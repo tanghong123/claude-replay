@@ -3957,6 +3957,7 @@ var phoneDock;
 {
   const PHONE = layout.query("phone");
   const WIDE = layout.query("wide");
+  const TOUCH = layout.query("touch");
   const topbar = viewRoot.$(".topbar");
 
   const info = document.createElement("button");
@@ -4326,6 +4327,10 @@ var phoneDock;
   // since iOS raises a keyboard (or a select's picker) only for a focused field. An iframe counts, as
   // its inside cannot be seen. The page-scroll compensation below is left as it was: it answers
   // iOS's scroll, not the keyboard.
+  // #s497: that scroll is a touch screen's alone, so only there is the page's offset read as it. A
+  // desktop host whose pane makes the view a phone reader (under 490px of its own width) scrolls its
+  // page with the reader's wheel, and the offset read as iOS's sent that page back to its top on every
+  // scroll and gave the host's box a transform for a frame.
   const NO_KEYBOARD_INPUTS = new Set(["button", "checkbox", "radio", "range", "color", "file", "image", "reset", "submit", "hidden"]);
   const typesInto = () => {
     let at = viewRoot.active();
@@ -4346,8 +4351,9 @@ var phoneDock;
       // stale (a host's bar hidden while the reader typed), and on iOS, where the page's scroll and the
       // grid's transform cancel, the box may not move, so no watch of its place hears it.
       const rode = keyboardRides;
+      const pageTop = TOUCH.matches ? viewport2.pageTop : 0;
       if (controls.nativeActive && PHONE.matches) {
-        const frame = sharedKeyboardFrame(grid.getBoundingClientRect().height, viewport2);
+        const frame = sharedKeyboardFrame(grid.getBoundingClientRect().height, { height: viewport2.height, scale: viewport2.scale, pageTop });
         // Keep one containing block even at zero offset; Safari pans during keyboard animation.
         keyboardRides = Math.abs(viewport2.scale - 1) < 0.01 && frame.shift > 0;
         writeStyle(grid, "transform", Math.abs(viewport2.scale - 1) < 0.01 ? `translateY(${frame.shift}px)` : "");
@@ -4362,7 +4368,7 @@ var phoneDock;
       const steady = PHONE.matches && Math.abs(viewport2.scale - 1) < 0.01;
       const shortfall = steady ? Math.max(0, Math.round(root.clientHeight - viewport2.height)) : 0;
       const covered = typing ? shortfall : 0;
-      const shift = steady ? Math.max(0, Math.round(viewport2.pageTop)) : 0;
+      const shift = steady ? Math.max(0, Math.round(pageTop)) : 0;
       // Once the keyboard is down there is nothing to fight: the page goes back to the top. This reads
       // the viewport as it is, unguarded, so it acts only as it did before #s451.
       if (steady && !shortfall && shift) scrollTo(0, 0);
@@ -4376,7 +4382,8 @@ var phoneDock;
     rideAgain = ride;
     viewport2.addEventListener("resize", ride, { signal });
     viewport2.addEventListener("scroll", ride, { signal });
-    // The page itself scrolls only under iOS's keyboard; off a phone this listener has nothing to do.
+    // The page's scroll is the ride's only under iOS's keyboard (a touch screen's, which `ride` reads
+    // for itself, #s497); off a phone this listener has nothing to do.
     addEventListener("scroll", () => { if (PHONE.matches || grid.style.transform) ride(); }, { passive: true, signal });
     // Focus moving may come with no resize of the visual viewport (a stale shortfall stays short, and
     // a keyboard rising into it leaves the height as it was), so the ride is asked again once focus

@@ -78,7 +78,9 @@ export function classesFor(view) {
 export function mountPaneLayout(element, { signal, onChange, inputs, onArrange, rides } = {}) {
   const coarse = matchMedia("(pointer:coarse)"), fine = matchMedia("(pointer:fine)");
   const events = new EventTarget();
-  const family = { phone: false, wide: false };
+  // `touch`: the screen the view last decided on is a touch screen (its `pl-coarse`), which the
+  // keyboard ride asks so that only a touch screen's page offset is read as its keyboard's (#s497).
+  const family = { phone: false, wide: false, touch: false };
   // `sized`: whether a decision has seen the view's box. A view mounted hidden decides once at 0×0,
   // which says nothing of its family, and `phone()` then answers for no box.
   let said = null, wrote = null, placed = null, arranged = null, glideUntil = 0, sized = false;
@@ -153,6 +155,7 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange, 
     const was = { ...family };
     family.phone = on.has("pl-phone");
     family.wide = isWidePhone(view);
+    family.touch = !!isCoarse;
     const hold = performance.now() >= glideUntil;
     if (hold) element.classList.add("pl-holding");
     for (const name of [...LAYOUT_CLASSES, ...ARRANGE_CLASSES, "pl-phone"]) element.classList.toggle(name, on.has(name));
