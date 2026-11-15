@@ -139,8 +139,8 @@ ring, so the scroll keys keep scrolling it while the session grows (#s488: Safar
 nothing once a redraw replaced the paragraph the reader had clicked). A host that reads
 `document.activeElement` after such a click finds the transcript instead of what it held before.
 A touch, a pen, and a click inside a wide code block, a wide table or a capped raw record do not
-focus the transcript, and the browser's own rule decides where the focus goes; a press on the
-transcript's scrollbar leaves the focus where it was. What is left of the Safari bug is in a wide
+focus the transcript, and the browser's own rule decides where the focus goes; nor does a press on
+the transcript's scrollbar, which leaves a focused transcript focused. What is left of the Safari bug is in a wide
 block: after a click inside one in the open turn, a prompt arriving redraws that block and Page Up
 scrolls nothing again.
 

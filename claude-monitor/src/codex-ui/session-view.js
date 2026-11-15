@@ -99,7 +99,7 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    focus ring: WebKit sends a key from a pressed node a redraw has replaced to the page and scrolls
  *    nothing. A click inside a box that scrolls on its own (a wide code block or table, a capped raw
  *    record), a touch and a pen do not focus the transcript (the browser's own rule decides the rest);
- *    a press on the transcript's scrollbar leaves the focus where it was.
+ *    nor does a press on the transcript's scrollbar, which leaves a focused transcript focused.
  *  - `write`: what writing to a session needs from the host, which owns write mode; left out, the
  *    view offers no writes (no compose button, no ✎ in a phone's dock, no notice that a session
  *    cannot be written to). An object of two functions:
@@ -413,8 +413,9 @@ const scrollsInside = target => {
 };
 transcript.tabIndex = -1;
 transcript.addEventListener("pointerdown", event => {
-  // A press on the transcript's own scrollbar leaves the focus where it was (a draft, the search
-  // field): the browser moves the focus on a scrollbar press only to a box it may focus. With the
+  // A press on the transcript's own scrollbar does not focus it: a browser moves the focus to a box
+  // it may focus on that press, so a draft's keys went to the transcript (with none, Chrome blurs the
+  // field as for a press anywhere else, measured, so the keys go to the page as before). With the
   // transcript itself focused the box stays focusable, since one that stops being so is blurred.
   const mouse = event.pointerType === "mouse" && !tapsMouse(event);
   if (mouse && viewport.frame.isScrollbarTarget(event)) { if (viewRoot.active() !== transcript) transcript.removeAttribute("tabindex"); }
