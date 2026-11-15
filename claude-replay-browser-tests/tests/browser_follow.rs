@@ -518,6 +518,124 @@ fn jump_to_bottom_lands_after_a_viewport_resize() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// **The classic page scales its heights by the width its records are laid out at** (#s492).
+/// Where a scrollbar takes room (Linux, Windows, a Mac set to always show them), the page's own
+/// scrollbar appears once the records outgrow the window and narrows the column, and no `resize`
+/// fires for it. The engine's last width was read as the mount was attached and empty, so the next
+/// resize could scale every remembered height by a ratio from the wider column, as #s431 found in
+/// the app shell's transcript. Both ways a page comes to overflow are walked: a long session at its
+/// first load, and a short one growing past the window. The window is narrower than the layout's
+/// 1160px cap, where the column follows the window. The ratios of every remeasure since the mark are
+/// multiplied, since each starts from the width the one before ended at.
+#[test]
+#[ignore] // needs a local Chrome/Chromium; see the module docs
+fn the_classic_page_scales_its_heights_by_the_width_its_records_are_laid_out_at() {
+    const MARK: &str = "(function(){ window.__t0 = performance.now(); window.__w0 = document.querySelector('.vwin').getBoundingClientRect().width; return true; })()";
+    const REMEASURES: &str = "(function(){ var w = document.querySelector('.vwin').getBoundingClientRect().width; var rs = window.__viewportHistory.states.filter(function (s) { return s.cause === 'remeasure' && s.t >= window.__t0; }).map(function (s) { return s.ratio; }); return { count: rs.length, ratios: rs, ratio: Math.round(rs.reduce(function (a, r) { return a * r; }, 1) * 1000) / 1000, expected: Math.round(window.__w0 / w * 1000) / 1000, from: Math.round(window.__w0), to: Math.round(w), innerWidth: innerWidth }; })()";
+    const ROOM: &str = "window.innerWidth - document.documentElement.clientWidth";
+    // Whether the page overflows the window: what makes a scrollbar appear, read apart from the
+    // room one takes, since a page that keeps its gutter has the room before it overflows.
+    const OVER: &str =
+        "document.documentElement.scrollHeight - document.documentElement.clientHeight";
+    let _serial = serial();
+    let base = base("classic-scrollbar-width");
+    std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
+    let turn = |i: u32| {
+        user(
+            &format!(
+                "question {i}: {}",
+                "lorem ipsum dolor sit amet consectetur. ".repeat(4)
+            ),
+            i % 60,
+        ) + &assistant(
+            &format!(
+                "answer {i}: {}",
+                "sed do eiusmod tempor incididunt ut labore. ".repeat(9)
+            ),
+            i % 60,
+        )
+    };
+    let long = base.join("long.jsonl");
+    std::fs::write(&long, (0..120).map(turn).collect::<String>()).unwrap();
+    let short = base.join("short.jsonl");
+    std::fs::write(&short, turn(0)).unwrap();
+    let args = Args {
+        no_cache: true,
+        ..Default::default()
+    };
+    let mut wrong = Vec::new();
+    for (name, src, grows) in [
+        ("a long session at its first load", &long, false),
+        ("a short session grown past the window", &short, true),
+    ] {
+        let server = start_server(&args, std::slice::from_ref(src)).expect("server starts");
+        let url = server.url_for_root(0).expect("hosted");
+        let (browser, tab) = harness::chrome_tab();
+        harness::classic_scrollbars(&tab);
+        harness::resize(&tab, 1000.0, 800.0);
+        tab.navigate_to(&url).unwrap();
+        tab.wait_until_navigated().unwrap();
+        wait_for(
+            &tab,
+            &format!("{name}: the page drawn"),
+            Duration::from_secs(20),
+            |s| s["blocks"].as_i64().unwrap_or(-1) >= 2,
+        );
+        if grows {
+            let over = eval(&tab, OVER, false);
+            assert!(
+                over.as_f64().unwrap_or(99.0) < 1.0,
+                "{name}: premise, the session fits the window: {over}"
+            );
+            for i in 1..16 {
+                append(src, &turn(i));
+            }
+        }
+        wait_probe(
+            &tab,
+            &format!("{name}: the page overflowing the window"),
+            Duration::from_secs(20),
+            OVER,
+            |v| v.as_f64().unwrap_or(0.0) > 200.0,
+        );
+        // Let the growth's apply and its measures finish before the mark.
+        std::thread::sleep(Duration::from_millis(2600));
+        let room = eval(&tab, ROOM, false);
+        assert!(
+            room.as_f64().unwrap_or(0.0) >= 14.5,
+            "{name}: the page's scrollbar takes room: {room}"
+        );
+        eval(&tab, MARK, false);
+        harness::resize(&tab, 900.0, 800.0);
+        wait_probe(
+            &tab,
+            &format!("{name}: a remeasure at the new width"),
+            Duration::from_secs(10),
+            REMEASURES,
+            |v| v["count"].as_i64().unwrap_or(0) >= 1 && v["innerWidth"] == 900,
+        );
+        // Any later resize event of the same move is in the product too.
+        std::thread::sleep(Duration::from_millis(800));
+        let seen = eval(&tab, REMEASURES, false);
+        let (ratio, expected) = (
+            seen["ratio"].as_f64().unwrap_or(0.0),
+            seen["expected"].as_f64().unwrap_or(-1.0),
+        );
+        eprintln!("{name}: {seen}");
+        if (ratio - expected).abs() > 0.002 {
+            wrong.push(format!("{name}: {seen}"));
+        }
+        drop(tab);
+        drop(browser);
+        drop(server);
+    }
+    assert!(
+        wrong.is_empty(),
+        "the remeasure scales by the column's own widths, before and after: {wrong:#?}"
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// **A turn landing must survive late reflow.** Reported from the monitor: clicking a turn
 /// in the sidebar landed several turns away, on a stretch full of images, and only a
 /// SECOND click worked — because the first had finally measured the region.
