@@ -15624,6 +15624,15 @@ fn app_shell_the_rail_opens_an_agent_s_sessions_and_the_filter_in_flyouts() {
         );
 
         // A click pins Codex's flyout; Escape closes it and gives the focus back to the mark.
+        // The mark is stamped before the click (#s482, below): stamped after it, a refresh landing
+        // while the flyout opened had rewritten the marks already and the stamp went on the new ones.
+        eval(
+            &tab,
+            &format!(
+                "(function () {{ {}.__kept = true; return 'ok'; }})()",
+                mark("Codex")
+            ),
+        );
         eval(&tab, &format!("{}.click(); 'ok'", mark("Codex")));
         until_open("the pinned flyout for Codex");
         let seen = read();
@@ -15639,11 +15648,13 @@ fn app_shell_the_rail_opens_an_agent_s_sessions_and_the_filter_in_flyouts() {
         // saying so. The open sets that mark's aria-expanded itself, and while the marks' HTML
         // carried it, the next refresh rewrote them: new buttons on the screen, which on an iPad
         // spend a tap that meets them as a hover. (The resource timings are cleared first, so a
-        // full buffer cannot hide the refresh.)
+        // full buffer cannot hide the refresh.) #s493: the flyout's rows likewise, which a tap
+        // choosing a session from a pinned flyout meets.
         let refreshes = "performance.getEntriesByType('resource').filter(function (e) { return /\\/api\\/sessions(\\?|$)/.test(e.name); }).length";
+        let codex_row = "document.querySelector('#railFlyout [data-session]')";
         eval(
             &tab,
-            &format!("(function () {{ performance.clearResourceTimings(); {}.__kept = true; return 'ok'; }})()", mark("Codex")),
+            &format!("(function () {{ performance.clearResourceTimings(); {codex_row}.__kept = true; return 'ok'; }})()"),
         );
         harness::until(
             &tab,
@@ -15660,6 +15671,41 @@ fn app_shell_the_rail_opens_an_agent_s_sessions_and_the_filter_in_flyouts() {
             ),
             "[true,\"true\"]",
             "at {width}px: a refresh with the flyout open keeps the rail's marks, the open one expanded"
+        );
+        assert_eq!(
+            eval(
+                &tab,
+                &format!("(function () {{ var r = {codex_row}; return !!(r && r.__kept); }})()"),
+            ),
+            true,
+            "at {width}px: a refresh that changes nothing keeps the pinned flyout's rows"
+        );
+        // #s493: when the marks are drawn again while the flyout is open (the selection moving to
+        // Codex gives its mark the selected class), the next placing (a resize here) keeps the
+        // flyout beside the mark on the screen. It measured the mark the flyout opened from, gone
+        // from the page and so all zeros, and put the flyout at the window's corner.
+        eval(
+            &tab,
+            &format!("(function () {{ history.pushState({{}}, '', '?session=' + encodeURIComponent({:?})); dispatchEvent(new PopStateEvent('popstate')); return 'ok'; }})()", ids[0]),
+        );
+        harness::until(
+            &tab,
+            &format!("(function () {{ var m = {}; return !!m && m.classList.contains('selected') && !m.__kept; }})()", mark("Codex")),
+            "the rail's marks drawn again with Codex's selected",
+            Duration::from_secs(10),
+            "document.getElementById('sidebarMiniAgents').innerHTML.slice(0, 300)",
+        );
+        eval(&tab, "dispatchEvent(new Event('resize')); 'ok'");
+        settle();
+        let beside = eval(
+            &tab,
+            &format!("(function () {{ var m = {}.getBoundingClientRect(), f = document.getElementById('railFlyout'); var r = f.getBoundingClientRect(); return JSON.stringify({{ open: !f.hidden, beside: Math.abs(r.left - m.right - 8) <= 1, expanded: {}.getAttribute('aria-expanded'), at: [Math.round(r.left), Math.round(r.top), Math.round(m.right), Math.round(m.top)] }}); }})()", mark("Codex"), mark("Codex")),
+        );
+        let beside: serde_json::Value =
+            serde_json::from_str(beside.as_str().unwrap_or("{}")).unwrap();
+        assert!(
+            beside["open"] == true && beside["beside"] == true && beside["expanded"] == "true",
+            "at {width}px: with the marks drawn again, the flyout stays open beside its mark, which says it is open: {beside}"
         );
         fire(&mark("Codex"), "pointerleave");
         std::thread::sleep(Duration::from_millis(600));
