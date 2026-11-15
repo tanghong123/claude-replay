@@ -1078,7 +1078,7 @@ fn videos(tab: &headless_chrome::Tab, dir: &Path, records: &[Value]) -> Vec<Stri
         for (k, r) in rows.iter().enumerate() {
             let url = format!(
                 "file://{}?img={}&w={}&h={}&cap={}",
-                page.display(),
+                encode(&page.display().to_string()),
                 encode(&format!(
                     "file://{}",
                     dir.join(r["shot"].as_str().unwrap()).display()
@@ -1136,6 +1136,8 @@ fn videos(tab: &headless_chrome::Tab, dir: &Path, records: &[Value]) -> Vec<Stri
     made
 }
 
+/// Percent-encodes everything but the unreserved characters and `/`, so a path (the frame page's,
+/// a screenshot's) and a caption both go into a `file://` URL whole.
 fn encode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
