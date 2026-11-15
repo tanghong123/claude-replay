@@ -23442,7 +23442,9 @@ fn a_click_in_a_growing_transcript_leaves_its_keys_a_scroller_no_redraw_takes() 
     harness::pause("the reader to stay", Duration::from_millis(1500));
     let rested = harness::eval(&tab, top).as_i64().unwrap_or(0);
     assert!(
-        landed < before - 100 && rested == landed,
+        // A few pixels for an estimate the engine applies at rest, which holds what the reader sees
+        // while it moves the offset; away from the end all the same.
+        landed < before - 100 && rested < before - 100 && (rested - landed).abs() <= 4,
         "and the reader stays where Page Up took them: from {before} to {landed}, then {rested}"
     );
     // After a key Chrome counts the mouse's focus as the keyboard's (`:focus-visible` matches,
@@ -23636,7 +23638,9 @@ fn a_click_in_a_wide_block_of_the_transcript_leaves_its_arrows_to_the_block() {
     eprintln!("#s488 wide blocks: {seen:?}");
     assert!(
         seen.iter().all(|line| line.ends_with("moved the block true")
-            && !line.contains("focus \"the transcript\"")),
+            && !line.contains("focus \"the transcript\"")
+            && (!line.contains("after a click on text")
+                || line.contains("focused \"the transcript\""))),
         "an arrow after a click in a wide block scrolls that block, the transcript unfocused, after a click on text too: {seen:?}"
     );
 }
