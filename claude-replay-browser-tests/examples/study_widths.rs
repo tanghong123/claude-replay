@@ -36,7 +36,9 @@
 //! not in every build), and `cells/` and `shots/`, one JSON and one PNG per cell, written as each
 //! cell finishes. `target/study-widths/latest` points at the last run. It is an example rather than
 //! an `#[ignore]`d case so the browser suite's `--ignored` runs never sweep it in. Nothing in it is a
-//! verdict: run it again after a change to see the after.
+//! verdict: run it again after a change to see the after. A cell the probe could not measure (it
+//! answered nothing or threw) is flagged in every output, and the run then exits 1, after writing
+//! everything.
 
 #[path = "../tests/harness/mod.rs"]
 mod harness;
@@ -552,6 +554,13 @@ fn run_cell(
     std::thread::sleep(Duration::from_millis(300));
     settle(tab);
     let measured = harness::probe(tab, PROBE);
+    // A probe that answered nothing or threw measured nothing: say so beside whatever else was noted,
+    // so the cell is flagged rather than read as clean.
+    if measured.is_null() {
+        notes.push("the probe answered nothing: this cell was not measured".into());
+    } else if let Some(e) = measured["error"].as_str() {
+        notes.push(format!("the probe threw: {e}"));
+    }
     // The screenshot, in CSS pixels whatever the device's scale; a host cell shows its pane and a
     // margin of the host's page around it.
     let (dpr, shot_w) = match (cell.surface, cell.input) {
@@ -594,6 +603,7 @@ fn run_cell(
         "shot": shot,
         "shot_w": shot_w,
         "shot_h": shot_h,
+        "measured_ok": is_measured(&measured),
         "measured": measured,
         "notes": notes,
         "ms": t0.elapsed().as_millis() as u64,
@@ -612,6 +622,12 @@ fn run_cell(
 
 // ── the outputs ─────────────────────────────────────────────────────────────────────────────
 
+/// Whether the probe measured the cell: it answered, and without an error (its own early `{error}`
+/// return included). The one test the report, the contact sheet, stderr and the exit status use.
+fn is_measured(m: &Value) -> bool {
+    m.is_object() && m.get("error").is_none()
+}
+
 fn part(v: &Value) -> String {
     if v.is_null() {
         return "·".into();
@@ -623,6 +639,9 @@ fn part(v: &Value) -> String {
 }
 
 fn missed_list(m: &Value) -> String {
+    if !is_measured(m) {
+        return "**not measured**".into();
+    }
     let list = m["missed"].as_array().cloned().unwrap_or_default();
     let under = m["underPane"].as_array().map_or(0, Vec::len);
     let under = if under > 0 {
@@ -652,6 +671,9 @@ fn missed_list(m: &Value) -> String {
 }
 
 fn overflow(m: &Value) -> String {
+    if !is_measured(m) {
+        return "**not measured**".into();
+    }
     let o = &m["overflow"];
     let mut bits = Vec::new();
     for k in ["page", "view", "transcript"] {
@@ -747,10 +769,7 @@ fn report(dir: &Path, records: &[Value], took: Duration) {
                         .collect()
                 })
                 .unwrap_or_default();
-            let mut notes = notes.join("; ");
-            if let Some(e) = m["error"].as_str() {
-                notes = format!("probe: {e}");
-            }
+            let notes = notes.join("; ");
             let _ = writeln!(
                 md,
                 "| [{}]({}) | {}×{} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |",
@@ -827,14 +846,18 @@ fn report(dir: &Path, records: &[Value], took: Duration) {
         let _ = writeln!(html, "<h2>{title}</h2>\n<div class=\"grid\">");
         for r in rows {
             let m = &r["measured"];
-            let missed = m["missed"].as_array().map_or(0, Vec::len);
-            let over = overflow(m).replace("**", "");
             let mut flags = Vec::new();
-            if missed > 0 {
-                flags.push(format!("{missed} control(s) unreachable"));
-            }
-            if over != "none" {
-                flags.push(format!("overflow: {over}"));
+            if is_measured(m) {
+                let missed = m["missed"].as_array().map_or(0, Vec::len);
+                let over = overflow(m).replace("**", "");
+                if missed > 0 {
+                    flags.push(format!("{missed} control(s) unreachable"));
+                }
+                if over != "none" {
+                    flags.push(format!("overflow: {over}"));
+                }
+            } else {
+                flags.push("NOT MEASURED".to_string());
             }
             if let Some(a) = r["notes"].as_array() {
                 flags.extend(a.iter().filter_map(|x| x.as_str().map(String::from)));
@@ -1060,15 +1083,24 @@ fn main() {
         for (n, cell) in cells.iter().enumerate() {
             let record = run_cell(&tab, &monitor, cell, &path, n + 1, &run);
             let m = &record["measured"];
-            eprintln!(
-                "{:3} {:44} text={:>5} missed={} overflow={} {}",
-                n + 1,
-                cell.id,
-                m["text"].to_string(),
-                m["missed"].as_array().map_or(0, Vec::len),
-                overflow(m).replace("**", ""),
-                record["notes"]
-            );
+            if is_measured(m) {
+                eprintln!(
+                    "{:3} {:44} text={:>5} missed={} overflow={} {}",
+                    n + 1,
+                    cell.id,
+                    m["text"].to_string(),
+                    m["missed"].as_array().map_or(0, Vec::len),
+                    overflow(m).replace("**", ""),
+                    record["notes"]
+                );
+            } else {
+                eprintln!(
+                    "{:3} {:44} NOT MEASURED {}",
+                    n + 1,
+                    cell.id,
+                    record["notes"]
+                );
+            }
             done.push(record);
         }
         made = videos(&tab, &dir, &done);
@@ -1085,4 +1117,19 @@ fn main() {
         println!("video:   {m}");
     }
     println!("{} cells in {} s", records.len(), t0.elapsed().as_secs());
+    // Everything is written; a cell the probe could not measure makes the run fail, so a script (or
+    // a reader of the exit status) never takes it for a clean sweep.
+    let unmeasured: Vec<&str> = records
+        .iter()
+        .filter(|r| !is_measured(&r["measured"]))
+        .filter_map(|r| r["id"].as_str())
+        .collect();
+    if !unmeasured.is_empty() {
+        eprintln!(
+            "study-widths: {} cell(s) not measured: {}",
+            unmeasured.len(),
+            unmeasured.join(", ")
+        );
+        std::process::exit(1);
+    }
 }
