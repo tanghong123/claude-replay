@@ -328,13 +328,13 @@ function recordOf(element, unit) {
 }
 
 /** What tells one record from another a rewrite put in its place (#s504): all its text, whitespace
- *  collapsed, and every link it holds by its address. A queued prompt picked up moves every marker
- *  behind it up a slot (#165), so the same place in a unit can hold another record, and two queued
- *  prompts may differ anywhere, or only in a link's address. Read only when a focus is to be given
+ *  collapsed, and every link and image it holds by its address. A queued prompt picked up moves
+ *  every marker behind it up a slot (#165), so the same place in a unit can hold another record, and
+ *  two queued prompts may differ anywhere, or only in a link's or an image's address. Read only when a focus is to be given
  *  back, and from both markups painted (`refocus` runs after the page's `afterRender`, which fills
  *  a code box's bar, say). */
 function recordIdentity(record) {
-  const links = [...record.querySelectorAll("[href]")].map(link => link.getAttribute("href"));
+  const links = [...record.querySelectorAll("[href], [src]")].map(node => `${node.getAttribute("href") || ""} ${node.getAttribute("src") || ""}`);
   return `${(record.textContent || "").replace(/\s+/g, " ").trim()}\n${links.join("\n")}`;
 }
 
