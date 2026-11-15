@@ -388,10 +388,11 @@ const transcript = byId("transcript");
 // does: a finger's or a pen's tap does not focus it (the attribute goes for the tap), since on a phone
 // or a tablet a tap on the text must not put the keyboard down nor take the focus from a field. No
 // ring is drawn for it (`production.css`). A browser sends no pointer events for a tap's
-// compatibility mouse events, but a mouse press that comes after a touch, at its point and within
-// `TAP_MOUSE_MS` of it, is that tap's all the same: Linux's Chrome stops a synthesized tap at
-// `touchend` and its harness supplies the press itself (#366), and a page may be sent one late.
-const TAP_MOUSE_MS = 1000, TAP_MOUSE_PX = 24;
+// compatibility mouse events, so a mouse's pointerdown is a mouse's press, except one the browser
+// suite supplies: Linux's Chrome stops a synthesized tap at `touchend` and the harness sends the
+// press itself, up to half a second later and more on a loaded runner (#366), so a mouse press that
+// comes after a touch, at its point and within `TAP_MOUSE_MS` of it, is read as that tap's.
+const TAP_MOUSE_MS = 2000, TAP_MOUSE_PX = 24;
 let lastTouch = null;
 const touched = event => { if (event.pointerType !== "mouse") lastTouch = { at: event.timeStamp, x: event.clientX, y: event.clientY }; };
 const tapsMouse = event => !!lastTouch && event.timeStamp - lastTouch.at < TAP_MOUSE_MS && Math.hypot(event.clientX - lastTouch.x, event.clientY - lastTouch.y) < TAP_MOUSE_PX;

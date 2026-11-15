@@ -23443,8 +23443,8 @@ fn a_click_in_a_growing_transcript_leaves_its_keys_a_scroller_no_redraw_takes() 
 /// phone or a tablet a tap there must not take the focus from a field (and put the keyboard down) for
 /// a key nobody presses. Three taps, each from nothing focused and from the search field: Chrome's own
 /// finger tap; a finger's tap whose compatibility mouse press comes late and as a plain mouse press,
-/// as Linux's harness supplies it (#366) and as a slow phone may, which is that tap's and not a
-/// mouse's; and a pen's press.
+/// as Linux's harness supplies it (#366), which is that tap's and not a mouse's (1.5 s late, as a
+/// loaded runner may send it: the harness waits up to half a second); and a pen's press.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_tap_on_the_transcript_does_not_focus_it() {
@@ -23499,7 +23499,7 @@ fn a_phone_tap_on_the_transcript_does_not_focus_it() {
             );
             match tap {
                 0 => harness::finger_tap(&tab, at.0, at.1),
-                1 => harness::finger_tap_late_click(&tab, at.0, at.1, Duration::from_millis(500)),
+                1 => harness::finger_tap_late_click(&tab, at.0, at.1, Duration::from_millis(1500)),
                 _ => pen(),
             }
             harness::pause("the tap's click", Duration::from_millis(800));
@@ -23514,7 +23514,7 @@ fn a_phone_tap_on_the_transcript_does_not_focus_it() {
             ));
         }
         // Past the window in which a mouse press still counts as the tap's.
-        harness::pause("the tap's window", Duration::from_millis(1200));
+        harness::pause("the tap's window", Duration::from_millis(2200));
     }
     eprintln!("#s488 taps: {seen:?}");
     assert!(
