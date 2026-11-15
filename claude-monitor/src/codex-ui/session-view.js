@@ -2456,13 +2456,14 @@ searchSuggest = document.createElement("div");
 searchSuggest.className = "search-suggest"; searchSuggest.id = "searchSuggest"; searchSuggest.hidden = true;
 searchSuggest.setAttribute("role", "listbox");
 viewRoot.$(".header-search-cluster").appendChild(searchSuggest);
-/** The placeholder of a phone's open box where the whole hint does not fit (#s516). */
-const SEARCH_PLACEHOLDER = "Search this session";
+/** What a phone's open box shows, empty, where the whole hint does not fit: the first that does (#s516). */
+const SEARCH_PLACEHOLDERS = ["Search this session", "Search"];
 /** Size the field to its text while the phone's box is open, and keep the end in view (#353). An
- *  EMPTY field fills the room and shows its placeholder from the start, the hint's key left out
- *  where the whole hint does not fit (#s516): sized to the hint, the field was 181px in a 178px
- *  strip on the iPhone 17 Pro upright (158px with the keyboard down), and with the caret at the end
- *  the strip scrolled the hint's first letters away. */
+ *  EMPTY field fills the room and shows its placeholder from the start: the whole hint where it
+ *  fits, else the first of `SEARCH_PLACEHOLDERS` that does (#s516). Sized to the hint, the field was
+ *  181px in a 178px strip on the iPhone 17 Pro upright (158px with the keyboard down), and with the
+ *  caret at the end the strip scrolled the hint's first letters away; a 320px phone's strip is 76px
+ *  with the keyboard down. */
 function fitSearchField() {
   if (!searchField || !fieldMeasure) return;
   const input = byId("transcriptSearchInput");
@@ -2475,8 +2476,8 @@ function fitSearchField() {
   if (!input.value) {
     // With chips the placeholder is not shown (#355), so the field's room is all it takes, and the
     // strip keeps its end in view as it does while typing.
-    fieldMeasure.textContent = hint;
-    input.placeholder = Math.ceil(fieldMeasure.getBoundingClientRect().width) + 8 <= room ? hint : SEARCH_PLACEHOLDER;
+    const fits = text => { fieldMeasure.textContent = text; return Math.ceil(fieldMeasure.getBoundingClientRect().width) + 8 <= room; };
+    input.placeholder = [hint, ...SEARCH_PLACEHOLDERS].find(fits) || SEARCH_PLACEHOLDERS[SEARCH_PLACEHOLDERS.length - 1];
     input.style.width = `${room}px`;
     searchField.scrollLeft = chips ? searchField.scrollWidth : 0;
     return;
@@ -2487,15 +2488,16 @@ function fitSearchField() {
   if (input.selectionStart === input.value.length) searchField.scrollLeft = searchField.scrollWidth;
 }
 addEventListener("resize", () => fitSearchField(), { signal });
+// The strip's room changes without the window's (#s516): the magnifier gives way while the field holds
+// the focus (the keyboard up), and the dock narrows beside a pane. The strip is a flex item that
+// takes what the box leaves, whatever the field inside it measures, so a fit never resizes it again.
+new ResizeObserver(() => fitSearchField()).observe(searchField);
 // #310, #313: on a phone (the view's phone family, `PHONE_QUERY` read from its own classes, #s431; #s32 a landscape phone too) the search box is an icon with its
 // input hidden. A tap on it OPENS it across the bar's second row, and it stays open until a tap lands outside the search's own
 // surfaces (the box, the drop-down, the filter popover) or Escape — never on blur, since a touch
 // browser does not focus a tapped button and the steps would vanish under the finger. The query,
 // its count and its marks outlive the box closing, as they outlive a blur on a wider window.
 const phoneSearch = layout.query("phone"), searchBox = viewRoot.$(".header-searchbox");
-// The magnifier gives way while the box holds the focus (the keyboard up on a phone), which changes
-// the room an empty field fills (#s516): fitted again once the focus has moved and the box is laid out.
-for (const type of ["focusin", "focusout"]) searchBox.addEventListener(type, () => requestAnimationFrame(fitSearchField), { signal });
 function setPhoneSearch(open) {
   if (!open && byId("navigatorOptions").classList.contains("open")) setPopover(null);
   searchBox.classList.toggle("phone-open", open && phoneSearch.matches);
@@ -3919,9 +3921,9 @@ if (keyboardMode === "engaged") {
 // press there is the browser's find.
 byId("composer").dataset.commandKeys = "";
 // Discoverability in the shell's idiom: the key in the control's own title / hint. A phone's box
-// names `/` alone (#s509): its field is a strip as wide as its text, scrolled to its end, so an
-// empty one showing "( / or ⌘F )" lost its start on a 390px phone, and ⌘F is a hardware keyboard's.
-// The hint the box shows; a phone's open box may show it without its key (`fitSearchField`, #s516).
+// names `/` alone (#s509): ⌘F is a hardware keyboard's, and "( / or ⌘F )" did not fit a 390px phone's
+// strip. Its open box, empty, shows the hint where it fits and a shorter text where it does not
+// (`fitSearchField`, #s516); the hint is kept in `data-hint`.
 const searchHint = () => { const input = byId("transcriptSearchInput"); input.dataset.hint = input.placeholder = `Search this session  ( ${hintFor("search", { command: !phoneSearch.matches })} )`; fitSearchField(); };
 searchHint();
 phoneSearch.addEventListener("change", searchHint, { signal });
