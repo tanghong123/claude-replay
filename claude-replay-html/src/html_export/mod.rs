@@ -2445,7 +2445,7 @@ fn build_page(
     </div>
     <div class="searchbox">
       <span class="mag">⌕</span>
-      <input id="q" placeholder="Search transcript  ( / )" title="⏎ next · ⇧⏎ previous · a uatow: prefix scopes by type — o(…) narrows the tools, e.g. o(B): for Bash; w requires whole words (e.g. tw:) · a leading : searches the literal text" autocomplete="off">
+      <input id="q" placeholder="Search transcript" title="⏎ next · ⇧⏎ previous · a uatow: prefix scopes by type — o(…) narrows the tools, e.g. o(B): for Bash; w requires whole words (e.g. tw:) · a leading : searches the literal text" autocomplete="off">
       <span id="qcount"></span>
       <span id="qprev" class="qnav" title="Previous match (⇧⏎)">▲</span>
       <span id="qnext" class="qnav" title="Next match (⏎)">▼</span>
