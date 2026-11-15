@@ -23429,6 +23429,22 @@ fn a_click_in_a_growing_transcript_leaves_its_keys_a_scroller_no_redraw_takes() 
         Duration::from_secs(5),
         top,
     );
+    // Where the key took the reader, once the browser's scroll has ended, and a moment later.
+    let mut landed = harness::eval(&tab, top).as_i64().unwrap_or(0);
+    for _ in 0..20 {
+        harness::pause("the key's scroll", Duration::from_millis(200));
+        let now = harness::eval(&tab, top).as_i64().unwrap_or(0);
+        if now == landed {
+            break;
+        }
+        landed = now;
+    }
+    harness::pause("the reader to stay", Duration::from_millis(1500));
+    let rested = harness::eval(&tab, top).as_i64().unwrap_or(0);
+    assert!(
+        landed < before - 100 && rested == landed,
+        "and the reader stays where Page Up took them: from {before} to {landed}, then {rested}"
+    );
     // After a key Chrome counts the mouse's focus as the keyboard's (`:focus-visible` matches,
     // measured): still no outline is drawn, which `production.css` sees to.
     let after = read("after Page Up");
