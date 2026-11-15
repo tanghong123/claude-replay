@@ -138,8 +138,11 @@ A mouse's click in the session view's transcript focuses the transcript, which d
 ring, so the scroll keys keep scrolling it while the session grows (#s488: Safari scrolled
 nothing once a redraw replaced the paragraph the reader had clicked). A host that reads
 `document.activeElement` after such a click finds the transcript instead of what it held before.
-A touch, a pen, a press on the transcript's scrollbar, and a click inside a wide code block, a wide
-table or a capped raw record leave the focus where it was.
+A touch, a pen, and a click inside a wide code block, a wide table or a capped raw record do not
+focus the transcript, and the browser's own rule decides where the focus goes; a press on the
+transcript's scrollbar leaves the focus where it was. What is left of the Safari bug is in a wide
+block: after a click inside one in the open turn, a prompt arriving redraws that block and Page Up
+scrolls nothing again.
 
 Where the session view shows an agent's HTML page in a frame, it writes the frame from the page's
 text, and such a frame takes the security policy of the page around it. The native app's policy

@@ -98,7 +98,8 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    In either mode a mouse's click in the transcript focuses the transcript (#s488), which draws no
  *    focus ring: WebKit sends a key from a pressed node a redraw has replaced to the page and scrolls
  *    nothing. A click inside a box that scrolls on its own (a wide code block or table, a capped raw
- *    record) or on the transcript's scrollbar, a touch and a pen leave the focus where it was.
+ *    record), a touch and a pen do not focus the transcript (the browser's own rule decides the rest);
+ *    a press on the transcript's scrollbar leaves the focus where it was.
  *  - `write`: what writing to a session needs from the host, which owns write mode; left out, the
  *    view offers no writes (no compose button, no ✎ in a phone's dock, no notice that a session
  *    cannot be written to). An object of two functions:
