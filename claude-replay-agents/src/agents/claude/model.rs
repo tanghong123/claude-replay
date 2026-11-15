@@ -1329,6 +1329,22 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             "classifierBoundary",
             "mcpMeta",
             "toolEndsTurn",
+            // #s507 (client 2.1.325): a string on the user record carrying an MCP tool's result,
+            // written just before `sourceToolAssistantUUID`: the server's annotation of the tool,
+            // recorded once per call. `"declared"` when the server marks the tool `readOnlyHint:
+            // false` (it may change things), `"no_hint"` when it gives no annotation; absent for a
+            // built-in tool, an MCP tool declared read-only, and an error result (the client's
+            // code, 2.1.325). The client reads it for its own bookkeeping: which old tool results
+            // it clears from the model's context. Measured 2026-11-15 on aries-black: 16 records
+            // in 1 session, every value `"no_hint"`, on each MCP result that succeeded and on none
+            // that failed. Like `mcpMeta` and `toolEndsTurn` beside it, it is context bookkeeping;
+            // what a call did is read from the call and its result, which the card shows. Unread.
+            // REVISIT: (1) the first `"declared"`, a call to a tool its server says may change
+            // things: whether an MCP tool card marks such a call is a RENDER question for the
+            // owner, queued with the record count and client version, never decided here; (2) a
+            // value other than `"declared"` and `"no_hint"`; (3) the key on a result that is not
+            // an MCP call, on an error result, or on another record type.
+            "mcpCallNotReadOnly",
             "imagePasteIds",
             "queueOrigin",
             "userFeedback",
@@ -10240,6 +10256,43 @@ mod tests {
         let seen: Vec<_> = unknown_shapes()
             .into_iter()
             .filter(|s| s.example.as_deref() == Some("s-s215"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
+    }
+
+    /// #s507: 2.1.325's read-only stamp on an MCP tool's result (`"no_hint"` and `"declared"`) is
+    /// known, not reported while the sweep asks, and draws nothing: each record folds to the same
+    /// blocks as the record without the key. Invented records only. Removing the key from the user
+    /// arm of the census turns this red.
+    #[test]
+    fn an_mcp_call_s_read_only_stamp_is_known_and_unread() {
+        unknown_watch_keys(true);
+        let session = |stamp_a: &str, stamp_b: &str, sid: &str| {
+            format!(
+                r##"
+{{"type":"user","version":"2.1.325","sessionId":"{sid}","uuid":"u0","message":{{"role":"user","content":"look it up"}}}}
+{{"type":"assistant","version":"2.1.325","sessionId":"{sid}","uuid":"a1","message":{{"role":"assistant","content":[{{"type":"tool_use","id":"toolu_s507a","name":"mcp__fixture__lookup","input":{{"term":"walnut"}}}},{{"type":"tool_use","id":"toolu_s507b","name":"mcp__fixture__store","input":{{"term":"walnut","note":"keep"}}}}]}}}}
+{{"type":"user","version":"2.1.325","sessionId":"{sid}","uuid":"u1","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_s507a","content":[{{"type":"text","text":"walnut: a tree"}}]}}]}},"toolUseResult":[{{"type":"text","text":"walnut: a tree"}}]{stamp_a},"sourceToolAssistantUUID":"a1"}}
+{{"type":"user","version":"2.1.325","sessionId":"{sid}","uuid":"u2","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_s507b","content":[{{"type":"text","text":"stored"}}]}}]}},"toolUseResult":[{{"type":"text","text":"stored"}}]{stamp_b},"sourceToolAssistantUUID":"a1"}}
+"##
+            )
+        };
+        let stamped = parse(&session(
+            r#","mcpCallNotReadOnly":"no_hint""#,
+            r#","mcpCallNotReadOnly":"declared""#,
+            "s-s507",
+        ));
+        let plain = parse(&session("", "", "s-s507p"));
+        assert_eq!(stamped, plain, "the stamp draws nothing");
+        assert!(
+            stamped
+                .iter()
+                .any(|b| matches!(b, Block::Thinking { tools, .. } if tools.len() == 2)),
+            "the calls are drawn: {stamped:?}"
+        );
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s507"))
             .collect();
         assert!(seen.is_empty(), "nothing reported: {seen:?}");
     }
