@@ -492,27 +492,40 @@ fn stale_secs() -> u64 {
         .unwrap_or(3600)
 }
 
+/// This process's stdin, when a person is at a terminal there to answer a question.
+fn at_terminal() -> Option<std::io::StdinLock<'static>> {
+    use std::io::IsTerminal;
+    let stdin = std::io::stdin();
+    stdin.is_terminal().then(|| stdin.lock())
+}
+
 /// When the newest session is stale AND there's more than one to choose from AND a
 /// human is at the terminal, show a numbered list and let them pick which to resume
 /// (Enter = newest, `q` = abort). Otherwise return `newest` unchanged — so an
 /// unattended run (no TTY), a single-session dir, or a fresh session never prompts.
+///
+/// `person` is where the answer is read from, and `None` when nobody is at a terminal:
+/// the caller decides that from its stdin (`at_terminal`), so a test says "no terminal"
+/// whatever stdin `cargo test` was given (#s515: run from a tmux pane, it waited 50
+/// minutes on the pane for an answer).
 fn confirm_if_stale(
     adapter: &dyn agent::AgentAdapter,
     cwd: &Path,
     newest: agent::ResumableSession,
+    person: Option<&mut dyn std::io::BufRead>,
 ) -> Result<agent::ResumableSession> {
-    use std::io::{IsTerminal, Write};
+    use std::io::Write;
     if newest.idle_secs <= stale_secs() {
         return Ok(newest);
     }
-    if !std::io::stdin().is_terminal() {
+    let Some(person) = person else {
         eprintln!(
             "agent-jdi: newest session here is {} old and there's no TTY to confirm — \
              using it (pass --session <id> to choose).",
             human_ago(newest.idle_secs)
         );
         return Ok(newest);
-    }
+    };
     let sessions = adapter.sessions_for_cwd(cwd);
     if sessions.len() <= 1 {
         return Ok(newest); // nothing to choose between
@@ -536,7 +549,7 @@ fn confirm_if_stale(
     );
     std::io::stderr().flush().ok();
     let mut line = String::new();
-    std::io::stdin().read_line(&mut line)?;
+    person.read_line(&mut line)?;
     let choice = line.trim();
     if choice.eq_ignore_ascii_case("q") {
         bail!("aborted — no session chosen.");
@@ -577,7 +590,13 @@ fn cmd_resume(
     let adapter = agent::adapter(agent);
     adapter.preflight()?;
     if tracked_id.is_none() && session.is_none() {
-        resumable = confirm_if_stale(adapter.as_ref(), &cwd, resumable)?;
+        let mut stdin = at_terminal();
+        resumable = confirm_if_stale(
+            adapter.as_ref(),
+            &cwd,
+            resumable,
+            stdin.as_mut().map(|s| s as &mut dyn std::io::BufRead),
+        )?;
     }
 
     // `--dry-run`: show what would run, with no side effects (no slot, no spawn, no
@@ -2684,33 +2703,121 @@ mod tests {
         assert!(error.to_string().contains("18"));
     }
 
-    /// The stale-confirm picker must never block an unattended run: with no TTY (as
-    /// in `cargo test`, and in the detached handoff watcher) it returns the newest
-    /// session unchanged even when it's stale, rather than waiting for input.
+    /// An adapter that answers only what the stale-confirm picker asks: the sessions of a
+    /// directory (counting how often it is asked), and where a session's transcript is.
+    /// Everything else is out of scope.
+    struct PickerAdapter {
+        sessions: Vec<&'static str>,
+        listed: std::cell::Cell<usize>,
+    }
+    impl PickerAdapter {
+        fn new(sessions: Vec<&'static str>) -> Self {
+            PickerAdapter {
+                sessions,
+                listed: std::cell::Cell::new(0),
+            }
+        }
+    }
+    impl agent::AgentAdapter for PickerAdapter {
+        fn id(&self) -> Agent {
+            Agent::CLAUDE
+        }
+        fn initial_mode(&self, _trigger: agent::Trigger) -> agent::Mode {
+            unreachable!("the picker never asks for a mode")
+        }
+        fn resolve_binary(&self) -> Result<PathBuf> {
+            unreachable!("the picker never runs the agent")
+        }
+        fn build_invocation(&self, _ctx: &agent::TurnContext) -> agent::Invocation {
+            unreachable!("the picker never runs the agent")
+        }
+        fn classify(
+            &self,
+            _rc: i32,
+            _capture: &str,
+            _ctx: &agent::TurnContext,
+        ) -> agent::TurnOutcome {
+            unreachable!("the picker never runs the agent")
+        }
+        fn discover_resumable(&self, _cwd: &Path) -> Result<agent::ResumableSession> {
+            unreachable!("the picker is handed the newest session")
+        }
+        fn sessions_for_cwd(&self, _cwd: &Path) -> Vec<agent::SessionBrief> {
+            self.listed.set(self.listed.get() + 1);
+            self.sessions
+                .iter()
+                .map(|id| agent::SessionBrief {
+                    id: id.to_string(),
+                    idle_secs: 99_999,
+                    snippet: String::new(),
+                })
+                .collect()
+        }
+        fn transcript_path(&self, session_id: &str, _cwd: &Path) -> Option<PathBuf> {
+            Some(PathBuf::from(format!("/nonexistent/{session_id}.jsonl")))
+        }
+        fn prompt_for(&self, _mode: agent::Mode, _brief: &agent::Brief, _id: &str) -> String {
+            unreachable!("the picker never prompts the agent")
+        }
+    }
+
+    fn stale(id: &str) -> agent::ResumableSession {
+        agent::ResumableSession {
+            id: id.into(),
+            transcript: PathBuf::from(format!("/nonexistent/{id}.jsonl")),
+            // Well past the 1h threshold, and past the AGENT_JDI_STALE another test sets.
+            idle_secs: 99_999,
+        }
+    }
+
+    /// The stale-confirm picker must never block an unattended run: with nobody at a
+    /// terminal (the detached handoff watcher, a run from launchd) it returns the newest
+    /// session unchanged even when it's stale, and never even lists the others. The test
+    /// says "no terminal" itself, so it passes whatever stdin `cargo test` was given
+    /// (#s515: run from a tmux pane, the old test waited 50 minutes on the pane).
     #[test]
     fn stale_confirm_never_blocks_without_a_tty() {
-        let adapter = agent::adapter(Agent::CLAUDE);
-        let cwd = std::env::temp_dir().join("agent-jdi-nonexistent-cwd");
-        let stale = agent::ResumableSession {
-            id: "the-only-one".into(),
-            transcript: cwd.join("t.jsonl"),
-            idle_secs: 99_999, // well past the 1h threshold
-        };
-        // No TTY under `cargo test` → returns the input without prompting.
-        let out = confirm_if_stale(adapter.as_ref(), &cwd, stale.clone()).unwrap();
-        assert_eq!(out.id, stale.id);
+        let adapter = PickerAdapter::new(vec!["newest", "older"]);
+        let cwd = Path::new("/nonexistent");
+        let out = confirm_if_stale(&adapter, cwd, stale("newest"), None).unwrap();
+        assert_eq!(out.id, "newest");
+        assert_eq!(
+            adapter.listed.get(),
+            0,
+            "with no terminal the others are never listed"
+        );
 
-        // A fresh session skips the check entirely (early return).
+        // A fresh session skips the check entirely (early return), at a terminal too.
         let fresh = agent::ResumableSession {
             idle_secs: 5,
-            ..stale.clone()
+            ..stale("newest")
         };
-        assert_eq!(
-            confirm_if_stale(adapter.as_ref(), &cwd, fresh.clone())
-                .unwrap()
-                .id,
-            fresh.id
-        );
+        let mut person: &[u8] = b"2\n";
+        let out = confirm_if_stale(&adapter, cwd, fresh, Some(&mut person)).unwrap();
+        assert_eq!(out.id, "newest");
+        assert_eq!(person, b"2\n", "a fresh session asks nothing");
+    }
+
+    /// With a person at a terminal and a stale newest session among several, the picker
+    /// still asks, and does what the answer says.
+    #[test]
+    fn stale_confirm_asks_a_person_at_a_terminal() {
+        let adapter = PickerAdapter::new(vec!["newest", "older"]);
+        let cwd = Path::new("/nonexistent");
+        let pick = |answer: &'static [u8]| {
+            let mut person = answer;
+            confirm_if_stale(&adapter, cwd, stale("newest"), Some(&mut person))
+        };
+        assert_eq!(pick(b"2\n").unwrap().id, "older");
+        assert_eq!(pick(b"\n").unwrap().id, "newest", "Enter takes the newest");
+        assert!(pick(b"q\n").is_err(), "q aborts");
+        assert!(pick(b"7\n").is_err(), "a choice out of range aborts");
+
+        // One session is nothing to choose between: no question.
+        let single = PickerAdapter::new(vec!["newest"]);
+        let mut person: &[u8] = b"q\n";
+        let out = confirm_if_stale(&single, cwd, stale("newest"), Some(&mut person)).unwrap();
+        assert_eq!(out.id, "newest");
     }
 
     #[test]
