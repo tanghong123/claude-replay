@@ -18,8 +18,10 @@
 //! box of each part (the session list, the session, the right pane, the outline), the chrome's
 //! controls that a pointer cannot reach at their centre (hit-tested with `elementFromPoint`; what
 //! sits inside a scroller — the transcript, the session tree, the pane's body, the outline's lists —
-//! is left out, as is a layer parked off the window or, in a host, off the view), how far the page, the view and the transcript
-//! overflow sideways, and the width of the transcript's text column, beside a screenshot.
+//! is left out, and so is a layer parked by its own state, named in `PROBE`: the shut right pane, the
+//! shut drawer, the outline folded off a phone; each one set aside is listed in the cell's JSON), how
+//! far the page, the view and the transcript overflow sideways, and the width of the transcript's
+//! text column, beside a screenshot.
 //!
 //! Run it from the workspace root, after building the monitor in release:
 //!
@@ -407,8 +409,20 @@ fn forget(tab: &headless_chrome::Tab, dark: bool) {
     );
 }
 
-/// The probe: what the layout is and what a pointer can reach. Wrapped so a throw is recorded.
-const PROBE: &str = r#"(function(){ try {
+/// The probe: what the layout is and what a pointer can reach. Wrapped so a throw is recorded. It is
+/// a function of the cell (`{pane}`), called by `probe_call`.
+///
+/// A control is set aside before it is counted only where a layer is parked by its OWN state, named
+/// here, never by where a layer happens to sit (a layer placed against the window rather than the
+/// view must still count in a narrow host): the right pane while the view wears `preview-off`
+/// (`.preview`: past the view's edge where it lies over the session, a 0px track where it is a
+/// column); the phone's drawer while `#app` wears `app-drawer` and `mobile-detail` (`.sidebar`
+/// pushed off the left edge), except on a wide phone held sideways, where the list is a column and
+/// `mobile-detail` parks nothing; and the outline folded off a narrow phone view
+/// (`.workspace.navigator-off .session-navigator` under `pl-phone.pl-max-w-900`; elsewhere
+/// `navigator-off` is the glyphs' rail, on the screen). Each control set aside so is listed in
+/// `skipped` with its reason, and the rest of what is not checked is counted in `notChecked`.
+const PROBE: &str = r#"(function(cell){ try {
 var W = innerWidth, H = innerHeight;
 var app = document.getElementById('app'), v = document.getElementById('sessionView');
 var root = app || v;
@@ -424,13 +438,24 @@ var text = null; if (ti && ti.getClientRects().length) { var cs = getComputedSty
 var docW = Math.max(document.documentElement.scrollWidth, document.body ? document.body.scrollWidth : 0);
 var SKIP = '.transcript-inner, .tree, #previewBody, .outline-card-body';
 var SEL = 'button, a[href], input:not([type=hidden]), select, textarea, summary, [role=button], [role=tab], [role=menuitem], [tabindex]:not([tabindex="-1"])';
-var checked = 0, missed = [], underPane = [], pv = document.getElementById('preview');
+var checked = 0, missed = [], underPane = [], skipped = [], notChecked = { inScroller: 0, hidden: 0, noPointer: 0, tiny: 0 };
+var pv = document.getElementById('preview');
+var has = function (n, c) { return !!n && n.classList.contains(c); };
+var WIDE = matchMedia('(pointer:coarse) and (max-height:500px) and (min-width:900px)').matches;
+var paneShut = has(v, 'preview-off');
+var sidebar = app && app.querySelector(':scope > .sidebar');
+var parked = function (e) {
+  if (paneShut && pv && pv.contains(e)) return 'the right pane, shut (preview-off)';
+  if (sidebar && has(app, 'app-drawer') && has(app, 'mobile-detail') && !WIDE && sidebar.contains(e)) return 'the drawer, shut (mobile-detail)';
+  if (has(v, 'pl-phone') && has(v, 'pl-max-w-900')) { var nav = e.closest('.workspace.navigator-off .session-navigator'); if (nav && v.contains(nav)) return "the outline, folded off a phone's view (navigator-off)"; }
+  return null;
+};
 Array.prototype.forEach.call(root.querySelectorAll(SEL), function (e) {
-  if (e.closest(SKIP) || !e.getClientRects().length || !shown(e)) return;
-  if (getComputedStyle(e).pointerEvents === 'none') return;
-  var r = e.getBoundingClientRect(); if (r.width < 2 || r.height < 2) return;
-  var layer = e; while (layer && layer !== root) { var lc = getComputedStyle(layer); if (lc.position === 'fixed' || lc.transform !== 'none') break; layer = layer.parentElement; }
-  if (layer && layer !== root) { var lr = layer.getBoundingClientRect(); if (lr.right <= 0 || lr.left >= W || lr.bottom <= 0 || lr.top >= H || (!app && (lr.left >= vr.right - 0.5 || lr.right <= vr.left + 0.5))) return; }
+  if (e.closest(SKIP)) { notChecked.inScroller++; return; }
+  if (!e.getClientRects().length || !shown(e)) { notChecked.hidden++; return; }
+  if (getComputedStyle(e).pointerEvents === 'none') { notChecked.noPointer++; return; }
+  var r = e.getBoundingClientRect(); if (r.width < 2 || r.height < 2) { notChecked.tiny++; return; }
+  var park = parked(e); if (park) { skipped.push({ control: name(e), why: park }); return; }
   checked++;
   var cx = r.left + r.width / 2, cy = r.top + r.height / 2, why = null;
   if (cx < 0 || cx >= W || cy < 0 || cy >= H) why = 'centre off the window';
@@ -453,8 +478,13 @@ return {
   parts: { list: box(q('#app>.sidebar')), session: box(q('#sessionView>.workspace')), transcript: box(q('#sessionView .transcript')), pane: box(q('#preview')), outline: box(q('#sessionView .session-navigator')) },
   text: text, transcript: tr ? Math.round(tr.clientWidth) : null,
   overflow: { page: docW - W, view: v ? v.scrollWidth - v.clientWidth : null, transcript: tr ? tr.scrollWidth - tr.clientWidth : null },
-  checked: checked, missed: missed, underPane: underPane, beyond: beyond.slice(0, 6), viewOverflowX: v ? getComputedStyle(v).overflowX : null
-}; } catch (error) { return { error: String(error && error.stack || error) }; } })()"#;
+  checked: checked, missed: missed, underPane: underPane, skipped: skipped, notChecked: notChecked, beyond: beyond.slice(0, 6), viewOverflowX: v ? getComputedStyle(v).overflowX : null
+}; } catch (error) { return { error: String(error && error.stack || error) }; } })"#;
+
+/// The probe called for `cell`.
+fn probe_call(cell: &Cell) -> String {
+    format!("{PROBE}({})", json!({ "pane": cell.pane }))
+}
 
 /// The pane shows the notes: the right pane on the screen and the document drawn in it.
 const PANE_SHOWS: &str = "(function(){ var p = document.getElementById('preview'), b = document.getElementById('previewBody'); if (!p || !b) return false; var r = p.getBoundingClientRect(); return r.width > 40 && r.right > 0 && r.left < innerWidth && /This week/.test(b.innerText || ''); })()";
@@ -553,7 +583,7 @@ fn run_cell(
     }
     std::thread::sleep(Duration::from_millis(300));
     settle(tab);
-    let measured = harness::probe(tab, PROBE);
+    let measured = harness::probe(tab, &probe_call(cell));
     // A probe that answered nothing or threw measured nothing: say so beside whatever else was noted,
     // so the cell is flagged rather than read as clean.
     if measured.is_null() {
@@ -731,7 +761,9 @@ fn report(dir: &Path, records: &[Value], took: Duration) {
          A study, not a gate. Sizes are CSS pixels. A part's box is `left–right (width)`; *session* is the session's whole column, the outline included; `—` is \
          not on the screen, `·` not in the page. *Text* is the transcript's text column. \
          *Unreachable* lists the chrome's controls whose centre a pointer cannot reach \
-         (`elementFromPoint`), out of those checked; a control the open right pane lies over is counted apart. *Overflow* is how far the page, the view and \
+         (`elementFromPoint`), out of those checked; a control the open right pane lies over is counted apart. \
+         A control in a layer parked by its own state (the shut right pane, the shut drawer, the outline \
+         folded off a phone) is not checked; each cell's JSON lists them under `skipped`. *Overflow* is how far the page, the view and \
          the transcript scroll sideways, and what is drawn in the view past its left or right edge \
          (the shut right pane, parked past the view's edge and not drawn, adds to the view's \
          number without being named). The screenshots are in `shots/`, and `contact.html` shows \
