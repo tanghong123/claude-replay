@@ -16832,6 +16832,123 @@ fn a_phone_task_card_dims_what_is_behind_it() {
     );
 }
 
+/// #s510, seen on #s496's walk: a wide phone held sideways, its list column showing Tasks, a task's
+/// card open, and a tap on the dim where the sidebar handle lies beneath it. The card closed and the
+/// column hid as well: the dim went at the touch, and the tap's click then landed on the handle. A
+/// tap on the dim is spent closing the card, as the pane's dim's is (#s55). A tap on the dim
+/// elsewhere still closes the card, and the handle answers the next tap.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_wide_phone_s_task_card_dim_spends_its_tap_on_closing_the_card() {
+    let _serial = serial();
+    let base = harness::base("wide-phone-task-dim");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        PHONE_SID,
+        &harness::long_session(8, harness::Shape::default()),
+    );
+    stores.claude_tasks(
+        PHONE_SID,
+        &[
+            (
+                "1",
+                "count the tern nests on the north shore",
+                "in_progress",
+            ),
+            ("2", "count the skua burrows by the cliff", "pending"),
+            ("3", "map the petrel colony", "pending"),
+        ],
+    );
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3141, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    harness::phone(&tab, 956, 440);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    m.pair(&tab);
+    harness::eval(&tab, "localStorage.removeItem('am-phone-column'); 'ok'");
+    m.open(&tab, &format!("?ui=app&session={PHONE_SID}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user') && innerWidth === 956 && !!document.querySelector('#columnSwitch [data-column-tab=tasks]') && getComputedStyle(document.getElementById('columnSwitch')).display !== 'none'",
+        "the session beside its list column at the phone's size",
+        Duration::from_secs(20),
+        "innerWidth + 'x' + innerHeight + ' ' + document.getElementById('app').className",
+    );
+    const COLUMN: &str = "JSON.stringify({ stored: localStorage.getItem('am-phone-column'), off: document.getElementById('app').classList.contains('phone-column-off'), expanded: document.getElementById('drawerHandle').getAttribute('aria-expanded') })";
+    let column = || -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, COLUMN).as_str().unwrap_or("{}"))
+            .unwrap_or_default()
+    };
+    assert_eq!(column()["off"], false, "the column is shown: {}", column());
+    let tasks = page_point(&tab, "the column's Tasks tab", "(function(){ var b = document.querySelector('#columnSwitch [data-column-tab=tasks]').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); })()");
+    harness::finger_tap(&tab, tasks[0], tasks[1]);
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#columnPane .work-task-head').length === 3",
+        "the column to list the session's three tasks",
+        Duration::from_secs(10),
+        "document.querySelectorAll('#columnPane .work-task-head').length",
+    );
+    let open_card = || {
+        let row = page_point(&tab, "a task row in the column", "(function(){ var r = [...document.querySelectorAll('#columnPane .work-task-head')].map(function (h) { return h.getBoundingClientRect(); }).find(function (b) { var e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!e && !!e.closest('#columnPane .work-task-head'); }); return r ? JSON.stringify([r.left + r.width / 2, r.top + r.height / 2]) : 'none'; })()");
+        harness::finger_tap(&tab, row[0], row[1]);
+        harness::until(
+            &tab,
+            "!document.getElementById('taskPopover').hidden",
+            "the task's card to open",
+            Duration::from_secs(5),
+            "document.getElementById('taskPopover').hidden",
+        );
+        std::thread::sleep(Duration::from_millis(600));
+    };
+    // The dim is gone once the card is closed and the scrim neither shown nor catching.
+    let closed = |what: &str| {
+        harness::until(
+            &tab,
+            "document.getElementById('taskPopover').hidden && getComputedStyle(document.getElementById('taskScrim')).display === 'none'",
+            what,
+            Duration::from_secs(6),
+            "document.getElementById('taskPopover').hidden + ' ' + document.getElementById('taskScrim').className + ' ' + getComputedStyle(document.getElementById('taskScrim')).display",
+        );
+    };
+    open_card();
+    let handle = page_point(&tab, "the sidebar handle", "(function(){ var b = document.getElementById('drawerHandle').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); })()");
+    let under = harness::eval(&tab, &format!("(function(){{ var e = document.elementFromPoint({}, {}); return e ? (e.id || e.className) : null; }})()", handle[0], handle[1]));
+    assert_eq!(
+        under,
+        serde_json::Value::String("taskScrim".into()),
+        "the card's dim lies over the handle"
+    );
+    harness::finger_tap(&tab, handle[0], handle[1]);
+    closed("a tap on the dim over the handle to close the card and lift the dim");
+    std::thread::sleep(Duration::from_millis(300));
+    let after = column();
+    assert_eq!(
+        (after["off"].clone(), after["stored"].clone()),
+        (serde_json::Value::Bool(false), serde_json::Value::Null),
+        "the tap closed the card and nothing else: the column is still shown: {after}"
+    );
+    // A tap on the dim elsewhere still closes the card.
+    open_card();
+    let elsewhere = page_point(&tab, "a point on the dim away from the card and the handle", "(function(){ var s = document.getElementById('taskScrim'), h = document.getElementById('drawerHandle').getBoundingClientRect(); var p = [[innerWidth - 90, 50], [innerWidth / 2, 50], [innerWidth - 90, innerHeight / 3]].find(function (q) { return document.elementFromPoint(q[0], q[1]) === s && (q[0] > h.right + 40 || q[1] > h.bottom + 40); }); return p ? JSON.stringify(p) : 'none'; })()");
+    harness::finger_tap(&tab, elsewhere[0], elsewhere[1]);
+    closed("a tap on the dim elsewhere to close the card and lift the dim");
+    assert_eq!(
+        column()["off"],
+        false,
+        "…and leave the column shown: {}",
+        column()
+    );
+    // And the handle answers the next tap.
+    harness::finger_tap(&tab, handle[0], handle[1]);
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('phone-column-off') && localStorage.getItem('am-phone-column') === '0'",
+        "the next tap on the handle to hide the column",
+        Duration::from_secs(5),
+        COLUMN,
+    );
+}
+
 /// #319, the owner: "the opened task card should be laid over the still open task pane, currently
 /// the task pane is closed right after the task is selected". The card opens OVER the pane, which
 /// stays open under it: closing the card — a tap beside it, its ✕ or Escape — goes back to the
