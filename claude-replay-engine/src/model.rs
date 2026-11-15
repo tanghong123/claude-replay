@@ -480,8 +480,9 @@ pub enum Block {
     /// place: one quiet line ([`WITHDRAWN_LINE`]) with the withdrawn reply (thinking and prose,
     /// as it was, never a tool call) and then the note folded under it; the reply no longer
     /// draws where it was. Like [`Block::SafetyStop`] it is a result in every other respect: the
-    /// same kind, search class and `--json` line the note had (the reply is billed and counted
-    /// as it was; only where it is drawn moves).
+    /// same kind, search class and `--json` line the note had, and the stream states the reply
+    /// where it stood, just before that line (the stream is public, and the mark is drawn, not
+    /// stated; the reply is billed and counted as it was; only where it is drawn moves).
     Withdrawn { note: String, reply: Vec<Block> },
     /// A file, plan, or image the transcript embedded or referenced. Surfaced (the
     /// viewer used to drop these) so the reader can **download** embedded content or
