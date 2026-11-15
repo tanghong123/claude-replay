@@ -2075,25 +2075,75 @@ fn app_shell_ends_a_turn_steps_hold_on_a_click_in_its_turns_pane() {
 /// (at the end, so nothing it could chain to moves the view), and `[` again go to N-1 and then
 /// N-2. The classic page ended the hold on a wheel anywhere in the window, so its second `[`
 /// counted from N again and landed N-1 a second time; the app shell already heard only the
-/// transcript's input.
+/// transcript's input. On the classic page the top bar's menus scroll themselves too (second
+/// review): a wheel over the open Filter menu's list, the menu then closed, keeps the hold as well.
 fn scenario_a_wheel_beside_the_transcript_keeps_a_turn_steps_hold(
     tab: &headless_chrome::Tab,
     surface: Surface,
 ) {
-    use headless_chrome::protocol::cdp::Input::{DispatchMouseEvent, DispatchMouseEventTypeOption};
     let mut readings = Vec::new();
     step_back_from_the_end(tab, surface, &mut readings);
     let panel = match surface {
         Surface::Classic => "document.getElementById('sidebar')",
         Surface::AppShell => "document.querySelector('#app>.sidebar .tree')",
     };
+    wheel_over(tab, panel, &readings);
+    settle();
+    until_engine_quiet(tab);
+    let wheeled = named_turn(tab, surface);
+    readings.push(wheeled.clone());
+    assert_eq!(
+        (wheeled["bar"].as_i64(), wheeled["pane"].as_i64()),
+        (Some(29), Some(29)),
+        "a wheel over the panel leaves turn 29 the current one: {readings:?}"
+    );
+    if surface == Surface::Classic {
+        let opened = eval(
+            tab,
+            "(function(){ var b = document.getElementById('btn-tools'); if (!b || b.disabled) return false; b.click(); return document.getElementById('toolmenu').classList.contains('on'); })()",
+        );
+        assert_eq!(
+            opened.as_bool(),
+            Some(true),
+            "the premise: the Filter menu opens: {readings:?}"
+        );
+        settle();
+        wheel_over(tab, "document.getElementById('toolmenu')", &readings);
+        settle();
+        until_engine_quiet(tab);
+        eval(tab, "document.getElementById('btn-tools').click()");
+        settle();
+        let menu = named_turn(tab, surface);
+        readings.push(menu.clone());
+        assert_eq!(
+            (menu["bar"].as_i64(), menu["pane"].as_i64()),
+            (Some(29), Some(29)),
+            "a wheel over the open Filter menu leaves turn 29 the current one: {readings:?}"
+        );
+    }
+    let (first, later) = press_and_name(tab, surface, "[", &mut readings);
+    assert_eq!(
+        names_both(&first, &later),
+        [Some(28); 4],
+        "…so the next `[` goes to turn 28, and stays: {readings:?}"
+    );
+}
+
+/// A real CDP wheel DOWN at the middle of the element `element` (a JS expression) names, which must
+/// be the element there, not one drawn over it.
+fn wheel_over(tab: &headless_chrome::Tab, element: &str, readings: &[serde_json::Value]) {
+    use headless_chrome::protocol::cdp::Input::{DispatchMouseEvent, DispatchMouseEventTypeOption};
     let at: Vec<f64> = serde_json::from_str(
-        eval(tab, &format!("(function(){{ var p = {panel}; if (!p) return '[]'; var b = p.getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); }})()"))
+        eval(tab, &format!("(function(){{ var p = {element}; if (!p) return '[]'; var b = p.getBoundingClientRect(), x = b.left + b.width / 2, y = b.top + b.height / 2; var hit = document.elementFromPoint(x, y); if (!hit || !p.contains(hit)) return '[]'; return JSON.stringify([x, y]); }})()"))
             .as_str()
             .unwrap_or("[]"),
     )
     .unwrap_or_default();
-    assert_eq!(at.len(), 2, "the premise: the panel is drawn: {readings:?}");
+    assert_eq!(
+        at.len(),
+        2,
+        "the premise: {element} is drawn, on top where the wheel goes: {readings:?}"
+    );
     tab.call_method(DispatchMouseEvent {
         Type: DispatchMouseEventTypeOption::MouseWheel,
         x: at[0],
@@ -2112,22 +2162,7 @@ fn scenario_a_wheel_beside_the_transcript_keeps_a_turn_steps_hold(
         delta_y: Some(240.0),
         pointer_Type: None,
     })
-    .expect("a wheel over the panel");
-    settle();
-    until_engine_quiet(tab);
-    let wheeled = named_turn(tab, surface);
-    readings.push(wheeled.clone());
-    assert_eq!(
-        (wheeled["bar"].as_i64(), wheeled["pane"].as_i64()),
-        (Some(29), Some(29)),
-        "a wheel over the panel leaves turn 29 the current one: {readings:?}"
-    );
-    let (first, later) = press_and_name(tab, surface, "[", &mut readings);
-    assert_eq!(
-        names_both(&first, &later),
-        [Some(28); 4],
-        "…so the next `[` goes to turn 28, and stays: {readings:?}"
-    );
+    .expect("a wheel over the element");
 }
 
 #[test]

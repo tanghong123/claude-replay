@@ -3885,7 +3885,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(classic, /function goToId\(id, pin\) \{\n\s*var ti = idIndex\[id\];\n\s*if \(ti == null\) return;\n\s*if \(pin !== "acquire"\) stepLanded = null;/, "…in goToId");
   assert.match(classic, /function landOn\(id, dy\) \{\n\s*var ti = idIndex\[id\];\n\s*if \(ti == null\) return false;\n\s*stepLanded = null;/, "…and in landOn");
   assert.match(classic, /window\.addEventListener\(ev, function \(e\) \{\n\s*if \(!onTranscript\(e\.target\)\) return;/, "…and the reader's input ends it only on the transcript, as the shell's does");
-  assert.match(classic, /function onTranscript\(t\) \{\n\s*return !\(t instanceof Element && t\.closest\("#sidebar, #taskpanel"\)\);\n\s*\}/, "…the window's, short of the panels that scroll themselves");
+  assert.match(classic, /function onTranscript\(t\) \{\n\s*return !\(t instanceof Element && t\.closest\("#sidebar, #taskpanel, #toolmenu, #agentmenu, #taskmenu, #artifactmenu"\)\);\n\s*\}/, "…the window's, short of the panels and the top bar's menus, which scroll themselves");
   assert.match(classic, /var at = curTurn \? turns\.indexOf\(idIndex\[curTurn\.id\]\) : -1;/, "…whose turn step counts from the turn its bar names, as the shell's does (#s503)");
   assert.match(classic, /var cur = landedTurn\(\);\n\s*if \(!cur && records\.length\) \{/, "…and whose bar keeps the turn a step landed while the view stays where the step left it");
   assert.match(shell, /this\.jumpTo\(\{ key: memory\.key, index, top: memory\.top \}, \{ dirtyFrom: changedUnit \}\);/, "…its memory restore is a landing with no stamp");
