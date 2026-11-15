@@ -137,9 +137,9 @@ The options, each in `index.d.ts`:
   (the view asks you to select one), and `renderList`, `refreshIndex`, `pauseIndex`,
   `resumeIndex` (your list and its index, for the compose box's controls).
 - **`theme`**: `"light"` (the default) or `"dark"`; `setTheme` changes it later.
-- **`backend`**: the handle above. Pass one: without it the parts read the server at the
-  directory of your page's address, as an unpaired one unless your page's body says
-  `data-paired="true"`.
+- **`backend`**: the handle above. Pass one: without it the view reads the server
+  `useBackend` last named, and with neither, the server at the directory of your page's address,
+  as an unpaired one unless your page's body says `data-paired="true"` as the kit loads.
 - **`show`**: the optional controls, each shown unless `false`: `reading` (the Reading menu and
   its keys), `history` (the viewport history's Save), `detach` (the artifact pane's ↗).
 - **`write`**: `{ on(), confirm(ask) }`, for writing to a session. Left out, the view offers no
