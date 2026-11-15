@@ -189,9 +189,11 @@ pub const CLAIMS: &[KindClaim] = &[
     },
     KindClaim {
         kind: "tool",
-        parts: &["pre"],
+        parts: &["pre", "md", "think"],
         why: "a bare `ToolResult`, the mark on a stopped reply (`SafetyStop`, #s378) and every \
-              unrecognised `ToolUse` all end in `pre_part`",
+              unrecognised `ToolUse` all end in `pre_part`; the mark on a withdrawn reply \
+              (`Withdrawn`, #s500) folds that reply's thinking (`think`) and text (`md`) under \
+              it before its note",
     },
 ];
 
@@ -272,6 +274,19 @@ pub fn corpus_for(kind: BlockKind) -> Vec<Block> {
             Block::SafetyStop {
                 category: Some("cyber".into()),
                 note: "Your response above was stopped by a safety classifier.".into(),
+            },
+            // #s500: a reply the client withdrew for a broken tool call — the line, the reply
+            // folded under it as it was, then the client's note to the model.
+            Block::Withdrawn {
+                note: "The previous response failed to produce a valid tool call.".into(),
+                reply: vec![
+                    Block::Thinking {
+                        text: "The call needs the file's path first.".into(),
+                        duration_secs: None,
+                        tools: vec![],
+                    },
+                    Block::AssistantText("Reading `notes.md` now.".into()),
+                ],
             },
         ],
         // Path-only, so nothing is loaded or embedded — and either way this arm emits no body.

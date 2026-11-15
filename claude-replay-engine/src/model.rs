@@ -472,6 +472,17 @@ pub enum Block {
         category: Option<String>,
         note: String,
     },
+    /// A reply Claude Code WITHDREW for a broken tool call (#s500): when a response's tool call
+    /// cannot be used and the client retries, it takes every record of that response out of its
+    /// own conversation (and drops them on a resume) and writes the model a note naming them,
+    /// after which the agent goes on in the same turn. The withdrawn reply used to draw as the
+    /// agent's own, the note as a result line worded for the model. This block takes the note's
+    /// place: one quiet line ([`WITHDRAWN_LINE`]) with the withdrawn reply (thinking and prose,
+    /// as it was, never a tool call) and then the note folded under it; the reply no longer
+    /// draws where it was. Like [`Block::SafetyStop`] it is a result in every other respect: the
+    /// same kind, search class and `--json` line the note had (the reply is billed and counted
+    /// as it was; only where it is drawn moves).
+    Withdrawn { note: String, reply: Vec<Block> },
     /// A file, plan, or image the transcript embedded or referenced. Surfaced (the
     /// viewer used to drop these) so the reader can **download** embedded content or
     /// **reveal** a path-only reference in the file manager. See `Attachment`.
@@ -851,6 +862,10 @@ pub fn safety_stop_line(category: Option<&str>) -> String {
     }
 }
 
+/// The line that marks a reply the client withdrew for a broken tool call and asked the model to
+/// retry (`Block::Withdrawn`, #s500), on every surface that draws one.
+pub const WITHDRAWN_LINE: &str = "Retried: the reply gave no usable tool call";
+
 /// The line that ends a reply the person cut off mid-stream (`Block::AssistantCutOff`, #s305),
 /// on every surface that draws one.
 pub const CUT_OFF_NOTE: &str = "Cut off: interrupted mid-reply";
@@ -873,7 +888,7 @@ pub fn block_kind(b: &Block) -> BlockKind {
                 Act
             }
         }
-        Block::ToolResult(_) | Block::SafetyStop { .. } => ToolResult,
+        Block::ToolResult(_) | Block::SafetyStop { .. } | Block::Withdrawn { .. } => ToolResult,
         Block::Attachment(_) => Attachment,
         Block::SubAgent(_) | Block::AgentDone { .. } => Agent,
         Block::Command { .. } => Command,
@@ -981,6 +996,7 @@ pub fn foldable(b: &Block) -> bool {
         Block::ToolUse { .. }
             | Block::ToolResult(_)
             | Block::SafetyStop { .. }
+            | Block::Withdrawn { .. }
             | Block::Thinking { .. }
             | Block::Command { .. }
             | Block::SubAgent(_)
@@ -1471,6 +1487,26 @@ mod tests {
         assert_eq!(block_kind(&b).html(), "tool");
         assert_eq!(fold_key(&b), "tool_result");
         assert!(foldable(&b));
+    }
+
+    /// #s500: the mark on a withdrawn reply is a result in kind too, whatever it holds.
+    #[test]
+    fn a_withdrawn_reply_reads_as_a_result() {
+        let b = Block::Withdrawn {
+            note: "n".into(),
+            reply: vec![Block::AssistantText("t".into())],
+        };
+        assert_eq!(block_kind(&b), BlockKind::ToolResult);
+        assert_eq!(block_kind(&b).html(), "tool");
+        assert_eq!(fold_key(&b), "tool_result");
+        assert!(foldable(&b));
+        assert!(!b.opens_turn());
+        // The browser scenario (`scenarios.rs`, #s500) carries this line as a literal so it is red
+        // on the code before the mark: change both together.
+        assert_eq!(
+            WITHDRAWN_LINE,
+            "Retried: the reply gave no usable tool call"
+        );
     }
 
     #[test]

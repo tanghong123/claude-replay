@@ -85,6 +85,8 @@ fn block_fields(b: &Block, o: &mut Map<String, Value>) {
         | Block::AssistantCutOff(t)
         // #s378: the mark on a stopped reply is the note it holds here, as the note was before.
         | Block::SafetyStop { note: t, .. }
+        // #s500: so is the mark on a withdrawn reply; the reply it folds is not in the stream.
+        | Block::Withdrawn { note: t, .. }
         | Block::ToolResult(t) => {
             o.insert("text".into(), json!(t));
         }

@@ -19020,6 +19020,183 @@ fn app_shell_marks_a_reply_the_safety_classifier_stopped() {
     scenario_a_reply_the_safety_classifier_stopped_is_marked(&page.tab, Surface::AppShell);
 }
 
+// ── scenario: a reply the client withdrew for a broken tool call is marked (#s500)
+
+const WITHDRAWN_LINE: &str = "Retried: the reply gave no usable tool call";
+
+/// Claude Code 2.1.325 withdraws a reply whose tool call it cannot use and writes a note to the
+/// model naming the withdrawn records (`retractedMessageUuids`), then retries. Both pages drew the
+/// withdrawn reply as the agent's own (its thinking in the turn's run, its text as prose) and the
+/// note as a plain "Result" line worded for the model. Now the note's place holds one head saying
+/// the reply was retried, the withdrawn thinking and text and the note folded under it until the
+/// reader opens it; the retry after it is drawn as before.
+fn scenario_a_reply_the_client_withdrew_is_marked(tab: &headless_chrome::Tab, surface: Surface) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // The mark's line as a literal, not `model::WITHDRAWN_LINE`, so this case compiles against the
+    // code before #s500 and is red there; `a_withdrawn_reply_reads_as_a_result` holds the two equal.
+    let line = WITHDRAWN_LINE;
+    let read = format!(
+        "(function(){{ \
+           var names = [...document.querySelectorAll('.tool-name, .renderer-title')] \
+             .filter(function(n){{ return n.textContent.trim() === {line:?}; }}); \
+           var find = function(sel, text){{ return [...document.querySelectorAll(sel)] \
+             .find(function(p){{ return p.textContent.indexOf(text) >= 0; }}); }}; \
+           var shown = function(e){{ var r = e && e.getBoundingClientRect(); return !!r && r.width > 0 && r.height > 0; }}; \
+           var withdrawn = ['The burrow log needs its path first.', 'Reading the burrow log now.', \
+                            'failed to produce a valid tool call']; \
+           var marks = names.map(function(n){{ \
+             var head = n.closest('.fold-h, .renderer-head') || n.parentElement; \
+             var box = n.closest('.fold, .renderer'); \
+             var prompt = find('p, .uturn, .user', 'Map the skua burrows'); \
+             var answer = find('p', 'Twelve burrows on the east slope'); \
+             var under = withdrawn.map(function(t){{ \
+               var e = box ? [...box.querySelectorAll('p, pre, div')] \
+                 .filter(function(e){{ return e !== head && !head.contains(e) && e.textContent.indexOf(t) >= 0; }}) \
+                 .pop() : null; \
+               return {{ inside: !!e, shown: shown(e) }}; \
+             }}); \
+             return {{ \
+               shown: shown(head), under: under, \
+               afterPrompt: !!prompt && !!(prompt.compareDocumentPosition(head) & Node.DOCUMENT_POSITION_FOLLOWING), \
+               beforeAnswer: !!answer && !!(answer.compareDocumentPosition(head) & Node.DOCUMENT_POSITION_PRECEDING) \
+             }}; \
+           }}); \
+           var boxes = names.map(function(n){{ return n.closest('.fold, .renderer'); }}); \
+           var outside = withdrawn.map(function(t){{ \
+             return [...document.querySelectorAll('p, pre, .tool-target, .renderer-target, .think-body')] \
+               .filter(function(e){{ return e.textContent.indexOf(t) >= 0 \
+                 && !boxes.some(function(b){{ return b && b.contains(e); }}); }}).length; \
+           }}); \
+           return JSON.stringify({{ marks: marks, outside: outside }}); \
+         }})()"
+    );
+    let poll = |what: &str, done: &dyn Fn(&serde_json::Value) -> bool| {
+        let mut last = serde_json::Value::Null;
+        for _ in 0..40 {
+            last = serde_json::from_str(eval(tab, &read).as_str().unwrap_or("null"))
+                .unwrap_or(serde_json::Value::Null);
+            if done(&last) {
+                return last;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        panic!("{surface:?}: {what}: {last}");
+    };
+    let last = poll("one mark, drawn", &|v| {
+        v["marks"]
+            .as_array()
+            .is_some_and(|m| m.len() == 1 && m[0]["shown"] == true)
+    });
+    let mark = &last["marks"][0];
+    assert_eq!(
+        mark["afterPrompt"], true,
+        "{surface:?}: after the prompt whose reply was withdrawn: {last}"
+    );
+    assert_eq!(
+        mark["beforeAnswer"], true,
+        "{surface:?}: before the answer the retry gave: {last}"
+    );
+    // Folded, a body may not be drawn at all (the classic page draws a fold's body as it opens),
+    // so what is asked here is only that none of it shows; once opened, that each is inside.
+    for (i, what) in ["the thinking", "the text", "the note"].iter().enumerate() {
+        assert_eq!(
+            mark["under"][i]["shown"], false,
+            "{surface:?}: {what} is folded under the line: {last}"
+        );
+    }
+    assert_eq!(
+        last["outside"],
+        serde_json::json!([0, 0, 0]),
+        "{surface:?}: nothing withdrawn draws outside the mark, nor the note as a result line of \
+         its own: {last}"
+    );
+    // Opening the mark shows what it folds, as opening any fold does.
+    let open = format!(
+        "(function(){{ \
+           var n = [...document.querySelectorAll('.tool-name, .renderer-title')] \
+             .filter(function(n){{ return n.textContent.trim() === {line:?}; }})[0]; \
+           (n.closest('.fold-h, .renderer-head') || n).click(); return true; }})()"
+    );
+    eval(tab, &open);
+    poll(
+        "the withdrawn thinking, its text and the note show inside the mark once it is opened",
+        &|v| {
+            v["marks"][0]["under"]
+                .as_array()
+                .is_some_and(|u| u.iter().all(|u| u["inside"] == true && u["shown"] == true))
+        },
+    );
+}
+
+/// Twelve turns, then a prompt whose reply Claude Code 2.1.325 withdrew (#s500): the reply as two
+/// records, its thinking and then its text, the client's note naming both, then the retry's call,
+/// its result and the answer. Every text here is the fixture's own.
+fn withdrawn_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    let line = |v: serde_json::Value| format!("{v}\n");
+    transcript += &user_at("Map the skua burrows.", &now_minus(60));
+    let withdrawn = |uuid: &str, content: serde_json::Value| {
+        serde_json::json!({
+            "type": "assistant", "cwd": "/r", "timestamp": now_minus(58), "version": "2.1.325", "uuid": uuid,
+            "message": {"id": "msg_s500", "role": "assistant", "model": "claude-opus-5", "stop_reason": "tool_use",
+                        "usage": {"input_tokens": 12, "output_tokens": 8},
+                        "content": [content]}
+        })
+    };
+    transcript += &line(withdrawn(
+        "w500a",
+        serde_json::json!({"type": "thinking", "thinking": "The burrow log needs its path first.", "signature": "x"}),
+    ));
+    transcript += &line(withdrawn(
+        "w500b",
+        serde_json::json!({"type": "text", "text": "Reading the burrow log now."}),
+    ));
+    transcript += &line(serde_json::json!({
+        "type": "user", "cwd": "/r", "timestamp": now_minus(57), "isMeta": true, "turnCompanion": true,
+        "uuid": "n500", "retractedMessageUuids": ["w500a", "w500b"],
+        "message": {"role": "user", "content": "The previous response failed to produce a valid tool call. Please retry the tool call now."}
+    }));
+    transcript += &line(serde_json::json!({
+        "type": "assistant", "cwd": "/r", "timestamp": now_minus(56), "version": "2.1.325", "uuid": "r500",
+        "message": {"id": "msg_s500r", "role": "assistant", "model": "claude-opus-5", "stop_reason": "tool_use",
+                    "usage": {"input_tokens": 12, "output_tokens": 8},
+                    "content": [{"type": "tool_use", "id": "toolu_s500", "name": "Bash", "input": {"command": "wc -l burrows.md"}}]}
+    }));
+    transcript += &line(serde_json::json!({
+        "type": "user", "cwd": "/r", "timestamp": now_minus(55),
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_s500", "content": "12 burrows.md"}]}
+    }));
+    transcript += &assistant_at("Twelve burrows on the east slope.", &now_minus(50));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_marks_a_reply_the_client_withdrew() {
+    let _serial = serial();
+    let fx = withdrawn_fixture("scenario-withdrawn-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_reply_the_client_withdrew_is_marked(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_marks_a_reply_the_client_withdrew() {
+    let _serial = serial();
+    let fx = withdrawn_fixture("scenario-withdrawn-app");
+    let page = open(Surface::AppShell, &fx, 3118);
+    scenario_a_reply_the_client_withdrew_is_marked(&page.tab, Surface::AppShell);
+}
+
 /// #s272: Hong's messages that aries-inbox types into the Aries pane arrive as one signed
 /// element, recorded as a whole-turn paste. A verified one is HIS card in its own style: what the
 /// relay says of it as chips (via, kind, the issue, the agent and task, when), the words it answers
