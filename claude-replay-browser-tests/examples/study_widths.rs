@@ -14,7 +14,9 @@
 //!   touch.
 //!
 //! Every cell is a fresh load with the page's remembered choices cleared, so no cell inherits a fold
-//! from the one before. For each it records the layout classes `#app` and `#sessionView` wear, the
+//! or a place from the one before: the tab first goes to a neutral page of the same origin (a public
+//! icon, which runs nothing, so the last page's `pagehide` has written what it writes), then storage
+//! is cleared, then the size is set, then the cell loads. For each it records the layout classes `#app` and `#sessionView` wear, the
 //! box of each part (the session list, the session, the right pane, the outline), the chrome's
 //! controls that a pointer cannot reach at their centre (hit-tested with `elementFromPoint`; what
 //! sits inside a scroller — the transcript, the session tree, the pane's body, the outline's lists —
@@ -399,15 +401,41 @@ fn settle(tab: &headless_chrome::Tab) {
     );
 }
 
-/// Forget what the page remembers (folds, the pane's share, the outline's default, the theme), keep
-/// the seed that shows every session, and set the theme the cell asks for.
-fn forget(tab: &headless_chrome::Tab, dark: bool) {
-    harness::eval(
+/// The page a cell starts from: a public icon the monitor serves on the same origin as the app and
+/// the host page, an image document that runs none of the app, so nothing on it writes to storage
+/// after it has been cleared.
+const NEUTRAL: &str = "icon-192.png";
+
+/// Start the cell from nothing (#s517 review): leave the last cell's page for the neutral one FIRST,
+/// so its `pagehide` (which writes the session's place back into sessionStorage) has run, then forget
+/// what the origin remembers (folds, the pane's share, the outline's default, the theme, the view's
+/// place), keep the seed that shows every session and set the theme the cell asks for. The caller
+/// sets the size after this, while the neutral page is showing, so no app page reacts to it. Returns
+/// a note when any step failed.
+fn forget(tab: &headless_chrome::Tab, monitor: &harness::Monitor, dark: bool) -> Option<String> {
+    if let Err(e) = tab.navigate_to(&monitor.url(NEUTRAL)) {
+        return Some(format!("the neutral page did not load: {e}"));
+    }
+    let _ = tab.wait_until_navigated();
+    let here = format!("location.pathname === '/{NEUTRAL}' && document.readyState === 'complete'");
+    if !wait_for(tab, &here, Duration::from_secs(10)) {
+        return Some(
+            "the neutral page never came; the cell may inherit the last one's state".into(),
+        );
+    }
+    let cleared = harness::eval(
         tab,
         &format!(
-            "(function(){{ try {{ Object.keys(localStorage).forEach(function(k){{ localStorage.removeItem(k); }}); sessionStorage.clear(); localStorage.setItem('am-prod-session-filter', JSON.stringify(['recent','blocked','idle'])); if ({dark}) localStorage.setItem('am-demo-theme', 'dark'); }} catch (e) {{}} return true; }})()"
+            "(function(){{ try {{ localStorage.clear(); sessionStorage.clear(); localStorage.setItem('am-prod-session-filter', JSON.stringify(['recent','blocked','idle'])); if ({dark}) localStorage.setItem('am-demo-theme', 'dark'); return localStorage.length === ({dark} ? 2 : 1) && sessionStorage.length === 0 ? 'ok' : 'storage kept ' + localStorage.length + ' and ' + sessionStorage.length + ' keys'; }} catch (e) {{ return String(e); }} }})()"
         ),
     );
+    match cleared.as_str() {
+        Some("ok") => None,
+        other => Some(format!(
+            "storage was not cleared: {}",
+            other.unwrap_or("no answer")
+        )),
+    }
 }
 
 /// The probe: what the layout is and what a pointer can reach. Wrapped so a throw is recorded. It is
@@ -544,8 +572,10 @@ fn run_cell(
         Surface::App => (cell.w, cell.h),
         Surface::Host => HOST_WINDOW,
     };
+    if let Some(note) = forget(tab, monitor, cell.dark) {
+        notes.push(note);
+    }
     emulate(tab, win_w, win_h, cell.input);
-    forget(tab, cell.dark);
     match cell.surface {
         Surface::App => {
             tab.navigate_to(&monitor.url(&format!("?ui=app&session={SID}")))
