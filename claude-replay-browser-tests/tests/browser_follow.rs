@@ -14975,6 +14975,92 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
     drop(world);
 }
 
+/// A GET on the loopback, answered within `wait`: the reply as text (status line first), or why not.
+fn loopback_get(port: u16, path: &str, wait: Duration) -> String {
+    use std::io::{Read, Write};
+    let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) else {
+        return format!("nothing listens on {port}");
+    };
+    s.set_read_timeout(Some(wait)).unwrap();
+    let _ = write!(
+        s,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    );
+    let mut out = String::new();
+    match s.read_to_string(&mut out) {
+        Ok(_) => out,
+        Err(e) => format!("no reply within {wait:?} ({e}): {out}"),
+    }
+}
+
+/// #s495: a case's port held by another listener — aries-black's ssh tunnel on 2728 — moves the
+/// case's monitor to a port the kernel has free, and the handle says where it went. The harness
+/// used to wait for anything to answer on the port, so it handed the case the tunnel: the monitor
+/// had exited on its bind, and the case failed later as a page that never came. The listener here
+/// accepts nothing, as a tunnel with nothing behind it would; the case asks the monitor itself
+/// (its public manifest) on the port the handle names.
+#[test]
+#[ignore = "needs a built agent-monitor"]
+fn a_case_whose_port_is_held_gets_its_monitor_on_another() {
+    let _serial = serial();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let base = harness::base("held-port-moves");
+    let stores = harness::Stores::new(&base);
+    let m = harness::Monitor::spawn(harness::Kind::V1, port, &base, Some(&stores), true);
+    assert_ne!(
+        m.port, port,
+        "the monitor serves somewhere other than the held port"
+    );
+    assert_eq!(m.key, port, "its scratch keeps the case's port in its name");
+    assert!(
+        m.state.ends_with(format!("state-{port}")),
+        "the state dir is named for the case's port: {}",
+        m.state.display()
+    );
+    let reply = loopback_get(m.port, "/manifest.webmanifest", Duration::from_secs(10));
+    assert!(
+        reply.starts_with("HTTP/1.1 200") && reply.contains("Agent Monitor"),
+        "the monitor answers on the port its handle names: {reply}"
+    );
+}
+
+/// #s495: a monitor that must serve on one port (a page is open on that origin,
+/// `Monitor::respawn`) and finds it held fails AT ONCE, naming the port and what holds it — here
+/// this test process, by `lsof` (or `ss`) — rather than handing the case to the listener there.
+#[test]
+#[ignore = "needs a built agent-monitor"]
+fn a_monitor_held_off_its_exact_port_names_the_holder_at_once() {
+    let _serial = serial();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let base = harness::base("held-port-exact");
+    let stores = harness::Stores::new(&base);
+    let started = std::time::Instant::now();
+    let spawned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        harness::Monitor::spawn_exact(harness::Kind::V1, port, port, &base, Some(&stores), true)
+    }));
+    let took = started.elapsed();
+    let why = match spawned {
+        Ok(m) => panic!("a monitor came up on the held port {}", m.port),
+        Err(payload) => payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default(),
+    };
+    assert!(
+        took < Duration::from_secs(5),
+        "it fails at once, not after a wait: {took:?}"
+    );
+    let me = std::process::id();
+    assert!(
+        why.contains(&format!("port {port} is held by")) && why.contains(&format!("pid {me}")),
+        "the panic names the port and its holder (pid {me}): {why}"
+    );
+    drop(held);
+}
+
 /// #309 — the owner saw `agent-monitor --pair` print `session 72b570af…: no such transcript` right
 /// after it started, for a valid transcript: a tab left open on it polled before any page had
 /// fetched the session list, and the service can only serve ids a scan has SHOWN it. A `/pull` for
@@ -19045,11 +19131,31 @@ const PHONE_WHOLLY_IN: &str = "function (el, box) { if (!el || !box) return fals
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_search_box_shows_whole_chips_and_clears_in_one_tap() {
     let _serial = serial();
+    search_box_shows_whole_chips(2728);
+}
+
+/// The same case with its port held by another listener (#s495): on aries-black an ssh tunnel
+/// keeps port 2728 on the loopback, and the case timed out "waiting for the phone to open on a session"
+/// while its monitor, refused the port, had already exited. The listener here never answers, as
+/// a tunnel with nothing behind it would not; the tunnel itself, where it is up, serves as well.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_search_box_shows_whole_chips_with_its_port_held() {
+    let _serial = serial();
+    let _held = std::net::TcpListener::bind(("127.0.0.1", 2728)).ok();
+    assert!(
+        !harness::port_is_free(2728),
+        "something holds port 2728 on the loopback for the case"
+    );
+    search_box_shows_whole_chips(2728);
+}
+
+fn search_box_shows_whole_chips(port: u16) {
     // 440 wide, the owner's phone: since #s41 the funnel stays in the find pill while typing (iOS
     // focuses the field as the search opens, so hiding it then hid it always), and at 390 two chips
     // and a word then overflow the strip, which scrolls as a whole (#353,
     // `a_phone_search_strip_scrolls_whole_and_counts_beside_the_box`).
-    let (_m, _b, tab) = phone_world(2728, "phone-search-chips", 440, 956);
+    let (_m, _b, tab) = phone_world(port, "phone-search-chips", 440, 956);
     let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + 16, r.top + r.height / 2]; })()");
     phone_tap_at(&tab, gx, gy);
     harness::until(
