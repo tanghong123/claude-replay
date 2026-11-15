@@ -22,7 +22,7 @@ import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeight
 import { taskGlyph, taskStatus as cardStatus, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml, TASK_NO_TITLE, TASK_NO_DETAILS } from "../../claude-replay-html/src/html/shared/task-card.js";
 import { displayName, toolHead, stateLabel, nextHeadStep, headStepState, headStepOf } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
-import { KEYMAP, bindKeymap, hintFor, inGuest, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
+import { COMMAND_KEY, KEYMAP, bindKeymap, hintFor, inGuest, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
 import { isMarkdownName, standaloneFacts, standaloneHref } from "../../claude-monitor/src/codex-ui/mdrev-pane.js";
 import { agentRecordTargets, currentTurnIndex, peerHue, peerLabelRest, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget, taskDetails, artifactRoster, humanTokens, compactionTick } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
@@ -1559,6 +1559,25 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   for (const k of ["n", "[", "]", "j"]) assert.equal(resolveKey(ev(k), "view", inside), null, `${k} inside a guest is the guest's`);
   assert.equal(resolveKey(ev("/"), "view", inside), null, "…including an \"any\" binding");
   assert.equal(resolveKey(ev("n"), "view", outside).action, "hit-next", "outside it the shell keeps its keys");
+  // #s509 (Hong on #s508): ⌘F, Ctrl+F off Apple platforms, opens the session's search — the command
+  // key alone, and from a text field only inside `[data-command-keys]` (the compose box), so the
+  // search field's own press, and every other field's, is the browser's find.
+  const cmd = (key, extra = {}) => ev(key, { [COMMAND_KEY]: true, ...extra });
+  const otherMod = COMMAND_KEY === "metaKey" ? "ctrlKey" : "metaKey";
+  assert.equal(resolveKey(cmd("f"), "view").action, "search", "the command key and F open the session search");
+  assert.equal(resolveKey(cmd("F"), "list").action, "search", "…with Caps Lock on, and from the list");
+  assert.equal(resolveKey(ev("f"), "view"), null, "F alone is no key");
+  for (const extra of [{ shiftKey: true }, { altKey: true }, { [otherMod]: true }]) assert.equal(resolveKey(cmd("f", extra), "view"), null, `with ${Object.keys(extra)[0]} held too it is the browser's`);
+  assert.equal(resolveKey(ev("f", { [otherMod]: true }), "view"), null, "the other modifier is not the command key (Ctrl+F in a Mac's field moves the caret)");
+  assert.equal(resolveKey(cmd("k"), "view"), null, "⌘K stays the shell's own");
+  const searchField = { tagName: "INPUT", closest: () => null };
+  assert.equal(resolveKey(cmd("f"), "view", searchField), null, "in the search field the second press is the browser's");
+  const composeField = { tagName: "TEXTAREA", closest: sel => (sel === "[data-command-keys]" ? {} : null) };
+  assert.equal(resolveKey(cmd("f"), "view", composeField).action, "search", "from the compose box it opens the session search");
+  for (const k of ["/", "j", "n"]) assert.equal(resolveKey(ev(k), "view", composeField), null, `${k} in the compose box is typing`);
+  assert.equal(resolveKey(cmd("f"), "view", inside), null, "inside a guest it is the guest's");
+  assert.match(hintFor("search"), /^\/ or (⌘F|Ctrl\+F)$/, "the hint names both keys");
+  assert.match(viewSource, /byId\("composer"\)\.dataset\.commandKeys = "";/, "the view marks its compose box");
   // ENGAGEMENT: a click on a guest's prose leaves the focus on <body>, so the keydown's target is
   // <body> — and the key is still the guest's until the reader clicks elsewhere. bindKeymap tracks
   // the last mousedown/focusin exactly as mdrev's own key scope does.
