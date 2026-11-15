@@ -610,19 +610,39 @@ fn run_cell(
             } else {
                 String::new()
             };
-            harness::eval(
+            let mounted = harness::eval(
                 tab,
                 &format!(
-                    "(function(){{ var p = document.getElementById('hostPane'); p.style.left = '{HOST_LEFT}px'; p.style.right = 'auto'; p.style.width = '{}px'; {height} return window.__host.mount ? window.__host.mount() : String(window.__host.error); }})()",
+                    "(function(){{ try {{ var p = document.getElementById('hostPane'); p.style.left = '{HOST_LEFT}px'; p.style.right = 'auto'; p.style.width = '{}px'; {height} if (!window.__host) return 'no host on the page'; if (!window.__host.mount) return 'the host offers no mount: ' + String(window.__host.error); return String(window.__host.mount()); }} catch (e) {{ return 'the mount threw: ' + String(e && e.stack || e); }} }})()",
                     cell.w
                 ),
             );
+            if mounted.as_str() != Some("mounted") {
+                notes.push(format!(
+                    "the host's mount answered {}",
+                    mounted.as_str().map_or(mounted.to_string(), String::from)
+                ));
+            }
             if !wait_for(
                 tab,
                 "!!document.querySelector('#sessionView .transcript .turn.user')",
                 Duration::from_secs(25),
             ) {
                 notes.push("the view never drew the session".into());
+            }
+            // What the host page caught: its own setup's error, and every error the page threw.
+            let caught = harness::probe(
+                tab,
+                "window.__host ? { error: window.__host.error, errors: window.__host.errors } : null",
+            );
+            if let Some(e) = caught["error"].as_str() {
+                notes.push(format!("the host page's error: {e}"));
+            }
+            for e in caught["errors"].as_array().into_iter().flatten() {
+                notes.push(format!(
+                    "the page threw: {}",
+                    e.as_str().map_or(e.to_string(), String::from)
+                ));
             }
         }
     }
