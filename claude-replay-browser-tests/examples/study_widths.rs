@@ -450,6 +450,21 @@ var parked = function (e) {
   if (has(v, 'pl-phone') && has(v, 'pl-max-w-900')) { var nav = e.closest('.workspace.navigator-off .session-navigator'); if (nav && v.contains(nav)) return "the outline, folded off a phone's view (navigator-off)"; }
   return null;
 };
+// Where the open pane lies OVER the session, a control it covers is set apart rather than missed:
+// that is the layout's choice. pane-layout.js gives every phone view `pl-pane-over`, but on a short
+// touch view (`pl-coarse.pl-max-h-500`, a phone held sideways) the open pane is a column beside the
+// session at half the width, unless it is full (`preview-full`) or a wide phone shows its list as a
+// column, where the pane covers the session's area. Anywhere else the pane is beside the session,
+// and a control under it is missed like any other.
+var paneOver = null;
+if (cell && cell.pane && v && pv && !paneShut) {
+  var sideways = has(v, 'pl-coarse') && has(v, 'pl-max-h-500');
+  if (has(v, 'pl-phone')) {
+    if (!sideways) paneOver = 'an upright phone view: the open pane fills it';
+    else if (has(v, 'preview-full')) paneOver = 'a phone view held sideways, the pane full';
+    else if (app && WIDE && !has(app, 'phone-column-off')) paneOver = 'a wide phone held sideways beside its list: the pane covers the session';
+  } else if (has(v, 'pl-pane-over')) paneOver = 'pl-pane-over: the pane lies over the session';
+}
 Array.prototype.forEach.call(root.querySelectorAll(SEL), function (e) {
   if (e.closest(SKIP)) { notChecked.inScroller++; return; }
   if (!e.getClientRects().length || !shown(e)) { notChecked.hidden++; return; }
@@ -464,7 +479,7 @@ Array.prototype.forEach.call(root.querySelectorAll(SEL), function (e) {
     if (!hit) why = 'nothing at its centre';
     else if (hit === e || e.contains(hit)) { if (r.left < -0.5 || r.right > W + 0.5 || (!app && (r.left < vr.left - 0.5 || r.right > vr.right + 0.5))) why = 'cut at the edge'; }
     else if (hit.contains(e)) why = 'clipped inside ' + named(hit);
-    else if (pv && pv.contains(hit) && !pv.contains(e)) { underPane.push(name(e)); return; }
+    else if (paneOver && pv.contains(hit) && !pv.contains(e)) { underPane.push(name(e)); return; }
     else why = 'covered by ' + named(hit); }
   if (why) missed.push({ control: name(e), why: why, at: Math.round(cx) + ',' + Math.round(cy) });
 });
@@ -478,7 +493,7 @@ return {
   parts: { list: box(q('#app>.sidebar')), session: box(q('#sessionView>.workspace')), transcript: box(q('#sessionView .transcript')), pane: box(q('#preview')), outline: box(q('#sessionView .session-navigator')) },
   text: text, transcript: tr ? Math.round(tr.clientWidth) : null,
   overflow: { page: docW - W, view: v ? v.scrollWidth - v.clientWidth : null, transcript: tr ? tr.scrollWidth - tr.clientWidth : null },
-  checked: checked, missed: missed, underPane: underPane, skipped: skipped, notChecked: notChecked, beyond: beyond.slice(0, 6), viewOverflowX: v ? getComputedStyle(v).overflowX : null
+  checked: checked, missed: missed, paneOver: paneOver, underPane: underPane, skipped: skipped, notChecked: notChecked, beyond: beyond.slice(0, 6), viewOverflowX: v ? getComputedStyle(v).overflowX : null
 }; } catch (error) { return { error: String(error && error.stack || error) }; } })"#;
 
 /// The probe called for `cell`.
@@ -668,17 +683,25 @@ fn part(v: &Value) -> String {
     format!("{}–{} ({})", v["l"], v["r"], v["w"])
 }
 
+/// The controls the open right pane covers where it lies over the session: counted among those
+/// checked, and set aside rather than missed. Empty where there are none.
+fn under_pane(m: &Value) -> String {
+    let n = m["underPane"].as_array().map_or(0, Vec::len);
+    if n == 0 {
+        return String::new();
+    }
+    format!(
+        " ({n} of the {} lie under the open right pane, which covers the session here, and are not counted as unreachable)",
+        m["checked"]
+    )
+}
+
 fn missed_list(m: &Value) -> String {
     if !is_measured(m) {
         return "**not measured**".into();
     }
     let list = m["missed"].as_array().cloned().unwrap_or_default();
-    let under = m["underPane"].as_array().map_or(0, Vec::len);
-    let under = if under > 0 {
-        format!(" ({under} more under the open right pane)")
-    } else {
-        String::new()
-    };
+    let under = under_pane(m);
     if list.is_empty() {
         return format!("0 of {}{under}", m["checked"]);
     }
@@ -761,7 +784,10 @@ fn report(dir: &Path, records: &[Value], took: Duration) {
          A study, not a gate. Sizes are CSS pixels. A part's box is `left–right (width)`; *session* is the session's whole column, the outline included; `—` is \
          not on the screen, `·` not in the page. *Text* is the transcript's text column. \
          *Unreachable* lists the chrome's controls whose centre a pointer cannot reach \
-         (`elementFromPoint`), out of those checked; a control the open right pane lies over is counted apart. \
+         (`elementFromPoint`), out of those checked. Where the open right pane lies over the session (`pl-pane-over`, \
+         an upright phone view, or a phone held sideways with the pane full or beside its list), a \
+         control it covers is one of those checked but set aside, not counted as unreachable; where \
+         the pane is beside the session, a control under it is unreachable like any other. \
          A control in a layer parked by its own state (the shut right pane, the shut drawer, the outline \
          folded off a phone) is not checked; each cell's JSON lists them under `skipped`. *Overflow* is how far the page, the view and \
          the transcript scroll sideways, and what is drawn in the view past its left or right edge \
@@ -894,9 +920,18 @@ fn report(dir: &Path, records: &[Value], took: Duration) {
             if let Some(a) = r["notes"].as_array() {
                 flags.extend(a.iter().filter_map(|x| x.as_str().map(String::from)));
             }
-            let text = m["text"]
-                .as_i64()
-                .map_or(String::new(), |t| format!(" · text {t}px"));
+            let under = m["underPane"].as_array().map_or(0, Vec::len);
+            let text = format!(
+                "{}{}",
+                m["text"]
+                    .as_i64()
+                    .map_or(String::new(), |t| format!(" · text {t}px")),
+                if under > 0 {
+                    format!(" · {under} control(s) under the open pane, set aside")
+                } else {
+                    String::new()
+                }
+            );
             let _ = writeln!(
                 html,
                 "<figure><a href=\"{shot}\"><img loading=\"lazy\" src=\"{shot}\" alt=\"\"></a><figcaption><b>{n}. {caption}</b><span class=\"mute\">{view}{text}</span>{flags}</figcaption></figure>",
