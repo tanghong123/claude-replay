@@ -5286,6 +5286,111 @@ fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
     );
 }
 
+/// #s497 (the second delta review of #s431 stage 4): a desktop host page that scrolls keeps its offset
+/// while the session view in its pane is a phone reader (a 400px pane, under 490px of the view). The
+/// keyboard ride answers iOS scrolling the page to bring a focused field above its keyboard, and it
+/// also ran on every scroll of the page once the view was in its phone family: with a mouse and no
+/// keyboard, the page's offset read as iOS's, so the ride snapped the host's page back to its top and
+/// gave its box a `translateY` of that offset for a frame. Here the reader scrolls the page by a mouse
+/// wheel and then by a script (a key, the scrollbar), and the page keeps each offset, the pane never
+/// transformed. Red on 081be59e, where the page went back to 0.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_desktop_host_page_that_scrolls_keeps_its_offset_beside_a_phone_reader() {
+    use headless_chrome::protocol::cdp::Input::{DispatchMouseEvent, DispatchMouseEventTypeOption};
+    let _serial = serial();
+    let base = base("host-page-scroll");
+    let monitor = Monitor::spawn(Kind::V1, 3119, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1400.0, 900.0);
+    harness::open_host_page(&tab, &monitor, "");
+    place_host_pane(&tab, 500, 400);
+    // A page taller than the window, and every transform written on the host's box from here on.
+    harness::eval(
+        &tab,
+        "(function(){ document.body.style.height = '3000px'; var p = document.getElementById('hostPane'); window.__transforms = []; new MutationObserver(function(){ if (p.style.transform) window.__transforms.push(p.style.transform); }).observe(p, { attributes: true, attributeFilter: ['style'] }); return true; })()",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let facts = "JSON.stringify({ phone: document.getElementById('sessionView').classList.contains('pl-phone'), coarse: matchMedia('(pointer:coarse)').matches, scroll: Math.round(scrollY), transform: document.getElementById('hostPane').style.transform, transforms: window.__transforms })";
+    let before: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default();
+    assert!(
+        before["phone"] == true && before["coarse"] == false && before["scroll"] == 0,
+        "the view is a phone reader in a mouse window's page at its top: {before}"
+    );
+    // The reader's wheel, over the host's page beside the pane.
+    tab.call_method(DispatchMouseEvent {
+        Type: DispatchMouseEventTypeOption::MouseWheel,
+        x: 200.0,
+        y: 600.0,
+        modifiers: None,
+        timestamp: None,
+        button: None,
+        buttons: None,
+        click_count: None,
+        force: None,
+        tangential_pressure: None,
+        tilt_x: None,
+        tilt_y: None,
+        twist: None,
+        delta_x: Some(0.0),
+        delta_y: Some(300.0),
+        pointer_Type: None,
+    })
+    .expect("a mouse wheel");
+    harness::until(
+        &tab,
+        "Math.round(scrollY) === 300",
+        "the page to keep the 300px the wheel scrolled it",
+        Duration::from_secs(5),
+        facts,
+    );
+    harness::pause("any ride a scroll event starts", Duration::from_millis(300));
+    harness::eval(&tab, TWO_FRAMES);
+    let wheeled: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default();
+    // A scroll the page is given by a script (a key, the scrollbar).
+    harness::eval(&tab, "(function(){ scrollBy(0, 200); return true; })()");
+    harness::pause("any ride a scroll event starts", Duration::from_millis(300));
+    harness::eval(&tab, TWO_FRAMES);
+    let scripted: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default();
+    // The ride is asked by more than the page's scroll: focus moving and the visual viewport's own
+    // events. Neither may take the page's offset for iOS's either.
+    harness::eval(
+        &tab,
+        "(function(){ document.dispatchEvent(new FocusEvent('focusin')); visualViewport.dispatchEvent(new Event('resize')); visualViewport.dispatchEvent(new Event('scroll')); return true; })()",
+    );
+    harness::pause(
+        "the ride focus and the viewport ask for",
+        Duration::from_millis(300),
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let asked: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default();
+    drop(monitor);
+    assert_eq!(
+        (wheeled["scroll"].clone(), wheeled["transforms"].clone()),
+        (serde_json::json!(300), serde_json::json!([])),
+        "the page keeps the wheel's offset and its pane is never transformed: {wheeled}"
+    );
+    assert_eq!(
+        (scripted["scroll"].clone(), scripted["transforms"].clone()),
+        (serde_json::json!(500), serde_json::json!([])),
+        "the page keeps a scripted offset and its pane is never transformed: {scripted}"
+    );
+    assert_eq!(
+        (asked["scroll"].clone(), asked["transforms"].clone()),
+        (serde_json::json!(500), serde_json::json!([])),
+        "a ride focus or the visual viewport asks for leaves the page's offset alone: {asked}"
+    );
+}
+
 /// #s431 stage 4 (the second delta review of b4ad87a9): the gaps a decision during the keyboard ride
 /// keeps come only from a decision that saw a box while no ride moved it, and the ride's end decides
 /// again. A view its host mounts hidden decided once at 0×0, whose foot read the window's whole height
