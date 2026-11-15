@@ -1670,7 +1670,9 @@ fn output_within(mut cmd: std::process::Command, limit: Duration) -> Result<Stri
     let started = Instant::now();
     loop {
         if let Ok(Some(_)) = child.try_wait() {
-            let left = limit.saturating_sub(started.elapsed()).max(Duration::from_millis(200));
+            let left = limit
+                .saturating_sub(started.elapsed())
+                .max(Duration::from_millis(200));
             return rx
                 .recv_timeout(left)
                 .map(|text| String::from_utf8_lossy(&text).into_owned())
@@ -1829,8 +1831,17 @@ impl Monitor {
         drop(child);
         std::thread::sleep(Duration::from_millis(800));
         let args: Vec<&str> = args.iter().map(String::as_str).collect();
-        Self::spawn_at(kind, key, port, base, stores, paired, &|_| env.clone(), &args)
-            .unwrap_or_else(|why| panic!("{why}"))
+        Self::spawn_at(
+            kind,
+            key,
+            port,
+            base,
+            stores,
+            paired,
+            &|_| env.clone(),
+            &args,
+        )
+        .unwrap_or_else(|why| panic!("{why}"))
     }
 
     /// A monitor on exactly `port`, its scratch named for `key`: for a page already open on that

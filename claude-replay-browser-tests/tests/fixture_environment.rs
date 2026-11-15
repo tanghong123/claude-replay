@@ -282,9 +282,10 @@ fn a_held_ports_holder_reads_the_same_from_ss() {
 #[test]
 fn the_stranded_monitor_reaper_matches_the_whole_port() {
     let bin = "/w/target/release/agent-monitor";
-    assert!(harness::names_port(&format!("{bin} --port 3276 --no-open"), 3276));
-    assert!(harness::names_port(&format!("{bin} --no-open --port 3276"), 3276));
-    assert!(!harness::names_port(&format!("{bin} --port 32761 --no-open"), 3276));
-    assert!(!harness::names_port(&format!("{bin} --port 13276"), 3276));
-    assert!(!harness::names_port(&format!("{bin} --no-open"), 3276));
+    let on = |args: &str| harness::names_port(&format!("{bin} {args}"), 3276);
+    assert!(on("--port 3276 --no-open"));
+    assert!(on("--no-open --port 3276"));
+    assert!(!on("--port 32761 --no-open"));
+    assert!(!on("--port 13276"));
+    assert!(!on("--no-open"));
 }

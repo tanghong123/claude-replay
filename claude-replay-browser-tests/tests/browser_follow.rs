@@ -15084,7 +15084,10 @@ fn a_respawned_monitor_keeps_its_port_its_environment_and_its_arguments() {
     let first = harness::Monitor::spawn_remote(harness::Kind::V1, port, &base, Some(&stores));
     let moved = first.port;
     assert_ne!(moved, port, "the held port moved the first monitor");
-    let trusted = format!("AGENT_MONITOR_TRUSTED_HOSTS={}:{moved}", harness::REMOTE_HOST);
+    let trusted = format!(
+        "AGENT_MONITOR_TRUSTED_HOSTS={}:{moved}",
+        harness::REMOTE_HOST
+    );
     assert!(
         environment(&first).contains(&trusted),
         "the first monitor trusts the name on its port: {}",
@@ -15094,7 +15097,10 @@ fn a_respawned_monitor_keeps_its_port_its_environment_and_its_arguments() {
     assert_eq!(again.port, moved, "the restart serves where the page is");
     assert_eq!(again.key, port, "over the same scratch");
     let said = environment(&again);
-    assert!(said.contains(&trusted), "the restart keeps its environment: {said}");
+    assert!(
+        said.contains(&trusted),
+        "the restart keeps its environment: {said}"
+    );
     let reply = loopback_get(again.port, "/manifest.webmanifest", Duration::from_secs(10));
     assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
     drop(again);
