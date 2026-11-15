@@ -1361,6 +1361,9 @@ fn withdrawn_header() -> Line<'static> {
     ))
 }
 
+/// A width no drawn line reaches, for a count that has none (`body_len`'s withdrawn reply).
+const UNWRAPPED: usize = 10_000;
+
 /// How many lines `render_one` emits *after* the header — computed cheaply (no
 /// `Line` allocation) so a collapsed block's `⋯ N folded` count is exact without
 /// building the body. Must agree with `render_one`'s output length.
@@ -1372,18 +1375,14 @@ fn body_len(b: &Block) -> usize {
         | Block::QueueEvent { text: t } => t.lines().count().saturating_sub(1),
         // #s378: the line is the header; the whole note is the body.
         Block::SafetyStop { note, .. } => note.lines().count(),
-        // #s500: the withdrawn reply, then the note. A reply's prose is counted by its source
-        // lines (markdown may draw it in more), as a thinking's is.
+        // #s500: the withdrawn reply as `render_one` draws it (markdown's own lines, a cut-off
+        // reply's line), then the note. This count has no width, so the reply is drawn on a line
+        // wide enough not to wrap: a narrow terminal may draw its prose in more. It is drawn only
+        // for this count, and a withdrawn reply is rare and short.
         Block::Withdrawn { note, reply } => {
             let reply: usize = reply
                 .iter()
-                .map(|c| match c {
-                    Block::Thinking { text, .. }
-                    | Block::AssistantText(text)
-                    | Block::AssistantCutOff(text)
-                    | Block::AssistantMessage { text, .. } => text.lines().count(),
-                    _ => 1,
-                })
+                .map(|c| render_one(c, UNWRAPPED, Hl::Styled).len())
                 .sum();
             reply + note.lines().count()
         }
@@ -2811,6 +2810,27 @@ mod tests {
         );
         assert_eq!(texts(&[render_header(&b)]), [line]);
         assert_eq!(body_len(&b), lines.len() - 1, "the body is the note");
+    }
+
+    /// #s500: the folded count of a withdrawn reply is what expanding it draws: markdown's own
+    /// lines (a list, a paragraph break), a cut-off reply's line, the thinking, and the note.
+    #[test]
+    fn a_withdrawn_reply_s_folded_count_is_what_it_draws() {
+        let b = Block::Withdrawn {
+            note: "The previous response failed to produce a valid tool call.\nPlease retry."
+                .into(),
+            reply: vec![
+                Block::Thinking {
+                    text: "First the file.\nThen the count.".into(),
+                    duration_secs: None,
+                    tools: Vec::new(),
+                },
+                Block::AssistantText("Counting:\n\n- one\n- two".into()),
+                Block::AssistantCutOff("And then".into()),
+            ],
+        };
+        let lines = render_one(&b, 200, Hl::Styled);
+        assert_eq!(body_len(&b), lines.len() - 1, "{:?}", texts(&lines));
     }
 
     /// A Command block renders `❯ /compact` + a dim `⎿`-prefixed stdout line.
