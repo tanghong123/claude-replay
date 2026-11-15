@@ -2067,6 +2067,76 @@ fn app_shell_ends_a_turn_steps_hold_on_a_click_in_its_turns_pane() {
     scenario_a_turn_click_ends_a_turn_steps_hold(&page.tab, Surface::AppShell);
 }
 
+// ── scenario: a click on the turn a step landed keeps it (#s487) ────────────────────────────
+
+/// #s487 (second review): at the end, where turn N-1 is already in view, `[` makes N-1 the current
+/// turn and moves nothing. The reader then clicks turn N-1 itself in the page's turn list (the
+/// classic sidebar, the app shell's Turns pane): nothing moves, and the bar and the list go on
+/// naming N-1, at rest and a second later, so the next `[` goes to N-2. A commanded move used to
+/// clear the turn a step landed whatever its target, so the end rule named N again and that `[`
+/// landed N-1 a second time: the click and the press both seemed to do nothing. A move to a turn's
+/// own record now makes that turn the one the step counts from.
+fn scenario_a_click_on_the_turn_a_step_landed_keeps_it(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) {
+    let mut readings = Vec::new();
+    step_back_from_the_end(tab, surface, &mut readings);
+    let before = named_turn(tab, surface);
+    readings.push(before.clone());
+    assert!(
+        harness::jump_to_turn(tab, surface, 29),
+        "turn 29's entry in the turn list: {readings:?}"
+    );
+    settle();
+    until_engine_quiet(tab);
+    let clicked = named_turn(tab, surface);
+    harness::pause("the reader rests", Duration::from_secs(1));
+    let later = named_turn(tab, surface);
+    readings.push(clicked.clone());
+    readings.push(later.clone());
+    assert!(
+        clicked["rest"]["gap"].as_i64().is_some_and(|g| g <= 2),
+        "the premise: the end of the session holds the view: {readings:?}"
+    );
+    for at in [&clicked, &later] {
+        assert_eq!(
+            (&at["rest"]["card"], &at["rest"]["gap"]),
+            (&before["rest"]["card"], &before["rest"]["gap"]),
+            "a click on turn 29, already where the step put it, moves nothing: {readings:?}"
+        );
+    }
+    assert_eq!(
+        names_both(&clicked, &later),
+        [Some(29); 4],
+        "…and the bar and the turn list go on naming turn 29, and a second later still: {readings:?}"
+    );
+    let (first, later) = press_and_name(tab, surface, "[", &mut readings);
+    assert_eq!(
+        names_both(&first, &later),
+        [Some(28); 4],
+        "…so the next `[` goes to turn 28, not 29 again, and stays: {readings:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_keeps_a_turn_steps_landing_on_a_click_on_that_turn_in_its_sidebar() {
+    let _serial = serial();
+    let fx = fixture_short_last_turns("scenario-turnhold-same-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_click_on_the_turn_a_step_landed_keeps_it(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_keeps_a_turn_steps_landing_on_a_click_on_that_turn_in_its_turns_pane() {
+    let _serial = serial();
+    let fx = fixture_short_last_turns("scenario-turnhold-same-app");
+    let page = open(Surface::AppShell, &fx, 3191);
+    scenario_a_click_on_the_turn_a_step_landed_keeps_it(&page.tab, Surface::AppShell);
+}
+
 // ── scenario: a wheel beside the transcript keeps a turn step's hold (#s487) ────────────────
 
 /// #s487 (review): a wheel over a panel beside the transcript (the classic page's sidebar, the app

@@ -3837,15 +3837,20 @@ for (const kind of ["wheel", "touchmove", "pointerdown", "keydown"]) document.ad
 
 /** Every commanded move the view makes to a record or an element goes through these two but the
  *  turn step's own (#s487 review): each ends the step's hold on the current turn. A move that
- *  moves nothing (a click on turn N in the Turns pane, or on the bar, while the end of the session
+ *  moves nothing (a search hit, a task or an agent already in view while the end of the session
  *  holds the view where a step left it) leaves the landed row where it was, so the hold's own test
- *  (`landedTurnIndex`) cannot see it end, and the bar went on naming the turn the step landed: the
- *  next `[` counted from there and skipped a turn. A head step's reveal (`stepHead`) is not one of
- *  them: it moves among the rows inside the turns, and where it moves the view the hold ends by its
- *  own test. */
+ *  (`landedTurnIndex`) cannot see it end, and the bar went on naming a turn the reader had moved
+ *  away from. A move to a turn's own record (a click on a turn in the Turns pane or on the bar,
+ *  `reveal` "turn", which a compaction's row shares) SETS it to that turn instead, as the step's
+ *  own landing does: where the end of the session holds the view the click moves nothing, and the
+ *  end rule (#199) named the last turn again, so the next `[` landed where the reader already was.
+ *  A head step's reveal (`stepHead`) is not one of them: it moves among the rows inside the turns,
+ *  and where it moves the view the hold ends by its own test. */
 function jumpToRecord(recordIndex, reveal) {
   stepLanded = null;
-  return viewport.jumpToRecord(recordIndex, reveal);
+  const landed = viewport.jumpToRecord(recordIndex, reveal);
+  if (landed && reveal === "turn") holdTurn(recordState.units.find(unit => unit.type === "user" && unit.from === recordIndex));
+  return landed;
 }
 function revealElement(element, options) {
   stepLanded = null;
@@ -3878,8 +3883,8 @@ function landedTurnIndex() {
   }
   // Not cleared here: the bar is also painted mid-transaction, before the placement puts the row
   // back where it landed (`afterRender`). What ends the hold is the reader's input, the jump to
-  // the latest, the next step, every other commanded move (`jumpToRecord`, `revealElement`) or
-  // another session.
+  // the latest, the next step, every commanded move but one to a turn (`jumpToRecord`,
+  // `revealElement`) or another session.
   return -1;
 }
 function stepTurn(delta) {
@@ -3890,9 +3895,13 @@ function stepTurn(delta) {
   // Following decided as a jump to the end decides it (#s502): kept only where the step lands at
   // the end, never within the hold slack short of it, where the tail would take the reader back.
   if (!viewport.jumpToRecord(turns[next].from, "turn", "acquire")) return;
-  const row = unitRow(turns[next].key);
+  holdTurn(turns[next]);
+}
+/** The user turn `unit`, now where a move put its row, becomes the current one (`landedTurnIndex`). */
+function holdTurn(unit) {
+  const row = unit ? unitRow(unit.key) : null;
   if (!row) return;
-  stepLanded = { session: recordState.session, key: turns[next].key, top: row.getBoundingClientRect().top - viewport.scroller.getBoundingClientRect().top };
+  stepLanded = { session: recordState.session, key: unit.key, top: row.getBoundingClientRect().top - viewport.scroller.getBoundingClientRect().top };
   // A landing the bottom clamped moves nothing, so no scroll event repaints the bar or the pane.
   queueTurn(updateTurnBar());
   updateOutlineFocus();

@@ -3092,9 +3092,9 @@
     if (h) { cycleFold(h.closest(".fold")); return; }
     var trow = e.target.closest(".task-row");
     if (trow) { trow.parentElement.classList.toggle("open"); return; }
-    if (e.target.closest("#stickybar") && curTurn) { goToId(curTurn.id); return; }
+    if (e.target.closest("#stickybar") && curTurn) { goToTurn(curTurn.id); return; }
     var si = e.target.closest(".side-item, .side-epoch");
-    if (si) goToId(si.dataset.t);
+    if (si) goToTurn(si.dataset.t);
   });
 
   var themeBtn = $("btn-theme");
@@ -3679,11 +3679,13 @@
   // within the end rule's slack the bar named the LAST turn, and a step that moved nothing (N-1
   // already in view at the end) would have counted from N again. `stepLanded` is that turn's id
   // and its header's top as it landed; the reader's input on the transcript, the jump to the
-  // latest, the next step and every other commanded move (`goTo`, `goToId`, `landOn`: the sidebar,
-  // the bar, search, the filter, a deep link) end it, and so does any move of the view, read by the
-  // header's place. A commanded move that moves nothing (a click on turn N in the sidebar while the
-  // end of the session holds the view) leaves the header where it was, so only ending it there
-  // keeps the bar from naming the turn the step landed.
+  // latest, the next step and every other commanded move (`goTo`, `goToId`, `landOn`: search, the
+  // filter, a deep link, the restore) end it, and so does any move of the view, read by the
+  // header's place. A commanded move that moves nothing leaves the header where it was, so only
+  // ending it there keeps the bar from naming a turn the reader moved away from. A click on a turn
+  // itself, in the sidebar or on the bar (`goToTurn`), SETS it to that turn instead: where the end
+  // of the session holds the view the click moves nothing, and the end rule would name the last
+  // turn again, so the next `[` landed where the reader already was.
   var stepLanded = null;
   function landedTurn() {
     var at = stepLanded;
@@ -3718,11 +3720,23 @@
     // Following decided as a jump to the end decides it (#s502): kept only where the step lands at
     // the end, never within the hold slack short of it.
     goToId(id, "acquire");
+    holdTurn(id);
+  }
+  // A click on a turn in the sidebar or on the bar: the jump any click makes, and then the turn is
+  // the one the bar names and a step counts from, as a step's own landing is (#s487). A compaction
+  // in the sidebar is no turn, so its click only ends the memory.
+  function goToTurn(id) {
+    goToId(id);
+    holdTurn(id);
+  }
+  // The turn `id` opens, now where the move put its header, becomes the bar's (`landedTurn`). A
+  // landing the bottom clamped moves nothing, so no scroll event repaints the bar.
+  function holdTurn(id) {
+    var rec = records[idIndex[id]];
     var e = document.getElementById(id);
-    if (e) {
-      stepLanded = { id: id, top: e.getBoundingClientRect().top };
-      spy();
-    }
+    if (!rec || rec.turn == null || !e) return;
+    stepLanded = { id: id, top: e.getBoundingClientRect().top };
+    spy();
   }
   document.addEventListener("keydown", function (e) {
     if (shared.isEditable(e.target)) return;

@@ -3877,13 +3877,19 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSrc, /viewport\.jumpToRecord\(turns\[next\]\.from, "turn", "acquire"\)/, "…and a turn step keeps following only where it lands at the end (#s502)");
   assert.match(classic, /goToId\(id, "acquire"\);/, "…on the classic page too");
   // Every other commanded move ends a step's hold on the current turn (#s487 review): one that moves
-  // nothing (turn N clicked while the end holds the view) left the bar naming the turn the step landed.
-  assert.match(viewSrc, /function jumpToRecord\(recordIndex, reveal\) \{\n  stepLanded = null;\n  return viewport\.jumpToRecord\(recordIndex, reveal\);\n\}\nfunction revealElement\(element, options\) \{\n  stepLanded = null;\n  return viewport\.reveal\(element, options\);\n\}/, "…the shell's through two wrappers that end it");
+  // nothing left the bar naming a turn the reader had moved away from. A move to a turn's own record
+  // (a click on a turn in the list or on the bar) sets it to that turn instead (second review).
+  assert.match(viewSrc, /function jumpToRecord\(recordIndex, reveal\) \{\n  stepLanded = null;\n  const landed = viewport\.jumpToRecord\(recordIndex, reveal\);\n  if \(landed && reveal === "turn"\) holdTurn\(recordState\.units\.find\(unit => unit\.type === "user" && unit\.from === recordIndex\)\);\n  return landed;\n\}\nfunction revealElement\(element, options\) \{\n  stepLanded = null;\n  return viewport\.reveal\(element, options\);\n\}/, "…the shell's through two wrappers that end it, the jump to a turn's own record setting it to that turn");
+  assert.match(viewSrc, /if \(!viewport\.jumpToRecord\(turns\[next\]\.from, "turn", "acquire"\)\) return;\n  holdTurn\(turns\[next\]\);/, "…as the turn step's own landing does");
   assert.equal((viewSrc.match(/viewport\.jumpToRecord\(/g) || []).length, 2, "…which every jump to a record but the turn step's own goes through");
   assert.equal((viewSrc.match(/viewport\.reveal\(/g) || []).length, 2, "…and every reveal but a head step's, which moves within the turns");
   assert.match(classic, /function goTo\(target, instant, keepIfVisible, pin\) \{\n\s*if \(!target\) return;\n(?:\s*\/\/[^\n]*\n)*\s*if \(pin !== "acquire"\) stepLanded = null;/, "…the classic page's in goTo");
   assert.match(classic, /function goToId\(id, pin\) \{\n\s*var ti = idIndex\[id\];\n\s*if \(ti == null\) return;\n\s*if \(pin !== "acquire"\) stepLanded = null;/, "…in goToId");
   assert.match(classic, /function landOn\(id, dy\) \{\n\s*var ti = idIndex\[id\];\n\s*if \(ti == null\) return false;\n\s*stepLanded = null;/, "…and in landOn");
+  assert.match(classic, /function goToTurn\(id\) \{\n\s*goToId\(id\);\n\s*holdTurn\(id\);\n\s*\}/, "…but a click on a turn sets it to that turn");
+  assert.match(classic, /if \(e\.target\.closest\("#stickybar"\) && curTurn\) \{ goToTurn\(curTurn\.id\); return; \}\n\s*var si = e\.target\.closest\("\.side-item, \.side-epoch"\);\n\s*if \(si\) goToTurn\(si\.dataset\.t\);/, "…on the bar or in the sidebar");
+  assert.match(classic, /goToId\(id, "acquire"\);\n\s*holdTurn\(id\);/, "…as the turn step's own landing does");
+  assert.match(classic, /function holdTurn\(id\) \{\n\s*var rec = records\[idIndex\[id\]\];\n\s*var e = document\.getElementById\(id\);\n\s*if \(!rec \|\| rec\.turn == null \|\| !e\) return;\n\s*stepLanded = \{ id: id, top: e\.getBoundingClientRect\(\)\.top \};\n\s*spy\(\);/, "…and only for a turn's own record, the bar repainted at once");
   assert.match(classic, /window\.addEventListener\(ev, function \(e\) \{\n\s*if \(!onTranscript\(e\.target\)\) return;/, "…and the reader's input ends it only on the transcript, as the shell's does");
   assert.match(classic, /function onTranscript\(t\) \{\n\s*return !\(t instanceof Element && t\.closest\("#sidebar, #taskpanel, #toolmenu, #agentmenu, #taskmenu, #artifactmenu"\)\);\n\s*\}/, "…the window's, short of the panels and the top bar's menus, which scroll themselves");
   assert.match(classic, /var at = curTurn \? turns\.indexOf\(idIndex\[curTurn\.id\]\) : -1;/, "…whose turn step counts from the turn its bar names, as the shell's does (#s503)");
@@ -4730,7 +4736,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // session's own units arrive.
   assert.match(viewSource, /afterTransaction: \(\) => \{ const p = viewport\.position; if \(p && p\.key\) queueTurn\(updateTurnBar\(p\.key\)\); wantWindow\(\); \}/, "after a transaction");
   assert.match(viewSource, /updateStickyHeaders\(\); updateOutlineFocus\(\); queueTurn\(updateTurnBar\(\)\);/, "after a scroll");
-  assert.match(viewSource, /stepLanded = \{ session: recordState\.session, key: turns\[next\]\.key, top: [^\n]*\n(?:  \/\/[^\n]*\n)*  queueTurn\(updateTurnBar\(\)\);/, "after a turn step has landed, which a landing the bottom clamped never scrolls to say (#s487)");
+  assert.match(viewSource, /stepLanded = \{ session: recordState\.session, key: unit\.key, top: [^\n]*\n(?:  \/\/[^\n]*\n)*  queueTurn\(updateTurnBar\(\)\);/, "after a turn step or a click on a turn has landed, which a landing the bottom clamped never scrolls to say (#s487)");
   assert.equal((viewSource.match(/queueTurn\(/g) || []).length, 6, "and nowhere else but open and close, which say none (with the definition)");
   assert.doesNotMatch(/^function updateTurnBar\(atKey\) \{[\s\S]*?\n\}/m.exec(viewSource)[0], /sayTurn|queueTurn/, "never from the bar itself, which afterRender paints before the placement");
   assert.match(viewSource, /recordState\.units = projection\.units;\n  unitsSession = recordState\.session \|\| "";/, "the units are the session's once its records apply");
