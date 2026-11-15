@@ -47,7 +47,9 @@ a control off is not drawn and takes no key; the app passes none); and `keyboard
 default (the view binds its keymap in the capture phase and answers, as the pane's image viewer
 does, only while the reader's last press or focus is inside it, as mdrev does) or `"page"`, the
 app's: the view binds none and the app's one keymap at the document routes keys to the handle's
-`keys`; and `room`, a function answering how much wider the host could make the view by narrowing
+`keys` (either way a MOUSE's press in the transcript focuses the transcript itself, with no ring, so
+Safari's keys reach it whatever a growth redraws; a finger's or a pen's tap, a press on its scrollbar
+and one inside a box that scrolls on its own do not, #s488); and `room`, a function answering how much wider the host could make the view by narrowing
 what it lays beside it (the app: its list's width less 232; 0 without it, #s476). What the view
 tells its host comes out as optional handlers with plain data, never a node (`onTitle`, `onTurn`,
 `onInfo`, `onFile`, `onLinkCopied`, `onToast`, and `onOutline`, `{wanted}`, the reader's outline
