@@ -49,7 +49,7 @@ export const KEYBOARD_MODES = Object.freeze(["engaged", "page"]);
 /** Every option `mountSessionView` takes; any other name is refused, so a misspelt or retired one
  *  (the old `toast`, `keys` or `controls`) fails loudly rather than being dropped. */
 export const MOUNT_OPTIONS = Object.freeze([
-  "theme", "grid", "backend", "show", "keyboard", "write", "frame",
+  "theme", "grid", "backend", "show", "keyboard", "write", "frame", "detachTo",
   "selectedId", "sessionRow", "sessionWorkers", "selectSession", "renderList", "refreshIndex", "pauseIndex", "resumeIndex",
   "onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast", "onOutline",
   "room", "parentShown", "openList", "openSidebar", "paneLayout", "paneCount",
@@ -72,7 +72,8 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  `sessionRow`, `sessionWorkers`, `selectSession`, `renderList`, `refreshIndex`, `pauseIndex` and
  *  `resumeIndex`. The rest are optional: a host may leave out `theme`, `backend`, `show` and
  *  `keyboard` (each has a default), `write` (writes are not offered without it), `frame` (the
- *  native app's), and every handler of what the view tells it.
+ *  native app's), `detachTo` (tabs open at the server's own pages), and every handler of what the
+ *  view tells it.
  *  - `theme`: "light" (the default) or "dark", carried by the view's element, where its stylesheet
  *    reads it; the handle's `setTheme` changes it.
  *  - `grid`: the box around the view (the app's `#app`). The phone's sheets are measured against it
@@ -87,7 +88,19 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    - `reading`: the Reading menu (Aa) and its keys (`w`, `-`, `+`). Off, the reader's stored
  *      reading preferences (this origin's `am-prod-reading`) still apply as they are.
  *    - `history`: the viewport history's Save, a row of the Reading menu.
- *    - `detach`: the artifact pane's ↗, which opens the document or image in a tab of its own.
+ *    - `detach`: every ↗ that opens something in a tab of its own: the artifact pane's (the document
+ *      or image it shows) and, where `detachTo` is given, the top bar's (the session's transcript).
+ *  - `detachTo`: where a tab of its own opens (#s433, design/embedding.md, "Detached views"): the page
+ *    that runs the kit's `mountDetached`, which reads what to show from the address's query (a
+ *    session, a document or an image). Left out, nothing changes: the pane's ↗ opens the server's
+ *    own `/markdown` and `/image` pages, and the top bar draws no ↗ for the transcript. A string is
+ *    that page's address, and every ↗ opens it with the query added (`?session=…`, `?root=…`,
+ *    `?name=…`). A function is asked at each ↗ with `{ kind, query, href }` (`kind` "session",
+ *    "markdown" or "image"; `href` the server's own page for it: `/detached`, `/markdown` or
+ *    `/image` with the query) and answers the address the view opens, or anything else once it has
+ *    opened a window of its own. The view opens a tab with `window.open`, never `noopener`: text the
+ *    transcript carries and an image it embeds reach the tab through a copy of this page's
+ *    sessionStorage, which a window the host opens itself does not get (that tab then says so).
  *  - `keyboard`: "engaged" (the default) or "page", as `KEYBOARD_MODES` says. Engaged, the view answers
  *    its keymap only while the reader's last press or focus is inside its element (or the task card
  *    it floats over the page), and yields to a guest inside it (mdrev's pane), as mdrev does; a key
@@ -187,6 +200,7 @@ if (!KEYBOARD_MODES.includes(keyboardMode)) throw new Error(`mountSessionView ta
 if (options.write !== undefined && !(typeof options.write?.on === "function" && typeof options.write?.confirm === "function")) throw new Error("mountSessionView takes its write as { on, confirm }, two functions, or none for a host that offers no writes");
 if (options.room !== undefined && typeof options.room !== "function") throw new Error("mountSessionView takes its room as a function answering how many pixels its host could give, or none");
 if (options.frame !== undefined && typeof options.frame !== "function") throw new Error("mountSessionView takes its frame as a function from a page's HTML to the address its frame loads");
+if (options.detachTo !== undefined && !((typeof options.detachTo === "string" && options.detachTo) || typeof options.detachTo === "function")) throw new Error("mountSessionView takes its detachTo as the address of the page its tabs open at, or a function answering one, or none");
 /** Whether an optional control is drawn: each is, unless the host switched it off. */
 const shows = name => options.show?.[name] !== false;
 // What the view starts outside its element, which `unmount` stops (stage 7). Every listener it binds
@@ -375,6 +389,9 @@ const sayFile = item => say(options.onFile, { name: String(item.fileName || item
 let outlineCurrent = null;
 // Whether the Turns pane follows the session (#s207) — declared here for the same reason.
 let turnsFollow = true;
+// The top bar's ↗ for the transcript (#s433), made further down — declared here for the same reason:
+// the header paints during the first render.
+let sessionNewTab = null;
 
 const byId = viewRoot.byId;
 const transcript = byId("transcript");
@@ -626,7 +643,33 @@ layoutHeard = () => { if (!settleOutline()) paneLayoutChanged({ decided: true })
 // (`toggled`), even where the host's list gives way in the same moment; the pane shutting itself as
 // the view is built glides nothing, but the view is arranged again for it, since what the mount draws
 // reads the arrangement. Then `layoutChanged` remeasures once that glide is done.
-const preview = new Preview({ phone: () => layout.phone(), layoutChanged: () => paneLayoutChanged(), paneToggled: change => (viewMounted ? layout.toggled(change) : (change(), layout.decide())), dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
+/** Where a tab of its own opens for `kind` ("session", "markdown" or "image") and the address's
+ *  `query` (#s433): the host's page (`detachTo`), else the server's own; "" for none (a transcript
+ *  with no `detachTo`, or a host that opened a window itself). */
+function tabAddress(kind, query) {
+  const to = options.detachTo;
+  if (typeof to === "string") return `${to}${to.includes("?") ? "&" : "?"}${query}`;
+  if (typeof to === "function") {
+    let answer;
+    try { answer = to({ kind, query, href: serverTab(kind, query) }); } catch (error) { (globalThis.reportError || console.error)(error); return ""; }
+    return typeof answer === "string" ? answer : "";
+  }
+  return kind === "session" ? "" : serverTab(kind, query);
+}
+/** The server's own tab for a document or an image (its `/markdown` and `/image` pages), or for a
+ *  transcript (`/detached`), which the view opens only where the host asks for it. */
+function serverTab(kind, query) {
+  if (kind === "markdown") return backend().mdrevUrl(`/markdown?${query}`);
+  if (kind === "image") return backend().url(`/image?${query}`);
+  return backend().url(`/detached?${query}`);
+}
+/** Open a tab of its own. NOT `noopener`: the tab takes a copy of this page's sessionStorage, which
+ *  is how held text and an embedded image reach it. */
+function openTab(kind, query) {
+  const href = tabAddress(kind, query);
+  if (href) window.open(href, "_blank");
+}
+const preview = new Preview({ openTab, phone: () => layout.phone(), layoutChanged: () => paneLayoutChanged(), paneToggled: change => (viewMounted ? layout.toggled(change) : (change(), layout.decide())), dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
 const attachmentViewer = new AttachmentViewer({ toast });
 // What the compose box asks of the app goes nowhere once the view is unmounted: a dialog's answer
 // still settling, a send still out.
@@ -738,6 +781,7 @@ function renderHeader() {
   sayTitle(sessionTitle.textContent);
 }
 function paintHeader() {
+  if (sessionNewTab) sessionNewTab.hidden = !selectedId();
   renderArtifacts();
   const row = selectedRow();
   const liveMeta = recordState.session === selectedId() ? recordState.meta : null;
@@ -3484,6 +3528,17 @@ byId("navigatorRailExpand").onclick = () => toggleNavigator(!uiState.navigatorOp
 // demo shell, which is never hand-edited, so it is removed here at runtime — the same
 // production-chrome layering the X itself used.
 byId("navigatorToggle")?.remove();
+// #s433: the session's transcript in a tab of its own, beside the right pane's control: only where the
+// host says where its tabs open (`detachTo`), so a host that passes nothing sees nothing new. Hidden
+// on a phone, where the tab has no way back (the pane's ↗ too, #335), and while no session is open.
+sessionNewTab = shows("detach") && options.detachTo !== undefined
+  ? Object.assign(document.createElement("button"), { type: "button", id: "sessionNewTab", className: "iconbtn session-newtab", textContent: "↗", title: "Open this session in a new tab", hidden: true })
+  : null;
+if (sessionNewTab) {
+  sessionNewTab.setAttribute("aria-label", "Open this session in a new tab");
+  sessionNewTab.onclick = () => { const id = selectedId(); if (id) openTab("session", `session=${encodeURIComponent(id)}`); };
+  byId("previewBtn").before(sessionNewTab);
+}
 // The published-artifact roster (#78) lives in the right pane (#95), not in a header menu:
 // one row per URL with its republish count — twenty calls for two decks read as two rows —
 // as the pane's pinned first tab, and the count on the pane's own button so a closed pane

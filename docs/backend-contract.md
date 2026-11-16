@@ -37,7 +37,8 @@ The tiers say what a host must serve:
 - **core**: the parts show nothing without it;
 - **optional**: a feature goes away (each section says which);
 - **write**: sending, granting and answering; a host that serves none of these says it is not paired;
-- **page**: the detached tabs, which `design/embedding.md` moves to a later kit;
+- **page**: the detached tabs: the server's own page for a tab of its own, and the Markdown tab's
+  mdrev prefix (a host may serve the kit's `mountDetached` at a route of its own instead);
 - **native**: Codex native mode, which is outside contract 1 (see "Codex native mode").
 
 <!-- route-index -->
@@ -60,8 +61,9 @@ The tiers say what a host must serve:
 | GET | `/mdrev/<mdrev>/` | optional | `/mdrev/<mdrev>/mdrev.js` | mdrev's viewer, for Markdown and code in the artifact pane |
 | ANY | `/api/mdrev/` | optional | `/api/mdrev/hold` | mdrev's routes for the pane |
 | GET | `/mermaid/` | optional | `<mermaid>` | the Mermaid runtime, for diagrams in the transcript |
-| GET | `/image` | page | `/image` | an image in a tab of its own |
-| GET | `/markdown` | page | `/markdown` | a Markdown document in a tab of its own |
+| GET | `/detached` | page | `/detached` | a transcript, a document or an image in a tab of its own |
+| GET | `/image` | page | `/image` | the same page, at the address an image's tab had before it |
+| GET | `/markdown` | page | `/markdown` | the same page, at the address a document's tab had before it |
 | ANY | `/api/mdrev-review/` | page | `/api/mdrev-review/review` | mdrev's routes for that tab, with shared review |
 | ANY | `/api/codex/` | native | `/api/codex/status` | Codex native mode's gateway |
 | GET | `/codex-workspace/` | native | `/codex-workspace/api.js` | Codex native mode's modules |
@@ -381,12 +383,16 @@ buttons.
 
 ## The detached tabs
 
-`/image?name=&path=&sig=&held=` and `/markdown?root=&path=&cap=&from=&to=&since=` are static
-pages: an image, or a Markdown document, in a tab of its own. Nothing from the address is written
-into them; their script reads the address and goes through the routes above. Text carried in the
-transcript reaches the tab through `sessionStorage`. `/api/mdrev-review/` is the Markdown tab's
-mdrev prefix, the same routes as `/api/mdrev/` plus shared review. **Without them:** no tab of its
-own; the pane still shows everything.
+`/detached` is one static page, the kit's `mountDetached` on the page's own address:
+`?session=<id>` a session's transcript, `?root=&path=&cap=&from=&to=&since=` a Markdown document,
+`?name=&path=&sig=&held=` an image. `/markdown` and `/image` serve the same page, so a tab opened at
+either before it still lands. Nothing from the address is written into it; its script reads the
+address and goes through the routes above. Text and images carried in the transcript reach the tab
+through `sessionStorage`. `/api/mdrev-review/` is the Markdown tab's mdrev prefix, the same routes as
+`/api/mdrev/` plus shared review. **Without them:** no tab of its own at the server's address; the pane
+still shows everything. A host that mounts the kit's `mountDetached` on a page of its own, and names
+that page as the view's `detachTo`, needs none of the three pages, and `/api/mdrev-review/` still for
+a document there.
 
 ## Codex native mode
 

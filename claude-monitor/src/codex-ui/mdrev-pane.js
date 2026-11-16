@@ -21,7 +21,7 @@
 // own (#271): `/markdown` serves the viewer as the whole page, at the reader's document and range.
 
 import { backend } from "./backend.js";
-import { page, viewRoot } from "./view-root.js";
+import { viewRoot } from "./view-root.js";
 
 const CONTRACT = "/api/mdrev";
 // #s10: the detached tab mounts the guest under a prefix of its own, which ALSO answers mdrev's
@@ -228,27 +228,34 @@ export async function mountMarkdown(el, item, { review = false } = {}) {
      *  was upgraded while the page was open; "" otherwise, and on every later mount. */
     updated: takeUpdate(),
     print,
-    /** Where a tab of its own finds this document; for held text, first leave the tab its own copy
-     *  (`window.open` copies this page's sessionStorage into the tab it makes), so a monitor restart
-     *  that empties the store cannot strand a tab the reader keeps open. */
-    href() {
+    /** The address a tab of its own finds this document by (`standaloneQuery`), for whichever page
+     *  the host opens tabs at (#s433); for held text, first leave the tab its own copy (`window.open`
+     *  copies this page's sessionStorage into the tab it makes), so a monitor restart that empties
+     *  the store cannot strand a tab the reader keeps open. */
+    query() {
       if (carried) carry(place.path, carried);
-      return standaloneHref(place);
+      return standaloneQuery(place);
     },
   };
 }
 
 // ------------------------------------------------------------------------ a tab of its own (#271)
 
-/** The address of a tab of its own for the document the reader is on: the same collection,
- *  document and capability — nothing the tab could not already ask the routes for — and the range
- *  they chose, so it opens where they were. */
-export function standaloneHref({ root, path, cap, range }) {
+/** What a tab's address carries for the document the reader is on: the same collection, document
+ *  and capability — nothing the tab could not already ask the routes for — and the range they
+ *  chose, so it opens where they were. The query alone (#s433): the page it goes after is the host's
+ *  to choose (the view's `detachTo`), the server's `/markdown` by default (`standaloneHref`). */
+export function standaloneQuery({ root, path, cap, range }) {
   const query = new URLSearchParams({ root: root || "", path: path || "", cap: cap || "" });
   if (range?.from) query.set("from", range.from);
   if (range?.to && range.to !== "WORKTREE") query.set("to", range.to);
   if (range?.since) query.set("since", range.since);
-  return backend().mdrevUrl(`/markdown?${query}`);
+  return String(query);
+}
+
+/** The server's own tab for a document: its `/markdown` page with `standaloneQuery`. */
+export function standaloneHref(place) {
+  return backend().mdrevUrl(`/markdown?${standaloneQuery(place)}`);
 }
 
 /** What a tab's address carries, as `standaloneHref` wrote it. */
@@ -299,23 +306,18 @@ async function standaloneMount(want) {
 }
 
 /**
- * The page `/markdown` serves: the document a tab's address names, as the whole page. The address
- * follows the reader — a move to another range or document rewrites it — so a reload or a copied
- * link lands where they were. The theme is the shell's own, read from the setting the shell keeps,
- * and follows a toggle made in any tab.
+ * A tab's document (#s433, `mountDetached`'s Markdown): the document the address `search` names, as
+ * the whole of `el`. The address follows the reader — a move to another range or document is told to
+ * `moved` with the query that names the new place (`standaloneQuery`), which the page writes into its
+ * own address, so a reload or a copied link lands where they were. The theme is the view root's (the
+ * detached element's), and a change to it remounts at the reader's place.
  */
-export async function mountStandalone(el, search = location.search) {
+export async function mountStandalone(el, search = location.search, moved = () => {}) {
   const want = standaloneFacts(search);
   const version = mdrevVersion();
   if (!version) throw new Unavailable("This server carries no Markdown viewer.");
   if (!want.root || !want.path) throw new Unavailable("This address names no document.");
-  const follow = () => { page.html().dataset.theme = localStorage.getItem("am-demo-theme") === "dark" ? "dark" : ""; };
-  follow();
-  addEventListener("storage", event => { if (event.key === "am-demo-theme") follow(); });
   const [{ mountMdrev }, facts] = await Promise.all([loadMdrev(version), standaloneMount(want)]);
   const name = facts.name || want.path;
-  return mountAt(mountMdrev, el, { ...facts, range: want.range }, place => {
-    document.title = place.path.split("/").pop() || name;
-    history.replaceState(null, "", standaloneHref(place));
-  }, backend().mdrevUrl(REVIEW_CONTRACT));
+  return mountAt(mountMdrev, el, { ...facts, range: want.range }, place => moved({ title: place.path.split("/").pop() || name, query: standaloneQuery(place) }), backend().mdrevUrl(REVIEW_CONTRACT));
 }

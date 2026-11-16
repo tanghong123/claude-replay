@@ -492,7 +492,7 @@ fn mdrev_contract_passes_mdrev_cli_conform() {
 // ------------------------------------------------------------------ a tab of its own (#271)
 
 /// What a tab of its own holds right now, for a failure message.
-const OWN: &str = "(function(){ var d = document.getElementById('doc'); return location.href + ' | ' + (d ? d.className + ' | ' + d.innerHTML.slice(0, 300) : 'no #doc'); })()";
+const OWN: &str = "(function(){ var d = document.querySelector('#detachedView > .detached-doc'); return location.href + ' | ' + (d ? d.className + ' | ' + d.innerHTML.slice(0, 300) : 'no .detached-doc: ' + (document.getElementById('detachedView') || {}).innerText); })()";
 
 /// The app shell for an UNPAIRED monitor: held text needs no pairing, and a case that proves so
 /// must not pair first.
@@ -532,7 +532,7 @@ fn opened_tab(browser: &headless_chrome::Browser) -> std::sync::Arc<headless_chr
 fn own_h1(tab: &headless_chrome::Tab) -> String {
     eval(
         tab,
-        "(document.querySelector('#doc.mdrev-host h1') || {}).textContent || ''",
+        "(document.querySelector('#detachedView > .detached-doc.mdrev-host h1') || {}).textContent || ''",
     )
     .as_str()
     .unwrap_or("")
@@ -563,20 +563,24 @@ fn mdrev_opens_held_text_in_a_tab_of_its_own() {
     let own = opened_tab(&browser);
     until(
         &own,
-        "!!document.querySelector('#doc.mdrev-host h1')",
+        "!!document.querySelector('#detachedView > .detached-doc.mdrev-host h1')",
         "the held notes in a tab of their own",
         Duration::from_secs(30),
         OWN,
     );
     assert_eq!(own_h1(&own), "Field notes");
     assert_eq!(
-        eval(&own, "document.getElementById('doc').dataset.root").as_str(),
+        eval(
+            &own,
+            "document.querySelector('#detachedView > .detached-doc').dataset.root"
+        )
+        .as_str(),
         Some("held")
     );
     assert_eq!(
         eval(
             &own,
-            "document.querySelectorAll('#doc.mdrev-host .topbar').length"
+            "document.querySelectorAll('#detachedView > .detached-doc.mdrev-host .topbar').length"
         )
         .as_i64(),
         Some(0),
@@ -632,7 +636,7 @@ fn mdrev_opens_a_file_in_a_tab_where_the_reader_was() {
     let own = opened_tab(&browser);
     until(
         &own,
-        "!!document.querySelector('#doc.mdrev-host h1')",
+        "!!document.querySelector('#detachedView > .detached-doc.mdrev-host h1')",
         "the guide in a tab of its own",
         Duration::from_secs(30),
         OWN,
@@ -653,7 +657,7 @@ fn mdrev_opens_a_file_in_a_tab_where_the_reader_was() {
         PANE,
     );
     assert_eq!(
-        range(&own, "#doc"),
+        range(&own, "#detachedView > .detached-doc"),
         chosen,
         "the tab opened at the reader's range: {}",
         own.get_url()
@@ -668,7 +672,7 @@ fn mdrev_opens_a_file_in_a_tab_where_the_reader_was() {
     }
     until(
         &own,
-        "document.querySelectorAll('#doc.mdrev-host .topbar').length > 0",
+        "document.querySelectorAll('#detachedView > .detached-doc.mdrev-host .topbar').length > 0",
         "the whole viewer — history and notes are in play for a file",
         Duration::from_secs(20),
         OWN,
@@ -679,10 +683,13 @@ fn mdrev_opens_a_file_in_a_tab_where_the_reader_was() {
         "the tab names its document"
     );
 
-    let cap = eval(&own, "document.getElementById('doc').dataset.cap")
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let cap = eval(
+        &own,
+        "document.querySelector('#detachedView > .detached-doc').dataset.cap",
+    )
+    .as_str()
+    .unwrap_or("")
+    .to_string();
     assert_eq!(cap.len(), 64, "a stamp: {cap:?}");
     let forged = browser.new_tab().unwrap();
     forged
@@ -691,7 +698,7 @@ fn mdrev_opens_a_file_in_a_tab_where_the_reader_was() {
     forged.wait_until_navigated().unwrap();
     until(
         &forged,
-        "document.getElementById('doc').classList.contains('unavailable')",
+        "!!document.querySelector('#detachedView > .detached-unavailable')",
         "the forged address refused",
         Duration::from_secs(20),
         OWN,
@@ -728,7 +735,7 @@ fn a_tab_of_held_text_survives_a_monitor_restart() {
     let own = opened_tab(&browser);
     until(
         &own,
-        "!!document.querySelector('#doc.mdrev-host h1')",
+        "!!document.querySelector('#detachedView > .detached-doc.mdrev-host h1')",
         "the held notes in a tab of their own",
         Duration::from_secs(30),
         OWN,
@@ -740,7 +747,7 @@ fn a_tab_of_held_text_survives_a_monitor_restart() {
     own.wait_until_navigated().unwrap();
     until(
         &own,
-        "!!document.querySelector('#doc.mdrev-host h1')",
+        "!!document.querySelector('#detachedView > .detached-doc.mdrev-host h1')",
         "the notes again, held from the tab's own copy",
         Duration::from_secs(30),
         OWN,
@@ -753,12 +760,12 @@ fn a_tab_of_held_text_survives_a_monitor_restart() {
     own.wait_until_navigated().unwrap();
     until(
         &own,
-        "document.getElementById('doc').classList.contains('unavailable')",
+        "!!document.querySelector('#detachedView > .detached-unavailable')",
         "without its copy, the tab to say the text is gone",
         Duration::from_secs(20),
         OWN,
     );
-    let said = eval(&own, "document.getElementById('doc').textContent")
+    let said = eval(&own, "document.getElementById('detachedView').textContent")
         .as_str()
         .unwrap_or("")
         .to_string();
@@ -819,7 +826,7 @@ fn mdrev_follows_the_reader_to_another_document_into_its_tab() {
     let own = opened_tab(&browser);
     until(
         &own,
-        "!!document.querySelector('#doc.mdrev-host h1')",
+        "!!document.querySelector('#detachedView > .detached-doc.mdrev-host h1')",
         "the other guide in a tab of its own",
         Duration::from_secs(30),
         OWN,
@@ -952,7 +959,7 @@ fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
     let own = opened_tab(&browser);
     until(
         &own,
-        "!!document.querySelector('#doc.mdrev-host h1')",
+        "!!document.querySelector('#detachedView > .detached-doc.mdrev-host h1')",
         "the guide in a tab of its own",
         Duration::from_secs(30),
         OWN,
@@ -963,14 +970,14 @@ fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
     // Linux runner, where the guest had not asked by the deadline.
     until(
         &own,
-        "(document.getElementById('doc') || {dataset: {}}).dataset.contract === '/api/mdrev-review'",
+        "(document.querySelector('#detachedView > .detached-doc') || {dataset: {}}).dataset.contract === '/api/mdrev-review'",
         "the detached tab mounted on the review prefix",
         Duration::from_secs(20),
-        "JSON.stringify((document.getElementById('doc') || {dataset: {}}).dataset)",
+        "JSON.stringify((document.querySelector('#detachedView > .detached-doc') || {dataset: {}}).dataset)",
     );
     let paired_as = eval(
         &own,
-        "(async function(){ var d = document.getElementById('doc').dataset; var q = 'root=' + encodeURIComponent(d.root) + '&path=' + encodeURIComponent(d.path) + '&cap=' + encodeURIComponent(d.cap); var r = await fetch(d.contract + '/review?' + q); var j = await r.json(); return r.status + ' ' + (j.paired && j.paired.email) + (j.error ? ' — ' + j.error : ''); })()",
+        "(async function(){ var d = document.querySelector('#detachedView > .detached-doc').dataset; var q = 'root=' + encodeURIComponent(d.root) + '&path=' + encodeURIComponent(d.path) + '&cap=' + encodeURIComponent(d.cap); var r = await fetch(d.contract + '/review?' + q); var j = await r.json(); return r.status + ' ' + (j.paired && j.paired.email) + (j.error ? ' — ' + j.error : ''); })()",
     );
     assert_eq!(
         paired_as.as_str().unwrap_or(""),
@@ -980,10 +987,13 @@ fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
 
     // mdrev's definition of a host, on the review prefix.
     let fact = |k: &str| {
-        eval(&own, &format!("document.getElementById('doc').dataset.{k}"))
-            .as_str()
-            .unwrap_or("")
-            .to_string()
+        eval(
+            &own,
+            &format!("document.querySelector('#detachedView > .detached-doc').dataset.{k}"),
+        )
+        .as_str()
+        .unwrap_or("")
+        .to_string()
     };
     let (root, path, cap) = (fact("root"), fact("path"), fact("cap"));
     let token = m.token().expect("a paired monitor has a token");
@@ -2154,7 +2164,7 @@ fn the_detached_tab_reads_subscribes_and_notifies_through_draft_8() {
     let own = opened_tab(&browser);
     until(
         &own,
-        "!!document.querySelector('#doc.mdrev-host h1')",
+        "!!document.querySelector('#detachedView > .detached-doc.mdrev-host h1')",
         "the guide in a tab of its own",
         Duration::from_secs(30),
         OWN,
@@ -2169,7 +2179,7 @@ fn the_detached_tab_reads_subscribes_and_notifies_through_draft_8() {
     own.reload(false, None).unwrap();
     until(
         &own,
-        "!!document.querySelector('#doc.mdrev-host h1') && navigator.language === 'en-US'",
+        "!!document.querySelector('#detachedView > .detached-doc.mdrev-host h1') && navigator.language === 'en-US'",
         "the tab again, in English",
         Duration::from_secs(30),
         OWN,

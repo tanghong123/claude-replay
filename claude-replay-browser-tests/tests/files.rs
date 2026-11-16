@@ -1029,8 +1029,8 @@ fn an_image_opens_in_a_tab_of_its_own_from_the_pane() {
         "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
     );
     let opened = |want: &str| harness::opened_tab(&browser, want, Duration::from_secs(20));
-    let whole = "(function(){ var s = document.getElementById('stage'); var i = s && s.querySelector('img'); return !!i && !s.classList.contains('unavailable') && i.complete && i.naturalWidth === 1200 && i.getBoundingClientRect().width > 100; })()";
-    let what = "(function(){ var s = document.getElementById('stage'); return location.href + ' | ' + (s ? s.className + ' | ' + s.innerText.slice(0, 200) + ' | ' + ((s.querySelector('img') || {}).naturalWidth) : 'no stage'); })()";
+    let whole = "(function(){ var s = document.querySelector('#detachedView > .detached-stage'); var i = s && s.querySelector('img'); return !!i && !s.classList.contains('unavailable') && i.complete && i.naturalWidth === 1200 && i.getBoundingClientRect().width > 100; })()";
+    let what = "(function(){ var s = document.querySelector('#detachedView > .detached-stage'); return location.href + ' | ' + (s ? s.className + ' | ' + s.innerText.slice(0, 200) + ' | ' + ((s.querySelector('img') || {}).naturalWidth) : 'no stage: ' + (document.getElementById('detachedView') || {}).innerText); })()";
 
     // The pane: a file the session read.
     click_path(&tab, &repo, "big.png");

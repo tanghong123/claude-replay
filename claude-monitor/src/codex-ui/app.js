@@ -609,6 +609,10 @@ viewHandle = mountSessionView(viewRoot.element(), {
   grid: app,
   keyboard: "page",
   write: { on: () => controlState.write, confirm: confirmWrite },
+  // A tab of its own (#s433): the monitor's own pages, one page at three addresses that say what it
+  // shows (`/detached?session=…` for the transcript's ↗; `/markdown?…` and `/image?…` for the pane's,
+  // as before it).
+  detachTo: ({ href }) => href,
   selectedId: () => listHandle.selected(),
   sessionRow: id => listHandle.row(id),
   sessionWorkers: id => listHandle.workers(id),

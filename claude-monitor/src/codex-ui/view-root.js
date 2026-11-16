@@ -19,6 +19,9 @@ const doc = () => (typeof document === "undefined" ? null : document);
 const rootElement = () => doc()?.documentElement;
 /** The view's own element (`#sessionView`), once the page holds one. */
 const viewElement = () => doc()?.getElementById("sessionView") ?? null;
+/** A detached tab's element (`#detachedView`, #s433), which carries the theme of a tab that shows a
+ *  document or an image, with no view in it. */
+const detachedElement = () => doc()?.getElementById("detachedView") ?? null;
 
 /** The session view's root and its lookups. */
 export const viewRoot = Object.freeze({
@@ -59,10 +62,11 @@ export const viewRoot = Object.freeze({
     return { left: 0, top: 0, width: root?.clientWidth ?? 0, height: root?.clientHeight ?? 0 };
   },
   /** "dark" or "light": the theme the view draws in, carried by the view's own element, whose
-   *  stylesheet reads it there (stage 5b); a page with no view (mdrev's tab) carries it on its root. */
-  theme: () => ((viewElement() || rootElement())?.dataset.theme === "dark" ? "dark" : "light"),
+   *  stylesheet reads it there (stage 5b); a detached tab with no view (a document's, #s433) carries
+   *  it on its own element, and a page with neither on its root. */
+  theme: () => ((viewElement() || detachedElement() || rootElement())?.dataset.theme === "dark" ? "dark" : "light"),
   /** The element whose `data-theme` the view follows: what to watch for a theme change. */
-  themeElement: () => viewElement() || rootElement(),
+  themeElement: () => viewElement() || detachedElement() || rootElement(),
 });
 
 /** The app around the view: its own chrome, which stays in the page. */

@@ -18,6 +18,7 @@ const ROUTES: &[&str] = &[
     "__reveal",
     "search",
     "turn-index",
+    "detached",
     "markdown",
     "image",
     "mdrev",

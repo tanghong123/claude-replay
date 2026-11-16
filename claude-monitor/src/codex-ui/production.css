@@ -1291,6 +1291,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    document mounted. `iconbtn` sets `display:grid`, which would outrank the `hidden` attribute. */
 .preview-head .preview-newtab{width:32px;height:32px;flex:none;font-size:15px;line-height:1}
 .preview-head .preview-newtab[hidden]{display:none}
+/* #s433 the session's transcript in a tab of its own, beside the right pane's control, only where the
+   host says where its tabs open (the view's `detachTo`) and while a session is open. */
+.workspace>.topbar .session-newtab{font-size:15px;line-height:1}
+.workspace>.topbar .session-newtab[hidden]{display:none}
 /* #272 every file view offers the file manager beside showing or downloading: one control in the
    pane's head for whatever the pane shows, and a prompt card's own reveal beside its action. */
 .preview-head .preview-reveal{width:32px;height:32px;flex:none}
@@ -1654,9 +1658,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      label into a column a word wide. */
   #sessionView .input-answer{flex-direction:column;align-items:flex-start;gap:2px;width:100%}
   #sessionView .input-answer span{overflow:visible;overflow-wrap:break-word}
-  /* #335: the pane's ↗ opens a page with no way back on a phone. (A reveal is not a question of
-     width since #s29 — the shells offer it to a reader at this machine and nobody else.) */
-  #sessionView .preview-newtab{display:none!important}
+  /* #335: the pane's ↗ opens a page with no way back on a phone, and so does the transcript's (#s433).
+     (A reveal is not a question of width since #s29 — the shells offer it to a reader at this
+     machine and nobody else.) */
+  #sessionView .preview-newtab,#sessionView .session-newtab{display:none!important}
   #sessionView .preview-tab-step{width:40px;height:44px}
   /* #s30: the head's file controls are a finger's target on a phone too. */
   #sessionView .preview-head .preview-print,#sessionView .preview-head .preview-download,#sessionView .preview-head .preview-reveal{width:40px;height:44px}
