@@ -1334,6 +1334,16 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    in the sidebar row too. */
 .session-heading>.crumb{min-width:0;flex-shrink:8;overflow:hidden;text-overflow:ellipsis}
 .session-heading>.status-chip{min-width:0;flex-shrink:4}
+/* #s520: and off the phone the session's name keeps at least its first word (`--title-word`, its
+   width in the title's font with the ellipsis a longer title draws, measured by session-view.js; at
+   most 160px). The heading holds that and what else it draws at its least (the crumb's two gaps and
+   dividers, the chip's padding: 60px; 21px where the glyphs' bar leaves only the chip's dot), and the
+   search box gives way to it, down to 150px at rest, before the bar runs out of room. */
+#sessionView:not(.pl-phone) .workspace>.topbar>.session-heading>#sessionTitle{min-width:calc(min(var(--title-word,0px),160px) + 10px)}
+#sessionView:not(.pl-phone) .workspace>.topbar>.session-heading{min-width:calc(min(var(--title-word,0px),160px) + 65px)}
+#sessionView.pl-outline-bar .workspace>.topbar>.session-heading{min-width:calc(min(var(--title-word,0px),160px) + 30px)}
+#sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster{flex-shrink:1;min-width:150px}
+#sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster>.header-searchbox{max-width:100%}
 @media(min-width:1181px) and (min-height:501px),(min-width:1181px) and (pointer:fine){.header-searchbox:focus-within,.header-searchbox:has(input:not(:placeholder-shown)),.header-searchbox:has(.search-chips.has-chips){width:min(460px,36vw)}}
 /* #303 widened this: the box may hold chips now (`scope:o`, `tool:Read`), and at 1100px a 400px box
    left the text 34px — "needle" needs 43. */
@@ -1479,6 +1489,37 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 #sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-jumps{display:none}
 #sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 6px 6px}
 #sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-body .navigator-list{overflow:visible}
+/* #s520: the bar the glyphs join is the session's column, 480–547px (the order puts them there only
+   while they have no column of their own), and it carries nine controls beside the title. Laid out
+   at their widest (the search box 180 or 286px, chosen by the window's bands) they squeezed the title
+   to a letter and pushed Info and the pane's control past the window or under the open pane. There
+   the bar gives way in this order, by the arrangement alone: the crumb and its dividers go (the list
+   and Info say both), the status chip is its dot (its colour is the state; the word is in the list
+   and Info), the gaps tighten, fold-all moves into Aa's menu, and the search box rests as its
+   glyph. A click, a focus or the search key opens it, for typing, in the room the title and the
+   outline's glyphs give up while it is in use, and it folds back once the search has nothing focused
+   and no menu open (a held query tints the glyph). So every control keeps its place inside the
+   column, and the title its first word. */
+#sessionView.pl-outline-bar .workspace>.topbar{column-gap:4px;padding-right:10px}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster{min-width:0}
+/* The fold-all control is the one the bar can spare: it moves into Aa's menu there (the phone has
+   neither), so a 480px column under the drawer's handle still holds the title's first word. A host
+   that switched Aa off keeps it in the bar, with Aa's room. */
+#sessionView .reading-options .reading-fold-all{display:none}
+#sessionView.pl-outline-bar .reading-options .reading-fold-all{display:grid}
+#sessionView.pl-outline-bar .workspace>.topbar:has(>.reading-cluster)>#sessionFoldAll{display:none}
+#sessionView.pl-outline-bar .workspace>.topbar>.session-heading{column-gap:6px}
+#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>:is(.header-divider,.crumb){display:none}
+#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>.status-chip{flex:none;gap:0;padding:0 4px;border-color:transparent;background:transparent;font-size:0}
+#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>.status-chip .state-dot{margin:0!important}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(:has(>.navigator-options.open))>.header-searchbox{width:34px;height:34px;padding:0;gap:0;justify-content:center;border-color:transparent;background:transparent;box-shadow:none;cursor:pointer}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(:has(>.navigator-options.open))>.header-searchbox>:is(.find-count,.find-nav,.search-clear,.header-filter,.find-whole){display:none}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(:has(>.navigator-options.open))>.header-searchbox>.search-field{flex:0 0 0;width:0;overflow:hidden}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(:has(>.navigator-options.open))>.header-searchbox:hover{background:var(--hover)}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(:has(>.navigator-options.open))>.header-searchbox.has-query{background:var(--selected);color:var(--blue)}
+#sessionView.pl-outline-bar .workspace>.topbar:is(:has(>.header-search-cluster:focus-within),:has(>.header-search-cluster>.navigator-options.open))>:is(.session-heading,.top-spacer,.phone-pane,#navigatorRailExpand){display:none}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:is(:focus-within,:has(>.navigator-options.open)){flex:1 1 auto;min-width:0}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:is(:focus-within,:has(>.navigator-options.open))>.header-searchbox{width:100%;max-width:none}
 @media(max-width:760px) and (hover:hover){.drawer-handle:hover{background:var(--hover)}}
 /* The list's rows are touch targets on a touch screen, wherever the list is drawn (#s431 stage 2,
    design/pane-layout.md): a finger needs 44px in an iPad's sidebar as in a phone's drawer, and a

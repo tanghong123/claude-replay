@@ -735,7 +735,26 @@ function renderParent(meta) {
 /** The top bar for the selected session, and its title to the host (`onTitle`, when it changed). */
 function renderHeader() {
   paintHeader();
+  markTitleWord();
   sayTitle(sessionTitle.textContent);
+}
+// #s520: off the phone the title keeps at least its first word, whatever else the top bar holds: the
+// bar's rules give it that much room (`--title-word` on the heading, production.css) and let the crumb,
+// the status chip and the search box give way first. Measured with the title's own font on a canvas,
+// so nothing is laid out for it, and again only when the text or the font changed (a host's stylesheet
+// may arrive after the first header). `var`: a header can be drawn during module evaluation.
+var titleRuler = null, titleWordKey = "";
+function markTitleWord() {
+  const heading = sessionTitle.parentElement, text = sessionTitle.textContent.trim();
+  titleRuler ||= document.createElement("canvas").getContext("2d");
+  if (!heading || !titleRuler) return;
+  const font = getComputedStyle(sessionTitle).font;
+  if (`${font}\n${text}` === titleWordKey) return;
+  titleWordKey = `${font}\n${text}`;
+  const word = text.split(/\s+/)[0] || "";
+  titleRuler.font = font;
+  const width = word ? titleRuler.measureText(word).width + (text.length > word.length ? titleRuler.measureText("…").width : 0) : 0;
+  heading.style.setProperty("--title-word", `${Math.ceil(width) + 1}px`);
 }
 function paintHeader() {
   renderArtifacts();
@@ -2484,8 +2503,15 @@ function setPhoneSearch(open) {
   if (open && phoneSearch.matches) byId("transcriptSearchInput").focus();
 }
 searchBox.addEventListener("click", event => {
+  // #s520: off the phone a click anywhere in the box but its buttons is a click for its field, as a
+  // native search field takes it; where the box rests as its glyph (the bar the outline's glyphs
+  // join) that click is what opens it.
+  if (!phoneSearch.matches) {
+    if (!event.target.closest("button, input")) byId("transcriptSearchInput").focus();
+    return;
+  }
   // #333: with a query the closed box keeps its arrows, which step through the matches in place.
-  if (!phoneSearch.matches || searchBox.classList.contains("phone-open") || event.target.closest("#filterTranscriptBtn, .find-nav")) return;
+  if (searchBox.classList.contains("phone-open") || event.target.closest("#filterTranscriptBtn, .find-nav")) return;
   setPhoneSearch(true);
 });
 // A tap outside dismisses the TOP layer only (#s49, the owner: "after opening and closing the filter
@@ -2934,7 +2960,11 @@ readingSection.innerHTML = `<div class="scope-menu-head"><strong>Reading</strong
 <div class="reading-row reading-wide"><span>Wide transcript</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wide" aria-label="Wide transcript" aria-checked="false"><span></span></button></div>
 <div class="reading-row reading-wrap"><span>Wrap long lines</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wrap" aria-label="Wrap long lines — the baseline every code block starts from" aria-checked="false"><span></span></button></div>
 <div class="reading-row"><span>User turns as raw text</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="rawUser" aria-label="Show user turns as raw text — exactly as typed, whitespace intact" aria-checked="false"><span></span></button></div>
+<div class="reading-row reading-fold-all"><span>Agent processes</span><button class="scope-menu-action" type="button" data-fold-all title="Collapse every agent process; with none open, open them all">Collapse all</button></div>
 <div class="reading-row"><span>Viewport history</span><button class="scope-menu-action" type="button" data-history-save title="Save the last hour of what you did and what the page did — kinds, heights and timings, no content">Save</button></div>`;
+// #s520: where the outline's glyphs share the top bar, the bar's fold-all control moves into this
+// menu (production.css shows the row only there, and only while the menu is drawn); the row presses it.
+readingSection.querySelector("[data-fold-all]").addEventListener("click", () => byId("sessionFoldAll").click());
 // A host may switch the viewport history's Save off (stage 6): it is this repository's bug report.
 if (!shows("history")) readingSection.querySelector("[data-history-save]").closest(".reading-row").remove();
 // Production-only chrome, built here so the extracted demo shell stays byte-identical (the

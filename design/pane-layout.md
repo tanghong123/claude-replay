@@ -440,6 +440,16 @@ screen up to 760px):
   on #s462: Windows NavigationView's minimal mode, JetBrains' undocked tool windows, VS Code's
   title-bar toggles). A glyph in the column opens the outline at its pane where the outline fits, as
   today, and its list as the same panel where the outline does not.
+  That bar is the session's column alone, 480–547px, and it carries nine controls beside the title
+  (#s520: laid out at their widest, the search box 180 or 286px by the window's bands, the title
+  shrank to a letter and Info and the pane's control went past the window or under the open pane).
+  There, read from the arrangement (`pl-outline-bar`), the crumb and its dividers go, the status chip
+  is its dot, the gaps tighten, the fold-all control moves into Aa's menu and the search box
+  rests as its glyph; a click, a focus or the search
+  key opens it for typing in the room the title and the glyphs give up while it is in use, and it
+  folds back when nothing in the search has focus and its filter is shut. At every desktop width the
+  title keeps at least its first word (at most 160px), the crumb, the chip and the resting search
+  box (down to 150px) giving way first.
 
 **Who decides what.** The view decides its own parts from its own box (#s461): whether it is the phone
 reader, the pane, the glyphs, the outline, and how the slack splits between the session and the pane
