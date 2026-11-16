@@ -22,6 +22,9 @@ use crate::ui;
 
 /// The release the kit is cut from: the workspace's version, which is the monitor's.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The mdrev release this kit's server pins, which a host passes as its backend handle's
+/// `mdrevVersion` (the guide's "pins mdrev").
+pub const MDREV: &str = mdrev::VERSION;
 
 const INDEX: &str = include_str!("../kit/index.js");
 const TYPES: &str = include_str!("../kit/index.d.ts");
@@ -30,8 +33,8 @@ const CONFORM: &str = include_str!("../kit/conform.mjs");
 const CONTRACT: &str = include_str!("../../docs/backend-contract.md");
 const LICENSE: &str = include_str!("../../LICENSE");
 
-/// The stylesheets the kit carries beside the modules: the view's and the list's.
-const STYLESHEETS: [&str; 2] = ["session-view.css", "session-list.css"];
+/// The stylesheets the kit carries beside the modules: the view's, the list's and a detached tab's.
+const STYLESHEETS: [&str; 3] = ["session-view.css", "session-list.css", "detached.css"];
 
 /// The kit's directory, and its archive's name less `.tar.gz`.
 pub fn name() -> String {
@@ -317,6 +320,7 @@ mod tests {
         for name in [
             "mountSessionView",
             "mountSessionList",
+            "mountDetached",
             "backendHandle",
             "useBackend",
             "persist",
@@ -434,6 +438,18 @@ mod tests {
                 .iter()
                 .all(|(_, required)| !required),
             "every option of the list is optional"
+        );
+        // A detached tab (#s433) withholds nothing, and every option is optional.
+        let detached = include_str!("codex-ui/detached.js");
+        let declared = members(TYPES, "DetachedOptions");
+        assert!(declared.iter().all(|(_, required)| !required));
+        let declared: BTreeSet<String> = declared.into_iter().map(|(n, _)| n).collect();
+        let taken: BTreeSet<String> = frozen_list(detached, "DETACHED_OPTIONS")
+            .into_iter()
+            .collect();
+        assert_eq!(
+            declared, taken,
+            "DetachedOptions declares the tab's options"
         );
     }
 
