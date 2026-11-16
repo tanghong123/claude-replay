@@ -1355,7 +1355,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    which Safari and Firefox on a Mac bring at a press on the box's own buttons). There the
    count and the steps fold away until the box is in use again: at 180px they pushed the filter
    button out past the box's edge, and a wider resting box took the same pixels from the title. */
-@media(min-width:701px) and (max-width:900px) and (min-height:501px),(min-width:701px) and (max-width:900px) and (pointer:fine){:is(.header-searchbox:focus-within,.search-held>.header-searchbox){width:min(392px,52vw)}.topbar:has(:is(.header-searchbox:focus-within,.search-held>.header-searchbox))>.session-heading{display:none}.header-search-cluster:not(.search-held)>.header-searchbox:not(:focus-within) .search-field~:is(.find-count,.find-nav,.search-clear){display:none}}
+@media(min-width:701px) and (max-width:900px) and (min-height:501px),(min-width:701px) and (max-width:900px) and (pointer:fine){.header-searchbox:focus-within{width:min(392px,52vw)}.topbar:has(.header-searchbox:focus-within)>.session-heading{display:none}.header-searchbox:not(:focus-within) .search-field~:is(.find-count,.find-nav,.search-clear){display:none}#sessionView:not(.pl-phone) .search-held>.header-searchbox{width:min(392px,52vw)}#sessionView:not(.pl-phone) .topbar:has(>.search-held)>.session-heading{display:none}#sessionView:not(.pl-phone) .search-held>.header-searchbox:has(input:not(:placeholder-shown)) .search-field~.find-count{display:block}#sessionView:not(.pl-phone) .search-held>.header-searchbox:has(input:not(:placeholder-shown)) .search-field~.find-nav{display:grid}#sessionView:not(.pl-phone) .search-held>.header-searchbox.has-query .search-field~.search-clear{display:grid}}
 
 
 
@@ -1385,7 +1385,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .search-chips.has-chips{display:flex}
 /* Below 900px a focused box with chips has no room for its count as well: 360px less the chips, the
    steps and the filter left the text 7px. The count steps aside while the reader types there. */
-@media(min-width:701px) and (max-width:900px) and (min-height:501px),(min-width:701px) and (max-width:900px) and (pointer:fine){:is(.header-searchbox:focus-within,.search-held>.header-searchbox):has(.search-chips.has-chips) .find-count{display:none}}
+@media(min-width:701px) and (max-width:900px) and (min-height:501px),(min-width:701px) and (max-width:900px) and (pointer:fine){.header-searchbox:focus-within:has(.search-chips.has-chips) .find-count{display:none}#sessionView:not(.pl-phone) .search-held>.header-searchbox:has(.search-chips.has-chips) .search-field~.find-count{display:none}}
 .search-chip{display:inline-flex;align-items:center;min-width:0;height:22px;padding:0 2px 0 7px;border-radius:6px;background:color-mix(in srgb,var(--primary) 10%,var(--panel));color:var(--ink);font:10.5px/1 var(--mono);white-space:nowrap}
 .search-chip-key{color:var(--primary);flex:none}
 .search-chip-value{min-width:0;overflow:hidden;text-overflow:ellipsis;margin-left:2px}

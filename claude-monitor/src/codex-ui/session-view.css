@@ -1937,12 +1937,18 @@
 #sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster>.header-searchbox{max-width:100%}
 :where(#sessionView:is(.pl-min-w-1181.pl-min-h-501,.pl-min-w-1181.pl-fine)) .header-searchbox:focus-within,:where(#sessionView:is(.pl-min-w-1181.pl-min-h-501,.pl-min-w-1181.pl-fine)) .header-searchbox:has(input:not(:placeholder-shown)),:where(#sessionView:is(.pl-min-w-1181.pl-min-h-501,.pl-min-w-1181.pl-fine)) .header-searchbox:has(.search-chips.has-chips){width:min(460px,calc(36 * var(--pl-b) / 100))}
 :where(#sessionView:is(.pl-min-w-901.pl-max-w-1180.pl-min-h-501,.pl-min-w-901.pl-max-w-1180.pl-fine)) .header-searchbox:focus-within,:where(#sessionView:is(.pl-min-w-901.pl-max-w-1180.pl-min-h-501,.pl-min-w-901.pl-max-w-1180.pl-fine)) .header-searchbox:has(input:not(:placeholder-shown)),:where(#sessionView:is(.pl-min-w-901.pl-max-w-1180.pl-min-h-501,.pl-min-w-901.pl-max-w-1180.pl-fine)) .header-searchbox:has(.search-chips.has-chips){width:min(460px,calc(42 * var(--pl-b) / 100))}
-:where(#sessionView:is(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine)) :is(.header-searchbox:focus-within,.search-held>.header-searchbox){width:min(392px,calc(52 * var(--pl-b) / 100))}
-:where(#sessionView:is(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine)) .topbar:has(:is(.header-searchbox:focus-within,.search-held>.header-searchbox))>.session-heading{display:none}
-:where(#sessionView:is(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine)) .header-search-cluster:not(.search-held)>.header-searchbox:not(:focus-within) .search-field~:is(.find-count,.find-nav,.search-clear){display:none}
+:where(#sessionView:is(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine)) .header-searchbox:focus-within{width:min(392px,calc(52 * var(--pl-b) / 100))}
+:where(#sessionView:is(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine)) .topbar:has(.header-searchbox:focus-within)>.session-heading{display:none}
+:where(#sessionView:is(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine)) .header-searchbox:not(:focus-within) .search-field~:is(.find-count,.find-nav,.search-clear){display:none}
+#sessionView:where(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine):not(.pl-phone) .search-held>.header-searchbox{width:min(392px,calc(52 * var(--pl-b) / 100))}
+#sessionView:where(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine):not(.pl-phone) .topbar:has(>.search-held)>.session-heading{display:none}
+#sessionView:where(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine):not(.pl-phone) .search-held>.header-searchbox:has(input:not(:placeholder-shown)) .search-field~.find-count{display:block}
+#sessionView:where(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine):not(.pl-phone) .search-held>.header-searchbox:has(input:not(:placeholder-shown)) .search-field~.find-nav{display:grid}
+#sessionView:where(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine):not(.pl-phone) .search-held>.header-searchbox.has-query .search-field~.search-clear{display:grid}
 :where(#sessionView) .search-chips{display:none;flex:0 1 auto;min-width:0;max-width:34%;gap:4px;align-items:center;overflow:hidden}
 :where(#sessionView) .search-chips.has-chips{display:flex}
-:where(#sessionView:is(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine)) :is(.header-searchbox:focus-within,.search-held>.header-searchbox):has(.search-chips.has-chips) .find-count{display:none}
+:where(#sessionView:is(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine)) .header-searchbox:focus-within:has(.search-chips.has-chips) .find-count{display:none}
+#sessionView:where(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine):not(.pl-phone) .search-held>.header-searchbox:has(.search-chips.has-chips) .search-field~.find-count{display:none}
 :where(#sessionView) .search-chip{display:inline-flex;align-items:center;min-width:0;height:22px;padding:0 2px 0 7px;border-radius:6px;background:color-mix(in srgb,var(--primary) 10%,var(--panel));color:var(--ink);font:10.5px/1 var(--mono);white-space:nowrap}
 :where(#sessionView) .search-chip-key{color:var(--primary);flex:none}
 :where(#sessionView) .search-chip-value{min-width:0;overflow:hidden;text-overflow:ellipsis;margin-left:2px}
