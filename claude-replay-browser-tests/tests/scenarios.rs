@@ -15513,7 +15513,10 @@ fn app_shell_a_focused_fold_head_keeps_its_focus_through_growth() {
 /// markup has and the new one gets only after it is drawn, must not count, and (2) a queued prompt
 /// picked up moves the next one into its place (#165), which must not be given the focus. Either
 /// way the focus may stay on the body, as before #s504; it must never go to another element.
-fn growth_focus_review_fixture(name: &str) -> Fixture {
+/// `queued` ends the session with two queued prompts, for (2). (1) has none: a queued marker after
+/// the process unit keeps that unit out of the redraw a plain prompt and reply bring (measured, the
+/// unit's old link still connected), and (1) needs the unit drawn again.
+fn growth_focus_review_fixture(name: &str, queued: bool) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
     let mut t = long_session(12, Shape::default());
@@ -15526,8 +15529,10 @@ fn growth_focus_review_fixture(name: &str) -> Fixture {
     );
     t += &read_tool_at("t-504-read", "/tmp/burrows.txt", &now_minus(75));
     t += &tool_result_lines("t-504-read", 4, &now_minus(74));
-    t += &queued_at("queued one: count the skua burrows", &now_minus(70));
-    t += &queued_at("queued two: then the petrel nests", &now_minus(65));
+    if queued {
+        t += &queued_at("queued one: count the skua burrows", &now_minus(70));
+        t += &queued_at("queued two: then the petrel nests", &now_minus(65));
+    }
     let path = stores.claude_session(SID, &t);
     Fixture {
         base,
@@ -15567,7 +15572,7 @@ fn review_grow(tab: &headless_chrome::Tab, fx: &Fixture, prompt: &str, reply: &s
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_focus_restored_after_growth_counts_no_search_mark() {
     let _serial = serial();
-    let fx = growth_focus_review_fixture("growth-focus-marks-app");
+    let fx = growth_focus_review_fixture("growth-focus-marks-app", false);
     let page = open(Surface::AppShell, &fx, 3137);
     let tab = &page.tab;
     jump_to_end(tab, Surface::AppShell);
@@ -15611,7 +15616,7 @@ fn app_shell_a_focus_restored_after_growth_counts_no_search_mark() {
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_focus_restored_after_a_pickup_is_not_the_next_queued_prompt() {
     let _serial = serial();
-    let fx = growth_focus_review_fixture("growth-focus-pickup-app");
+    let fx = growth_focus_review_fixture("growth-focus-pickup-app", true);
     let page = open(Surface::AppShell, &fx, 3138);
     let tab = &page.tab;
     jump_to_end(tab, Surface::AppShell);
