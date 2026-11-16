@@ -1543,10 +1543,11 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // count and client version, never decided here; (2) the key on an assistant record NOT
             // flagged `isApiErrorMessage`, which the page would draw as prose; (3) a record whose
             // text no longer names the cause the key names, where the Failure note should read the
-            // key. (1) MET (#s530, measured 2026-11-16 on aries-black): "network_edge_blocked" on
-            // ONE record, client 2.1.325, a headless one-shot, with no `resendCannotCure`. The
-            // client classes it as blocked on a person (the network or region, a VPN or proxy; no
-            // sign-in changes it), and its text says so; the RENDER question is the owner's, #s534.
+            // key. REVISIT (1) met (#s530, measured 2026-11-16 on aries-black):
+            // "network_edge_blocked" on ONE record, client 2.1.325, a headless one-shot, with no
+            // `resendCannotCure`. The client classes it as blocked on a person (the network or
+            // region, a VPN or proxy; no sign-in changes it), and its text says so; the RENDER
+            // question is the owner's, #s534.
             "apiError",
             // #s360 (client 2.1.318): the boolean `true` on the same synthetic API-error record
             // (`isApiErrorMessage`, model "<synthetic>", zero usage, `apiError` and `error` beside
@@ -1705,8 +1706,8 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // "model" then on a `<synthetic>` record. One since (#s530, aries-black, 2026-11-16):
             // a 2.1.325 API-error record, model `<synthetic>`, carries "model"; `client_reply`
             // passes it over, since it skips an `isApiErrorMessage` record first, so it is still
-            // its Failure note. The client's code names three values: "model" (the
-            // model wrote it), "other" (the client did: this placeholder, an imported conversation
+            // its Failure note. The client's code names three values: "model" (the model wrote
+            // it), "other" (the client did: this placeholder, an imported conversation
             // whose records carry model "claude-export-import", a record with no version or
             // session), "input" (a record a caller handed in, beside `handedOff`). READ, with the
             // model, by `client_reply`: the placeholder folds to a client note
