@@ -5583,8 +5583,11 @@ fn a_host_s_own_transform_on_its_pane_outlives_the_keyboard_ride() {
 /// offset and no transform is ever written. Then the search field takes focus there, iOS's lift is
 /// modelled as the page scrolled 150px more under a keyboard 300px tall: the box moves by the 150px
 /// alone, and as the keyboard goes down the page goes back to where the reader left it, the transform
-/// with it. Red on c723f926: the gesture's offset was snapped to 0, and the lift was read as the whole
-/// offset and ended at the page's top.
+/// with it. Last the host locks its scroll for a modal of its own (`overflow: hidden` on its body) and
+/// the field lets go of focus: the page and the box are left alone. Red on c723f926: the gesture's
+/// offset was snapped to 0, and the lift was read as the whole offset and ended at the page's top; and
+/// on 0642dfac, which read a clipped page as one that cannot scroll, the lock moved the box by the
+/// whole offset and sent the page to its top (#s512's third review).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_touch_host_page_keeps_the_offset_the_reader_scrolled_it_to_beside_a_phone_reader() {
@@ -5677,6 +5680,14 @@ fn a_touch_host_page_keeps_the_offset_the_reader_scrolled_it_to_beside_a_phone_r
     );
     harness::eval(&tab, TWO_FRAMES);
     let ended = read();
+    // The host's scroll lock, the page where the reader left it, and the field letting go of focus.
+    harness::eval(
+        &tab,
+        "(function(){ document.body.style.overflow = 'hidden'; if (document.activeElement) document.activeElement.blur(); return true; })()",
+    );
+    harness::pause("the ride the focus change asks", Duration::from_millis(300));
+    harness::eval(&tab, TWO_FRAMES);
+    let locked = read();
     drop(monitor);
     assert!(
         at >= 200 && scrolled["transforms"] == serde_json::json!([]),
@@ -5692,6 +5703,95 @@ fn a_touch_host_page_keeps_the_offset_the_reader_scrolled_it_to_beside_a_phone_r
         (serde_json::json!(at), serde_json::json!("")),
         "the keyboard down gives the page back to the reader's offset: {ended}"
     );
+    assert!(
+        locked["focused"] == ""
+            && locked["scroll"] == serde_json::json!(at)
+            && locked["transform"] == ""
+            && locked["transforms"] == lifted["transforms"],
+        "a host's scroll lock keeps the page where its reader left it, and its box unmoved: {locked}"
+    );
+}
+
+/// #s512's review (of e28e3a00): the ride reads the page's offset as iOS's lift whatever has focus only
+/// where the page cannot scroll at all, and gives it back to the top, as it did before #s512; a page
+/// that scrolls keeps the offset its reader left it at. The app's own page is the first kind, so its
+/// ride is what it was by construction rather than by assumption. On a phone, upright and sideways,
+/// with a long session open: the app's page has no scroll range, at rest and with the search field
+/// focused; and an offset iOS leaves behind with nothing focused (shadowed, 120px, as a field that
+/// blurred with no ride would leave it) is given back to the top, the app moved over it meanwhile, and
+/// the transform goes with it. Red on e28e3a00, which took that offset for the page's rest and kept it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_app_page_cannot_scroll_so_its_keyboard_ride_rests_at_its_top() {
+    let _serial = serial();
+    let base = base("app-page-range");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000512";
+    stores.claude_session(sid, &harness::long_session(30, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3138, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let facts = "JSON.stringify({ range: document.documentElement.scrollHeight - document.documentElement.clientHeight, phone: !!document.getElementById('sessionView') && document.getElementById('sessionView').classList.contains('pl-phone'), w: innerWidth, h: innerHeight, focused: (document.activeElement || {}).id || '' })";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default()
+    };
+    let mut seen = Vec::new();
+    for (width, height) in [(390, 844), (844, 390)] {
+        harness::phone(&tab, width, height);
+        tab.navigate_to(&monitor.url(&format!("?ui=app&session={sid}")))
+            .unwrap();
+        tab.wait_until_navigated().unwrap();
+        harness::until(
+            &tab,
+            "document.querySelectorAll('.virtual-window .turn.user').length >= 3",
+            "the app shell to draw the session's turns",
+            Duration::from_secs(20),
+            facts,
+        );
+        harness::eval(&tab, TWO_FRAMES);
+        let rest = read();
+        // An offset iOS left behind, nothing focused: the ride gives the page back to its top.
+        let left: serde_json::Value = serde_json::from_str(
+            harness::eval(
+                &tab,
+                "(async function(){ var app = document.getElementById('app'), put = window.scrollTo, asked = []; window.scrollTo = function (x, y) { asked.push(typeof x === 'object' && x ? x.top : y); return put.apply(this, arguments); }; var frames = function () { return new Promise(function (r) { requestAnimationFrame(function () { requestAnimationFrame(r); }); }); }; Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return 120; } }); visualViewport.dispatchEvent(new Event('scroll')); await frames(); var during = app.style.transform; delete visualViewport.pageTop; visualViewport.dispatchEvent(new Event('scroll')); await frames(); window.scrollTo = put; return JSON.stringify({ asked: asked, during: during, after: app.style.transform, focused: (document.activeElement || {}).id || '' }); })()",
+            )
+            .as_str()
+            .unwrap_or("{}"),
+        )
+        .unwrap_or_default();
+        // The search open and its field focused: where a reply or a search stands before iOS lifts.
+        harness::eval(
+            &tab,
+            "(function(){ var b = document.querySelector('#sessionView .header-searchbox'); if (b) b.click(); return !!b; })()",
+        );
+        harness::until(
+            &tab,
+            "(document.activeElement || {}).id === 'transcriptSearchInput'",
+            "the search field to take focus",
+            Duration::from_secs(5),
+            facts,
+        );
+        harness::eval(&tab, TWO_FRAMES);
+        seen.push((width, height, rest, read(), left));
+    }
+    drop(monitor);
+    let flat = |v: &serde_json::Value| v["range"].as_f64().is_some_and(|r| r < 1.0);
+    for (width, height, rest, typing, left) in &seen {
+        assert!(
+            rest["phone"] == true && flat(rest) && flat(typing),
+            "a phone's app page has no scroll range, at rest and with a field focused ({width}x{height}): {rest} {typing}"
+        );
+        assert!(
+            left["focused"] == ""
+                && left["asked"].as_array().is_some_and(|a| a.iter().any(|y| y.as_f64() == Some(0.0)))
+                && left["during"] == "translateY(120px)"
+                && left["after"] == "",
+            "an offset iOS left behind with nothing focused is given back to the top, the app moved over it \
+             until then, and nothing is left on it after ({width}x{height}): {left}"
+        );
+    }
 }
 
 /// #s431 stage 4 (the second delta review of b4ad87a9): the gaps a decision during the keyboard ride
