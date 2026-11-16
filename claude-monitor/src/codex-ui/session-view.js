@@ -3511,10 +3511,24 @@ taskScrim.hidden = true;
 // while the view contains its layout (a host's pane, beside the app's list), its box holds them.
 element.append(taskScrim, taskPopover);
 let taskPopoverOpener = null;
-function closeTaskPopover(restoreFocus = true) {
+// A tap on the scrim is spent closing the card (#s510), as a tap on the pane's dim is (#s55): the
+// scrim stays, clear, catching until that tap's click has passed, or the click lands on whatever lay
+// beneath once it had gone — a wide phone's sidebar handle, which hid the column as the card closed.
+// The click follows the LIFT, so the wait is counted from there; a gesture the browser took over
+// gets no click and lets go at once; and a lift that never comes still lets go.
+let scrimPointer = null, scrimTimer = 0;
+const scrimLetGo = after => {
+  clearTimeout(scrimTimer);
+  scrimTimer = setTimeout(() => { taskScrim.classList.remove("catching"); if (taskPopover.hidden) taskScrim.hidden = true; }, after);
+};
+function closeTaskPopover(restoreFocus = true, catching = null) {
   if (taskPopover.hidden) return;
   taskPopover.hidden = true;
-  taskScrim.hidden = true;
+  if (catching) {
+    taskScrim.classList.add("catching");
+    scrimPointer = catching.pointerId;
+    scrimLetGo(4000);
+  } else taskScrim.hidden = true;
   taskPopover.innerHTML = "";
   if (restoreFocus && taskPopoverOpener?.isConnected) taskPopoverOpener.focus();
   taskPopoverOpener = null;
@@ -3547,6 +3561,8 @@ function openTaskPopover(index, opener) {
     <div class="task-popover-actions">${jump}</div>`;
   taskPopoverOpener = opener;
   taskPopover.hidden = false;
+  clearTimeout(scrimTimer); scrimPointer = null;
+  taskScrim.classList.remove("catching");
   taskScrim.hidden = false;
   // Placed in the box its layers are drawn in (#s431 stage 4): the view's own while it contains its
   // layout, else the window.
@@ -3564,7 +3580,21 @@ taskPopover.addEventListener("click", event => {
   if (find) { const index = Number(find.dataset.taskFind), task = (recordState.meta?.tasks || [])[index]; closeTaskPopover(false); if (task) findTaskRecord(task, String(task.id ?? index)); }
 });
 document.addEventListener("keydown", event => { if (event.key === "Escape" && !taskPopover.hidden) { event.stopPropagation(); closeTaskPopover(); } }, { capture: true, signal });
-document.addEventListener("pointerdown", event => { if (!taskPopover.hidden && !taskPopover.contains(event.target) && !event.target.closest("[data-task-open]")) closeTaskPopover(false); }, { signal });
+document.addEventListener("pointerdown", event => { if (!taskPopover.hidden && !taskPopover.contains(event.target) && !event.target.closest("[data-task-open]")) closeTaskPopover(false, event.target === taskScrim ? event : null); }, { signal });
+const scrimLifted = event => {
+  if (scrimPointer == null || event.pointerId !== scrimPointer) return;
+  scrimPointer = null;
+  scrimLetGo(event.type === "pointercancel" ? 0 : 1000);
+};
+document.addEventListener("pointerup", scrimLifted, { capture: true, signal });
+document.addEventListener("pointercancel", scrimLifted, { capture: true, signal });
+taskScrim.addEventListener("click", event => {
+  event.preventDefault();
+  if (!taskScrim.classList.contains("catching")) return;
+  clearTimeout(scrimTimer);
+  taskScrim.classList.remove("catching");
+  if (taskPopover.hidden) taskScrim.hidden = true;
+}, { signal });
 // The tasks pane centered on the running tasks (#57), or on the done/pending boundary: the
 // target row is the pure function's, the scroll is the PANE's own scroller — never the
 // transcript's. Runtime chrome on the card's head, so the generated shell stays exact.
