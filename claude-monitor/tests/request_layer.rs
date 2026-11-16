@@ -55,6 +55,11 @@ const NAMED: &[(&str, &str, &str)] = &[
         "the detached tab's route prefix, joined through backend().mdrevUrl",
     ),
     (
+        "codex-ui/merged-source.js",
+        "const SESSIONS = \"/api/sessions\", LAYOUT = \"/api/layout\", IGNORE = \"/api/ignore\";",
+        "the routes the merged source answers in the page, and asks each machine's handle for by name",
+    ),
+    (
         "codex-ui/native-menu.js",
         "fetcher(\"/api/codex/status\"",
         "a path for the fetcher its callers hand in, backend().fetch",

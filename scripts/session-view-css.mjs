@@ -288,8 +288,9 @@ export const LIST_CHROME = Object.freeze([
   ".arrange-strip", ".arrange-strip-box", ".arrange-strip-close", ".arrange-strip-text",
   ".arranged-empty", ".arranged-group", ".arranged-head", ".arranged-label", ".arranged-rest", ".arranged-view",
   ".no-results",
+  ".machine-stale",
   ".session-age", ".session-end", ".session-state", ".sessions-arranged", ".sessions-flat",
-  ".tree", ".tree-action", ".tree-agent", ".tree-context", ".tree-forks", ".tree-main", ".tree-project", ".tree-project-more", ".tree-row", ".tree-side", ".tree-title",
+  ".tree", ".tree-action", ".tree-agent", ".tree-context", ".tree-forks", ".tree-machine", ".tree-machine-head", ".tree-machine-head-failed", ".tree-machine-head-stale", ".tree-machine-stale", ".tree-machines", ".tree-main", ".tree-project", ".tree-project-more", ".tree-row", ".tree-side", ".tree-title",
 ]);
 
 /** The names of the list's body that the page also shows OUTSIDE `#sessionList`: the rows the rail's
@@ -299,9 +300,9 @@ export const LIST_CHROME = Object.freeze([
  *  app's copy styles them where they are shown, the list's in its element. The contract reads the
  *  flyout's functions and holds this list to what they draw. */
 export const LIST_SHOWN_OUTSIDE = Object.freeze([
-  ".agent-monogram", ".no-results",
+  ".agent-monogram", ".machine-stale", ".no-results",
   ".session-age", ".session-end", ".session-state",
-  ".tree-action", ".tree-agent", ".tree-context", ".tree-forks", ".tree-main", ".tree-project", ".tree-project-more", ".tree-row", ".tree-side", ".tree-title",
+  ".tree-action", ".tree-agent", ".tree-context", ".tree-forks", ".tree-machine", ".tree-machine-stale", ".tree-main", ".tree-project", ".tree-project-more", ".tree-row", ".tree-side", ".tree-title",
 ]);
 
 /** What the list draws that the page shows outside `#sessionList` (#s430 stage 3): its head controls

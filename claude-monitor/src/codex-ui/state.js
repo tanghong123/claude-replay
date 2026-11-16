@@ -16,6 +16,9 @@ const json = (key, fallback) => {
  *  workers through `selectedId`, `sessionRow` and `sessionWorkers`. */
 export const indexState = {
   groups: [], rows: new Map(), selected: "",
+  // #s541: a merged source's machines, as its last answer said each answered (`{ machine, label,
+  // state, since, error }`); empty for one monitor.
+  machines: [],
   collapsed: new Set(json("am-demo-collapsed", [])), ignoredCount: 0, showHidden: false,
   // The session filter (#202): which of the three buckets — recent (active in the last 6 hours) /
   // blocked / idle — the tree shows. The owner's default is Active recently and Blocked (a new

@@ -1,7 +1,35 @@
 // The app shell's session list as ONE list (#s206). Pure, and importing only the shared grouping,
 // so the contract test runs it under node. It is the app shell's alone: the classic page has no
 // flat list, so it stays out of the shared modules every exported page inlines.
-import { families } from "./shared/session-visibility.js";
+import { families, groupSessions } from "./shared/session-visibility.js";
+
+/**
+ * The grouped index over several machines (#s541): `groupSessions` for each machine's groups (the
+ * merged source names a group's machine in `machine`), each project id led by its machine where the
+ * group's own key does not already name it, so two machines' desktop agents or same-named groups are
+ * two projects, folded and opened apart, and their families are formed apart; then the machines'
+ * agents as one, each agent's projects in the machines' order. Without a `machine` on any group it is
+ * `build` itself, so one monitor's list is what it always was. `build` is the grouping a host's
+ * `group` hook was handed (native mode's).
+ */
+export function groupAcrossMachines(groups = [], build = groupSessions) {
+  if (!groups.some(group => group.machine)) return build(groups);
+  const byMachine = new Map();
+  for (const group of groups) {
+    const machine = group.machine || "";
+    if (!byMachine.has(machine)) byMachine.set(machine, []);
+    byMachine.get(machine).push(group);
+  }
+  const agents = new Map();
+  for (const [machine, own] of byMachine) for (const agent of build(own)) {
+    if (!agents.has(agent.id)) agents.set(agent.id, { ...agent, projects: [] });
+    for (const project of agent.projects) {
+      const id = machine && !String(project.id).startsWith(`${machine}/`) ? `${machine}/${project.id}` : project.id;
+      agents.get(agent.id).projects.push(machine ? { ...project, id, machine } : project);
+    }
+  }
+  return [...agents.values()];
+}
 
 /** How long a session counts as active for the list's ORDER — the server's `ACTIVE_WINDOW`
  *  (claude-monitor/src/index.rs, which a test holds to this), not the filter's hour. */
