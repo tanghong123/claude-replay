@@ -831,7 +831,7 @@ fn overflow(m: &Value) -> String {
             out,
             " (view {}; past its edge: {})",
             m["viewOverflowX"].as_str().unwrap_or("?"),
-            md_escape(&past.join(", "))
+            past.join(", ")
         );
     }
     out
@@ -943,7 +943,7 @@ fn report(dir: &Path, records: &[Value], took: Duration, videos: &Videos) {
                 part(&m["parts"]["outline"]),
                 part(&m["parts"]["pane"]),
                 m["text"],
-                overflow(m),
+                md_escape(&overflow(m)),
                 md_escape(&missed_list(m)),
                 md_escape(&notes),
             );
