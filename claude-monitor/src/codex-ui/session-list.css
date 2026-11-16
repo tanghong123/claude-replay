@@ -224,6 +224,7 @@
 :where(#sessionList) .arrange-text{display:flex;flex-direction:column;gap:1px;min-width:0}
 :where(#sessionList) .arrange-note{font-size:10.5px;line-height:13px;color:var(--faint);white-space:normal}
 :where(#sessionList) .arrange-note:empty{display:none}
+#sessionList .navigator-options{overflow-y:auto;overscroll-behavior:contain}
 :where(#sessionList) .scope-option .scope-count{margin-left:auto;font:11px/1.4 var(--mono,ui-monospace,monospace);color:var(--faint);min-width:2ch;text-align:right}
 :where(#sessionList) .scope-option .scope-count:empty{display:none}
 :where(#sessionList).session-list{--kw:#6d4fa1;--str:#8f5a22;--fn:#28567e;--com:#a69e8e}

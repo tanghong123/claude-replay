@@ -158,8 +158,9 @@ follow:
   blocks, `monitor-controls.js` 4 reads). `native-entry.css`'s two phone blocks draw nothing in the
   view: one is the app's sidebar and menu, which keep the window, and the other the list's project
   actions, which follow the list's touch rows. In the app the two disagree only in
-  the rows above that change, but there they must agree. Native mode's pickers, placed from
-  `innerWidth`, wait for stage 4 with the other fixed layers.
+  the rows above that change, but there they must agree. Native mode's pickers are placed from
+  `visualViewport` in the top layer, and stay so: native mode is the standalone app's, never a
+  host's, and there the window is the screen.
 
 **The pinned mdrev guest** in the right pane reads the window through its own queries, and this
 repository does not change it. At a 461–760px desktop window it shows its phone toolbar inside the
@@ -590,14 +591,70 @@ in Chrome 153, the suite's engine, and in Safari 26.4 on the iOS 26.4 Simulator,
 - On a `display: contents` element, `container-type` computes but no box carries it.
 
 So the view's box can take `contain: layout` while it is not the screen, and every fixed layer then
-lands in the pane. What is placed from window coordinates moves to the box's coordinates: the task
-popover, the section menu, the filter sheet, the rail flyout, the turn menu and the right pane's
-drag (`innerWidth - clientX`).
+lands in the pane. What a script places from window coordinates moves to the box's: the task card,
+and in the list the section menu, the filter sheet's height and the rail flyout. The right pane's
+drag already reads the view's own right edge (`dragPane`), and nothing opens the turn menu: it is
+in the reference shell's markup and drawn by no script.
 
-Whether the app's box takes it too is stage 4's question. One path for every host is simpler: the
-layers written in the box's coordinates, and the box contained. But containment traps stacking, and
-in the app the view's layers interleave with the app's own today: the drawer and its handle, the
-toasts, the review sheet above the drawer. Stage 4 lists each one before choosing.
+**Every layer, where it is drawn and placed** (the stage 4 inventory, 2026-11-14):
+
+| Layer | Drawn in | Placed by | In a host's desktop pane before stage 4 |
+|---|---|---|---|
+| The right pane over the session (`pl-pane-over`) | the view | its rules: 10px in from the view's left edge (`--pane-x`) and from the window's top, right and bottom | against the window's top, right and bottom |
+| The task card and its dim | the page's body | its script, from `innerWidth`, `innerHeight` and its row | the window's, and unstyled: its rules hang on `#sessionView` and the app's copy is in the app's stylesheet |
+| The pane's drag catcher (`.resizer.dragging:after`) | the view | `inset: 0` | the window, during a drag |
+| The view's other popovers (search suggestions, the outline's menus, Info, the session's menu) | the view | absolute, inside the workspace | inside the view already, cut at its edge |
+| The phone reader's dock, sheets, dims, reply box, and the popovers it fixes 10px in from its sides (`pl-max-w-700`, which a desktop view never wears: its bands read its width and 300) | the view | their rules, in the box since stage 2 | inside the pane |
+| The list's section menu and its dim | the list (the app: `#app`) | its script, from `innerWidth` and `innerHeight` | the window's |
+| The list's filter sheet | the list's head | absolute under its control; its height from `innerHeight` | its height the window's |
+| The list's rail flyout | the list (the app: the body) | its script, from `innerHeight` | none: a host has no rail |
+| Native mode's menus and dialogs | the top layer | from `visualViewport` | none: native mode is the standalone app's |
+
+**The view contains its layout whenever it is not the screen**, in every family, and the app's view
+too. `pl-boxed` reads all four sides, so a host's pane that starts below the window's top is boxed,
+however tall it is, and one its host scrolls up has a gap at its foot. A view as tall as the window
+whose top is the window's has no gap there or at the foot. While its own keyboard ride moves the app
+(or a host's box) back over iOS's scroll, the box is placed for the keyboard, not by a host, so the
+gaps stay as the last decision before the ride read them: none in the app, the bar's in a host's pane
+under one. Only a decision that saw a box while no ride moved it keeps them (a view mounted hidden
+reads no box), and with none kept a ride reads the box as it is, for that ride alone. The ride is asked again as the view
+leaves the phone family, so it never outlives the keyboard, and its end decides again, since the
+gaps it kept may be stale and, where the page's scroll and the transform cancel, the box need not
+move for a watch to hear it.
+Containment puts every fixed layer in the box by construction, so no rule has to know where the view
+sits, and the app's suite runs the same contained path a host's pane does. What it changes in the
+app is measured before it lands (`Tests`): the view becomes one stacking context, and the app's
+layers that can meet the view's either paint over it already (the toasts, ⌘K, the confirm dialog,
+the list's menus, the tooltips) or never meet it (the sidebar and its resizer). The drag catcher
+alone reached outside the view, and it only keeps the resize cursor: the drag holds the pointer
+(pointer capture), so a drag carried over the list still drags and chooses nothing there, and the
+cursor keeps its resize shape over the view. If the measurement finds more, the
+app's stylesheet takes the containment off its desktop view instead (the cuts then 0), and the
+layers' rules, which read the cuts, are the same in both.
+
+- **The lengths.** The cuts are set on all four sides (`--pl-cut-top`, `--pl-cut-bottom`, from
+  `--pane-y` and `--pane-b`), and the screen's insets count only where they fall in the box on each.
+  A rule that names the view's left edge in the window (`--pane-x`, the overlaid pane's) takes the
+  cut off it, as stage 2's rules do.
+- **The scripts.** A layer a script places is placed from the box its layers are drawn in
+  (`layerBox()`, one helper beside `viewRoot`: the view's rect while it contains its layout, else the
+  window's), and clamped inside it.
+- **The task card is the view's.** It is drawn in the view's element, where the view's stylesheet
+  reaches it, and placed from `layerBox()`. A press in it is still a press in the view. On a phone its
+  dim covers the box; in the app, beside a wide phone's column or a 520px sidebar, the app's
+  stylesheet takes it to the window, as it does the review sheet, so it dims the column too and takes
+  the tap that closes the card. The view rises to the dim's level for that, its top bar with it, so
+  the handle by the title rises over the view while the card is open, drawn as the dim would draw it
+  and taking no press: a tap there still reaches the dim (#s496's walk found it covered).
+- **A move without a resize is heard** (#s467): an IntersectionObserver whose root margin is the
+  box's own place reports any change of it, floating-ui's move watch, with no polling timer.
+  Contained, a move changes no layer the rules place; it changes the cuts of the insets, which matter
+  only on a screen with an island or a home indicator. So a move alone writes the gaps and nothing
+  else: no hold of the view's transitions, no arrangement, no forced read, and what glides in the view
+  goes on while a host scrolls it with its page. The watch takes the window's size from the read the
+  decision was given, never a read of its own: a decision reads nothing of the page before it writes,
+  or the pane's toggle is laid out in the arrangement the decision is leaving and its glide starts
+  there, to be cancelled (the app's list-order case caught it, the pane opening at 1200px).
 
 **The phone reader takes it in stage 2.** Stage 2 is what makes a phone reader that is not the
 screen: beside a 520px sidebar, beside the rail, beside a wide phone's column, in a host's pane. Its
@@ -646,10 +703,10 @@ What follows from it:
   host's pane may be over the page beside it. A phone's pane never glides, so there it opens and
   hides at once.
 - **Not every layer is inside the element.** The task card and its dim go in the page's layer
-  (`viewRoot.layer()`), outside the view's element, and stay the window's until stage 4.
+  (`viewRoot.layer()`), outside the view's element, and stay the window's until stage 4, which makes
+  them the view's (above).
 
-A phone reader as wide as the window is not contained, so a phone is unchanged. The desktop's
-layers, placed by scripts from the window, and the app's own box stay stage 4's.
+A phone reader as wide as the window is not contained, so a phone is unchanged.
 
 ### What stays the host's
 
@@ -680,8 +737,20 @@ On a phone they are 44px touch rows. The list follows the same rule as the view,
   class is not set.
 - Its stylesheet's other size rules are the phone's and two stray copies of the view's
   `--navigator`, which go. `sidebar-tight` belongs to the app's head, not to the list.
-- Its floating layers (the filter sheet, the section menu, the rail flyout) keep reading the window
-  until stage 4 draws them in the pane.
+- **Its floating layers stand by their controls wherever it is drawn** (stage 4). The section menu
+  and the rail's flyout are anchored popovers, placed from their control in the window's coordinates
+  and kept inside the window. A host's pane that makes the box fixed layers are placed in (a
+  transform, as a sliding drawer has, or containment) moved them by that box's corner, so the list
+  reads the corner with a probe placed there and writes each place from it. The list itself is not
+  contained: a section menu wider than a narrow list floats out beside it, as a popover leaves its
+  pane, where a contained list would cut it at a scrolling pane's edge. A pane that both clips and is
+  that box (a drawer slid in by a transform) still cuts it at its edge, as it cuts anything fixed in
+  it. The filter sheet in the list's own head ends at the list's foot, or at the foot of a box of the
+  host's that clips the list, whichever is higher, so such a pane never cuts its last rows off (down
+  to a sheet 120px tall).
+  The app passes its own layers (`#app`, and the body for the rail's flyout, which flies out over the
+  view): the same probe reads the corner there, the window's until a phone's keyboard ride moves
+  `#app`.
 
 ### What the app changes
 
@@ -765,6 +834,25 @@ At the default text size, the pane at the reader's width:
   its right edge, keeps its dock 12px from each side of its own and the island's inset only where the
   island falls in the pane, and so does a review sheet there, which at ⤢ takes the whole screen with
   the pane; and with a classic scrollbar the view's right gap stops at it. A Back to another session closes the review sheet.
+- **Drawn inside, stage 4.** In the host fixture, a pane off the window's left and top edges at
+  380, 700, 1000 and 1100px, light and dark: each layer above that the pane can show is opened, the
+  case checks that it opened, then that it is inside the pane and is what `elementFromPoint` finds at
+  its middle and inside its corners. Red on 1.520.0 for the overlaid pane and the task card. In the
+  list's host, its pane moved off the window's corner and wearing a transform: a section's menu
+  opens under its control, its right edge at the control's, inside the window, and takes a press; the
+  filter sheet ends at the list's foot and its last row takes a press.
+- **The app, contained.** At a 1440, 1180, 1000, 900 and 700px window, with the pane shut and open
+  (a column, or over the session), at rest and with each of the view's layers opened in turn: every
+  placed element's rect and the element `elementFromPoint` finds on a 40px grid over the window are
+  the same contained and not. A drag of the pane's edge over the list still drags, and choosing
+  nothing there.
+- **A move.** A host's pane on a phone held sideways, moved by its `left` from the screen's edge to
+  its middle and back by a transform: the dock counts the island's inset where the pane is now, and
+  neither move holds the view's transitions (a resize after them does, so the count can hear one).
+  Then the pane is the screen's width and height under the host's 40px bar: it is boxed 40px from the
+  top, and stays so while the keyboard ride moves it, through a decision taken during the ride (the
+  pane 6px shorter). In the app, the view the ride moves 300px down stays unboxed through such a
+  decision too (`a_phone_find_pill_rides_the_keyboard`).
 - **Mutations.** Point the layout module back at the window, drop a condition from the rewrite's
   table, give the family the window's height, or let the order read what it drew: a width
   case goes red, or the derivation fails.
@@ -797,11 +885,12 @@ Each stage is page code: the whole local browser suite and an iOS Simulator walk
    the family is read (`classesFor`'s `pl-phone`, `bandWidth`), and inside the family `B` is still the
    view's width: the views new to the family (461–489px on any screen, and 490–760px touch views
    taller than 500px) read their bands as a phone of that width does.
-4. **Drawn inside the pane.** Containment, the layers in the box's coordinates, the width cases'
-   containment checks on a desktop and an emulated phone, and the Simulator walk of a narrow pane.
-   The phone reader narrower than the window is contained from stage 2 (above); this stage takes the
-   desktop's layers, a host's vertical offset and the app's own box.
-   The lengths that fit a fixed layer to the window (`calc(100vw - 24px)` and its kin in the task
-   card, the sheets and the menus) take a unit of their own there: `1vw` while the box is not
-   contained, the pane's width over 100 once it is. Stage 2's shares of `B` would size them to `B`,
-   which in a host's 500px desktop pane is 800px.
+4. **Drawn inside the pane** (#s431, #s467). The phone reader narrower than the window is contained
+   from stage 2 (above); this stage contains every family's view that is not the screen, the app's
+   included, with the cuts on four sides; makes the task card the view's; places the scripts' layers
+   from `layerBox()`; places the list's layers from the corner of the box they are drawn in; and
+   hears a move. It lands in pieces, each with its cases red first: the task card and the view's
+   containment, then the list's layers, then the move. The lengths that fit a fixed layer to the
+   window (`calc(100vw - 24px)` and its kin) are the view's width since stage 2 (`--pl-w`), which is
+   the box's once it is contained; the list's (`100vw`, `100vh` in the section menu and the rail
+   flyout) stay the window's, since its popovers are kept inside the window.

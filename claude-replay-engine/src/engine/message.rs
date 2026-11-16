@@ -59,6 +59,13 @@ pub enum NoteKind {
     /// records (#236), and Codex's `task_complete` carrying an error. Named for the meaning
     /// rather than for the API, so an agent whose turns fail some other way fits here too.
     Failure,
+    /// A reply the CLIENT wrote in the agent's place (#s499): drawn as a note, since the agent
+    /// never said it, and still the turn's last word to the state signals, as the prose it used
+    /// to fold to was, so a session ending on one keeps the state it had.
+    ///
+    /// What qualifies today: Claude Code's placeholder, the `<synthetic>` reply "No response
+    /// requested." it splices in when a resumed conversation ends on a prompt no answer followed.
+    ClientReply,
 }
 
 /// One entry in the canonical message log. Ordered exactly as the transcript's lines
@@ -179,6 +186,16 @@ pub enum Message {
     /// carried). Unlike the note it is still a FAILURE to the state signals, as the
     /// [`NoteKind::Failure`] note it replaces was: the client ended the request with an error.
     RefusedError { id: String, text: String },
+    /// An assistant record begins (#s500): its own id, ahead of the messages its content makes.
+    /// It draws nothing; the fold remembers where each record of the open turn began, so a note
+    /// that withdraws records ([`Message::RetryNote`]) can find what they drew.
+    ReplyRecord { uuid: String },
+    /// The client's note to the model after it withdrew a reply whose tool call it could not use
+    /// and asked for a retry (#s500), naming the withdrawn records by id. Folds to
+    /// `Block::Withdrawn`, the reply folded under it, when the named records are exactly the last
+    /// ones the fold met in the open turn and drew only thinking and prose; otherwise to the result
+    /// line any other note is (`text` is exactly what that note's `SystemNote` would have carried).
+    RetryNote { ids: Vec<String>, text: String },
     /// The transcript ran with the agent's Bash sandbox ON (#s381): Claude Code's
     /// `sandbox_instructions` attachment at the head of a session or a sub-agent. Draws nothing;
     /// the fold remembers it, through the meta stream, for the runs below.

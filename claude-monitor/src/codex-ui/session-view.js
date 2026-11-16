@@ -270,9 +270,12 @@ let layoutHeard = null;
 // says of itself (`arrangeInputs`, which answers the defaults until the view's state exists, just
 // below), and draws the outline as arranged (`drawOutline`) in the same decision.
 let arrangeInputs = () => ({}), outlineWanted = () => true;
+// Whether the keyboard ride below moves the host's box now (`grid`, back over iOS's scroll as the
+// reader types): the layout reads no gap to the window's top or bottom from that place.
+let keyboardRides = false;
 // Set by the phone shell below, which holds the glyphs and their panel: none until it has run.
 let placeOutlineGlyphs = () => {}, openOutlinePanel = () => false;
-const layout = mountPaneLayout(element, { signal, onChange: () => layoutHeard?.(), inputs: () => arrangeInputs(), onArrange: arrangement => drawOutline(arrangement) });
+const layout = mountPaneLayout(element, { signal, onChange: () => layoutHeard?.(), inputs: () => arrangeInputs(), onArrange: arrangement => drawOutline(arrangement), rides: () => keyboardRides });
 // How the view is laid out and read, made once the layout has decided (the outline's default is the
 // view's phone family's). A view mounted hidden (its host's `hidden`, #s464, or a hidden ancestor) was
 // decided at 0×0, which says nothing of its family: its outline's default waits for the first
@@ -564,16 +567,15 @@ bindComponentEvents(transcript, recordState, {
 
 // Engagement (stage 6): whether the reader is working in the view. It is mdrev's own rule, which
 // `bindKeymap` already reads for a guest (#270): the last press or focus landed inside the view's
-// element, or inside what the view floats over the page from `viewRoot.layer()` (`floating`: the task
-// card and its scrim), and not inside a guest of the view's (mdrev's pane), whose keys stay its own.
+// element, whose floating layers are drawn inside it (the task card and its dim too, since #s431
+// stage 4), and not inside a guest of the view's (mdrev's pane), whose keys stay its own.
 // Both `pointerdown` and `mousedown` are heard, since a host that prevents the first stops the
 // browser's second. The view's keymap and the artifact pane's image viewer answer only while it holds
 // (`keyboard: "engaged"`); with the page's keyboard (`"page"`, the app's) the view is always engaged,
 // as before.
-const floating = new Set();
 let engaged = keyboardMode === "page";
 if (keyboardMode === "engaged") {
-  const inView = target => !!target && typeof target.closest === "function" && (element.contains(target) || [...floating].some(node => node.contains(target)));
+  const inView = target => !!target && typeof target.closest === "function" && element.contains(target);
   const engage = event => { engaged = inView(event.target) && !inGuest(event.target); };
   for (const type of ["pointerdown", "mousedown", "focusin"]) document.addEventListener(type, engage, { capture: true, signal });
 }
@@ -3508,9 +3510,9 @@ const taskScrim = document.createElement("div");
 taskScrim.className = "task-scrim";
 taskScrim.id = "taskScrim";
 taskScrim.hidden = true;
-viewRoot.layer().append(taskScrim, taskPopover);
-// They float over the page, outside the view's element, and a press in them is a press in the view.
-floating.add(taskScrim); floating.add(taskPopover);
+// #s431 stage 4: they are the view's, drawn in its element, where its stylesheet reaches them and,
+// while the view contains its layout (a host's pane, beside the app's list), its box holds them.
+element.append(taskScrim, taskPopover);
 let taskPopoverOpener = null;
 function closeTaskPopover(restoreFocus = true) {
   if (taskPopover.hidden) return;
@@ -3549,10 +3551,12 @@ function openTaskPopover(index, opener) {
   taskPopoverOpener = opener;
   taskPopover.hidden = false;
   taskScrim.hidden = false;
-  const r = opener.getBoundingClientRect(), w = Math.min(440, window.innerWidth - 24);
-  const left = Math.min(window.innerWidth - w - 12, r.right + 8);
+  // Placed in the box its layers are drawn in (#s431 stage 4): the view's own while it contains its
+  // layout, else the window.
+  const box = viewRoot.layerBox(), r = opener.getBoundingClientRect(), w = Math.min(440, box.width - 24);
+  const left = Math.min(box.width - w - 12, r.right + 8 - box.left);
   taskPopover.style.left = `${Math.max(12, left)}px`;
-  taskPopover.style.top = `${Math.max(12, Math.min(window.innerHeight - 24 - taskPopover.offsetHeight, r.top))}px`;
+  taskPopover.style.top = `${Math.max(12, Math.min(box.height - 24 - taskPopover.offsetHeight, r.top - box.top))}px`;
   taskPopover.querySelector(".task-popover-close").focus();
 }
 taskPopover.addEventListener("click", event => {
@@ -3927,7 +3931,15 @@ function pageTranscript(direction) {
 // (`keyboard: "page"`) the app binds the page's keys and adds the list's (app.js); engaged, the view
 // binds them itself (below).
 const keyActions = {
-  "search": () => { setPhoneSearch(true); byId("transcriptSearchInput").focus(); },
+  // `/`, and ⌘F or Ctrl+F (#s509), from the compose box too: the field focused with its query
+  // selected, as a browser's find opens. On a phone the reply box holds the dock where the search
+  // would open, so the press is left to the page there (`false`).
+  "search": () => {
+    if (sessionView.classList.contains("composing")) return false;
+    setPhoneSearch(true);
+    const field = byId("transcriptSearchInput");
+    field.focus(); field.select();
+  },
   "turn-next": () => stepTurn(1), "turn-prev": () => stepTurn(-1),
   "head-next": () => stepHead(1), "head-prev": () => stepHead(-1),
   "hit-next": () => stepFromBox(1), "hit-prev": () => stepFromBox(-1),
@@ -3955,8 +3967,16 @@ if (keyboardMode === "engaged") {
     if (act && act() !== false) event.preventDefault();
   }, { capture: true, signal });
 }
-// Discoverability in the shell's idiom: the key in the control's own title / hint.
-byId("transcriptSearchInput").placeholder = `Search this session  ( ${hintFor("search")} )`;
+// ⌘F opens the session's search from the compose box (#s509): a reader who has just sent a prompt
+// still has the focus there. Every other field keeps it, the search field above all, so a second
+// press there is the browser's find.
+byId("composer").dataset.commandKeys = "";
+// Discoverability in the shell's idiom: the key in the control's own title / hint. A phone's box
+// names `/` alone (#s509): its field is a strip as wide as its text, scrolled to its end, so an
+// empty one showing "( / or ⌘F )" lost its start on a 390px phone, and ⌘F is a hardware keyboard's.
+const searchHint = () => { byId("transcriptSearchInput").placeholder = `Search this session  ( ${hintFor("search", { command: !phoneSearch.matches })} )`; };
+searchHint();
+phoneSearch.addEventListener("change", searchHint, { signal });
 byId("findPrev").title = `Previous match (${hintFor("hit-prev")})`; byId("findNext").title = `Next match (${hintFor("hit-next")})`;
 byId("turnPrev").title = `Previous turn (${hintFor("turn-prev")})`; byId("turnNext").title = `Next turn (${hintFor("turn-next")})`;
 // The header's own turn steppers were in the design but never bound; they step the same way the keys do.
@@ -4403,16 +4423,25 @@ var phoneDock;
     return at.localName === "textarea" || at.localName === "select" || at.localName === "iframe" || !!at.isContentEditable;
   };
   const viewport2 = window.visualViewport;
+  // Asked again as the view leaves the phone family (a host widening its pane while the keyboard is
+  // up hears no viewport event), so the grid's transform and `keyboardRides` do not outlive the ride.
+  let rideAgain = () => {};
   if (viewport2) {
     const root = viewRoot.styleRoot();
     const ride = () => {
       const typing = typesInto();
+      // The ride ending decides again (#s431 stage 4): the gaps the layout kept while it rode may be
+      // stale (a host's bar hidden while the reader typed), and on iOS, where the page's scroll and the
+      // grid's transform cancel, the box may not move, so no watch of its place hears it.
+      const rode = keyboardRides;
       if (controls.nativeActive && PHONE.matches) {
         const frame = sharedKeyboardFrame(grid.getBoundingClientRect().height, viewport2);
         // Keep one containing block even at zero offset; Safari pans during keyboard animation.
+        keyboardRides = Math.abs(viewport2.scale - 1) < 0.01 && frame.shift > 0;
         writeStyle(grid, "transform", Math.abs(viewport2.scale - 1) < 0.01 ? `translateY(${frame.shift}px)` : "");
         sessionView.classList.toggle("keyboard-up", typing && frame.keyboardOpen);
         writeStyle(root, "--phone-kb", `${typing ? frame.inset : 0}px`);
+        if (rode && !keyboardRides) layout.decide();
         place();
         // The shared listener can run first; fit again after applying the current viewport frame.
         controls.fitComposer();
@@ -4425,11 +4454,14 @@ var phoneDock;
       // Once the keyboard is down there is nothing to fight: the page goes back to the top. This reads
       // the viewport as it is, unguarded, so it acts only as it did before #s451.
       if (steady && !shortfall && shift) scrollTo(0, 0);
+      keyboardRides = shift > 0;
       writeStyle(grid, "transform", shift ? `translateY(${shift}px)` : "");
       sessionView.classList.toggle("keyboard-up", covered > 0);
       writeStyle(root, "--phone-kb", `${covered}px`);
+      if (rode && !keyboardRides) layout.decide();
       place();
     };
+    rideAgain = ride;
     viewport2.addEventListener("resize", ride, { signal });
     viewport2.addEventListener("scroll", ride, { signal });
     // The page itself scrolls only under iOS's keyboard; off a phone this listener has nothing to do.
@@ -4442,7 +4474,7 @@ var phoneDock;
   }
   // Across the breakpoint the Tasks list changes what it shows (#319: every state on a phone); the
   // desktop's rail comes off or goes back on in the app (#s33, `applySidebar`).
-  PHONE.addEventListener("change", () => { placeToolbar(); place(); if (!PHONE.matches) closePane(); renderNavigator(); paintCompose(); }, { signal });
+  PHONE.addEventListener("change", () => { placeToolbar(); place(); rideAgain(); if (!PHONE.matches) closePane(); renderNavigator(); paintCompose(); }, { signal });
   // Into the wide layout the drop-down has no button (the column shows its panes); out of it, the
   // app sends the column's borrowed list home and the handle speaks of the drawer again.
   WIDE.addEventListener("change", () => { if (WIDE.matches) closePane(); place(); }, { signal });
@@ -4548,7 +4580,7 @@ return fenced({
     for (const id of frames) cancelAnimationFrame(id);
     for (const observer of observers) observer.disconnect();
     timers.clear(); frames.clear(); observers.clear();
-    taskScrim.remove(); taskPopover.remove(); floating.clear();
+    taskScrim.remove(); taskPopover.remove();
     for (const [, , id] of PHONE_PANES) { const node = byId(id); if (node && !element.contains(node)) node.remove(); }
     for (const { node, style, values } of hostStyles) {
       for (const [name, value, priority] of values) {

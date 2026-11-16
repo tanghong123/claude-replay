@@ -501,7 +501,13 @@ fn pulse_within(adapter: &dyn TranscriptAdapter, path: &Path, window: u64) -> Op
                 // error and carries on — so the flag tracks the last word, not "ever happened".
                 pulse.last_failure = false;
             }
-            Message::AssistantMessage { text, .. } => {
+            // #s499: a reply the client wrote in the agent's place is drawn as a note, and is
+            // still the turn's last word here, exactly as the prose it used to fold to was.
+            Message::AssistantMessage { text, .. }
+            | Message::SystemNote {
+                text,
+                kind: crate::engine::message::NoteKind::ClientReply,
+            } => {
                 last_user = false;
                 saw_conversation = true;
                 pulse.final_text = Some(text.clone());

@@ -22,7 +22,7 @@ import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeight
 import { taskGlyph, taskStatus as cardStatus, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml, TASK_NO_TITLE, TASK_NO_DETAILS } from "../../claude-replay-html/src/html/shared/task-card.js";
 import { displayName, toolHead, stateLabel, nextHeadStep, headStepState, headStepOf } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
-import { KEYMAP, bindKeymap, hintFor, inGuest, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
+import { COMMAND_KEY, KEYMAP, bindKeymap, hintFor, inGuest, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
 import { isMarkdownName, standaloneFacts, standaloneHref } from "../../claude-monitor/src/codex-ui/mdrev-pane.js";
 import { agentRecordTargets, currentTurnIndex, peerHue, peerLabelRest, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget, taskDetails, artifactRoster, humanTokens, compactionTick } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
@@ -1559,6 +1559,28 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   for (const k of ["n", "[", "]", "j"]) assert.equal(resolveKey(ev(k), "view", inside), null, `${k} inside a guest is the guest's`);
   assert.equal(resolveKey(ev("/"), "view", inside), null, "…including an \"any\" binding");
   assert.equal(resolveKey(ev("n"), "view", outside).action, "hit-next", "outside it the shell keeps its keys");
+  // #s509 (Hong on #s508): ⌘F, Ctrl+F off Apple platforms, opens the session's search — the command
+  // key alone, and from a text field only inside `[data-command-keys]` (the compose box), so the
+  // search field's own press, and every other field's, is the browser's find.
+  const cmd = (key, extra = {}) => ev(key, { [COMMAND_KEY]: true, ...extra });
+  const otherMod = COMMAND_KEY === "metaKey" ? "ctrlKey" : "metaKey";
+  assert.equal(resolveKey(cmd("f"), "view").action, "search", "the command key and F open the session search");
+  assert.equal(resolveKey(cmd("F"), "list").action, "search", "…with Caps Lock on, and from the list");
+  assert.equal(resolveKey(ev("f"), "view"), null, "F alone is no key");
+  for (const extra of [{ shiftKey: true }, { altKey: true }, { [otherMod]: true }]) assert.equal(resolveKey(cmd("f", extra), "view"), null, `with ${Object.keys(extra)[0]} held too it is the browser's`);
+  assert.equal(resolveKey(ev("f", { [otherMod]: true }), "view"), null, "the other modifier is not the command key (Ctrl+F in a Mac's field moves the caret)");
+  assert.equal(resolveKey(cmd("k"), "view"), null, "⌘K stays the shell's own");
+  const searchField = { tagName: "INPUT", closest: () => null };
+  assert.equal(resolveKey(cmd("f"), "view", searchField), null, "in the search field the second press is the browser's");
+  const composeField = { tagName: "TEXTAREA", closest: sel => (sel === "[data-command-keys]" ? {} : null) };
+  assert.equal(resolveKey(cmd("f"), "view", composeField).action, "search", "from the compose box it opens the session search");
+  for (const k of ["/", "j", "n"]) assert.equal(resolveKey(ev(k), "view", composeField), null, `${k} in the compose box is typing`);
+  assert.equal(resolveKey(cmd("f"), "view", inside), null, "inside a guest it is the guest's");
+  assert.match(hintFor("search"), /^\/ or (⌘F|Ctrl\+F)$/, "the hint names both keys");
+  assert.equal(hintFor("search", { command: false }), "/", "without the command binding's, the hint is / alone");
+  assert.equal(hintFor("turn-next", { command: false }), "]", "an action with no command binding keeps its hint");
+  assert.match(viewSource, /const searchHint = \(\) => \{ byId\("transcriptSearchInput"\)\.placeholder = `Search this session  \( \$\{hintFor\("search", \{ command: !phoneSearch\.matches \}\)\} \)`; \};\nsearchHint\(\);\nphoneSearch\.addEventListener\("change", searchHint, \{ signal \}\);/, "a phone's search box names / alone, again as the view crosses the breakpoint");
+  assert.match(viewSource, /byId\("composer"\)\.dataset\.commandKeys = "";/, "the view marks its compose box");
   // ENGAGEMENT: a click on a guest's prose leaves the focus on <body>, so the keydown's target is
   // <body> — and the key is still the guest's until the reader clicks elsewhere. bindKeymap tracks
   // the last mousedown/focusin exactly as mdrev's own key scope does.
@@ -5003,7 +5025,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(body, /^const widthWatch = new ResizeObserver\(fitWidth\);$/m, "which it keeps");
   const unmount = /^  unmount\(\) \{\n[\s\S]*?\n  \},\n/m.exec(body);
   assert.ok(unmount, "the handle has an unmount");
-  for (const step of ["if (unmounted) return;", "unmounted = true;", "sessionIndex.stop();", "life.abort();", "widthWatch.disconnect();", "globalThis.clearTimeout(id)", "for (const node of [controls, filterSheet, filterMini, railMarks, railFlyout, sectionMenu, sectionScrim, insetProbe]) node?.remove();", "element.replaceChildren();", "element.removeAttribute(name)", "for (const [name, value] of elementBefore) element.setAttribute(name, value);"]) {
+  for (const step of ["if (unmounted) return;", "unmounted = true;", "sessionIndex.stop();", "life.abort();", "widthWatch.disconnect();", "globalThis.clearTimeout(id)", "for (const node of [controls, filterSheet, filterMini, railMarks, railFlyout, sectionMenu, sectionScrim, insetProbe, ...cornerProbes.values()]) node?.remove();", "element.replaceChildren();", "element.removeAttribute(name)", "for (const [name, value] of elementBefore) element.setAttribute(name, value);"]) {
     assert.ok(unmount[0].includes(step), `the unmount does ${step}`);
   }
   assert.match(body, /^const elementBefore = \[\.\.\.element\.attributes\]\.map\(attribute => \[attribute\.name, attribute\.value\]\);\n(?:\/\/[^\n]*\n)*element\.id = "sessionList";$/m, "the element's attributes are read before the list writes any");
@@ -5067,13 +5089,16 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(previewSrc, /\.\.\.\(this\.actions\.detach === false \? \[\] : \[this\.newTab\]\)/, "the ↗ is kept out of the pane's head with detach off");
   assert.match(viewSource, /detach: shows\("detach"\)/, "the view tells the pane");
   // The app's keymap leaves a key it has no action for to the page, as the view's own does.
-  assert.match(appSource, /action => \(keyActions\[action\] \? keyActions\[action\]\(\) : false\)\);/, "the app takes no key it has no action for");
-  // Engaged: the shared keymap resolves, the view decides by engagement (mdrev's rule), and the
-  // shared module is untouched (the offline pages inline it, and the byte gate reads them).
+  assert.match(appSource, /\(action, event\) => \(keyActions\[action\] \? keyActions\[action\]\(event\) : false\)\);/, "the app takes no key it has no action for (#s509: the action sees the event, so ⌘F with no session selected is left to the browser)");
+  // Engaged: the shared keymap resolves and the view decides by engagement (mdrev's rule). The
+  // keymap is one table for both pages: the offline pages inline it, so a change to it moves the
+  // byte gate's pages too (#s509 changed it).
   assert.match(viewSource, /if \(keyboardMode === "engaged"\) \{/, "the view binds its own keys only when engaged");
   assert.match(viewSource, /const engage = event => \{ engaged = inView\(event\.target\) && !inGuest\(event\.target\); \};/, "engagement is the last press or focus inside the view and outside its guest");
-  assert.match(viewSource, /element\.contains\(target\) \|\| \[\.\.\.floating\]\.some\(node => node\.contains\(target\)\)/, "inside the view counts what it floats over the page");
-  assert.match(viewSource, /floating\.add\(taskScrim\); floating\.add\(taskPopover\);/, "the task card and its scrim float");
+  assert.match(viewSource, /const inView = target => !!target && typeof target\.closest === "function" && element\.contains\(target\);/, "inside the view is inside its element");
+  // #s431 stage 4: the task card and its dim are drawn in the view's element, so they are inside it.
+  assert.match(viewSource, /\nelement\.append\(taskScrim, taskPopover\);\n/, "the task card and its dim are the view's");
+  assert.doesNotMatch(viewSource, /viewRoot\.layer\(\)\.append\(taskScrim/, "and float over the page no longer");
   assert.match(viewSource, /const binding = resolveKey\(event, "view", event\.target\);\n    const act = binding && keyActions\[binding\.action\];\n    if \(act && act\(\) !== false\) event\.preventDefault\(\);\n  \}, \{ capture: true, signal \}\);/, "a key the view has no action for, or one that answers false, is left to the page; the view listens in the capture phase");
   assert.match(viewSource, /engaged: \(\) => engaged, keysFirst: keyboardMode === "engaged", toast,/, "the pane's image viewer reads the engagement too, and hears its keys first in a host");
   // Mounted alone, the pane shutting itself as it is built changed the width, and the remeasure
@@ -5088,24 +5113,43 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /const laidOutWidth = \(\) => viewport\.mount\.getBoundingClientRect\(\)\.width;/, "the width laid out is the engine's mount's");
   assert.match(readFileSync(new URL("../src/codex-ui/pane-layout.js", import.meta.url), "utf8"), /const key = JSON\.stringify\(\[\[\.\.\.on\]\.sort\(\), Math\.round\(box\.width\), arrangement\.paneWidth\]\);\n    if \(key === said\) return;/, "a decision that moves the view's width or the pane's is heard");
   assert.match(viewSource, /paneToggled: change => \(viewMounted \? layout\.toggled\(change\) : \(change\(\), layout\.decide\(\)\)\),/, "the pane shut as the view is built opens no glide's time, and the view is arranged for it");
+  // #s467: a move of the view's box with no resize is heard by a watch on its place, never a clock:
+  // the layout module starts no timer, and its watch goes with the view's signal.
+  {
+    const layoutSource = readFileSync(new URL("../src/codex-ui/pane-layout.js", import.meta.url), "utf8");
+    assert.doesNotMatch(layoutSource, /\b(?:setTimeout|setInterval|requestAnimationFrame)\(/, "the layout module starts no timer (#s467)");
+    assert.match(layoutSource, /new IntersectionObserver\(heard, \{ \.\.\.options, root: viewRoot\.root\(\) \}\)/, "a move is heard by an IntersectionObserver rooted at the view's page");
+    assert.match(layoutSource, /if \(writing === wrote && place === placed\) return;\n    placed = place;\n(?:    \/\/[^\n]*\n)+    if \(!ridden && \(box\.width \|\| box\.height\)\) \{ gaps = \{ top, bottom \}; gapsKnown = true; \}\n    watchMoves\(box, \{ width: viewport, height: viewportHeight \}\);/, "every decision that writes watches the box where it measured it");
+    // A decision reads nothing of the page before it writes, the watch included: the window's size is
+    // the measure's (#s431 stage 4: a read of the root's size there started the pane's glide in the
+    // arrangement the decision was leaving, and the decision cancelled it).
+    const decision = /const decideAt = \(\{[\s\S]*?\n    if \(writing === wrote\) \{ writePlace\(\); return; \}/.exec(layoutSource);
+    const watch = /const watchMoves = \(box, frame, threshold = 1\) => \{[\s\S]*?\n    const heard = /.exec(layoutSource);
+    assert.ok(decision && watch, "the decision and the watch are where the contract reads them");
+    for (const part of [decision[0], watch[0]]) assert.doesNotMatch(part, /getBoundingClientRect|client(?:Width|Height)|offset(?:Width|Height|Top|Left)|getComputedStyle|viewportWidth\(/, "a decision reads nothing of the page before it writes");
+    // A move alone writes the gaps and returns, before the hold, the arrangement and the read.
+    assert.match(layoutSource, /if \(writing === wrote\) \{ writePlace\(\); return; \}\n    wrote = writing;/, "a move alone writes only where the view is");
+    assert.match(layoutSource, /signal\?\.addEventListener\("abort", \(\) => \{ observer\.disconnect\(\); moves\?\.disconnect\(\); moves = null; \}, \{ once: true \}\);/, "and the watch stops with the view");
+  }
   // …and so does the window's resize (the outline's toggle is held above): the view remeasures for its width one way.
   assert.match(viewSource, /addEventListener\("resize", \(\) => \{ paneLayoutChanged\(\); updateStickyHeaders\(\); \}/, "the window's resize remeasures only a width that changed");
   assert.match(viewSource, /^renderHeader\(\); renderNavigator\(\); paintJump\(\);\n(?:\/\/[^\n]*\n)+paneLaidOutWidth = laidOutWidth\(\);\nviewMounted = true;$/m, "and does from the first render on, measured from the width the mount left");
   // The engaged binding, run: the engagement and the keymap as the view writes them, over a fake
-  // document, the view's element, a host's node, a guest and the task card the view floats.
-  const engagement = /^const floating = new Set\(\);\nlet engaged = keyboardMode === "page";\nif \(keyboardMode === "engaged"\) \{\n[\s\S]*?\n\}\n/m.exec(viewSource);
+  // document, the view's element, a host's node and a guest. The task card is a node in the view's
+  // element like any other since stage 4 (`element.append(taskScrim, taskPopover)`, held above), so
+  // the view's node stands for it here.
+  const engagement = /^let engaged = keyboardMode === "page";\nif \(keyboardMode === "engaged"\) \{\n[\s\S]*?\n\}\n/m.exec(viewSource);
   const keymap = /^if \(keyboardMode === "engaged"\) \{\n  document\.addEventListener\("keydown"[\s\S]*?\n\}\n/m.exec(viewSource);
   assert.ok(engagement && keymap, "the view's engagement and its engaged keymap are where the contract reads them");
   const node = (inside, guest = false) => ({ tagName: "DIV", closest: sel => (sel === "[data-guest-keys]" && guest ? {} : null), inside });
-  const viewNode = node(true), guestNode = node(true, true), hostNode = node(false), card = { tagName: "DIV", closest: () => null, card: true };
+  const viewNode = node(true), guestNode = node(true, true), hostNode = node(false);
   const mount = (keyboardMode, actions) => {
     const handlers = {}, capture = {};
     const signal = { lifetime: "the view's" }, bound = [];
     const doc = { addEventListener: (type, fn, phase) => { (handlers[type] ||= []).push(fn); capture[type] = phase?.capture === true; bound.push(phase?.signal === signal); } };
-    const run = new Function("document", "element", "inGuest", "resolveKey", "keyActions", "keyboardMode", "signal", `${engagement[0]}${keymap[0]}; return { floating, engaged: () => engaged };`);
+    const run = new Function("document", "element", "inGuest", "resolveKey", "keyActions", "keyboardMode", "signal", `${engagement[0]}${keymap[0]}; return { engaged: () => engaged };`);
     const view = run(doc, { contains: t => t.inside === true, isConnected: true }, inGuest, resolveKey, actions, keyboardMode, signal);
     assert.ok(bound.every(Boolean), "every one of them carries the view's signal, which its unmount aborts (stage 7)");
-    view.floating.add({ contains: t => t.card === true });
     const press = (key, target = { tagName: "BODY", closest: () => null }) => { let prevented = false; for (const fn of handlers.keydown || []) fn({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, target, preventDefault() { prevented = true; } }); return prevented; };
     const on = (type, target) => { for (const fn of handlers[type] || []) fn({ target }); };
     return { ...view, handlers, capture, press, on };
@@ -5122,8 +5166,6 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(fired, ["turn-next", "tasks-center"]);
   view.on("mousedown", guestNode);
   assert.equal(view.press("]"), false, "inside a guest of the view's, the key is the guest's");
-  view.on("mousedown", card);
-  assert.equal(view.press("]"), true, "the task card the view floats over the page is the view's");
   view.on("mousedown", hostNode);
   assert.equal(view.press("]"), false, "a press in the host ends it");
   view.on("focusin", viewNode);

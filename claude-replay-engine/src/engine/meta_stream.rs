@@ -375,11 +375,20 @@ pub const COMPACT_AFTER: usize = 256;
 /// replies nothing has named yet ride the stream from here (`refused`), since a resume can begin
 /// inside a turn; a v78 stream carries none.
 ///
+/// v80: #s499 — a reply Claude Code wrote in the agent's place (its `<synthetic>` placeholder,
+/// "No response requested.") folds to a client note, a `ToolResult`, where a v79 stream holds it
+/// as the agent's `AssistantText`.
+///
+/// v81: #s500 — a reply Claude Code withdrew for a broken tool call (its retry note naming the
+/// reply's records in `retractedMessageUuids`, 2.1.325) folds to one `Withdrawn` mark in the
+/// note's place, the reply's thinking and text under it. A v80 stream holds the reply where it
+/// was and the note as a `ToolResult`.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 79;
+pub const FOLD_VERSION: u16 = 81;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

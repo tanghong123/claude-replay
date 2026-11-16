@@ -913,13 +913,15 @@ fn the_app_shell_hides_and_restores_a_session() {
     );
     let store_rows = 1;
     let monitor = Monitor::spawn(Kind::V1, 2832, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to("http://127.0.0.1:2832/?ui=app").unwrap();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     // The fixture is stamped in the builders' fixed past hour, so it is Idle — out of the
     // shell's default filter (#202). This case reads the TREE, so it asks for every bucket.
-    harness::show_every_session(&tab, "http://127.0.0.1:2832/?ui=app");
+    harness::show_every_session(&tab, &format!("http://127.0.0.1:{port}/?ui=app"));
 
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
         tab.evaluate(js, true)
@@ -1056,6 +1058,7 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
         &harness::long_session(6, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(Kind::V1, 2833, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
@@ -1066,7 +1069,8 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
     };
     // Find a parent with children by asking the same routes the shell uses — first the
     // listing (blocking on the cold scan), then `/pull` per session for its meta.
-    tab.navigate_to("http://127.0.0.1:2833/?ui=app").unwrap();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     // The child's id is whatever the index gave the sub-agent transcript: read it off the
     // parent's meta rather than guessing the naming.
@@ -1077,8 +1081,10 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
         .first()
         .cloned()
         .unwrap_or_else(|| panic!("the fixture parent lists its sub-agent child: {listed}"));
-    tab.navigate_to(&format!("http://127.0.0.1:2833/?ui=app&session={child_id}"))
-        .unwrap();
+    tab.navigate_to(&format!(
+        "http://127.0.0.1:{port}/?ui=app&session={child_id}"
+    ))
+    .unwrap();
     tab.wait_until_navigated().unwrap();
     let mut live = false;
     for _ in 0..80 {
@@ -1168,6 +1174,7 @@ fn the_app_shell_restores_the_scroll_position_across_a_reload() {
     let sid = "cccccccc-0000-4000-8000-000000000001".to_string();
     stores.claude_session(&sid, &harness::long_session(80, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2834, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
@@ -1176,7 +1183,7 @@ fn the_app_shell_restores_the_scroll_position_across_a_reload() {
             .and_then(|r| r.value)
             .unwrap_or(serde_json::Value::Null)
     };
-    tab.navigate_to(&format!("http://127.0.0.1:2834/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "document.querySelector('.transcript') && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3", "the fixture session to be tall enough to scroll", std::time::Duration::from_secs(20), "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : -1");
@@ -1260,6 +1267,7 @@ fn the_app_shell_keys_step_turns_and_heads() {
         ),
     );
     let monitor = Monitor::spawn(Kind::V1, 2835, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
@@ -1269,7 +1277,7 @@ fn the_app_shell_keys_step_turns_and_heads() {
             .unwrap_or(serde_json::Value::Null)
     };
     harness::track_idle(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2835/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "(function(){ var u=document.querySelectorAll('.virtual-window .turn.user').length, h=document.querySelectorAll('.virtual-window button.renderer-head').length; return u >= 3 && h >= 1; })()", "three user turns and a tool head mounted", std::time::Duration::from_secs(20), "document.querySelectorAll('.virtual-window .turn.user').length + ' turns, ' + document.querySelectorAll('.virtual-window button.renderer-head').length + ' heads'");
@@ -2951,6 +2959,162 @@ fn list_pane_width(tab: &headless_chrome::Tab, width: u32) -> serde_json::Value 
     harness::probe(tab, LIST_ROW_LAYOUT)
 }
 
+/// #s431 stage 4 (design/pane-layout.md, "Drawn inside the pane"): the list's own floating layers stand
+/// by their controls wherever a host draws the list. The host's pane here is moved off the window's
+/// corner (300px in, under its 40px bar) and wears a transform, which makes it the box its fixed
+/// descendants are placed in, as a sliding drawer's would. A section's menu opens under its control,
+/// its right edge at the control's, inside the window, and takes a press at its middle; the filter's
+/// sheet holds more than the pane leaves it and ends at the list's foot, above the pane's clip, so its
+/// last row takes a press. Red on f32883ef, which wrote the window's coordinates into the pane's box:
+/// the menu stood 300px right of its control and 40px low. Then the list is made 800px tall in the
+/// 360px pane that scrolls it: the sheet ends at the pane's foot, which clips it, and its last row
+/// still takes a press (red on 5eecc345, which ended it at the list's foot, past the pane's).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_list_in_a_host_places_its_layers_by_their_controls_in_a_transformed_pane() {
+    let _serial = serial();
+    let base = base("list-host-layers");
+    let stores = Stores::new(&base);
+    let ids = [
+        "cccccccc-0000-4000-8000-0000000004d1",
+        "cccccccc-0000-4000-8000-0000000004d2",
+    ];
+    list_host_world(&stores, &ids);
+    stores.app_session("local_d1", ids[0], "App first", 60, None);
+    stores.app_session("local_d2", ids[1], "App second", 120, None);
+    stores.app_settings(&[("cg-plan", "Planning", &["local_d2"])]);
+    let monitor = Monitor::spawn(Kind::V1, 3275, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1200.0, 900.0);
+    harness::open_list_host_page_with(&tab, &monitor, "mount=0");
+    harness::eval(
+        &tab,
+        "localStorage.setItem('am-prod-session-arrange', 'claude-app'); localStorage.setItem('am-prod-session-filter', '[\"recent\",\"blocked\",\"idle\"]'); 'ok'",
+    );
+    harness::open_list_host_page_with(&tab, &monitor, "");
+    until_list_drawn(&tab);
+    harness::until(
+        &tab,
+        "!!document.querySelector('#tree .arranged-head [data-section-view]')",
+        "the list arranged like the Claude app, its sections' menus offered",
+        Duration::from_secs(60),
+        "document.getElementById('tree').innerText",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ var p = document.getElementById('hostPane'); p.style.left = '300px'; p.style.height = '360px'; p.style.bottom = 'auto'; p.style.transform = 'translateX(0)'; return true; })()",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    // Where the control was as it was pressed: the press can scroll the tree to bring it into view
+    // after the menu is placed, as it does in the app.
+    harness::eval(
+        &tab,
+        "(function(){ var c = document.querySelector('#tree .arranged-head [data-section-view]').getBoundingClientRect(); window.__anchorAtPress = { right: Math.round(c.right), bottom: Math.round(c.bottom) }; c = null; document.querySelector('#tree .arranged-head [data-section-view]').click(); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "!!document.getElementById('sectionViewMenu') && !document.getElementById('sectionViewMenu').hidden",
+        "a section's menu to open",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host.errors)",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let menu = harness::probe(
+        &tab,
+        "(function(){ var m = document.getElementById('sectionViewMenu'), a = document.querySelector('#tree .arranged-head [data-section-view]'); var r = m.getBoundingClientRect(), c = a.getBoundingClientRect(); var x = r.left + r.width / 2, y = r.top + Math.min(r.height / 2, 40); var hit = document.elementFromPoint(x, y); return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom), anchorRight: Math.round(c.right), anchorBottom: Math.round(c.bottom), pressedAt: window.__anchorAtPress, margin: Math.round(parseFloat(getComputedStyle(m).marginTop) || 0), inWindow: r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight, pressed: !!hit && m.contains(hit) }; })()",
+    );
+    harness::eval(
+        &tab,
+        "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))",
+    );
+    harness::eval(&tab, "document.getElementById('filterBtn').click()");
+    harness::until(
+        &tab,
+        "(function(){ var s = document.getElementById('sessionFilter'); return !!s && !s.hidden; })()",
+        "the filter's sheet to open",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host.errors)",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let sheet = harness::probe(
+        &tab,
+        "(function(){ var s = document.getElementById('sessionFilter'), l = document.getElementById('sessionList'); var r = s.getBoundingClientRect(), lr = l.getBoundingClientRect(); var rows = Array.prototype.filter.call(s.querySelectorAll('.scope-option'), function(o){ return o.getClientRects().length > 0 && getComputedStyle(o).visibility !== 'hidden'; }); var last = rows[rows.length - 1]; s.scrollTop = s.scrollHeight; var lrr = last.getBoundingClientRect(); var hit = document.elementFromPoint(lrr.left + 20, lrr.top + lrr.height / 2); return { bottom: Math.round(r.bottom), listBottom: Math.round(lr.bottom), sheetScrolls: s.scrollHeight > s.clientHeight + 1, last: last.textContent.trim().slice(0, 40), lastBox: [Math.round(lrr.left), Math.round(lrr.top), Math.round(lrr.width), Math.round(lrr.height)], hit: hit ? (hit.id || hit.className || hit.tagName) : null, lastPressed: !!hit && last.contains(hit) }; })()",
+    );
+    // A list taller than the pane that scrolls it (the review of stage 4): the sheet ends at the pane's
+    // foot, the box that clips it, not at the list's, 440px below it.
+    harness::eval(&tab, "document.getElementById('filterBtn').click()");
+    harness::eval(
+        &tab,
+        "(function(){ var l = document.getElementById('sessionList'); l.style.flex = 'none'; l.style.height = '800px'; document.getElementById('hostPane').scrollTop = 0; return true; })()",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    harness::eval(&tab, "document.getElementById('filterBtn').click()");
+    harness::until(
+        &tab,
+        "(function(){ var s = document.getElementById('sessionFilter'); return !!s && !s.hidden; })()",
+        "the filter's sheet to open in a list taller than its pane",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host.errors)",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let clipped = harness::probe(
+        &tab,
+        "(function(){ var s = document.getElementById('sessionFilter'), l = document.getElementById('sessionList'), p = document.getElementById('hostPane'); var r = s.getBoundingClientRect(); var rows = Array.prototype.filter.call(s.querySelectorAll('.scope-option'), function(o){ return o.getClientRects().length > 0 && getComputedStyle(o).visibility !== 'hidden'; }); var last = rows[rows.length - 1]; s.scrollTop = s.scrollHeight; var lrr = last.getBoundingClientRect(); var hit = document.elementFromPoint(lrr.left + 20, lrr.top + lrr.height / 2); return { bottom: Math.round(r.bottom), paneBottom: Math.round(p.getBoundingClientRect().bottom), listBottom: Math.round(l.getBoundingClientRect().bottom), lastPressed: !!hit && last.contains(hit), hit: hit ? (hit.id || hit.className || hit.tagName) : null }; })()",
+    );
+    drop(monitor);
+    assert_eq!(
+        menu["inWindow"], true,
+        "the section's menu is inside the window: {menu}"
+    );
+    assert!(
+        [&menu["pressedAt"], &menu].iter().any(|at| {
+            let (right, bottom) = if at.get("anchorRight").is_some() {
+                (at["anchorRight"].as_i64(), at["anchorBottom"].as_i64())
+            } else {
+                (at["right"].as_i64(), at["bottom"].as_i64())
+            };
+            (menu["right"].as_i64().unwrap_or(0) - right.unwrap_or(-99)).abs() <= 1
+                && (menu["top"].as_i64().unwrap_or(0)
+                    - bottom.unwrap_or(-99)
+                    - 4
+                    - menu["margin"].as_i64().unwrap_or(0))
+                .abs()
+                    <= 1
+        }),
+        "the section's menu opens 4px under its control (and its own margin), its right edge at the control's: {menu}"
+    );
+    assert_eq!(
+        menu["pressed"], true,
+        "the section's menu takes a press: {menu}"
+    );
+    // The sheet holds more than the pane leaves it, so what is measured is its cap: a sheet that fit
+    // would end inside the pane on the code before it too.
+    assert_eq!(
+        sheet["sheetScrolls"], true,
+        "the filter's sheet is taller than the room the pane leaves it: {sheet}"
+    );
+    assert!(
+        sheet["bottom"].as_i64().unwrap_or(9999) <= sheet["listBottom"].as_i64().unwrap_or(0),
+        "the filter's sheet ends at the list's foot: {sheet}"
+    );
+    assert_eq!(
+        sheet["lastPressed"], true,
+        "the filter's last row takes a press: {sheet}"
+    );
+    assert!(
+        clipped["listBottom"].as_i64().unwrap_or(0)
+            > clipped["paneBottom"].as_i64().unwrap_or(0) + 200
+            && clipped["bottom"].as_i64().unwrap_or(9999)
+                <= clipped["paneBottom"].as_i64().unwrap_or(0),
+        "in a list taller than its pane the filter's sheet ends at the pane's foot: {clipped}"
+    );
+    assert_eq!(
+        clipped["lastPressed"], true,
+        "and its last row takes a press there: {clipped}"
+    );
+}
+
 /// The session list in a host lays out its rows by its own width and the screen's touch (#s431 stage
 /// 2, design/pane-layout.md, "The session list"), never by the window. In a host's 320px pane with a
 /// mouse a tree's session row is the desktop's one line, under 44px, and the flat list's names each
@@ -3114,12 +3278,13 @@ fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked() {
         );
     }
     let monitor = Monitor::spawn(Kind::V1, 3270, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     harness::track_idle(&tab);
     harness::show_every_session(
         &tab,
-        &format!("http://127.0.0.1:3270/?ui=app&session={first}"),
+        &format!("http://127.0.0.1:{port}/?ui=app&session={first}"),
     );
     let row = format!("#tree .tree-row.session[data-session=\"{second}\"]");
     harness::until(
@@ -3299,6 +3464,7 @@ fn subtitle_after_a_jump(port: u16, phone: Option<(u32, u32)>) {
         ),
     );
     let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     if let Some((w, h)) = phone {
         harness::phone(&tab, w, h);
@@ -3433,6 +3599,7 @@ fn the_app_shell_subtitle_after_a_plan_card_gives_one_answer_per_offset() {
     }
     stores.claude_session(sid, &session);
     let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     harness::track_idle(&tab);
@@ -4146,6 +4313,605 @@ fn the_session_view_in_a_host_lays_itself_out_by_its_own_box() {
     }
 }
 
+/// The layers a desktop view in a host's pane opens, each as (name, how it is opened, the element
+/// that shows it opened, how it is closed): the overlaid right pane, the task card (from the outline's
+/// Tasks list, whose rows exist whether or not the outline is shown at that width), the session's
+/// menu, the Reading menu and the search's filter.
+const HOST_DESKTOP_LAYERS: [(&str, &str, &str, &str); 5] = [
+    (
+        "the right pane",
+        "document.getElementById('previewBtn').click()",
+        "#closePreview",
+        "document.getElementById('closePreview').click()",
+    ),
+    (
+        "the task card",
+        "document.querySelector('#navigatorWork .work-task-head').click()",
+        "#taskPopover",
+        "document.querySelector('#taskPopover .task-popover-close').click()",
+    ),
+    (
+        "the session's menu",
+        "document.getElementById('sessionTitle').click()",
+        "#sessionCopyMenu",
+        // A press elsewhere closes it, as for a reader: a click on the title always opens it.
+        "document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))",
+    ),
+    (
+        "the Reading menu",
+        "document.getElementById('readingBtn').click()",
+        "#readingOptions",
+        "document.getElementById('readingBtn').click()",
+    ),
+    (
+        "the search's filter",
+        "document.getElementById('filterTranscriptBtn').click()",
+        "#navigatorOptions",
+        "document.getElementById('filterTranscriptBtn').click()",
+    ),
+];
+
+/// Opens each of `steps` in turn and returns, for each that is amiss, what [`LAYERS_AMISS`] found:
+/// it did not open, a layer of the view's is drawn outside the view's box, or the layer does not take
+/// a press inside it.
+fn layers_amiss_by_steps(
+    tab: &headless_chrome::Tab,
+    steps: &[(&str, &str, &str, &str)],
+) -> Vec<(String, serde_json::Value)> {
+    let mut amiss = Vec::new();
+    for (name, open, target, close) in steps {
+        harness::eval(tab, &format!("(function(){{ {open}; return true; }})()"));
+        harness::eval(tab, "new Promise(function(done){ requestAnimationFrame(function(){ setTimeout(done, 400); }); })");
+        let found = harness::probe(tab, &format!("{LAYERS_AMISS}('{target}')"));
+        if found["opened"] != serde_json::json!(true)
+            || found["outside"] != serde_json::json!([])
+            || found["missed"] != serde_json::json!([])
+        {
+            amiss.push((name.to_string(), found));
+        }
+        harness::eval(tab, &format!("(function(){{ {close}; return true; }})()"));
+        harness::eval(tab, "new Promise(function(done){ requestAnimationFrame(function(){ setTimeout(done, 300); }); })");
+    }
+    amiss
+}
+
+/// #s431 stage 4 (design/pane-layout.md, "Drawn inside the pane"): in a host's pane off the window's
+/// left edge and below its 40px bar, every layer the view opens is drawn inside the pane, on all four
+/// sides, and takes a press there, in the light theme and the dark: at 380px the phone reader's (its
+/// dock's sheets, Info, the menus, the right pane, and the task card from its Tasks sheet), at 700,
+/// 1000 and 1100px the desktop's (the right pane over the session or beside it, the task card, the
+/// session's menu, the Reading menu, the search's filter). Red on 1.520.0: the overlaid pane lay
+/// against the window's top, right and bottom, over the host's bar and the page beside the pane, and
+/// the task card was drawn in the page's body, placed from the window.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_draws_its_layers_inside_its_pane() {
+    let _serial = serial();
+    let base = base("host-layers-inside");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000004f1".to_string();
+    stores.claude_session(&sid, &harness::long_session(6, harness::Shape::default()));
+    stores.claude_tasks(
+        &sid,
+        &[
+            ("1", "one, done", "completed"),
+            ("2", "two, running", "in_progress"),
+            ("3", "three, pending", "pending"),
+        ],
+    );
+    let monitor = Monitor::spawn(Kind::V1, 3273, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1400.0, 900.0);
+    let phone_card: [(&str, &str, &str, &str); 1] = [(
+        "the task card",
+        "document.getElementById('phonePane-tasks').click(); document.querySelector('#navigatorWork .work-task-head').click()",
+        "#taskPopover",
+        "document.querySelector('#taskPopover .task-popover-close').click(); document.getElementById('phonePane-tasks').click()",
+    )];
+    let mut seen = Vec::new();
+    for theme in ["light", "dark"] {
+        for (left, width) in [(500, 380), (300, 700), (200, 1000), (200, 1100)] {
+            harness::open_host_page(&tab, &monitor, &format!("session={sid}&theme={theme}"));
+            harness::until(
+                &tab,
+                "!!document.querySelector('.virtual-window .turn.user') && document.querySelectorAll('#navigatorWork .work-task').length > 0",
+                "the session and its tasks in the host's view",
+                Duration::from_secs(20),
+                "document.body.innerText.slice(0, 200)",
+            );
+            let layout = place_host_pane(&tab, left, width);
+            let mut amiss = if layout["phone"] == serde_json::json!(true) {
+                let mut found = phone_layers_amiss(&tab, &["the reply box"]);
+                found.extend(layers_amiss_by_steps(&tab, &phone_card));
+                found
+            } else {
+                layers_amiss_by_steps(&tab, &HOST_DESKTOP_LAYERS)
+            };
+            let boxed = harness::probe(
+                &tab,
+                "(function(){ var v = document.getElementById('sessionView'); return { boxed: v.classList.contains('pl-boxed'), contain: getComputedStyle(v).contain, theme: v.dataset.theme }; })()",
+            );
+            if boxed["boxed"] != serde_json::json!(true)
+                || !boxed["contain"].as_str().unwrap_or("").contains("layout")
+                || boxed["theme"] != serde_json::json!(theme)
+            {
+                amiss.push(("the view's box".to_string(), boxed));
+            }
+            seen.push((theme, left, width, layout, amiss));
+        }
+    }
+    drop(monitor);
+    for (theme, left, width, layout, amiss) in seen {
+        assert!(
+            amiss.is_empty(),
+            "a {width}px pane at x={left} under the host's bar, {theme}: every layer inside the pane, \
+             taking a press there: {amiss:?} ({layout})"
+        );
+    }
+}
+
+/// What the app draws, read for [`the_app_shell_contains_its_view_and_draws_everything_else_as_before`]:
+/// every element under the page's body whose position is fixed, absolute or sticky and that is drawn,
+/// by name and rounded box, and the element `elementFromPoint` finds on a 40px grid over the window.
+const APP_DRAWN: &str = "(function(){ var name = function(e){ if (!e) return 'nothing'; return e.id ? '#' + e.id : e.tagName.toLowerCase() + (e.classList.length ? '.' + Array.prototype.slice.call(e.classList, 0, 3).join('.') : ''); }; var own = function(e){ return !!e.closest && !!e.closest('#taskPopover, #taskScrim'); }; var box = function(e){ if (!e) return null; var r = e.getBoundingClientRect(); return r.width < 1 || r.height < 1 ? null : { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom) }; }; var placed = []; document.body.querySelectorAll('*').forEach(function(e){ if (own(e)) return; var cs = getComputedStyle(e); if (!/^(fixed|absolute|sticky)$/.test(cs.position) || cs.display === 'none' || cs.visibility === 'hidden') return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return; placed.push(name(e) + ' ' + Math.round(r.left) + ',' + Math.round(r.top) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height)); }); var points = []; for (var y = 20; y < innerHeight; y += 40) for (var x = 20; x < innerWidth; x += 40) { var hit = document.elementFromPoint(x, y); points.push({ x: x, y: y, at: x + ',' + y + ' ' + (hit && own(hit) ? 'the task card' : name(hit)) }); } var card = document.getElementById('taskPopover'); return { placed: placed, points: points, card: card && !card.hidden ? box(card) : null, opener: box(document.querySelector('#navigatorWork .work-task-head')) }; })()";
+
+/// Takes the view's containment off (`on` false: its cuts 0, as an uncontained view's are) or gives
+/// it back, and waits two frames.
+fn app_view_contained(tab: &headless_chrome::Tab, on: bool) {
+    let js = if on {
+        "(function(){ var v = document.getElementById('sessionView'); ['contain', '--pl-cut-left', '--pl-cut-right', '--pl-cut-top', '--pl-cut-bottom'].forEach(function(p){ v.style.removeProperty(p); }); return true; })()"
+    } else {
+        "(function(){ var v = document.getElementById('sessionView'); v.style.setProperty('contain', 'inline-size'); ['left', 'right', 'top', 'bottom'].forEach(function(s){ v.style.setProperty('--pl-cut-' + s, '0px'); }); return true; })()"
+    };
+    harness::eval(tab, js);
+    harness::eval(tab, TWO_FRAMES);
+}
+
+/// #s431 stage 4 (design/pane-layout.md, "Drawn inside the pane"; the review's measure before the
+/// app's view is contained): beside the app's list the view contains its layout, as in a host's pane,
+/// and that changes nothing the app draws. At a 1440, 1180, 1000, 900 and 700px window, with the pane
+/// shut and open (a column, or over the session), at rest and with each of the view's layers open
+/// (the task card, the session's menu, the Reading menu, the search's filter), every placed element's
+/// box and what a press finds on a grid over the window are the same contained as with the
+/// containment taken off. A drag of the pane's edge over the list still drags: the drag catcher stops
+/// at the view's edge, and the resizer holds the pointer.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_contains_its_view_and_draws_everything_else_as_before() {
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchMouseEvent, DispatchMouseEventTypeOption, MouseButton,
+    };
+    let _serial = serial();
+    let base = base("app-view-contained");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000004f2".to_string();
+    stores.claude_session(&sid, &harness::long_session(12, harness::Shape::default()));
+    stores.claude_tasks(
+        &sid,
+        &[
+            ("1", "one, done", "completed"),
+            ("2", "two, running", "in_progress"),
+            ("3", "three, pending", "pending"),
+        ],
+    );
+    let monitor = Monitor::spawn(Kind::V1, 3274, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::mouse_window(&tab, 1440, 900);
+    monitor.open(&tab, &format!("?session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window .turn.user') && document.querySelectorAll('#navigatorWork .work-task').length > 0 && !!document.querySelector('#sessionList .tree-row.session')",
+        "the app shell to open the session and its tasks, the session listed",
+        Duration::from_secs(30),
+        "document.body.innerText.slice(0, 200)",
+    );
+    // Each step: its name, what opens it and closes it, and whether a reader can press its opener
+    // there (a task row in an outline folded to the bar has no box, and a click by script on it opens
+    // a card no reader could).
+    let pressable = "(function(){ var e = document.querySelector('#navigatorWork .work-task-head'); if (!e) return false; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return false; var h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!h && e.contains(h); })()";
+    let steps: [(&str, &str, &str, &str); 5] = [
+        ("at rest", "", "", ""),
+        (
+            "the task card",
+            "document.querySelector('#navigatorWork .work-task-head').click()",
+            "document.querySelector('#taskPopover .task-popover-close').click()",
+            pressable,
+        ),
+        (
+            "the session's menu",
+            "document.getElementById('sessionTitle').click()",
+            "document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))",
+            "",
+        ),
+        (
+            "the Reading menu",
+            "document.getElementById('readingBtn').click()",
+            "document.getElementById('readingBtn').click()",
+            "",
+        ),
+        (
+            "the search's filter",
+            "document.getElementById('filterTranscriptBtn').click()",
+            "document.getElementById('filterTranscriptBtn').click()",
+            "",
+        ),
+    ];
+    let mut differ = Vec::new();
+    let mut boxed = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    // Where the task card was drawn both ways, so its place by its row was compared.
+    let mut carded: Vec<String> = Vec::new();
+    for width in [1440_u32, 1180, 1000, 900, 700] {
+        harness::mouse_window(&tab, width, 900);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && {VIEW_CAUGHT_UP}"),
+            &format!("the view to decide at a {width}px window"),
+            Duration::from_secs(10),
+            VIEW_LAYOUT,
+        );
+        for open in [false, true] {
+            let shut = harness::eval(
+                &tab,
+                "document.getElementById('sessionView').classList.contains('preview-off')",
+            );
+            if shut == serde_json::json!(open) {
+                harness::eval(&tab, "document.getElementById('previewBtn').click()");
+            }
+            harness::until(
+                &tab,
+                &format!("(function(){{ var v = document.getElementById('sessionView'); return v.classList.contains('preview-off') === {} && v.getAnimations().length === 0; }})() && {VIEW_CAUGHT_UP}", !open),
+                &format!("the pane {} at a {width}px window", if open { "open" } else { "shut" }),
+                Duration::from_secs(10),
+                VIEW_LAYOUT,
+            );
+            // The Tasks drawer open, as a reader opens it to reach a task's row.
+            harness::eval(
+                &tab,
+                "(function(){ var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) { var t = document.querySelector('[data-nav-card-toggle=\"tasks\"]'); if (t) t.click(); } return true; })()",
+            );
+            harness::until_drawers_settle(&tab);
+            boxed.push((
+                width,
+                open,
+                harness::probe(&tab, "(function(){ var v = document.getElementById('sessionView'); return { boxed: v.classList.contains('pl-boxed'), contain: getComputedStyle(v).contain }; })()"),
+            ));
+            for (name, opener, close, shown) in steps {
+                if !shown.is_empty() && harness::eval(&tab, shown) != serde_json::json!(true) {
+                    skipped.push(format!(
+                        "{width}px, pane {}, {name}",
+                        if open { "open" } else { "shut" }
+                    ));
+                    continue;
+                }
+                let mut drawn = Vec::new();
+                for on in [true, false] {
+                    app_view_contained(&tab, on);
+                    if !opener.is_empty() {
+                        harness::eval(&tab, &format!("(function(){{ {opener}; return true; }})()"));
+                    }
+                    harness::eval(&tab, "new Promise(function(done){ requestAnimationFrame(function(){ setTimeout(done, 400); }); })");
+                    drawn.push(harness::probe(&tab, APP_DRAWN));
+                    if !close.is_empty() {
+                        harness::eval(&tab, &format!("(function(){{ {close}; return true; }})()"));
+                    }
+                    harness::eval(&tab, "new Promise(function(done){ requestAnimationFrame(function(){ setTimeout(done, 300); }); })");
+                }
+                app_view_contained(&tab, true);
+                // The task card is the view's own layer, placed from the view's box (its own case
+                // holds that): what it covers either way is left out, and it keeps its place by its
+                // row either way (the row may have scrolled between the two).
+                let covers = |v: &serde_json::Value, x: i64, y: i64| {
+                    let c = &v["card"];
+                    !c.is_null()
+                        && c["left"].as_i64().unwrap_or(0) <= x
+                        && x <= c["right"].as_i64().unwrap_or(0)
+                        && c["top"].as_i64().unwrap_or(0) <= y
+                        && y <= c["bottom"].as_i64().unwrap_or(0)
+                };
+                if name == "the task card"
+                    && !drawn[0]["card"].is_null()
+                    && !drawn[1]["card"].is_null()
+                {
+                    carded.push(format!(
+                        "{width}px, pane {}",
+                        if open { "open" } else { "shut" }
+                    ));
+                }
+                if !drawn[0]["card"].is_null() {
+                    let by_row = |v: &serde_json::Value| {
+                        (
+                            v["card"]["left"].as_i64().unwrap_or(0)
+                                - v["opener"]["right"].as_i64().unwrap_or(0),
+                            v["card"]["top"].as_i64().unwrap_or(0)
+                                - v["opener"]["top"].as_i64().unwrap_or(0),
+                        )
+                    };
+                    let (a, b) = (by_row(&drawn[0]), by_row(&drawn[1]));
+                    if (a.0 - b.0).abs() > 1 || (a.1 - b.1).abs() > 1 {
+                        differ.push(format!("{width}px, pane {}, {name}: the card beside its row contained {a:?}, uncontained {b:?}", if open { "open" } else { "shut" }));
+                    }
+                }
+                let set = |v: &serde_json::Value, k: &str| -> Vec<String> {
+                    v[k].as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| match x.as_str() {
+                                    Some(s) => Some(s.to_string()),
+                                    None => {
+                                        let (px, py) = (
+                                            x["x"].as_i64().unwrap_or(0),
+                                            x["y"].as_i64().unwrap_or(0),
+                                        );
+                                        (!covers(&drawn[0], px, py) && !covers(&drawn[1], px, py))
+                                            .then(|| x["at"].as_str().unwrap_or("").to_string())
+                                    }
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                {
+                    let mut only = Vec::new();
+                    for key in ["placed", "points"] {
+                        let (a, b) = (set(&drawn[0], key), set(&drawn[1], key));
+                        only.extend(
+                            a.iter()
+                                .filter(|x| !b.contains(x))
+                                .map(|x| format!("contained only: {x}")),
+                        );
+                        only.extend(
+                            b.iter()
+                                .filter(|x| !a.contains(x))
+                                .map(|x| format!("uncontained only: {x}")),
+                        );
+                    }
+                    if !only.is_empty() {
+                        differ.push(format!(
+                            "{width}px, pane {}, {name}: {}",
+                            if open { "open" } else { "shut" },
+                            only.join("; ")
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    // The drag: at 1440px with the pane a column, its edge dragged from the resizer to over the list.
+    harness::mouse_window(&tab, 1440, 900);
+    harness::until(
+        &tab,
+        &format!("innerWidth === 1440 && !document.getElementById('sessionView').classList.contains('preview-off') && document.getElementById('sessionView').classList.contains('pl-pane-column') && {VIEW_CAUGHT_UP}"),
+        "the pane a column at 1440px",
+        Duration::from_secs(10),
+        VIEW_LAYOUT,
+    );
+    harness::eval(&tab, "localStorage.removeItem('am-demo-pane-share')");
+    let x0 = harness::eval(&tab, "(function(){ var r = document.getElementById('resizer').getBoundingClientRect(); return r.left + r.width / 2; })()")
+        .as_f64()
+        .expect("the resizer's place");
+    let list_x = harness::eval(&tab, "(function(){ var r = document.querySelector('#app>.sidebar').getBoundingClientRect(); return r.left + r.width / 2; })()")
+        .as_f64()
+        .expect("the list's middle");
+    let mouse = |kind: DispatchMouseEventTypeOption, x: f64, buttons: u32| {
+        tab.call_method(DispatchMouseEvent {
+            Type: kind,
+            x,
+            y: 400.0,
+            modifiers: None,
+            timestamp: None,
+            button: Some(MouseButton::Left),
+            buttons: Some(buttons),
+            click_count: Some(1),
+            force: None,
+            tangential_pressure: None,
+            tilt_x: None,
+            tilt_y: None,
+            twist: None,
+            delta_x: None,
+            delta_y: None,
+            pointer_Type: None,
+        })
+        .unwrap();
+    };
+    let selected = harness::eval(&tab, "location.search");
+    mouse(DispatchMouseEventTypeOption::MouseMoved, x0, 0);
+    mouse(DispatchMouseEventTypeOption::MousePressed, x0, 1);
+    mouse(
+        DispatchMouseEventTypeOption::MouseMoved,
+        (x0 + list_x) / 2.0,
+        1,
+    );
+    mouse(DispatchMouseEventTypeOption::MouseMoved, list_x, 1);
+    let held = harness::probe(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return { resizing: v.classList.contains('resizing'), session: Math.round(document.querySelector('#sessionView>.workspace').getBoundingClientRect().width) }; })()",
+    );
+    mouse(DispatchMouseEventTypeOption::MouseReleased, list_x, 0);
+    harness::eval(&tab, TWO_FRAMES);
+    let after = harness::probe(
+        &tab,
+        "({ resizing: document.getElementById('sessionView').classList.contains('resizing'), share: Number(localStorage.getItem('am-demo-pane-share')), search: location.search })",
+    );
+    drop(monitor);
+    for (width, open, b) in boxed {
+        assert!(
+            b["boxed"] == true && b["contain"].as_str().unwrap_or("").contains("layout"),
+            "beside the list at a {width}px window, pane {}, the view contains its layout: {b}",
+            if open { "open" } else { "shut" }
+        );
+    }
+    assert!(
+        differ.is_empty(),
+        "contained, the app draws everything as it did uncontained:\n{}",
+        differ.join("\n")
+    );
+    // The card is opened wherever a reader can press its row in the outline: the 1440 and 1180px
+    // windows with the pane shut, where the outline is shown. Elsewhere the outline is folded to its
+    // glyphs, and a card opened from there is a narrow view's, which the host's case
+    // (`the_session_view_in_a_host_draws_its_layers_inside_its_pane`) opens in its pane.
+    for need in ["1440px, pane shut", "1180px, pane shut"] {
+        assert!(
+            carded.iter().any(|at| at == need),
+            "the task card is drawn contained and uncontained, and compared, where the outline shows its \
+             rows: not at {need} (compared at {carded:?}; no row to press at {skipped:?})"
+        );
+    }
+    eprintln!("the task card had no row to press at: {skipped:?}");
+    assert_eq!(
+        held["resizing"], true,
+        "the drag is under way over the list: {held}"
+    );
+    assert!(
+        held["session"].as_f64().unwrap_or(0.0) >= 480.0,
+        "the session keeps M under a drag past it: {held}"
+    );
+    assert_eq!(after["resizing"], false, "the drag ended: {after}");
+    assert!(
+        (after["share"].as_f64().unwrap_or(0.0) - 1.0).abs() < 1e-6,
+        "the pane took the whole slack, dragged past the session's M: {after}"
+    );
+    assert_eq!(
+        after["search"], selected,
+        "no session was chosen by the release over the list: {after}"
+    );
+}
+
+/// An `rgb(…)` or `color(srgb …)` computed colour as its 0–255 channels.
+fn css_rgb(value: &serde_json::Value) -> Option<[f64; 3]> {
+    let text = value.as_str()?;
+    let (scale, inner) = if let Some(rest) = text.strip_prefix("color(srgb ") {
+        (255.0, rest)
+    } else {
+        (1.0, text.strip_prefix("rgb(")?)
+    };
+    let parts: Vec<f64> = inner
+        .trim_end_matches(')')
+        .split([',', ' ', '/'])
+        .filter(|p| !p.is_empty())
+        .take(3)
+        .map(|p| p.parse::<f64>().map(|v| v * scale))
+        .collect::<Result<_, _>>()
+        .ok()?;
+    (parts.len() == 3).then(|| [parts[0], parts[1], parts[2]])
+}
+
+/// #s431 stage 4, from the iOS Simulator walk of #s496 (the 17 Pro Max held sideways): beside a wide
+/// phone's column the task card's dim rises with the view to cover the column, and the view's top bar
+/// rose with it over the handle by the session's title, which the reader saw vanish. As on 1.521.0,
+/// where the dim lay over the page, the handle stays drawn while the card is open, dimmed as the dim
+/// dims what lies under it (its glyph the ink mixed with the scrim's colour at the scrim's 42%), and
+/// a tap on it reaches the dim, which closes the card and leaves the column shown; in the light theme
+/// and the dark. Red on 1bfcb57c: what is drawn at the handle's middle is the dim over the top bar.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_wide_phone_s_task_card_dims_the_handle_by_the_title_and_keeps_it_drawn() {
+    let _serial = serial();
+    let base = base("wide-phone-card-handle");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000004f3".to_string();
+    stores.claude_session(&sid, &harness::long_session(6, harness::Shape::default()));
+    stores.claude_tasks(
+        &sid,
+        &[
+            ("1", "one, done", "completed"),
+            ("2", "two, running", "in_progress"),
+        ],
+    );
+    let monitor = Monitor::spawn(Kind::V1, 3276, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::phone(&tab, 932, 430);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    monitor.open(&tab, &format!("?session={sid}"));
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.virtual-window .turn.user') && document.querySelectorAll('#navigatorWork .work-task-head').length > 0 && !document.getElementById('app').classList.contains('phone-column-off') && document.getElementById('sessionView').classList.contains('pl-boxed') && document.getElementById('sessionView').classList.contains('pl-phone') && {VIEW_CAUGHT_UP}"),
+        "the session beside the wide phone's column, its tasks listed",
+        Duration::from_secs(30),
+        VIEW_LAYOUT,
+    );
+    let handle = "(function(){ var h = document.getElementById('drawerHandle'), r = h.getBoundingClientRect(), cs = getComputedStyle(h); var x = r.left + r.width / 2, y = r.top + r.height / 2; var name = function (e) { return !e ? 'nothing' : e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + String(e.className && e.className.baseVal !== undefined ? e.className.baseVal : e.className).split(' ')[0]; }; var taken = document.elementFromPoint(x, y); h.style.pointerEvents = 'auto'; var drawn = document.elementFromPoint(x, y); h.style.pointerEvents = ''; return { at: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)], visibility: cs.visibility, display: cs.display, color: cs.color, taken: h.contains(taken) ? 'the handle' : name(taken), drawn: h.contains(drawn) ? 'the handle' : name(drawn), card: !document.getElementById('taskPopover').hidden }; })()";
+    let mut seen = Vec::new();
+    for theme in ["light", "dark"] {
+        harness::eval(
+            &tab,
+            &format!("document.documentElement.dataset.theme = '{theme}'; true"),
+        );
+        harness::eval(&tab, TWO_FRAMES);
+        let shut = harness::probe(&tab, handle);
+        harness::eval(
+            &tab,
+            "document.querySelector('#navigatorWork .work-task-head').click(); true",
+        );
+        harness::until(
+            &tab,
+            "!document.getElementById('taskPopover').hidden && !!document.getElementById('taskScrim') && getComputedStyle(document.getElementById('taskScrim')).display !== 'none'",
+            "the task card and its dim to open",
+            Duration::from_secs(5),
+            "document.getElementById('taskPopover').hidden",
+        );
+        harness::eval(&tab, TWO_FRAMES);
+        let open = harness::probe(&tab, handle);
+        let (x, y) = phone_point(&tab, "(function(){ var r = document.getElementById('drawerHandle').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+        phone_tap_at(&tab, x, y);
+        harness::until(
+            &tab,
+            "document.getElementById('taskPopover').hidden && getComputedStyle(document.getElementById('taskScrim')).display === 'none'",
+            "a tap on the handle to reach the dim and close the card",
+            Duration::from_secs(5),
+            "document.getElementById('taskPopover').hidden",
+        );
+        harness::eval(&tab, TWO_FRAMES);
+        let after = harness::probe(
+            &tab,
+            &format!("(function(){{ var h = {handle}; h.column = !document.getElementById('app').classList.contains('phone-column-off'); return h; }})()"),
+        );
+        seen.push((theme, shut, open, after));
+    }
+    drop(monitor);
+    for (theme, shut, open, after) in seen {
+        assert_eq!(
+            (
+                shut["taken"].as_str(),
+                shut["display"].as_str(),
+                shut["visibility"].as_str()
+            ),
+            (Some("the handle"), Some("grid"), Some("visible")),
+            "{theme}: with no card open the handle by the title is drawn and takes a press: {shut}"
+        );
+        assert_eq!(
+            (open["drawn"].as_str(), open["visibility"].as_str(), open["at"].clone()),
+            (Some("the handle"), Some("visible"), shut["at"].clone()),
+            "{theme}: with the card open the handle stays drawn where it was, over the view's top bar: {open}"
+        );
+        assert_eq!(
+            open["taken"], "#taskScrim",
+            "{theme}: …and a press there reaches the dim, as when the dim lay over it: {open}"
+        );
+        let (ink, dimmed) = (
+            css_rgb(&shut["color"]).expect("the handle's colour"),
+            css_rgb(&open["color"]).expect("the dimmed handle's colour"),
+        );
+        let expected = [
+            ink[0] * 0.58 + 14.0 * 0.42,
+            ink[1] * 0.58 + 19.0 * 0.42,
+            ink[2] * 0.58 + 31.0 * 0.42,
+        ];
+        assert!(
+            (0..3).all(|i| (dimmed[i] - expected[i]).abs() <= 2.0),
+            "{theme}: the handle is dimmed as the dim dims the bar under it: {dimmed:?}, expected {expected:?} from {ink:?} ({open})"
+        );
+        assert_eq!(
+            (after["taken"].as_str(), after["color"].clone(), after["column"].clone()),
+            (Some("the handle"), shut["color"].clone(), serde_json::json!(true)),
+            "{theme}: the tap closed the card and nothing else, and the handle is as it was: {after}"
+        );
+    }
+}
+
 /// Two animation frames, which a style change needs before what it started is heard (#321).
 const TWO_FRAMES: &str = "new Promise(function (done) { requestAnimationFrame(function () { requestAnimationFrame(function () { done(true); }); }); })";
 
@@ -4326,7 +5092,7 @@ fn the_session_view_in_a_host_on_a_phone_reads_its_own_box_and_the_finger() {
 /// 10d88b7d, which reached the sheet to the window's sides in a host as in the app). At ⤢ the pane
 /// takes the whole screen in a host too, and so does a sheet opened there, with the screen's whole
 /// insets (red on cf156c65, which counted them from the pane's old place). Each placement is a fresh
-/// mount: a move with no resize is #s467's.
+/// mount: a move with no resize is the next case's (#s467).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_view_in_a_host_on_a_phone_counts_the_insets_only_inside_its_box() {
@@ -4423,12 +5189,22 @@ fn the_session_view_in_a_host_on_a_phone_counts_the_insets_only_inside_its_box()
 }
 
 /// #s467 (a gap #s431 stage 2's inset case found): a host that moves the view's box without resizing
-/// it, here a 450px pane on a phone held sideways moved from the screen's left edge to its middle, is
-/// not heard: the layout keeps the old place (`--pane-x`), so the dock still counts the island's inset
-/// at its left. Fixed, the dock is 12px from both sides at the new place.
+/// it is heard, by a watch on the box's place with no timer (design/pane-layout.md, "Drawn inside the
+/// pane"). A 450px pane on a phone held sideways, moved by its `left` from the screen's left edge to its
+/// middle: the dock is 12px from both sides at the new place, where it kept counting the island's inset
+/// at its left (red on 5b68bfcf, whose layout kept the old place, `--pane-x`). Moved back by a
+/// transform, which moves no layout box: the place is the screen's left edge again and the dock counts
+/// the inset there. Neither move holds the view's transitions (the review of stage 4: a move decided
+/// the whole layout again, which cut what glided, every frame of a host's scroll). Then the pane is the
+/// whole screen's width and height under a 40px bar of the host's: it is boxed, its gap at the top
+/// 40px (red on 5eecc345, which read no top gap for a box as tall as the window). The holds are
+/// counted where the view adds `pl-holding`, and the resize to the whole screen, a decision of the
+/// whole layout, must add one, so the count is known to hear a hold. Last the keyboard comes up in
+/// that pane: the view's ride moves the host's box back over iOS's scroll, and the view keeps the
+/// gaps it read at the bar, boxed 40px from the top.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
-fn the_session_view_in_a_host_hears_its_box_move_without_a_resize_known_red_s467() {
+fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
     let _serial = serial();
     let base = base("host-move");
     let monitor = Monitor::spawn(Kind::V1, 3116, &base, None, true);
@@ -4438,6 +5214,13 @@ fn the_session_view_in_a_host_hears_its_box_move_without_a_resize_known_red_s467
     harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
     harness::open_host_page(&tab, &monitor, "");
     place_host_pane(&tab, 0, 450);
+    harness::eval(&tab, TWO_FRAMES);
+    // Every hold of the view's transitions from here on: a move alone writes only where the view is
+    // (the review of stage 4), so none.
+    harness::eval(
+        &tab,
+        "(function(){ window.__holds = 0; var add = DOMTokenList.prototype.add; DOMTokenList.prototype.add = function(){ if (Array.prototype.indexOf.call(arguments, 'pl-holding') >= 0) window.__holds++; return add.apply(this, arguments); }; return true; })()",
+    );
     harness::eval(
         &tab,
         "(function(){ var p = document.getElementById('hostPane'); p.style.left = '241px'; return true; })()",
@@ -4449,7 +5232,223 @@ fn the_session_view_in_a_host_hears_its_box_move_without_a_resize_known_red_s467
         Duration::from_secs(5),
         "(function(){ var v = document.getElementById('sessionView'), d = document.getElementById('phoneDock'); var vr = v.getBoundingClientRect(), r = d.getBoundingClientRect(); return JSON.stringify({ view: Math.round(vr.left), paneX: v.style.getPropertyValue('--pane-x'), left: Math.round(r.left - vr.left), right: Math.round(vr.right - r.right) }); })()",
     );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('hostPane').style.transform = 'translateX(-241px)'; return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'), d = document.getElementById('phoneDock'); var vr = v.getBoundingClientRect(), r = d.getBoundingClientRect(); return Math.round(vr.left) === 0 && v.style.getPropertyValue('--pane-x') === '0px' && Math.round(r.left - vr.left) > 12 && Math.round(vr.right - r.right) === 12; })()",
+        "the dock counting the island's inset again once a transform moved the pane back to the screen's left edge",
+        Duration::from_secs(5),
+        "(function(){ var v = document.getElementById('sessionView'), d = document.getElementById('phoneDock'); var vr = v.getBoundingClientRect(), r = d.getBoundingClientRect(); return JSON.stringify({ view: Math.round(vr.left), paneX: v.style.getPropertyValue('--pane-x'), left: Math.round(r.left - vr.left), right: Math.round(vr.right - r.right) }); })()",
+    );
+    let holds = harness::eval(&tab, "window.__holds");
+    // A pane as wide and as tall as the screen under a 40px bar of the host's (the review of stage 4):
+    // its box starts below the window's top, so it is boxed, whatever its height. On the code before it
+    // a box as tall as the window read no gap at its top or foot, and the view, the whole width, was
+    // not boxed: its layers were placed against the window, over the host's bar.
+    harness::eval(
+        &tab,
+        "(function(){ var p = document.getElementById('hostPane'); p.style.transform = ''; p.style.left = '0px'; p.style.width = '932px'; p.style.top = '40px'; p.style.bottom = 'auto'; p.style.height = '100vh'; return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'), r = v.getBoundingClientRect(); return Math.round(r.top) === 40 && Math.round(r.width) === 932 && v.style.getPropertyValue('--pl-w') === '932px' && v.style.getPropertyValue('--pl-h') === '430px' && v.classList.contains('pl-boxed') && v.style.getPropertyValue('--pane-y') === '40px'; })()",
+        "a screen-tall pane under the host's bar to be boxed, its gap at the top 40px",
+        Duration::from_secs(5),
+        "(function(){ var v = document.getElementById('sessionView'), r = v.getBoundingClientRect(); return JSON.stringify({ top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height), plW: v.style.getPropertyValue('--pl-w'), plH: v.style.getPropertyValue('--pl-h'), boxed: v.classList.contains('pl-boxed'), paneY: v.style.getPropertyValue('--pane-y'), paneB: v.style.getPropertyValue('--pane-b') }); })()",
+    );
+    // That step resized the view, a decision of the whole layout, which holds: the count hears a hold.
+    let resized = harness::eval(&tab, "window.__holds");
+    // The keyboard up in that pane (the review of stage 4): iOS scrolls the page 100px and the view's
+    // ride moves the host's box (the `grid` it was given) back over it. The view, placed for the
+    // keyboard, keeps the gaps it read at the bar, still boxed 40px from the top; on the code before it
+    // a ride read no gaps, unboxing a pane under a bar for as long as the keyboard was up.
+    harness::eval(
+        &tab,
+        "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 200; } }); Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return 100; } }); visualViewport.dispatchEvent(new Event('scroll')); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('hostPane').style.transform === 'translateY(100px)'",
+        "the view's ride to move the host's box back over the page's scroll",
+        Duration::from_secs(5),
+        "document.getElementById('hostPane').style.transform",
+    );
+    // A decision the ride must take, and one that shows: the pane 6px shorter while the keyboard is up
+    // (the delta review of b4ad87a9: with nothing to decide, the state before the ride passed as kept).
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('hostPane').style.height = 'calc(100vh - 6px)'; return true; })()",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('sessionView').style.getPropertyValue('--pl-h') === '424px'",
+        "the view to decide again at its new height while the keyboard ride moves it",
+        Duration::from_secs(5),
+        "document.getElementById('sessionView').style.getPropertyValue('--pl-h')",
+    );
+    let riding = harness::eval(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return JSON.stringify({ boxed: v.classList.contains('pl-boxed'), paneY: v.style.getPropertyValue('--pane-y'), top: Math.round(v.getBoundingClientRect().top) }); })()",
+    );
     drop(monitor);
+    assert_eq!(
+        holds,
+        serde_json::json!(0),
+        "a move alone holds none of the view's transitions"
+    );
+    assert!(
+        resized.as_i64().unwrap_or(0) >= 1,
+        "a resize holds them, so the count above could hear one: {resized}"
+    );
+    assert_eq!(
+        riding,
+        serde_json::json!("{\"boxed\":true,\"paneY\":\"40px\",\"top\":140}"),
+        "while the keyboard ride moves the pane under the bar, the view keeps its gaps and its box"
+    );
+}
+
+/// #s431 stage 4 (the second delta review of b4ad87a9): the gaps a decision during the keyboard ride
+/// keeps come only from a decision that saw a box while no ride moved it, and the ride's end decides
+/// again. A view its host mounts hidden decided once at 0×0, whose foot read the window's whole height
+/// as its gap: shown while the ride ran, it kept that gap, 430px at its foot; and the decision that
+/// shows it during the ride reads the moved box for that ride alone, so a second scroll in the same
+/// ride is read again rather than kept (the review of d07aef0c). And where the page's
+/// scroll and the ride's transform cancel, as on iOS, the box does not move as the ride ends, so no
+/// watch of its place hears that the gaps it kept are stale: a host that hid its bar while the reader
+/// typed left the view placed 40px down after the ride.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_reads_its_gaps_again_around_the_keyboard_ride() {
+    let _serial = serial();
+    let base = base("host-ride-gaps");
+    let monitor = Monitor::spawn(Kind::V1, 3118, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::phone(&tab, 932, 430);
+    harness::open_host_page(&tab, &monitor, "mount=0");
+    let facts = "(function(){ var v = document.getElementById('sessionView'), p = document.getElementById('hostPane'); return { paneY: v ? v.style.getPropertyValue('--pane-y') : null, paneB: v ? v.style.getPropertyValue('--pane-b') : null, boxed: v ? v.classList.contains('pl-boxed') : null, top: v ? Math.round(v.getBoundingClientRect().top) : null, transform: p.style.transform, scroll: Math.round(scrollY) }; })()";
+    let seen = format!("JSON.stringify({facts})");
+    // Mounted hidden; the keyboard up (shadowed, as the move case does) before the pane is shown.
+    harness::eval(
+        &tab,
+        "document.getElementById('hostPane').hidden = true; window.__host.mount(); 'ok'",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    harness::eval(
+        &tab,
+        "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 200; } }); Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return 100; } }); visualViewport.dispatchEvent(new Event('scroll')); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('hostPane').style.transform === 'translateY(100px)'",
+        "the ride to move the hidden view's box back over the page's scroll",
+        Duration::from_secs(5),
+        &seen,
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('hostPane').hidden = false; 'ok'",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return v.getBoundingClientRect().height > 0 && v.style.getPropertyValue('--pl-h') === '390px'; })()",
+        "the view shown, and decided at its box",
+        Duration::from_secs(5),
+        &seen,
+    );
+    let shown = harness::probe(&tab, facts);
+    // iOS scrolls again as the field moves (60px now): the ride moves the box, and with no gaps kept the
+    // decision reads the moved box again. Had the shown decision kept the 140px it read, this one would
+    // keep it too (the review of 8ac8fd19..d07aef0c).
+    harness::eval(
+        &tab,
+        "(function(){ Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return 60; } }); visualViewport.dispatchEvent(new Event('scroll')); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return document.getElementById('hostPane').style.transform === 'translateY(60px)' && v.style.getPropertyValue('--pane-y') === '100px'; })()",
+        "a decision in the same ride to read the box where the second scroll put it",
+        Duration::from_secs(5),
+        &seen,
+    );
+    // The keyboard down: the ride ends, the box moves back, and the gaps are the bar's.
+    harness::eval(
+        &tab,
+        "(function(){ delete visualViewport.height; delete visualViewport.pageTop; visualViewport.dispatchEvent(new Event('scroll')); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return document.getElementById('hostPane').style.transform === '' && v.style.getPropertyValue('--pane-y') === '40px' && v.style.getPropertyValue('--pane-b') === '0px'; })()",
+        "the view under the host's bar once the ride ended",
+        Duration::from_secs(5),
+        &seen,
+    );
+    // A page that really scrolls with a pane that scrolls with it: the keyboard up, and the page
+    // scrolled 100px, which the ride's transform gives back, so the box stays where it was.
+    harness::eval(
+        &tab,
+        "(function(){ document.body.style.height = '2000px'; var p = document.getElementById('hostPane'); p.style.position = 'absolute'; p.style.top = '40px'; p.style.bottom = 'auto'; p.style.height = '390px'; Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 200; } }); scrollTo(0, 100); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return Math.round(scrollY) === 100 && document.getElementById('hostPane').style.transform === 'translateY(100px)' && Math.round(v.getBoundingClientRect().top) === 40; })()",
+        "the ride to give the page's 100px scroll back to the pane",
+        Duration::from_secs(5),
+        &seen,
+    );
+    // The host hides its bar while the reader types, and its pane grows 6px: a decision the view must
+    // take (its height shows it), which keeps the gaps it read under the bar.
+    harness::eval(
+        &tab,
+        "(function(){ var p = document.getElementById('hostPane'); p.style.top = '0px'; p.style.height = '396px'; return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return Math.round(v.getBoundingClientRect().top) === 0 && v.style.getPropertyValue('--pl-h') === '396px'; })()",
+        "the pane at the window's top, the bar gone, and the view decided at its new height",
+        Duration::from_secs(5),
+        &seen,
+    );
+    let kept = harness::probe(&tab, facts);
+    // The page scrolls back as the ride ends: the transform goes with it, and the box does not move.
+    harness::eval(&tab, "(function(){ scrollTo(0, 0); return true; })()");
+    harness::until(
+        &tab,
+        "(function(){ return Math.round(scrollY) === 0 && document.getElementById('hostPane').style.transform === ''; })()",
+        "the ride to end with the page's scroll",
+        Duration::from_secs(5),
+        &seen,
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    harness::eval(&tab, TWO_FRAMES);
+    let ended = harness::probe(&tab, facts);
+    drop(monitor);
+    assert_eq!(
+        (shown["paneB"].clone(), shown["paneY"].clone()),
+        (serde_json::json!("0px"), serde_json::json!("140px")),
+        "a view shown during the ride with no gaps kept reads its box as it is, not the hidden box's foot: {shown}"
+    );
+    assert_eq!(
+        (kept["paneY"].clone(), kept["top"].clone()),
+        (serde_json::json!("40px"), serde_json::json!(0)),
+        "during the ride the view keeps the gaps it read under the bar: {kept}"
+    );
+    assert_eq!(
+        (
+            ended["paneY"].clone(),
+            ended["paneB"].clone(),
+            ended["top"].clone()
+        ),
+        (
+            serde_json::json!("0px"),
+            serde_json::json!("34px"),
+            serde_json::json!(0)
+        ),
+        "the ride's end reads the gaps again though the box did not move: {ended}"
+    );
 }
 
 /// #s431 stage 2: wherever design/pane-layout.md's table says "the same", the app's view reads exactly
@@ -4521,12 +5520,16 @@ fn the_app_shell_view_reads_what_the_window_read_where_nothing_changes() {
 
 /// #s431 stage 2 (the review of 86b7c06f): what is wrong with the view's layers while it is a phone
 /// reader that is not the whole window. `opened`: the layer `target` names is drawn (a step whose
-/// press opened nothing must not pass). `outside`: the fixed layers drawn outside the view's box (one
-/// wholly off the screen, as the shut pane beside a window's edge, aside). `missed`: which of the first
+/// press opened nothing must not pass). `outside`: the fixed layers drawn outside the view's box on
+/// any of its four sides (one wholly off the screen, as the shut pane beside a window's edge, aside),
+/// and the layer `target` names if it is outside it, wherever it is drawn (stage 4: the task card was
+/// drawn in the page's body, which no walk of the view's element finds). `missed`: which of the first
 /// list row in reach, the title (at rest) or the layer just opened, and the drawer's handle (at rest
-/// and over the right pane, which it stays above) do not take a press at their middle; and, where the
-/// handle shows and an open layer covers its place, whether the handle is drawn over the layer.
-const LAYERS_AMISS: &str = "(function(target){ var v = document.getElementById('sessionView'), vr = v.getBoundingClientRect(); var name = function(e){ return e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + Array.prototype.slice.call(e.classList).join('.'); }; var outside = []; [v].concat(Array.prototype.slice.call(v.querySelectorAll('*'))).forEach(function(e){ var cs = getComputedStyle(e); if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1 || r.left >= innerWidth || r.right <= 0) return; if (r.left < vr.left - 0.5 || r.right > vr.right + 0.5) outside.push(name(e) + ' ' + Math.round(r.left) + '-' + Math.round(r.right)); }); var missed = []; var at = function(e, x, y){ var h = document.elementFromPoint(x, y); return e.contains(h) ? null : (h ? name(h) : 'nothing'); }; var press = function(label, e){ if (!e) return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return; var under = at(e, r.left + Math.min(r.width / 2, 20), r.top + Math.min(r.height / 2, 20)); if (under) missed.push(label + ' under ' + under); }; var row = Array.prototype.slice.call(document.querySelectorAll('#app>.sidebar .tree-row')).find(function(r){ var b = r.getBoundingClientRect(); return b.height > 0 && b.top >= 60 && b.bottom <= innerHeight - 60 && b.right <= vr.left; }); press('a list row', row); var t = target ? document.querySelector(target) : null; var opened = !target || (!!t && t.getClientRects().length > 0 && t.getBoundingClientRect().width >= 1 && t.getBoundingClientRect().height >= 1 && getComputedStyle(t).visibility === 'visible'); var handle = document.getElementById('drawerHandle'); var hs = handle && getComputedStyle(handle); var handleShown = !!handle && hs.display !== 'none' && hs.visibility === 'visible'; if (handleShown && (!target || target === '#closePreview')) press('the handle', handle); if (handleShown && t && target !== '#closePreview') { var layer = t; while (layer && layer !== v && getComputedStyle(layer).position !== 'fixed') layer = layer.parentElement; if (!layer || layer === v) layer = t; var lr = layer.getBoundingClientRect(), hr = handle.getBoundingClientRect(); if (lr.left < hr.right && hr.left < lr.right && lr.top < hr.bottom && hr.top < lr.bottom) { var under = at(layer, (Math.max(lr.left, hr.left) + Math.min(lr.right, hr.right)) / 2, (Math.max(lr.top, hr.top) + Math.min(lr.bottom, hr.bottom)) / 2); if (under) missed.push(target + ' under ' + under + ' where the handle is'); } } if (target) press(target, t); else press('the title', document.getElementById('sessionTitle')); return { opened: opened, outside: outside, missed: missed, view: Math.round(vr.left) + '-' + Math.round(vr.right) }; })";
+/// and over the right pane, which it stays above) do not take a press near their top left corner, or
+/// in the layer they are drawn in at their middle and inside their other three corners (the review of
+/// stage 4: one point let a layer pass with its lower half covered); and, where the handle shows and
+/// an open layer covers its place, whether the handle is drawn over the layer.
+const LAYERS_AMISS: &str = "(function(target){ var v = document.getElementById('sessionView'), vr = v.getBoundingClientRect(); var name = function(e){ return e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + Array.prototype.slice.call(e.classList).join('.'); }; var beyond = function(r){ return r.left < vr.left - 0.5 || r.right > vr.right + 0.5 || r.top < vr.top - 0.5 || r.bottom > vr.bottom + 0.5; }; var edges = function(r){ return Math.round(r.left) + '-' + Math.round(r.right) + ' ' + Math.round(r.top) + '-' + Math.round(r.bottom); }; var outside = []; [v].concat(Array.prototype.slice.call(v.querySelectorAll('*'))).forEach(function(e){ var cs = getComputedStyle(e); if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1 || r.left >= innerWidth || r.right <= 0 || r.top >= innerHeight || r.bottom <= 0) return; if (beyond(r)) outside.push(name(e) + ' ' + edges(r)); }); var missed = []; var at = function(e, x, y){ var h = document.elementFromPoint(x, y); return e.contains(h) ? null : (h ? name(h) : 'nothing'); }; var press = function(label, e){ if (!e) return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return; var layer = e; while (layer && layer !== v && getComputedStyle(layer).position !== 'fixed') layer = layer.parentElement; if (!layer || layer === v || !v.contains(e)) layer = e; var ix = Math.min(r.width / 2, 12), iy = Math.min(r.height / 2, 12); var points = [[r.left + Math.min(r.width / 2, 20), r.top + Math.min(r.height / 2, 20), e, ''], [r.left + r.width / 2, r.top + r.height / 2, layer, ' at its middle'], [r.right - ix, r.top + iy, layer, ' at its top right'], [r.left + ix, r.bottom - iy, layer, ' at its bottom left'], [r.right - ix, r.bottom - iy, layer, ' at its bottom right']]; for (var i = 0; i < points.length; i++) { var p = points[i]; if (p[0] < 0 || p[1] < 0 || p[0] >= innerWidth || p[1] >= innerHeight) continue; var under = at(p[2], p[0], p[1]); if (under) { missed.push(label + ' under ' + under + p[3]); return; } } }; var row = Array.prototype.slice.call(document.querySelectorAll('#app>.sidebar .tree-row')).find(function(r){ var b = r.getBoundingClientRect(); return b.height > 0 && b.top >= 60 && b.bottom <= innerHeight - 60 && b.right <= vr.left; }); press('a list row', row); var t = target ? document.querySelector(target) : null; var opened = !target || (!!t && t.getClientRects().length > 0 && t.getBoundingClientRect().width >= 1 && t.getBoundingClientRect().height >= 1 && getComputedStyle(t).visibility === 'visible'); if (t && opened && beyond(t.getBoundingClientRect())) outside.push(target + ' ' + edges(t.getBoundingClientRect())); var handle = document.getElementById('drawerHandle'); var hs = handle && getComputedStyle(handle); var handleShown = !!handle && hs.display !== 'none' && hs.visibility === 'visible'; if (handleShown && (!target || target === '#closePreview')) press('the handle', handle); if (handleShown && t && target !== '#closePreview') { var layer = t; while (layer && layer !== v && getComputedStyle(layer).position !== 'fixed') layer = layer.parentElement; if (!layer || layer === v) layer = t; var lr = layer.getBoundingClientRect(), hr = handle.getBoundingClientRect(); if (lr.left < hr.right && hr.left < lr.right && lr.top < hr.bottom && hr.top < lr.bottom) { var under = at(layer, (Math.max(lr.left, hr.left) + Math.min(lr.right, hr.right)) / 2, (Math.max(lr.top, hr.top) + Math.min(lr.bottom, hr.bottom)) / 2); if (under) missed.push(target + ' under ' + under + ' where the handle is'); } } if (target) press(target, t); else press('the title', document.getElementById('sessionTitle')); return { opened: opened, outside: outside, missed: missed, view: Math.round(vr.left) + '-' + Math.round(vr.right) }; })";
 
 /// Opens each of the phone reader's layers in turn (Info, Aa, the Turns sheet, the session's menu,
 /// the search's filter, the right pane, the reply box) and returns, for each that is amiss, what
@@ -6350,12 +7353,13 @@ fn a_follower_s_next_session_opens_at_its_end_before_any_scroll_event() {
         stores.claude_session(sid, &harness::long_session(30, harness::Shape::default()));
     }
     let monitor = Monitor::spawn(Kind::V1, 3133, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     harness::resize(&tab, 1280.0, 800.0);
     harness::show_every_session(
         &tab,
-        &format!("http://127.0.0.1:3133/?ui=app&session={first}&trace=viewport"),
+        &format!("http://127.0.0.1:{port}/?ui=app&session={first}&trace=viewport"),
     );
     let row = format!("#tree .tree-row.session[data-session=\"{second}\"]");
     harness::until(
@@ -6649,7 +7653,7 @@ fn the_session_view_in_a_host_unmounts_and_mounts_again() {
             "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
         );
     };
-    let shape = "({ strips: document.querySelectorAll('#turnStickyBar').length, menus: document.querySelectorAll('#sessionCopyMenu').length, cards: document.querySelectorAll('body > .task-popover').length, scrims: document.querySelectorAll('body > .task-scrim').length, children: document.querySelector('.host-view').children.length, attributes: [].map.call(document.querySelector('.host-view').attributes, function (a) { return a.name + '=' + a.value; }), preview: document.documentElement.style.getPropertyValue('--preview'), errors: window.__host.errors })";
+    let shape = "({ strips: document.querySelectorAll('#turnStickyBar').length, menus: document.querySelectorAll('#sessionCopyMenu').length, cards: document.querySelectorAll('.task-popover').length, scrims: document.querySelectorAll('.task-scrim').length, children: document.querySelector('.host-view').children.length, attributes: [].map.call(document.querySelector('.host-view').attributes, function (a) { return a.name + '=' + a.value; }), preview: document.documentElement.style.getPropertyValue('--preview'), errors: window.__host.errors })";
     let wrapped = "document.querySelector('.host-view').classList.contains('wrap-code')";
     let press_w = format!("(function(){{ document.getElementById('transcript').dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }})); var was = {wrapped}; var taken = {PRESS}('w'); return {{ was: was, taken: taken, now: {wrapped} }}; }})()");
     harness::eval(&tab, "window.__host.mount()");
@@ -6854,6 +7858,7 @@ fn the_app_shell_composes_one_scroller_under_fixed_chrome() {
     let sid = "cccccccc-0000-4000-8000-000000000001".to_string();
     stores.claude_session(&sid, &harness::long_session(80, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2836, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
@@ -6862,7 +7867,7 @@ fn the_app_shell_composes_one_scroller_under_fixed_chrome() {
             .and_then(|r| r.value)
             .unwrap_or(serde_json::Value::Null)
     };
-    tab.navigate_to(&format!("http://127.0.0.1:2836/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "(function(){ var s=document.querySelector('.transcript'); return !!s && document.querySelector('.virtual-window').children.length > 0 && s.scrollHeight > s.clientHeight * 2; })()", "the fixture session to be tall enough to scroll", std::time::Duration::from_secs(20), "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : -1");
@@ -7064,6 +8069,7 @@ fn app_shell_lists_a_session_started_in_another_s_scratch_under_its_project() {
     let wt = format!("/tmp/claude-502/-w-knack/{parent}/scratchpad/wt-1");
     stores.claude_session(child, &session(child, &wt, 400, "fix t1 in this worktree"));
     let monitor = Monitor::spawn(Kind::V1, 2960, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let probe = |js: &str| -> serde_json::Value {
@@ -7076,7 +8082,7 @@ fn app_shell_lists_a_session_started_in_another_s_scratch_under_its_project() {
     };
 
     // The app shell: a row belongs to the project header above it.
-    harness::show_every_session(&tab, "http://127.0.0.1:2960/?ui=app");
+    harness::show_every_session(&tab, &format!("http://127.0.0.1:{port}/?ui=app"));
     harness::until(
         &tab,
         &format!("!!document.querySelector('.tree-row.session[data-session=\"{child}\"]')"),
@@ -7228,9 +8234,10 @@ fn the_app_shell_collapses_the_sidebar_into_a_rail() {
     let sid = "cccccccc-0000-4000-8000-000000000054".to_string();
     stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2843, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let url = format!("http://127.0.0.1:2843/?ui=app&session={sid}");
+    let url = format!("http://127.0.0.1:{port}/?ui=app&session={sid}");
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
     let mounted = "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0";
@@ -8005,9 +9012,10 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
     let sid = "cccccccc-0000-4000-8000-000000000055".to_string();
     stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2844, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let url = format!("http://127.0.0.1:2844/?ui=app&session={sid}");
+    let url = format!("http://127.0.0.1:{port}/?ui=app&session={sid}");
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
     let mounted = "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0 && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3";
@@ -8256,9 +9264,10 @@ fn the_app_shell_orders_tasks_by_group_then_id() {
         ],
     );
     let monitor = Monitor::spawn(Kind::V1, 2845, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2845/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -8321,9 +9330,10 @@ fn the_app_shell_turns_pane_scrolls_itself() {
     let sid = "cccccccc-0000-4000-8000-000000000058".to_string();
     stores.claude_session(&sid, &harness::long_session(160, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2848, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2848/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(
@@ -8404,9 +9414,10 @@ fn the_app_shell_tasks_pane_scrolls_itself() {
         .collect();
     stores.claude_tasks(&sid, &borrowed);
     let monitor = Monitor::spawn(Kind::V1, 2849, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2849/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -8479,7 +9490,7 @@ fn the_app_shell_centers_the_tasks_pane_on_the_running_tasks() {
     let monitor = Monitor::spawn(Kind::V1, 2846, &base, Some(&stores), true);
     let (browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2846/?ui=app&session={sid}"))
+    tab.navigate_to(&monitor.url(&format!("?ui=app&session={sid}")))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -8673,7 +9684,7 @@ fn the_app_shell_centers_the_tasks_pane_on_the_running_tasks() {
     let monitor2 = Monitor::spawn(Kind::V1, 2847, &base2, Some(&stores2), true);
     let tab2 = browser.new_tab().unwrap();
     monitor2.pair(&tab2);
-    tab2.navigate_to(&format!("http://127.0.0.1:2847/?ui=app&session={sid2}"))
+    tab2.navigate_to(&monitor2.url(&format!("?ui=app&session={sid2}")))
         .unwrap();
     tab2.wait_until_navigated().unwrap();
     harness::until(&tab2, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the second shell to mount", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -8736,9 +9747,10 @@ fn the_app_shell_opens_a_task_details_popover() {
     // Give the running task a two-paragraph description and a dependency, as taskq writes them.
     std::fs::write(dir.join("2.json"), r#"{"id":"2","subject":"two, running","description":"First paragraph of the task.\n\nSecond paragraph, with detail.","activeForm":"Doing two","status":"in_progress","blocks":["3"],"blockedBy":["1"]}"#).unwrap();
     let monitor = Monitor::spawn(Kind::V1, 2867, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2867/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -8853,9 +9865,10 @@ fn the_app_shell_agents_pane_switches_to_the_sub_agent() {
         &harness::long_session(6, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(Kind::V1, 2850, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let url = format!("http://127.0.0.1:2850/?ui=app&session={parent}");
+    let url = format!("http://127.0.0.1:{port}/?ui=app&session={parent}");
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the parent to mount", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -8934,6 +9947,7 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
         .collect();
     stores.claude_tasks(&sid, &borrowed);
     let monitor = Monitor::spawn(Kind::V1, 2869, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     tab.set_bounds(headless_chrome::types::Bounds::Normal {
         left: Some(0),
@@ -8943,7 +9957,7 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
     })
     .unwrap();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2869/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(
@@ -9581,9 +10595,10 @@ fn the_app_shell_info_and_turns_panes_show_the_compaction() {
     }
     stores.claude_session(&sid, &transcript);
     let monitor = Monitor::spawn(Kind::V1, 2868, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2868/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(
@@ -9703,9 +10718,10 @@ fn the_app_shell_theme_toggle_is_visible_and_works() {
     let sid = "cccccccc-0000-4000-8000-000000000075".to_string();
     stores.claude_session(&sid, &harness::long_session(6, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2870, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2870/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(
@@ -9731,7 +10747,7 @@ fn the_app_shell_theme_toggle_is_visible_and_works() {
     // its contrast against what lies behind it is read in each theme.
     harness::show_every_session(
         &tab,
-        &format!("http://127.0.0.1:2870/?ui=app&session={sid}"),
+        &format!("http://127.0.0.1:{port}/?ui=app&session={sid}"),
     );
     harness::until(
         &tab,
@@ -9794,6 +10810,7 @@ fn the_app_shell_s_browser_colours_follow_its_theme_not_the_os() {
     let sid = "cccccccc-0000-4000-8000-000000014100".to_string();
     stores.claude_session(&sid, &harness::long_session(4, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 3080, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let os = |scheme: &str| {
@@ -9814,7 +10831,7 @@ fn the_app_shell_s_browser_colours_follow_its_theme_not_the_os() {
         ("light", "light"),
     ] {
         os(os_scheme);
-        tab.navigate_to(&format!("http://127.0.0.1:3080/?ui=app&session={sid}"))
+        tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
             .unwrap();
         tab.wait_until_navigated().unwrap();
         harness::until(
@@ -9872,7 +10889,8 @@ fn the_app_shell_collapses_a_prompt_only_when_that_hides_several_lines() {
     jsonl += &assistant("Done.", 6);
     stores.claude_session(&sid, &jsonl);
     let monitor = Monitor::spawn(Kind::V1, 3084, &base, Some(&stores), true);
-    let url = format!("http://127.0.0.1:3084/?ui=app&session={sid}");
+    let port = monitor.port;
+    let url = format!("http://127.0.0.1:{port}/?ui=app&session={sid}");
     let probe = "(function(){ var out = {}; document.querySelectorAll('.turn.user').forEach(function(t){ var p = t.querySelector('.user-prompt'), sh = t.querySelector('.prompt-copy-shell'), b = sh.firstElementChild, e = t.querySelector('.prompt-expand'), cs = getComputedStyle(b), r = null, hit = null; if (e) { e.scrollIntoView({block: 'center'}); r = e.getBoundingClientRect(); var at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); hit = !!at && e.contains(at); } out[t.dataset.turn] = { collapsible: p.classList.contains('prompt-collapsible'), collapsed: sh.classList.contains('collapsed'), label: e ? e.textContent : null, expanded: e ? e.getAttribute('aria-expanded') : null, h: b.getBoundingClientRect().height, lines: (b.scrollHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)) / parseFloat(cs.lineHeight), lh: parseFloat(cs.lineHeight), padTop: parseFloat(cs.paddingTop), padBottom: parseFloat(cs.paddingBottom), btnH: r ? r.height : null, hit: hit, font: e ? getComputedStyle(e).fontFamily : null }; }); return out; })()";
     let open = |tab: &headless_chrome::Tab| {
         monitor.pair(tab);
@@ -10048,9 +11066,10 @@ fn the_app_shell_open_counts_nothing_as_new() {
     let sid = "cccccccc-0000-4000-8000-000000000084".to_string();
     let path = stores.claude_session(&sid, &harness::long_session(40, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2871, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let url = format!("http://127.0.0.1:2871/?ui=app&session={sid}");
+    let url = format!("http://127.0.0.1:{port}/?ui=app&session={sid}");
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
     let mounted = "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0 && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3";
@@ -10155,10 +11174,13 @@ fn the_app_shell_finds_the_parent_from_a_child_opened_first() {
         &harness::long_session(6, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(Kind::V1, 2872, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to("http://127.0.0.1:2872/?ui=app&session=aExplore-82")
-        .unwrap();
+    tab.navigate_to(&format!(
+        "http://127.0.0.1:{port}/?ui=app&session=aExplore-82"
+    ))
+    .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the child to mount from its deep link", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 160)");
     harness::until(&tab, "document.getElementById('sessionParent').classList.contains('is-live')", "the parent control to appear", std::time::Duration::from_secs(15), "JSON.stringify({cls: document.getElementById('sessionParent').className, crumb: document.getElementById('sessionCrumb').textContent})");
@@ -10200,9 +11222,10 @@ fn the_app_shell_expands_every_group_again() {
         );
     }
     let monitor = Monitor::spawn(Kind::V1, 2874, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let url = "http://127.0.0.1:2874/?ui=app";
+    let url = &format!("http://127.0.0.1:{port}/?ui=app");
     tab.navigate_to(url).unwrap();
     tab.wait_until_navigated().unwrap();
     let toggles = "document.querySelectorAll('[data-toggle]').length";
@@ -10271,9 +11294,10 @@ fn the_app_shell_resizes_the_session_list() {
     let sid = "cccccccc-0000-4000-8000-000000000096".to_string();
     stores.claude_session(&sid, &harness::long_session(10, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2876, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let url = format!("http://127.0.0.1:2876/?ui=app&session={sid}");
+    let url = format!("http://127.0.0.1:{port}/?ui=app&session={sid}");
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
     let mounted = "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0";
@@ -11427,9 +12451,10 @@ fn the_app_shell_lists_the_published_artifacts() {
     }
     stores.claude_session(&sid, &transcript);
     let monitor = Monitor::spawn(Kind::V1, 2875, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2875/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -12858,10 +13883,11 @@ fn the_app_shell_panes_open_on_what_is_live() {
         ],
     );
     let monitor = Monitor::spawn(Kind::V1, 2885, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let open = |tab: &headless_chrome::Tab| {
-        tab.navigate_to(&format!("http://127.0.0.1:2885/?ui=app&session={sid}"))
+        tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
             .unwrap();
         tab.wait_until_navigated().unwrap();
         harness::until(tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -13353,6 +14379,7 @@ fn app_shell_favicon(kind: Kind, port: u16, label: &str) {
         &harness::long_session(3, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(kind, port, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
@@ -13405,6 +14432,7 @@ fn home_screen_icon(kind: Kind, port: u16, label: &str) {
         &harness::long_session(3, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(kind, port, &base, Some(&stores), true);
+    let port = monitor.port;
 
     // Never paired: the icon and the manifest are read, as the bytes they are.
     let (_stranger, tab) = harness::chrome_tab();
@@ -13615,8 +14643,10 @@ fn the_app_shell_counts_the_blocked_sessions() {
     let base = base("appshell-buckets");
     let world = bucket_world(&base);
     let monitor = Monitor::spawn(Kind::V1, 2916, &base, Some(&world.stores), false);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
-    tab.navigate_to("http://127.0.0.1:2916/?ui=app").unwrap();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     // A wait publishes at once, an ended turn after one stable tick, the process probe runs
     // every 10 s and the shell polls every 5 s: wait for every verdict to settle, not only
@@ -13739,8 +14769,10 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
     let base = base("appshell-filter");
     let world = bucket_world(&base);
     let monitor = Monitor::spawn(Kind::V1, 2917, &base, Some(&world.stores), false);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
-    tab.navigate_to("http://127.0.0.1:2917/?ui=app").unwrap();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     let settled = |v: &serde_json::Value| {
         let st = |k: &str| {
@@ -13891,7 +14923,8 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
     click("#sessionFilter [data-bucket=\"recent\"]");
     click("#sessionFilter [data-bucket=\"idle\"]");
     assert_eq!(tree(), "123", "blocked alone");
-    tab.navigate_to("http://127.0.0.1:2917/?ui=app").unwrap();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline && tree() != "123" {
@@ -13955,6 +14988,160 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
     drop(world);
 }
 
+/// A GET on the loopback, answered within `wait`: the reply as text (status line first), or why not.
+fn loopback_get(port: u16, path: &str, wait: Duration) -> String {
+    use std::io::{Read, Write};
+    let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) else {
+        return format!("nothing listens on {port}");
+    };
+    s.set_read_timeout(Some(wait)).unwrap();
+    let _ = write!(
+        s,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    );
+    let mut out = String::new();
+    match s.read_to_string(&mut out) {
+        Ok(_) => out,
+        Err(e) => format!("no reply within {wait:?} ({e}): {out}"),
+    }
+}
+
+/// #s495: a case's port held by another listener — aries-black's ssh tunnel on 2728 — moves the
+/// case's monitor to a port the kernel has free, and the handle says where it went. The harness
+/// used to wait for anything to answer on the port, so it handed the case the tunnel: the monitor
+/// had exited on its bind, and the case failed later as a page that never came. The listener here
+/// accepts nothing, as a tunnel with nothing behind it would; the case asks the monitor itself
+/// (its public manifest) on the port the handle names.
+#[test]
+#[ignore = "needs a built agent-monitor"]
+fn a_case_whose_port_is_held_gets_its_monitor_on_another() {
+    let _serial = serial();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let base = harness::base("held-port-moves");
+    let stores = harness::Stores::new(&base);
+    let m = harness::Monitor::spawn(harness::Kind::V1, port, &base, Some(&stores), true);
+    assert_ne!(
+        m.port, port,
+        "the monitor serves somewhere other than the held port"
+    );
+    assert_eq!(m.key, port, "its scratch keeps the case's port in its name");
+    assert!(
+        m.state.ends_with(format!("state-{port}")),
+        "the state dir is named for the case's port: {}",
+        m.state.display()
+    );
+    let reply = loopback_get(m.port, "/manifest.webmanifest", Duration::from_secs(10));
+    assert!(
+        reply.starts_with("HTTP/1.1 200") && reply.contains("Agent Monitor"),
+        "the monitor answers on the port its handle names: {reply}"
+    );
+}
+
+/// #s495: a monitor that must serve on one port (a page is open on that origin,
+/// `Monitor::respawn`) and finds it held fails AT ONCE, naming the port and what holds it — here
+/// this test process, by `lsof` (or `ss`) — rather than handing the case to the listener there.
+#[test]
+#[ignore = "needs a built agent-monitor"]
+fn a_monitor_held_off_its_exact_port_names_the_holder_at_once() {
+    let _serial = serial();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let base = harness::base("held-port-exact");
+    let stores = harness::Stores::new(&base);
+    let started = std::time::Instant::now();
+    let spawned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        harness::Monitor::spawn_exact(harness::Kind::V1, port, port, &base, Some(&stores), true)
+    }));
+    let took = started.elapsed();
+    let why = match spawned {
+        Ok(m) => panic!("a monitor came up on the held port {}", m.port),
+        Err(payload) => payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default(),
+    };
+    assert!(
+        took < Duration::from_secs(5),
+        "it fails at once, not after a wait: {took:?}"
+    );
+    let me = std::process::id();
+    assert!(
+        why.contains(&format!("port {port} is held by")) && why.contains(&format!("pid {me}")),
+        "the panic names the port and its holder (pid {me}): {why}"
+    );
+    drop(held);
+}
+
+/// #s495: a restart under an open page (`Monitor::respawn`) brings the same monitor back where the
+/// page is — the port the first one was MOVED to when the case's was held — and with what its
+/// spawn was given: a remote case's monitor still trusts `phone.test` on that port, and extra
+/// arguments come back too. It once kept only the port, so a remote case's restart would have
+/// refused its own phone.
+#[test]
+#[ignore = "needs a built agent-monitor"]
+fn a_respawned_monitor_keeps_its_port_its_environment_and_its_arguments() {
+    let _serial = serial();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let base = harness::base("held-port-respawn");
+    let stores = harness::Stores::new(&base);
+    let environment = |m: &harness::Monitor| {
+        let out = std::process::Command::new("ps")
+            .args(["eww", "-o", "command=", "-p", &m.pid().to_string()])
+            .output()
+            .expect("ps runs");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let first = harness::Monitor::spawn_remote(harness::Kind::V1, port, &base, Some(&stores));
+    let moved = first.port;
+    assert_ne!(moved, port, "the held port moved the first monitor");
+    let trusted = format!(
+        "AGENT_MONITOR_TRUSTED_HOSTS={}:{moved}",
+        harness::REMOTE_HOST
+    );
+    assert!(
+        environment(&first).contains(&trusted),
+        "the first monitor trusts the name on its port: {}",
+        environment(&first)
+    );
+    let again = harness::Monitor::respawn(first, &base, Some(&stores), true);
+    assert_eq!(again.port, moved, "the restart serves where the page is");
+    assert_eq!(again.key, port, "over the same scratch");
+    let said = environment(&again);
+    assert!(
+        said.contains(&trusted),
+        "the restart keeps its environment: {said}"
+    );
+    let reply = loopback_get(again.port, "/manifest.webmanifest", Duration::from_secs(10));
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    drop(again);
+
+    let base = harness::base("held-port-respawn-args");
+    let stores = harness::Stores::new(&base);
+    let first = harness::Monitor::spawn_with_args(
+        harness::Kind::V1,
+        port,
+        &base,
+        Some(&stores),
+        true,
+        &[("CR_RESPAWN_MARK", "kept")],
+        &["--agents", "claude,codex"],
+    );
+    let again = harness::Monitor::respawn(first, &base, Some(&stores), true);
+    let said = environment(&again);
+    assert!(
+        said.contains("CR_RESPAWN_MARK=kept"),
+        "the restart keeps the spawn's extra environment: {said}"
+    );
+    assert!(
+        said.contains("--agents claude,codex"),
+        "the restart keeps the spawn's extra arguments: {said}"
+    );
+    drop(held);
+}
+
 /// #309 — the owner saw `agent-monitor --pair` print `session 72b570af…: no such transcript` right
 /// after it started, for a valid transcript: a tab left open on it polled before any page had
 /// fetched the session list, and the service can only serve ids a scan has SHOWN it. A `/pull` for
@@ -13970,7 +15157,7 @@ fn a_fresh_monitor_serves_a_session_before_any_page_lists_them() {
     let m = harness::Monitor::spawn(harness::Kind::V1, 2819, &base, Some(&stores), false);
     let get = |path: &str| -> (u16, String) {
         use std::io::{Read, Write};
-        let mut s = std::net::TcpStream::connect(("127.0.0.1", 2819)).unwrap();
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", m.port)).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
         write!(
             s,
@@ -14024,8 +15211,8 @@ fn a_phone_pairs_by_a_one_time_code() {
         "aaaa1111-0000-4000-8000-000000000011",
         &harness::long_session(3, harness::Shape::default()),
     );
-    let port = 2820u16;
-    let m = harness::Monitor::spawn(harness::Kind::V1, port, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2820, &base, Some(&stores), true);
+    let port = m.port;
     // The CLI, in the monitor's own state and cache (where its token and the codes file live).
     let bin =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/release/agent-monitor");
@@ -14043,8 +15230,11 @@ fn a_phone_pairs_by_a_one_time_code() {
         ])
         .arg(format!("http://127.0.0.1:{port}/"))
         .env("XDG_CACHE_HOME", &base)
-        .env("CLAUDE_MONITOR_CACHE", base.join(format!("cache-{port}")))
-        .env("CLAUDE_MONITOR_STATE", base.join(format!("state-{port}")))
+        .env(
+            "CLAUDE_MONITOR_CACHE",
+            base.join(format!("cache-{}", m.key)),
+        )
+        .env("CLAUDE_MONITOR_STATE", &m.state)
         .output()
         .expect("run agent-monitor --pair-phone");
     let printed = String::from_utf8_lossy(&out.stdout).to_string();
@@ -14063,8 +15253,8 @@ fn a_phone_pairs_by_a_one_time_code() {
         printed.contains('▀') || printed.contains('▄') || printed.contains('█'),
         "a QR code is drawn"
     );
-    let token = std::fs::read_to_string(base.join(format!("state-{port}")).join("auth-token"))
-        .expect("a paired monitor has a token");
+    let token =
+        std::fs::read_to_string(m.state.join("auth-token")).expect("a paired monitor has a token");
     assert!(
         !token.trim().is_empty() && !printed.contains(token.trim()),
         "the long-lived token is never shown: {printed}"
@@ -14102,8 +15292,8 @@ fn refusal_pairing_actions_are_readable_and_tappable() {
     let _serial = serial();
     let base = harness::base("refusal-pairing-actions");
     let stores = harness::Stores::new(&base);
-    let port = 2987;
-    let _monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2987, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     for (layout, width, height, mobile) in [
         ("portrait", 390, 844, true),
@@ -14397,17 +15587,21 @@ const DRAWER_STATE: &str = "(function(){ var s = document.querySelector('#app > 
 /// its rows in place. It used to rewrite the whole list each time, and a press that straddled the
 /// write, down on a row and up on its replacement, made no click: a session chosen from the drawer
 /// just then was not chosen, which is how the drawer case above failed one run in four. Here a row is
-/// marked, two refreshes go by, and the marked row must still be the one in the list.
+/// marked, two refreshes go by, and the marked row must still be the one in the list. #s482: the
+/// collapsed rail's agent marks too. Rewritten on every refresh, they were new buttons on the screen
+/// every 5 s, and on an iPad a tap on the rail's expand that met one was spent by WebKit as a hover
+/// (no click), so the list opened only on a second tap.
 #[test]
 #[ignore]
 fn a_session_list_refresh_that_changes_nothing_keeps_its_rows() {
     let _serial = serial();
     let (_m, _b, tab) = phone_world(2820, "list-keeps-rows", 390, 844);
     let row = format!(".tree-row.session[data-session=\"{PHONE_OTHER}\"]");
+    let mark = "#sidebarMiniAgents [data-mini-agent]";
     let refreshes = "performance.getEntriesByType('resource').filter(function (e) { return /\\/api\\/sessions(\\?|$)/.test(e.name); }).length";
     let before = harness::eval(
         &tab,
-        &format!("(function () {{ document.querySelector({row:?}).__kept = true; return {refreshes}; }})()"),
+        &format!("(function () {{ document.querySelector({row:?}).__kept = true; document.querySelector({mark:?}).__kept = true; return {refreshes}; }})()"),
     )
     .as_u64()
     .expect("the refreshes so far");
@@ -14425,6 +15619,14 @@ fn a_session_list_refresh_that_changes_nothing_keeps_its_rows() {
         ),
         true,
         "an unchanged refresh keeps the row the reader may be pressing"
+    );
+    assert_eq!(
+        harness::eval(
+            &tab,
+            &format!("(function () {{ var r = document.querySelector({mark:?}); return !!(r && r.__kept); }})()"),
+        ),
+        true,
+        "an unchanged refresh keeps the rail's marks, which a tap on the rail's expand may be meeting"
     );
 }
 
@@ -15174,14 +16376,10 @@ fn a_phone_over_the_tailnet_sees_secrets_masked_and_the_desktop_does_not() {
     ]);
     harness::phone(&phone, 390, 844);
     let token = m.token().map(|t| format!("?token={t}")).unwrap_or_default();
-    phone
-        .navigate_to(&format!("http://phone.test:2737/{token}"))
-        .unwrap();
+    phone.navigate_to(&m.remote_url(&token)).unwrap();
     phone.wait_until_navigated().unwrap();
     phone
-        .navigate_to(&format!(
-            "http://phone.test:2737/?ui=app&session={PHONE_SID}"
-        ))
+        .navigate_to(&m.remote_url(&format!("?ui=app&session={PHONE_SID}")))
         .unwrap();
     phone.wait_until_navigated().unwrap();
     let on_phone = read(&phone, "the prompt over the tailnet name");
@@ -15234,13 +16432,10 @@ fn a_phone_over_the_tailnet_reads_the_session_gzipped() {
     ]);
     harness::phone(&tab, 390, 844);
     let token = m.token().map(|t| format!("?token={t}")).unwrap_or_default();
-    tab.navigate_to(&format!("http://phone.test:2805/{token}"))
-        .unwrap();
+    tab.navigate_to(&m.remote_url(&token)).unwrap();
     tab.wait_until_navigated().unwrap();
-    tab.navigate_to(&format!(
-        "http://phone.test:2805/?ui=app&session={PHONE_SID}"
-    ))
-    .unwrap();
+    tab.navigate_to(&m.remote_url(&format!("?ui=app&session={PHONE_SID}")))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(
         &tab,
@@ -15484,27 +16679,17 @@ fn a_paired_phone_over_the_tailnet_reads_a_file() {
     .concat()
     .replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
     stores.claude_session(PHONE_SID, &transcript);
-    let m = harness::Monitor::spawn_with(
-        harness::Kind::V1,
-        2714,
-        &base,
-        Some(&stores),
-        true,
-        &[("AGENT_MONITOR_TRUSTED_HOSTS", "phone.test:2714")],
-    );
+    let m = harness::Monitor::spawn_remote(harness::Kind::V1, 2714, &base, Some(&stores));
     let (_browser, tab) = harness::chrome_with_tab(&[
         "--host-resolver-rules=MAP phone.test 127.0.0.1",
         "--no-proxy-server",
     ]);
     harness::phone(&tab, 390, 844);
     let token = m.token().map(|t| format!("?token={t}")).unwrap_or_default();
-    tab.navigate_to(&format!("http://phone.test:2714/{token}"))
-        .unwrap();
+    tab.navigate_to(&m.remote_url(&token)).unwrap();
     tab.wait_until_navigated().unwrap();
-    tab.navigate_to(&format!(
-        "http://phone.test:2714/?ui=app&session={PHONE_SID}"
-    ))
-    .unwrap();
+    tab.navigate_to(&m.remote_url(&format!("?ui=app&session={PHONE_SID}")))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     let offered = "document.querySelector('[data-reference-path][data-reference-fsig]:not([data-reference-fsig=\"\"])')";
     harness::until(
@@ -17871,7 +19056,7 @@ fn a_paired_browser_arriving_by_a_link_from_another_site_is_let_in() {
     tab.find_element("#go").unwrap().click().unwrap();
     harness::until(
         &tab,
-        "location.port === '2724' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')",
+        &format!("location.port === '{}' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')", m.port),
         "a paired browser arriving by a link from another site to land on the session",
         Duration::from_secs(20),
         "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
@@ -17898,7 +19083,7 @@ fn a_paired_browser_arriving_by_a_link_from_another_site_is_let_in() {
     tab.find_element("a.again").unwrap().click().unwrap();
     harness::until(
         &tab,
-        "location.port === '2724' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')",
+        &format!("location.port === '{}' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')", m.port),
         "Try again to land the paired browser on the session",
         Duration::from_secs(20),
         "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
@@ -18008,7 +19193,7 @@ fn a_browser_paired_with_two_servers_on_one_host_stays_paired_with_both() {
     first.open(&tab, &format!("?ui=app&session={PHONE_SID}"));
     harness::until(
         &tab,
-        "location.port === '2725' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')",
+        &format!("location.port === '{}' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')", first.port),
         "the first server to let the browser in after the second paired it",
         Duration::from_secs(20),
         "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
@@ -18027,11 +19212,34 @@ const PHONE_WHOLLY_IN: &str = "function (el, box) { if (!el || !box) return fals
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_search_box_shows_whole_chips_and_clears_in_one_tap() {
     let _serial = serial();
+    search_box_shows_whole_chips(2728);
+}
+
+/// The same case with its port held by another listener (#s495): on aries-black an ssh tunnel
+/// keeps port 2728 on the loopback, and the case timed out "waiting for the phone to open on a session"
+/// while its monitor, refused the port, had already exited. The listener here never answers, as
+/// a tunnel with nothing behind it would not. It holds a port of the case's own, never 2728
+/// itself: the tunnel exits when its forward fails, so a case holding 2728 while the tunnel
+/// restarts would take the tunnel down.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_search_box_shows_whole_chips_with_its_port_held() {
+    let _serial = serial();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").expect("a port for the case to hold");
+    let port = held.local_addr().expect("the held port").port();
+    assert!(
+        !harness::port_is_free(port),
+        "the case's listener holds port {port} on the loopback"
+    );
+    search_box_shows_whole_chips(port);
+}
+
+fn search_box_shows_whole_chips(port: u16) {
     // 440 wide, the owner's phone: since #s41 the funnel stays in the find pill while typing (iOS
     // focuses the field as the search opens, so hiding it then hid it always), and at 390 two chips
     // and a word then overflow the strip, which scrolls as a whole (#353,
     // `a_phone_search_strip_scrolls_whole_and_counts_beside_the_box`).
-    let (_m, _b, tab) = phone_world(2728, "phone-search-chips", 440, 956);
+    let (_m, _b, tab) = phone_world(port, "phone-search-chips", 440, 956);
     let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + 16, r.top + r.height / 2]; })()");
     phone_tap_at(&tab, gx, gy);
     harness::until(
@@ -21624,6 +22832,40 @@ fn a_phone_find_pill_rides_the_keyboard() {
         Duration::from_secs(5),
         "document.getElementById('app').style.transform",
     );
+    // #s431 stage 4: the view, moved 300px down with the app, is placed for the keyboard, not by a
+    // host, so it reads no gap at its top and is not boxed (boxed, it would drop the island's and the
+    // status bar's insets while the reader types).
+    // A decision the ride must take, and one that shows: the app 4px shorter while the keyboard is up.
+    let tall = harness::eval(
+        &tab,
+        "document.getElementById('sessionView').style.getPropertyValue('--pl-h')",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('app').style.height = 'calc(100dvh - 4px)'; return true; })()",
+    );
+    harness::until(
+        &tab,
+        &format!(
+            "document.getElementById('sessionView').style.getPropertyValue('--pl-h') !== {tall}"
+        ),
+        "the view to decide again at its new height while the keyboard ride moves it",
+        Duration::from_secs(5),
+        "document.getElementById('sessionView').style.getPropertyValue('--pl-h')",
+    );
+    let riding = harness::eval(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return JSON.stringify({ boxed: v.classList.contains('pl-boxed'), paneY: v.style.getPropertyValue('--pane-y'), top: Math.round(v.getBoundingClientRect().top) }); })()",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('app').style.height = ''; return true; })()",
+    );
+    assert_eq!(
+        riding,
+        serde_json::json!("{\"boxed\":false,\"paneY\":\"0px\",\"top\":300}"),
+        "the view the keyboard ride moves keeps the window's top"
+    );
     assert_eq!(
         harness::eval(
             &tab,
@@ -22231,9 +23473,10 @@ fn the_app_shell_nests_a_desktop_side_session_under_its_starter() {
     stores.desktop_session("local_aaaa", starter, None);
     stores.desktop_session("local_bbbb", side, Some("local_aaaa"));
     stores.desktop_session("local_cccc", other, None);
-    let _monitor = Monitor::spawn(Kind::V1, 3205, &base, Some(&stores), false);
+    let monitor = Monitor::spawn(Kind::V1, 3205, &base, Some(&stores), false);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
-    let url = "http://127.0.0.1:3205/?ui=app";
+    let url = &format!("http://127.0.0.1:{port}/?ui=app");
     tab.navigate_to(url).unwrap();
     tab.wait_until_navigated().unwrap();
     // Each listed row: its id, whether it is a side session, and whether it wears the mark.
@@ -22370,8 +23613,9 @@ fn the_app_shell_lists_the_sessions_by_activity_alone() {
     let base = base("appshell-flat");
     let stores = flat_world(&base);
     let monitor = Monitor::spawn(Kind::V1, 3196, &base, Some(&stores), false);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
-    let url = "http://127.0.0.1:3196/?ui=app";
+    let url = &format!("http://127.0.0.1:{port}/?ui=app");
     tab.navigate_to(url).unwrap();
     tab.wait_until_navigated().unwrap();
     harness::show_every_session(&tab, url);
@@ -22756,9 +24000,10 @@ fn the_turns_pane_stays_where_the_reader_scrolled_it_until_they_go_back_to_the_s
         .collect();
     let path = stores.claude_session(sid, &body);
     let monitor = Monitor::spawn(Kind::V1, 3199, &base, Some(&stores), false);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     harness::resize(&tab, 1400.0, 760.0);
-    tab.navigate_to(&format!("http://127.0.0.1:3199/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     let pane = || -> serde_json::Value {
@@ -22910,6 +24155,7 @@ fn a_phone_s_turns_list_stays_where_the_finger_left_it() {
             .collect();
         let path = stores.claude_session(sid, &body);
         let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), false);
+        let port = monitor.port;
         let (_browser, tab) = harness::chrome_tab();
         harness::phone(&tab, w, h);
         if let Some(insets) = insets {

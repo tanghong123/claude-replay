@@ -189,9 +189,11 @@ pub const CLAIMS: &[KindClaim] = &[
     },
     KindClaim {
         kind: "tool",
-        parts: &["pre"],
+        parts: &["pre", "md", "think"],
         why: "a bare `ToolResult`, the mark on a stopped reply (`SafetyStop`, #s378) and every \
-              unrecognised `ToolUse` all end in `pre_part`",
+              unrecognised `ToolUse` all end in `pre_part`; the mark on a withdrawn reply \
+              (`Withdrawn`, #s500) folds that reply's thinking (`think`) and text (`md`) under \
+              it before its note",
     },
 ];
 
@@ -272,6 +274,19 @@ pub fn corpus_for(kind: BlockKind) -> Vec<Block> {
             Block::SafetyStop {
                 category: Some("cyber".into()),
                 note: "Your response above was stopped by a safety classifier.".into(),
+            },
+            // #s500: a reply the client withdrew for a broken tool call — the line, the reply
+            // folded under it as it was, then the client's note to the model.
+            Block::Withdrawn {
+                note: "The previous response failed to produce a valid tool call.".into(),
+                reply: vec![
+                    Block::Thinking {
+                        text: "The call needs the file's path first.".into(),
+                        duration_secs: None,
+                        tools: vec![],
+                    },
+                    Block::AssistantText("Reading `notes.md` now.".into()),
+                ],
             },
         ],
         // Path-only, so nothing is loaded or embedded — and either way this arm emits no body.
@@ -683,6 +698,24 @@ pub fn audit_jsonl() -> String {
     push(
         json!({"type":"user","timestamp":stamp(),"isMeta":true,"turnCompanion":true,"refusedMessageId":"msg-stopped",
         "message":{"role":"user","content":"Your response above was stopped by a safety classifier — this is not a tool or API error."}}),
+    );
+    // tool / think, md — a reply the client withdrew for a broken tool call (#s500): its thinking
+    // and its text, then the client's note naming both records, which folds to the mark (the
+    // line, the reply under it, then the note).
+    push(
+        json!({"type":"assistant","uuid":"rec-withdrawn-think","timestamp":stamp(),
+        "message":{"id":"msg-withdrawn","role":"assistant","stop_reason":"tool_use",
+                   "content":[{"type":"thinking","thinking":"The call needs the burrow count first.","signature":"x"}]}}),
+    );
+    push(
+        json!({"type":"assistant","uuid":"rec-withdrawn-text","timestamp":stamp(),
+        "message":{"id":"msg-withdrawn","role":"assistant","stop_reason":"tool_use",
+                   "content":[{"type":"text","text":"Counting the burrows now."}]}}),
+    );
+    push(
+        json!({"type":"user","timestamp":stamp(),"isMeta":true,"turnCompanion":true,
+        "retractedMessageUuids":["rec-withdrawn-think","rec-withdrawn-text"],
+        "message":{"role":"user","content":"The previous response failed to produce a valid tool call. Please retry the tool call now."}}),
     );
     // bash — a command that ran outside the sandbox (#s381): the sandbox's head says the session
     // ran with it on, then a call whose result reads `sandboxed: false` wears the mark.

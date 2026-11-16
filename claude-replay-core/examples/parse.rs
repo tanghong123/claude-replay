@@ -74,6 +74,14 @@ fn describe(b: &Block) -> (&'static str, String) {
             "result",
             claude_replay_core::model::safety_stop_line(category.as_deref()),
         ),
+        Block::Withdrawn { reply, .. } => (
+            "result",
+            format!(
+                "{} · {} blocks",
+                claude_replay_core::model::WITHDRAWN_LINE,
+                reply.len()
+            ),
+        ),
         Block::Command { name, .. } => ("command", name.clone()),
         Block::SubAgent(sa) => (
             "agent",
