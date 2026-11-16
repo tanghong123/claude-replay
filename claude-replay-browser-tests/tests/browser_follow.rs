@@ -11878,6 +11878,156 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
     );
 }
 
+/// #s520: with a mouse, where the outline's glyphs join the session's top bar (a session column of
+/// 480–547px: a 554–621px window beside the rail, a 490–553px one under the drawer's handle, a
+/// 1035–1102px one with the right pane open beside the session, a host's pane of the same), the bar
+/// holds its title, the search box, Aa, Turns, Tasks, Agents, the outline's control, Info and the
+/// pane's control. It used to lay them out at their widest: the search box kept 180 or 286px, so the
+/// title was squeezed to one letter and Info and the pane's control went past the window or under
+/// the open pane's tabs. Every control the bar shows lies inside the session's column, never under
+/// the pane, and a pointer at its centre reaches it; the title shows at least its first word; and the
+/// search box, folded to its glyph there, opens to its width on a click and folds back.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
+    let _serial = serial();
+    let base = base("topbar-band");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000005a0".to_string();
+    let mut jsonl = harness::long_session(6, harness::Shape::default());
+    jsonl.push_str("{\"type\":\"custom-title\",\"customTitle\":\"Harbour tide table notes\"}\n");
+    stores.claude_session(&sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3140, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    // What the bar shows, read where a reader would: each shown control's box against the session's
+    // column (`.workspace`) and the open pane, and what a pointer at its centre reaches; the title's
+    // room against its first word (a Range over the word, and the ellipsis a longer title draws).
+    let probe = "(function(){ var v = document.getElementById('sessionView'); var ws = v.querySelector('.workspace'), bar = ws.querySelector(':scope>.topbar'); var pv = v.classList.contains('preview-off') ? null : v.querySelector('.preview'); var W = ws.getBoundingClientRect(), P = pv ? pv.getBoundingClientRect() : null; var r4 = function (b) { return [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)]; }; var name = function (e) { return !e ? 'nothing' : e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + String(e.getAttribute('class') || '').split(' ')[0]; }; var bad = []; var shown = [].filter.call(bar.querySelectorAll('button, .header-searchbox'), function (e) { var b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && getComputedStyle(e).visibility !== 'hidden'; }); ['phoneInfo', 'previewBtn'].forEach(function (id) { if (shown.indexOf(document.getElementById(id)) < 0) bad.push('#' + id + ' is not shown'); }); shown.forEach(function (e) { var b = e.getBoundingClientRect(), hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2), why = []; if (b.left < W.left - 0.5 || b.right > W.right + 0.5) why.push('outside the session column ' + r4(W)); if (P && b.right > P.left + 0.5) why.push('under the pane from ' + Math.round(P.left)); if (!hit || !(hit === e || e.contains(hit))) why.push('its centre reaches ' + name(hit)); if (why.length) bad.push(name(e) + ' ' + r4(e.getBoundingClientRect()) + ': ' + why.join(', ')); }); var t = document.getElementById('sessionTitle'), text = t.textContent.trim(), word = text.split(/\\s+/)[0], node = t.firstChild, at = t.textContent.indexOf(word); var range = document.createRange(); range.setStart(node, at); range.setEnd(node, at + word.length); var cs = getComputedStyle(t), room = t.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); var ctx = document.createElement('canvas').getContext('2d'); ctx.font = cs.font; var need = range.getBoundingClientRect().width + (text.length > word.length ? ctx.measureText('\\u2026').width : 0); var tb = t.getBoundingClientRect(); if (room + 0.5 < need) bad.push('the title has ' + Math.round(room) + 'px of the ' + Math.ceil(need) + 'px its first word \"' + word + '\" needs'); if (tb.left < W.left - 0.5 || tb.right > W.right + 0.5) bad.push('the title ' + r4(tb) + ' is outside the session column'); var box = bar.querySelector('.header-searchbox'); return { width: innerWidth, classes: v.className, workspace: r4(W), pane: P ? r4(P) : null, title: text, search: Math.round(box.getBoundingClientRect().width), focused: document.activeElement ? document.activeElement.id : '', bar: shown.map(function (e) { return name(e) + ' ' + r4(e.getBoundingClientRect()); }), bad: bad }; })()";
+    let settled = |width: u32, open: bool| {
+        format!("innerWidth === {width} && {VIEW_CAUGHT_UP} && document.getElementById('sessionView').classList.contains('preview-off') === {} && document.getElementById('sessionView').getAnimations({{ subtree: true }}).filter(function (a) {{ return a instanceof CSSTransition; }}).length === 0 && document.getElementById('sessionTitle').textContent === 'Harbour tide table notes'", !open)
+    };
+    let at = |width: u32, open: bool, what: &str| -> serde_json::Value {
+        if width < 500 {
+            harness::mouse_window(&tab, width, 900);
+        } else {
+            harness::clear_metrics(&tab);
+            harness::resize(&tab, width as f64, 900.0);
+        }
+        let toggle = format!("(function(){{ var v = document.getElementById('sessionView'); if (v.classList.contains('preview-off') === {open}) document.getElementById('previewBtn').click(); return true; }})()");
+        harness::eval(&tab, &toggle);
+        harness::until(
+            &tab,
+            &settled(width, open),
+            &format!("{what} at {width}px, the pane {}", if open { "open" } else { "shut" }),
+            Duration::from_secs(15),
+            "({ w: innerWidth, cls: document.getElementById('sessionView').className, title: document.getElementById('sessionTitle').textContent })",
+        );
+        harness::until_preview_parked(&tab);
+        harness::probe(&tab, probe)
+    };
+    let fits = |seen: &serde_json::Value, what: &str| {
+        assert!(
+            seen["classes"]
+                .as_str()
+                .is_some_and(|c| c.split(' ').any(|x| x == "pl-outline-bar")),
+            "{what}: the outline's glyphs are in the top bar here: {seen}"
+        );
+        assert_eq!(
+            seen["bad"],
+            serde_json::json!([]),
+            "{what}: the top bar keeps its title and every control inside the session's column: {seen}"
+        );
+    };
+
+    // The app shell.
+    let url = monitor.url(&format!("?ui=app&session={sid}"));
+    harness::resize(&tab, 1100.0, 900.0);
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window .turn.user')",
+        "the app shell to mount the fixture",
+        Duration::from_secs(30),
+        "document.body.innerText.slice(0, 200)",
+    );
+    // 540px: the drawer's handle at the bar's left, the session 520px.
+    let narrow = at(540, false, "the app");
+    fits(&narrow, "the app at 540px");
+    // A click on the folded search box opens it to its width, for typing, and still inside the column.
+    harness::click_when_settled(&tab, ".workspace>.topbar .header-searchbox", "the search box");
+    harness::until(
+        &tab,
+        "document.activeElement && document.activeElement.id === 'transcriptSearchInput' && document.querySelector('.workspace>.topbar .header-searchbox').getBoundingClientRect().width >= 200 && document.getElementById('sessionView').getAnimations({ subtree: true }).filter(function (a) { return a instanceof CSSTransition; }).length === 0",
+        "the search box to open for typing",
+        Duration::from_secs(5),
+        "({ focused: document.activeElement && document.activeElement.id, width: document.querySelector('.workspace>.topbar .header-searchbox').getBoundingClientRect().width })",
+    );
+    let typing = harness::probe(&tab, probe);
+    let typed_bad: Vec<_> = typing["bad"]
+        .as_array()
+        .map(|b| {
+            b.iter()
+                .filter(|x| !x.as_str().unwrap_or("").starts_with("the title"))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        typed_bad.is_empty(),
+        "the open search box and the controls beside it stay inside the column: {typing}"
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('transcriptSearchInput').blur(); 1",
+    );
+    harness::until(
+        &tab,
+        "document.querySelector('.workspace>.topbar .header-searchbox').getBoundingClientRect().width < 60",
+        "the search box to fold back to its glyph",
+        Duration::from_secs(5),
+        "document.querySelector('.workspace>.topbar .header-searchbox').getBoundingClientRect().width",
+    );
+    // The bar's fold-all control is the one it spares there: it is in Aa's menu, and still folds.
+    harness::click_when_settled(&tab, "#readingBtn", "Aa");
+    harness::until(
+        &tab,
+        "(function(){ var b = document.querySelector('#readingOptions [data-fold-all]'); if (!b) return false; var r = b.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return r.width > 0 && !!hit && b.contains(hit) && getComputedStyle(document.getElementById('sessionFoldAll')).display === 'none'; })()",
+        "fold-all in Aa's menu, and not in the bar",
+        Duration::from_secs(5),
+        "({ row: !!document.querySelector('#readingOptions [data-fold-all]'), bar: getComputedStyle(document.getElementById('sessionFoldAll')).display })",
+    );
+    harness::eval(&tab, "document.getElementById('readingBtn').click(); 1");
+    // 500px: the narrowest under the handle, the session at M.
+    fits(&at(500, false, "the app"), "the app at 500px");
+    // 600px: beside the rail, the session 526px.
+    fits(&at(600, false, "the app"), "the app at 600px");
+    // 1100px, the pane open beside the session: the session 512px, its bar beside the pane's tabs.
+    fits(&at(1100, true, "the app"), "the app at 1100px, the pane open");
+    // 1040px, the pane open: the session at M.
+    fits(&at(1040, true, "the app"), "the app at 1040px, the pane open");
+
+    // A host's pane, the view the whole page.
+    harness::clear_metrics(&tab);
+    harness::resize(&tab, 1000.0, 900.0);
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window .turn.user')",
+        "the session in the host's view",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    fits(
+        &at(1000, true, "the host"),
+        "a host's 1000px pane, the pane open",
+    );
+    fits(&at(490, false, "the host"), "a host's 490px pane");
+    harness::clear_metrics(&tab);
+    drop(monitor);
+}
+
 /// #s431 stage 3 (design/pane-layout.md, "The owner's order"): the app lays out its list from the
 /// window by the owner's order, beside what the view needs. With a mouse and the pane shut: the list
 /// at the reader's 300px down to 858px, narrowing toward 232 below it, the rail from 789px (its expand
