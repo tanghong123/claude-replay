@@ -913,13 +913,15 @@ fn the_app_shell_hides_and_restores_a_session() {
     );
     let store_rows = 1;
     let monitor = Monitor::spawn(Kind::V1, 2832, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to("http://127.0.0.1:2832/?ui=app").unwrap();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     // The fixture is stamped in the builders' fixed past hour, so it is Idle — out of the
     // shell's default filter (#202). This case reads the TREE, so it asks for every bucket.
-    harness::show_every_session(&tab, "http://127.0.0.1:2832/?ui=app");
+    harness::show_every_session(&tab, &format!("http://127.0.0.1:{port}/?ui=app"));
 
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
         tab.evaluate(js, true)
@@ -1056,6 +1058,7 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
         &harness::long_session(6, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(Kind::V1, 2833, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
@@ -1066,7 +1069,8 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
     };
     // Find a parent with children by asking the same routes the shell uses — first the
     // listing (blocking on the cold scan), then `/pull` per session for its meta.
-    tab.navigate_to("http://127.0.0.1:2833/?ui=app").unwrap();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     // The child's id is whatever the index gave the sub-agent transcript: read it off the
     // parent's meta rather than guessing the naming.
@@ -1077,8 +1081,10 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
         .first()
         .cloned()
         .unwrap_or_else(|| panic!("the fixture parent lists its sub-agent child: {listed}"));
-    tab.navigate_to(&format!("http://127.0.0.1:2833/?ui=app&session={child_id}"))
-        .unwrap();
+    tab.navigate_to(&format!(
+        "http://127.0.0.1:{port}/?ui=app&session={child_id}"
+    ))
+    .unwrap();
     tab.wait_until_navigated().unwrap();
     let mut live = false;
     for _ in 0..80 {
@@ -1168,6 +1174,7 @@ fn the_app_shell_restores_the_scroll_position_across_a_reload() {
     let sid = "cccccccc-0000-4000-8000-000000000001".to_string();
     stores.claude_session(&sid, &harness::long_session(80, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2834, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
@@ -1176,7 +1183,7 @@ fn the_app_shell_restores_the_scroll_position_across_a_reload() {
             .and_then(|r| r.value)
             .unwrap_or(serde_json::Value::Null)
     };
-    tab.navigate_to(&format!("http://127.0.0.1:2834/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "document.querySelector('.transcript') && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3", "the fixture session to be tall enough to scroll", std::time::Duration::from_secs(20), "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : -1");
@@ -1260,6 +1267,7 @@ fn the_app_shell_keys_step_turns_and_heads() {
         ),
     );
     let monitor = Monitor::spawn(Kind::V1, 2835, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
@@ -1269,7 +1277,7 @@ fn the_app_shell_keys_step_turns_and_heads() {
             .unwrap_or(serde_json::Value::Null)
     };
     harness::track_idle(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2835/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "(function(){ var u=document.querySelectorAll('.virtual-window .turn.user').length, h=document.querySelectorAll('.virtual-window button.renderer-head').length; return u >= 3 && h >= 1; })()", "three user turns and a tool head mounted", std::time::Duration::from_secs(20), "document.querySelectorAll('.virtual-window .turn.user').length + ' turns, ' + document.querySelectorAll('.virtual-window button.renderer-head').length + ' heads'");
@@ -3266,12 +3274,13 @@ fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked() {
         );
     }
     let monitor = Monitor::spawn(Kind::V1, 3270, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     harness::track_idle(&tab);
     harness::show_every_session(
         &tab,
-        &format!("http://127.0.0.1:3270/?ui=app&session={first}"),
+        &format!("http://127.0.0.1:{port}/?ui=app&session={first}"),
     );
     let row = format!("#tree .tree-row.session[data-session=\"{second}\"]");
     harness::until(
@@ -3442,6 +3451,7 @@ fn subtitle_after_a_jump(port: u16, phone: Option<(u32, u32)>) {
         ),
     );
     let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     if let Some((w, h)) = phone {
         harness::phone(&tab, w, h);
@@ -3576,6 +3586,7 @@ fn the_app_shell_subtitle_after_a_plan_card_gives_one_answer_per_offset() {
     }
     stores.claude_session(sid, &session);
     let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     harness::track_idle(&tab);
@@ -7434,12 +7445,13 @@ fn a_follower_s_next_session_opens_at_its_end_before_any_scroll_event() {
         stores.claude_session(sid, &harness::long_session(30, harness::Shape::default()));
     }
     let monitor = Monitor::spawn(Kind::V1, 3133, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     harness::resize(&tab, 1280.0, 800.0);
     harness::show_every_session(
         &tab,
-        &format!("http://127.0.0.1:3133/?ui=app&session={first}&trace=viewport"),
+        &format!("http://127.0.0.1:{port}/?ui=app&session={first}&trace=viewport"),
     );
     let row = format!("#tree .tree-row.session[data-session=\"{second}\"]");
     harness::until(
@@ -7938,6 +7950,7 @@ fn the_app_shell_composes_one_scroller_under_fixed_chrome() {
     let sid = "cccccccc-0000-4000-8000-000000000001".to_string();
     stores.claude_session(&sid, &harness::long_session(80, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2836, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
@@ -7946,7 +7959,7 @@ fn the_app_shell_composes_one_scroller_under_fixed_chrome() {
             .and_then(|r| r.value)
             .unwrap_or(serde_json::Value::Null)
     };
-    tab.navigate_to(&format!("http://127.0.0.1:2836/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "(function(){ var s=document.querySelector('.transcript'); return !!s && document.querySelector('.virtual-window').children.length > 0 && s.scrollHeight > s.clientHeight * 2; })()", "the fixture session to be tall enough to scroll", std::time::Duration::from_secs(20), "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : -1");
@@ -8148,6 +8161,7 @@ fn app_shell_lists_a_session_started_in_another_s_scratch_under_its_project() {
     let wt = format!("/tmp/claude-502/-w-knack/{parent}/scratchpad/wt-1");
     stores.claude_session(child, &session(child, &wt, 400, "fix t1 in this worktree"));
     let monitor = Monitor::spawn(Kind::V1, 2960, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let probe = |js: &str| -> serde_json::Value {
@@ -8160,7 +8174,7 @@ fn app_shell_lists_a_session_started_in_another_s_scratch_under_its_project() {
     };
 
     // The app shell: a row belongs to the project header above it.
-    harness::show_every_session(&tab, "http://127.0.0.1:2960/?ui=app");
+    harness::show_every_session(&tab, &format!("http://127.0.0.1:{port}/?ui=app"));
     harness::until(
         &tab,
         &format!("!!document.querySelector('.tree-row.session[data-session=\"{child}\"]')"),
@@ -8312,9 +8326,10 @@ fn the_app_shell_collapses_the_sidebar_into_a_rail() {
     let sid = "cccccccc-0000-4000-8000-000000000054".to_string();
     stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2843, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let url = format!("http://127.0.0.1:2843/?ui=app&session={sid}");
+    let url = format!("http://127.0.0.1:{port}/?ui=app&session={sid}");
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
     let mounted = "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0";
@@ -9089,9 +9104,10 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
     let sid = "cccccccc-0000-4000-8000-000000000055".to_string();
     stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2844, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let url = format!("http://127.0.0.1:2844/?ui=app&session={sid}");
+    let url = format!("http://127.0.0.1:{port}/?ui=app&session={sid}");
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
     let mounted = "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0 && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3";
@@ -9340,9 +9356,10 @@ fn the_app_shell_orders_tasks_by_group_then_id() {
         ],
     );
     let monitor = Monitor::spawn(Kind::V1, 2845, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2845/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -9405,9 +9422,10 @@ fn the_app_shell_turns_pane_scrolls_itself() {
     let sid = "cccccccc-0000-4000-8000-000000000058".to_string();
     stores.claude_session(&sid, &harness::long_session(160, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2848, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2848/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(
@@ -9488,9 +9506,10 @@ fn the_app_shell_tasks_pane_scrolls_itself() {
         .collect();
     stores.claude_tasks(&sid, &borrowed);
     let monitor = Monitor::spawn(Kind::V1, 2849, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2849/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -9563,7 +9582,7 @@ fn the_app_shell_centers_the_tasks_pane_on_the_running_tasks() {
     let monitor = Monitor::spawn(Kind::V1, 2846, &base, Some(&stores), true);
     let (browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2846/?ui=app&session={sid}"))
+    tab.navigate_to(&monitor.url(&format!("?ui=app&session={sid}")))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -9757,7 +9776,7 @@ fn the_app_shell_centers_the_tasks_pane_on_the_running_tasks() {
     let monitor2 = Monitor::spawn(Kind::V1, 2847, &base2, Some(&stores2), true);
     let tab2 = browser.new_tab().unwrap();
     monitor2.pair(&tab2);
-    tab2.navigate_to(&format!("http://127.0.0.1:2847/?ui=app&session={sid2}"))
+    tab2.navigate_to(&monitor2.url(&format!("?ui=app&session={sid2}")))
         .unwrap();
     tab2.wait_until_navigated().unwrap();
     harness::until(&tab2, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the second shell to mount", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -9820,9 +9839,10 @@ fn the_app_shell_opens_a_task_details_popover() {
     // Give the running task a two-paragraph description and a dependency, as taskq writes them.
     std::fs::write(dir.join("2.json"), r#"{"id":"2","subject":"two, running","description":"First paragraph of the task.\n\nSecond paragraph, with detail.","activeForm":"Doing two","status":"in_progress","blocks":["3"],"blockedBy":["1"]}"#).unwrap();
     let monitor = Monitor::spawn(Kind::V1, 2867, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2867/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -9937,9 +9957,10 @@ fn the_app_shell_agents_pane_switches_to_the_sub_agent() {
         &harness::long_session(6, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(Kind::V1, 2850, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let url = format!("http://127.0.0.1:2850/?ui=app&session={parent}");
+    let url = format!("http://127.0.0.1:{port}/?ui=app&session={parent}");
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the parent to mount", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -10018,6 +10039,7 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
         .collect();
     stores.claude_tasks(&sid, &borrowed);
     let monitor = Monitor::spawn(Kind::V1, 2869, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     tab.set_bounds(headless_chrome::types::Bounds::Normal {
         left: Some(0),
@@ -10027,7 +10049,7 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
     })
     .unwrap();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2869/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(
@@ -10665,9 +10687,10 @@ fn the_app_shell_info_and_turns_panes_show_the_compaction() {
     }
     stores.claude_session(&sid, &transcript);
     let monitor = Monitor::spawn(Kind::V1, 2868, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2868/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(
@@ -10787,9 +10810,10 @@ fn the_app_shell_theme_toggle_is_visible_and_works() {
     let sid = "cccccccc-0000-4000-8000-000000000075".to_string();
     stores.claude_session(&sid, &harness::long_session(6, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2870, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2870/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(
@@ -10815,7 +10839,7 @@ fn the_app_shell_theme_toggle_is_visible_and_works() {
     // its contrast against what lies behind it is read in each theme.
     harness::show_every_session(
         &tab,
-        &format!("http://127.0.0.1:2870/?ui=app&session={sid}"),
+        &format!("http://127.0.0.1:{port}/?ui=app&session={sid}"),
     );
     harness::until(
         &tab,
@@ -10878,6 +10902,7 @@ fn the_app_shell_s_browser_colours_follow_its_theme_not_the_os() {
     let sid = "cccccccc-0000-4000-8000-000000014100".to_string();
     stores.claude_session(&sid, &harness::long_session(4, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 3080, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let os = |scheme: &str| {
@@ -10898,7 +10923,7 @@ fn the_app_shell_s_browser_colours_follow_its_theme_not_the_os() {
         ("light", "light"),
     ] {
         os(os_scheme);
-        tab.navigate_to(&format!("http://127.0.0.1:3080/?ui=app&session={sid}"))
+        tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
             .unwrap();
         tab.wait_until_navigated().unwrap();
         harness::until(
@@ -10956,7 +10981,8 @@ fn the_app_shell_collapses_a_prompt_only_when_that_hides_several_lines() {
     jsonl += &assistant("Done.", 6);
     stores.claude_session(&sid, &jsonl);
     let monitor = Monitor::spawn(Kind::V1, 3084, &base, Some(&stores), true);
-    let url = format!("http://127.0.0.1:3084/?ui=app&session={sid}");
+    let port = monitor.port;
+    let url = format!("http://127.0.0.1:{port}/?ui=app&session={sid}");
     let probe = "(function(){ var out = {}; document.querySelectorAll('.turn.user').forEach(function(t){ var p = t.querySelector('.user-prompt'), sh = t.querySelector('.prompt-copy-shell'), b = sh.firstElementChild, e = t.querySelector('.prompt-expand'), cs = getComputedStyle(b), r = null, hit = null; if (e) { e.scrollIntoView({block: 'center'}); r = e.getBoundingClientRect(); var at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); hit = !!at && e.contains(at); } out[t.dataset.turn] = { collapsible: p.classList.contains('prompt-collapsible'), collapsed: sh.classList.contains('collapsed'), label: e ? e.textContent : null, expanded: e ? e.getAttribute('aria-expanded') : null, h: b.getBoundingClientRect().height, lines: (b.scrollHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)) / parseFloat(cs.lineHeight), lh: parseFloat(cs.lineHeight), padTop: parseFloat(cs.paddingTop), padBottom: parseFloat(cs.paddingBottom), btnH: r ? r.height : null, hit: hit, font: e ? getComputedStyle(e).fontFamily : null }; }); return out; })()";
     let open = |tab: &headless_chrome::Tab| {
         monitor.pair(tab);
@@ -11132,9 +11158,10 @@ fn the_app_shell_open_counts_nothing_as_new() {
     let sid = "cccccccc-0000-4000-8000-000000000084".to_string();
     let path = stores.claude_session(&sid, &harness::long_session(40, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2871, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let url = format!("http://127.0.0.1:2871/?ui=app&session={sid}");
+    let url = format!("http://127.0.0.1:{port}/?ui=app&session={sid}");
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
     let mounted = "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0 && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3";
@@ -11239,10 +11266,13 @@ fn the_app_shell_finds_the_parent_from_a_child_opened_first() {
         &harness::long_session(6, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(Kind::V1, 2872, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to("http://127.0.0.1:2872/?ui=app&session=aExplore-82")
-        .unwrap();
+    tab.navigate_to(&format!(
+        "http://127.0.0.1:{port}/?ui=app&session=aExplore-82"
+    ))
+    .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the child to mount from its deep link", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 160)");
     harness::until(&tab, "document.getElementById('sessionParent').classList.contains('is-live')", "the parent control to appear", std::time::Duration::from_secs(15), "JSON.stringify({cls: document.getElementById('sessionParent').className, crumb: document.getElementById('sessionCrumb').textContent})");
@@ -11284,9 +11314,10 @@ fn the_app_shell_expands_every_group_again() {
         );
     }
     let monitor = Monitor::spawn(Kind::V1, 2874, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let url = "http://127.0.0.1:2874/?ui=app";
+    let url = &format!("http://127.0.0.1:{port}/?ui=app");
     tab.navigate_to(url).unwrap();
     tab.wait_until_navigated().unwrap();
     let toggles = "document.querySelectorAll('[data-toggle]').length";
@@ -11355,9 +11386,10 @@ fn the_app_shell_resizes_the_session_list() {
     let sid = "cccccccc-0000-4000-8000-000000000096".to_string();
     stores.claude_session(&sid, &harness::long_session(10, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2876, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let url = format!("http://127.0.0.1:2876/?ui=app&session={sid}");
+    let url = format!("http://127.0.0.1:{port}/?ui=app&session={sid}");
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
     let mounted = "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0";
@@ -12511,9 +12543,10 @@ fn the_app_shell_lists_the_published_artifacts() {
     }
     stores.claude_session(&sid, &transcript);
     let monitor = Monitor::spawn(Kind::V1, 2875, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2875/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -13942,10 +13975,11 @@ fn the_app_shell_panes_open_on_what_is_live() {
         ],
     );
     let monitor = Monitor::spawn(Kind::V1, 2885, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let open = |tab: &headless_chrome::Tab| {
-        tab.navigate_to(&format!("http://127.0.0.1:2885/?ui=app&session={sid}"))
+        tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
             .unwrap();
         tab.wait_until_navigated().unwrap();
         harness::until(tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -14437,6 +14471,7 @@ fn app_shell_favicon(kind: Kind, port: u16, label: &str) {
         &harness::long_session(3, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(kind, port, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
@@ -14489,6 +14524,7 @@ fn home_screen_icon(kind: Kind, port: u16, label: &str) {
         &harness::long_session(3, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(kind, port, &base, Some(&stores), true);
+    let port = monitor.port;
 
     // Never paired: the icon and the manifest are read, as the bytes they are.
     let (_stranger, tab) = harness::chrome_tab();
@@ -14699,8 +14735,10 @@ fn the_app_shell_counts_the_blocked_sessions() {
     let base = base("appshell-buckets");
     let world = bucket_world(&base);
     let monitor = Monitor::spawn(Kind::V1, 2916, &base, Some(&world.stores), false);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
-    tab.navigate_to("http://127.0.0.1:2916/?ui=app").unwrap();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     // A wait publishes at once, an ended turn after one stable tick, the process probe runs
     // every 10 s and the shell polls every 5 s: wait for every verdict to settle, not only
@@ -14823,8 +14861,10 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
     let base = base("appshell-filter");
     let world = bucket_world(&base);
     let monitor = Monitor::spawn(Kind::V1, 2917, &base, Some(&world.stores), false);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
-    tab.navigate_to("http://127.0.0.1:2917/?ui=app").unwrap();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     let settled = |v: &serde_json::Value| {
         let st = |k: &str| {
@@ -14975,7 +15015,8 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
     click("#sessionFilter [data-bucket=\"recent\"]");
     click("#sessionFilter [data-bucket=\"idle\"]");
     assert_eq!(tree(), "123", "blocked alone");
-    tab.navigate_to("http://127.0.0.1:2917/?ui=app").unwrap();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline && tree() != "123" {
@@ -15039,6 +15080,160 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
     drop(world);
 }
 
+/// A GET on the loopback, answered within `wait`: the reply as text (status line first), or why not.
+fn loopback_get(port: u16, path: &str, wait: Duration) -> String {
+    use std::io::{Read, Write};
+    let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) else {
+        return format!("nothing listens on {port}");
+    };
+    s.set_read_timeout(Some(wait)).unwrap();
+    let _ = write!(
+        s,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    );
+    let mut out = String::new();
+    match s.read_to_string(&mut out) {
+        Ok(_) => out,
+        Err(e) => format!("no reply within {wait:?} ({e}): {out}"),
+    }
+}
+
+/// #s495: a case's port held by another listener — aries-black's ssh tunnel on 2728 — moves the
+/// case's monitor to a port the kernel has free, and the handle says where it went. The harness
+/// used to wait for anything to answer on the port, so it handed the case the tunnel: the monitor
+/// had exited on its bind, and the case failed later as a page that never came. The listener here
+/// accepts nothing, as a tunnel with nothing behind it would; the case asks the monitor itself
+/// (its public manifest) on the port the handle names.
+#[test]
+#[ignore = "needs a built agent-monitor"]
+fn a_case_whose_port_is_held_gets_its_monitor_on_another() {
+    let _serial = serial();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let base = harness::base("held-port-moves");
+    let stores = harness::Stores::new(&base);
+    let m = harness::Monitor::spawn(harness::Kind::V1, port, &base, Some(&stores), true);
+    assert_ne!(
+        m.port, port,
+        "the monitor serves somewhere other than the held port"
+    );
+    assert_eq!(m.key, port, "its scratch keeps the case's port in its name");
+    assert!(
+        m.state.ends_with(format!("state-{port}")),
+        "the state dir is named for the case's port: {}",
+        m.state.display()
+    );
+    let reply = loopback_get(m.port, "/manifest.webmanifest", Duration::from_secs(10));
+    assert!(
+        reply.starts_with("HTTP/1.1 200") && reply.contains("Agent Monitor"),
+        "the monitor answers on the port its handle names: {reply}"
+    );
+}
+
+/// #s495: a monitor that must serve on one port (a page is open on that origin,
+/// `Monitor::respawn`) and finds it held fails AT ONCE, naming the port and what holds it — here
+/// this test process, by `lsof` (or `ss`) — rather than handing the case to the listener there.
+#[test]
+#[ignore = "needs a built agent-monitor"]
+fn a_monitor_held_off_its_exact_port_names_the_holder_at_once() {
+    let _serial = serial();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let base = harness::base("held-port-exact");
+    let stores = harness::Stores::new(&base);
+    let started = std::time::Instant::now();
+    let spawned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        harness::Monitor::spawn_exact(harness::Kind::V1, port, port, &base, Some(&stores), true)
+    }));
+    let took = started.elapsed();
+    let why = match spawned {
+        Ok(m) => panic!("a monitor came up on the held port {}", m.port),
+        Err(payload) => payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default(),
+    };
+    assert!(
+        took < Duration::from_secs(5),
+        "it fails at once, not after a wait: {took:?}"
+    );
+    let me = std::process::id();
+    assert!(
+        why.contains(&format!("port {port} is held by")) && why.contains(&format!("pid {me}")),
+        "the panic names the port and its holder (pid {me}): {why}"
+    );
+    drop(held);
+}
+
+/// #s495: a restart under an open page (`Monitor::respawn`) brings the same monitor back where the
+/// page is — the port the first one was MOVED to when the case's was held — and with what its
+/// spawn was given: a remote case's monitor still trusts `phone.test` on that port, and extra
+/// arguments come back too. It once kept only the port, so a remote case's restart would have
+/// refused its own phone.
+#[test]
+#[ignore = "needs a built agent-monitor"]
+fn a_respawned_monitor_keeps_its_port_its_environment_and_its_arguments() {
+    let _serial = serial();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let base = harness::base("held-port-respawn");
+    let stores = harness::Stores::new(&base);
+    let environment = |m: &harness::Monitor| {
+        let out = std::process::Command::new("ps")
+            .args(["eww", "-o", "command=", "-p", &m.pid().to_string()])
+            .output()
+            .expect("ps runs");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let first = harness::Monitor::spawn_remote(harness::Kind::V1, port, &base, Some(&stores));
+    let moved = first.port;
+    assert_ne!(moved, port, "the held port moved the first monitor");
+    let trusted = format!(
+        "AGENT_MONITOR_TRUSTED_HOSTS={}:{moved}",
+        harness::REMOTE_HOST
+    );
+    assert!(
+        environment(&first).contains(&trusted),
+        "the first monitor trusts the name on its port: {}",
+        environment(&first)
+    );
+    let again = harness::Monitor::respawn(first, &base, Some(&stores), true);
+    assert_eq!(again.port, moved, "the restart serves where the page is");
+    assert_eq!(again.key, port, "over the same scratch");
+    let said = environment(&again);
+    assert!(
+        said.contains(&trusted),
+        "the restart keeps its environment: {said}"
+    );
+    let reply = loopback_get(again.port, "/manifest.webmanifest", Duration::from_secs(10));
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    drop(again);
+
+    let base = harness::base("held-port-respawn-args");
+    let stores = harness::Stores::new(&base);
+    let first = harness::Monitor::spawn_with_args(
+        harness::Kind::V1,
+        port,
+        &base,
+        Some(&stores),
+        true,
+        &[("CR_RESPAWN_MARK", "kept")],
+        &["--agents", "claude,codex"],
+    );
+    let again = harness::Monitor::respawn(first, &base, Some(&stores), true);
+    let said = environment(&again);
+    assert!(
+        said.contains("CR_RESPAWN_MARK=kept"),
+        "the restart keeps the spawn's extra environment: {said}"
+    );
+    assert!(
+        said.contains("--agents claude,codex"),
+        "the restart keeps the spawn's extra arguments: {said}"
+    );
+    drop(held);
+}
+
 /// #309 — the owner saw `agent-monitor --pair` print `session 72b570af…: no such transcript` right
 /// after it started, for a valid transcript: a tab left open on it polled before any page had
 /// fetched the session list, and the service can only serve ids a scan has SHOWN it. A `/pull` for
@@ -15054,7 +15249,7 @@ fn a_fresh_monitor_serves_a_session_before_any_page_lists_them() {
     let m = harness::Monitor::spawn(harness::Kind::V1, 2819, &base, Some(&stores), false);
     let get = |path: &str| -> (u16, String) {
         use std::io::{Read, Write};
-        let mut s = std::net::TcpStream::connect(("127.0.0.1", 2819)).unwrap();
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", m.port)).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
         write!(
             s,
@@ -15108,8 +15303,8 @@ fn a_phone_pairs_by_a_one_time_code() {
         "aaaa1111-0000-4000-8000-000000000011",
         &harness::long_session(3, harness::Shape::default()),
     );
-    let port = 2820u16;
-    let m = harness::Monitor::spawn(harness::Kind::V1, port, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2820, &base, Some(&stores), true);
+    let port = m.port;
     // The CLI, in the monitor's own state and cache (where its token and the codes file live).
     let bin =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/release/agent-monitor");
@@ -15127,8 +15322,11 @@ fn a_phone_pairs_by_a_one_time_code() {
         ])
         .arg(format!("http://127.0.0.1:{port}/"))
         .env("XDG_CACHE_HOME", &base)
-        .env("CLAUDE_MONITOR_CACHE", base.join(format!("cache-{port}")))
-        .env("CLAUDE_MONITOR_STATE", base.join(format!("state-{port}")))
+        .env(
+            "CLAUDE_MONITOR_CACHE",
+            base.join(format!("cache-{}", m.key)),
+        )
+        .env("CLAUDE_MONITOR_STATE", &m.state)
         .output()
         .expect("run agent-monitor --pair-phone");
     let printed = String::from_utf8_lossy(&out.stdout).to_string();
@@ -15147,8 +15345,8 @@ fn a_phone_pairs_by_a_one_time_code() {
         printed.contains('▀') || printed.contains('▄') || printed.contains('█'),
         "a QR code is drawn"
     );
-    let token = std::fs::read_to_string(base.join(format!("state-{port}")).join("auth-token"))
-        .expect("a paired monitor has a token");
+    let token =
+        std::fs::read_to_string(m.state.join("auth-token")).expect("a paired monitor has a token");
     assert!(
         !token.trim().is_empty() && !printed.contains(token.trim()),
         "the long-lived token is never shown: {printed}"
@@ -15186,8 +15384,8 @@ fn refusal_pairing_actions_are_readable_and_tappable() {
     let _serial = serial();
     let base = harness::base("refusal-pairing-actions");
     let stores = harness::Stores::new(&base);
-    let port = 2987;
-    let _monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2987, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     for (layout, width, height, mobile) in [
         ("portrait", 390, 844, true),
@@ -16270,14 +16468,10 @@ fn a_phone_over_the_tailnet_sees_secrets_masked_and_the_desktop_does_not() {
     ]);
     harness::phone(&phone, 390, 844);
     let token = m.token().map(|t| format!("?token={t}")).unwrap_or_default();
-    phone
-        .navigate_to(&format!("http://phone.test:2737/{token}"))
-        .unwrap();
+    phone.navigate_to(&m.remote_url(&token)).unwrap();
     phone.wait_until_navigated().unwrap();
     phone
-        .navigate_to(&format!(
-            "http://phone.test:2737/?ui=app&session={PHONE_SID}"
-        ))
+        .navigate_to(&m.remote_url(&format!("?ui=app&session={PHONE_SID}")))
         .unwrap();
     phone.wait_until_navigated().unwrap();
     let on_phone = read(&phone, "the prompt over the tailnet name");
@@ -16330,13 +16524,10 @@ fn a_phone_over_the_tailnet_reads_the_session_gzipped() {
     ]);
     harness::phone(&tab, 390, 844);
     let token = m.token().map(|t| format!("?token={t}")).unwrap_or_default();
-    tab.navigate_to(&format!("http://phone.test:2805/{token}"))
-        .unwrap();
+    tab.navigate_to(&m.remote_url(&token)).unwrap();
     tab.wait_until_navigated().unwrap();
-    tab.navigate_to(&format!(
-        "http://phone.test:2805/?ui=app&session={PHONE_SID}"
-    ))
-    .unwrap();
+    tab.navigate_to(&m.remote_url(&format!("?ui=app&session={PHONE_SID}")))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(
         &tab,
@@ -16580,27 +16771,17 @@ fn a_paired_phone_over_the_tailnet_reads_a_file() {
     .concat()
     .replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
     stores.claude_session(PHONE_SID, &transcript);
-    let m = harness::Monitor::spawn_with(
-        harness::Kind::V1,
-        2714,
-        &base,
-        Some(&stores),
-        true,
-        &[("AGENT_MONITOR_TRUSTED_HOSTS", "phone.test:2714")],
-    );
+    let m = harness::Monitor::spawn_remote(harness::Kind::V1, 2714, &base, Some(&stores));
     let (_browser, tab) = harness::chrome_with_tab(&[
         "--host-resolver-rules=MAP phone.test 127.0.0.1",
         "--no-proxy-server",
     ]);
     harness::phone(&tab, 390, 844);
     let token = m.token().map(|t| format!("?token={t}")).unwrap_or_default();
-    tab.navigate_to(&format!("http://phone.test:2714/{token}"))
-        .unwrap();
+    tab.navigate_to(&m.remote_url(&token)).unwrap();
     tab.wait_until_navigated().unwrap();
-    tab.navigate_to(&format!(
-        "http://phone.test:2714/?ui=app&session={PHONE_SID}"
-    ))
-    .unwrap();
+    tab.navigate_to(&m.remote_url(&format!("?ui=app&session={PHONE_SID}")))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     let offered = "document.querySelector('[data-reference-path][data-reference-fsig]:not([data-reference-fsig=\"\"])')";
     harness::until(
@@ -18967,7 +19148,7 @@ fn a_paired_browser_arriving_by_a_link_from_another_site_is_let_in() {
     tab.find_element("#go").unwrap().click().unwrap();
     harness::until(
         &tab,
-        "location.port === '2724' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')",
+        &format!("location.port === '{}' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')", m.port),
         "a paired browser arriving by a link from another site to land on the session",
         Duration::from_secs(20),
         "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
@@ -18994,7 +19175,7 @@ fn a_paired_browser_arriving_by_a_link_from_another_site_is_let_in() {
     tab.find_element("a.again").unwrap().click().unwrap();
     harness::until(
         &tab,
-        "location.port === '2724' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')",
+        &format!("location.port === '{}' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')", m.port),
         "Try again to land the paired browser on the session",
         Duration::from_secs(20),
         "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
@@ -19104,7 +19285,7 @@ fn a_browser_paired_with_two_servers_on_one_host_stays_paired_with_both() {
     first.open(&tab, &format!("?ui=app&session={PHONE_SID}"));
     harness::until(
         &tab,
-        "location.port === '2725' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')",
+        &format!("location.port === '{}' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')", first.port),
         "the first server to let the browser in after the second paired it",
         Duration::from_secs(20),
         "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
@@ -19123,11 +19304,34 @@ const PHONE_WHOLLY_IN: &str = "function (el, box) { if (!el || !box) return fals
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_search_box_shows_whole_chips_and_clears_in_one_tap() {
     let _serial = serial();
+    search_box_shows_whole_chips(2728);
+}
+
+/// The same case with its port held by another listener (#s495): on aries-black an ssh tunnel
+/// keeps port 2728 on the loopback, and the case timed out "waiting for the phone to open on a session"
+/// while its monitor, refused the port, had already exited. The listener here never answers, as
+/// a tunnel with nothing behind it would not. It holds a port of the case's own, never 2728
+/// itself: the tunnel exits when its forward fails, so a case holding 2728 while the tunnel
+/// restarts would take the tunnel down.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_search_box_shows_whole_chips_with_its_port_held() {
+    let _serial = serial();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").expect("a port for the case to hold");
+    let port = held.local_addr().expect("the held port").port();
+    assert!(
+        !harness::port_is_free(port),
+        "the case's listener holds port {port} on the loopback"
+    );
+    search_box_shows_whole_chips(port);
+}
+
+fn search_box_shows_whole_chips(port: u16) {
     // 440 wide, the owner's phone: since #s41 the funnel stays in the find pill while typing (iOS
     // focuses the field as the search opens, so hiding it then hid it always), and at 390 two chips
     // and a word then overflow the strip, which scrolls as a whole (#353,
     // `a_phone_search_strip_scrolls_whole_and_counts_beside_the_box`).
-    let (_m, _b, tab) = phone_world(2728, "phone-search-chips", 440, 956);
+    let (_m, _b, tab) = phone_world(port, "phone-search-chips", 440, 956);
     let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + 16, r.top + r.height / 2]; })()");
     phone_tap_at(&tab, gx, gy);
     harness::until(
@@ -23361,9 +23565,10 @@ fn the_app_shell_nests_a_desktop_side_session_under_its_starter() {
     stores.desktop_session("local_aaaa", starter, None);
     stores.desktop_session("local_bbbb", side, Some("local_aaaa"));
     stores.desktop_session("local_cccc", other, None);
-    let _monitor = Monitor::spawn(Kind::V1, 3205, &base, Some(&stores), false);
+    let monitor = Monitor::spawn(Kind::V1, 3205, &base, Some(&stores), false);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
-    let url = "http://127.0.0.1:3205/?ui=app";
+    let url = &format!("http://127.0.0.1:{port}/?ui=app");
     tab.navigate_to(url).unwrap();
     tab.wait_until_navigated().unwrap();
     // Each listed row: its id, whether it is a side session, and whether it wears the mark.
@@ -23500,8 +23705,9 @@ fn the_app_shell_lists_the_sessions_by_activity_alone() {
     let base = base("appshell-flat");
     let stores = flat_world(&base);
     let monitor = Monitor::spawn(Kind::V1, 3196, &base, Some(&stores), false);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
-    let url = "http://127.0.0.1:3196/?ui=app";
+    let url = &format!("http://127.0.0.1:{port}/?ui=app");
     tab.navigate_to(url).unwrap();
     tab.wait_until_navigated().unwrap();
     harness::show_every_session(&tab, url);
@@ -23886,9 +24092,10 @@ fn the_turns_pane_stays_where_the_reader_scrolled_it_until_they_go_back_to_the_s
         .collect();
     let path = stores.claude_session(sid, &body);
     let monitor = Monitor::spawn(Kind::V1, 3199, &base, Some(&stores), false);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     harness::resize(&tab, 1400.0, 760.0);
-    tab.navigate_to(&format!("http://127.0.0.1:3199/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     let pane = || -> serde_json::Value {
@@ -24040,6 +24247,7 @@ fn a_phone_s_turns_list_stays_where_the_finger_left_it() {
             .collect();
         let path = stores.claude_session(sid, &body);
         let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), false);
+        let port = monitor.port;
         let (_browser, tab) = harness::chrome_tab();
         harness::phone(&tab, w, h);
         if let Some(insets) = insets {

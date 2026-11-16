@@ -913,6 +913,17 @@ import-closure test and the html crate's convention test cover the rest. `claude
 node (the contract test imports `components.js`, which imports `./shared/…`) and editors resolve the
 relative paths; the served bytes still come from the html crate through `ui::asset()`.
 
+**The kit** (#s432, `design/embedding.md` "Delivery"): each release publishes
+`agent-monitor-kit-<version>.tar.gz` and its `.sha256` (`scripts/kit.sh`, run by the Release
+workflow), the two components for a host to mount from a pinned release. Its `bundle/` is
+`claude-monitor/kit/index.js` and every module that imports, walked from it and taken from `ui::asset()`
+byte for byte (`src/kit.rs`), so a new import joins the kit by itself; a new mount option or optional
+control goes in `kit/index.d.ts` too (`the_declarations_follow_each_components_options` refuses one
+missing), and the guide (`kit/embedding-guide.md`) says it for a host. The kit offers only what the
+owner ruled a host may change and what mounting needs: an option it withholds (`VIEW_WITHHELD`,
+`LIST_WITHHELD` in `kit.rs`: the frame, the app's own chrome, `keyboard`'s `"page"` mode) is offered
+only once the owner rules on it.
+
 `claude-monitor/tests/ui_contract.mjs` holds the frontend contract that only JS can answer.
 It runs from `cargo test` (via `tests/ui_contract.rs`, which SKIPS when node is missing) and as
 its own mandatory CI step.
@@ -1057,9 +1068,16 @@ delivered is offered (`ToolUse::delivered` → `head.files`), not only the first
   (a local Chrome; CI runs the same split into five `browser` legs on separate runners, #s448, whose one result is the check `browser (real Chrome)`). `tests/harness/mod.rs` is the kit
   every case uses: `Stores` (a hermetic world of agent stores under the case's scratch root —
   nothing a case measures comes from this machine's sessions), record builders and
-  `long_session`, `Monitor::spawn` (`agent-monitor` on a fixed port, reaped on drop; a missing binary
+  `long_session`, `Monitor::spawn` (`agent-monitor` on the case's fixed port, reaped on drop; a missing binary
   PANICS naming the build — never a silent skip, which is how a blank shell once passed as
-  13/16), `chrome_tab()` — a browser with timer throttling off AND its first tab, the one way a
+  13/16; a port another listener holds moves the monitor to one the kernel has free, with a
+  stderr line naming the holder, and the spawn waits for the monitor's own "serving" line, so a
+  case reads its address from the handle — `url`, `remote_url`, `port` — and never writes the
+  number into one, which `no_case_writes_a_monitor_port_into_an_address` checks; scratch stays
+  named for the number asked, #s495; a restart under an open page is `Monitor::respawn`, which
+  brings the same monitor, its environment and arguments, back on the port the page is on, or
+  fails at once naming that port's holder: a second `Monitor::spawn` on the case's number would
+  move again, away from the tab), `chrome_tab()` — a browser with timer throttling off AND its first tab, the one way a
   case opens one (#343: `first_tab` launches again, up to four times with a stderr line each,
   when a fresh browser gives no tab — ~220 of ~230 failures across fifteen suite runs were that
   one error, "The event waited for never came", in runs of up to 22 cases; such a browser is
@@ -1108,6 +1126,19 @@ delivered is offered (`ToolUse::delivered` → `head.files`), not only the first
   stable for a while). Read Chrome's console
   before diagnosing a "timed out waiting for …" on a shell:
   `chrome --headless=new --enable-logging=stderr --v=0 <url>` prints `CONSOLE … Uncaught …`.
+  **The width study (#s517)** is a study, not a gate: `cargo run -p claude-replay-browser-tests
+  --example study_widths -- [--only <text>]` (after the release build above; port 3517) drives the
+  app shell at a row of window sizes and the session view at a row of host-pane sizes, mouse and
+  touch, the right pane shut and open, on the harness's hermetic world, and writes
+  `target/study-widths/<run>/`: `report.md` (per cell the layout classes, each part's box, the
+  chrome's controls a pointer cannot reach, how far what the view draws reaches past its edges, the
+  text column), `contact.html` and an MP4 sweep per surface, which needs `ffmpeg` (without one the
+  run says so at its start and skips only the videos). Each cell starts from a neutral page of the
+  monitor's origin with storage cleared; a control in a layer parked by its own state (the shut
+  pane, the shut drawer) is not checked and is listed in the cell's
+  JSON. A cell the probe could not measure is flagged everywhere and the run exits 1. It is an
+  example so the suite's `--ignored` runs never take it in; run it before and after a layout change
+  to see what moved.
   **The viewport trace (#192)** is how a scroll/blank-space report carries its own geometry:
   open either page with `?trace=viewport` (or set `localStorage.viewportTrace = "1"` to keep it
   across reloads) and the shared engine records every decision it makes — one entry per

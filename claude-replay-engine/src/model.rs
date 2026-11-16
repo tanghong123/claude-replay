@@ -472,6 +472,18 @@ pub enum Block {
         category: Option<String>,
         note: String,
     },
+    /// A reply Claude Code WITHDREW for a broken tool call (#s500): when a response's tool call
+    /// cannot be used and the client retries, it takes every record of that response out of its
+    /// own conversation (and drops them on a resume) and writes the model a note naming them,
+    /// after which the agent goes on in the same turn. The withdrawn reply used to draw as the
+    /// agent's own, the note as a result line worded for the model. This block takes the note's
+    /// place: one quiet line ([`WITHDRAWN_LINE`]) with the withdrawn reply (thinking and prose,
+    /// as it was, never a tool call) and then the note folded under it; the reply no longer
+    /// draws where it was. Like [`Block::SafetyStop`] it is a result in every other respect: the
+    /// same kind, search class and `--json` line the note had, and the stream states the reply
+    /// where it stood, just before that line (the stream is public, and the mark is drawn, not
+    /// stated; the reply is billed and counted as it was; only where it is drawn moves).
+    Withdrawn { note: String, reply: Vec<Block> },
     /// A file, plan, or image the transcript embedded or referenced. Surfaced (the
     /// viewer used to drop these) so the reader can **download** embedded content or
     /// **reveal** a path-only reference in the file manager. See `Attachment`.
@@ -851,6 +863,10 @@ pub fn safety_stop_line(category: Option<&str>) -> String {
     }
 }
 
+/// The line that marks a reply the client withdrew for a broken tool call and asked the model to
+/// retry (`Block::Withdrawn`, #s500), on every surface that draws one.
+pub const WITHDRAWN_LINE: &str = "Retried: the reply gave no usable tool call";
+
 /// The line that ends a reply the person cut off mid-stream (`Block::AssistantCutOff`, #s305),
 /// on every surface that draws one.
 pub const CUT_OFF_NOTE: &str = "Cut off: interrupted mid-reply";
@@ -873,7 +889,7 @@ pub fn block_kind(b: &Block) -> BlockKind {
                 Act
             }
         }
-        Block::ToolResult(_) | Block::SafetyStop { .. } => ToolResult,
+        Block::ToolResult(_) | Block::SafetyStop { .. } | Block::Withdrawn { .. } => ToolResult,
         Block::Attachment(_) => Attachment,
         Block::SubAgent(_) | Block::AgentDone { .. } => Agent,
         Block::Command { .. } => Command,
@@ -981,6 +997,7 @@ pub fn foldable(b: &Block) -> bool {
         Block::ToolUse { .. }
             | Block::ToolResult(_)
             | Block::SafetyStop { .. }
+            | Block::Withdrawn { .. }
             | Block::Thinking { .. }
             | Block::Command { .. }
             | Block::SubAgent(_)
@@ -1041,6 +1058,20 @@ pub fn is_edit_tool(name: &str) -> bool {
     matches!(name, "Edit" | "MultiEdit" | "Write" | "NotebookEdit")
 }
 
+/// Whether [`coalesce_spans`] takes `b` into an open run, or holds it for one: thinking, an
+/// activity call or a change, and an attachment. Any other block ends the run. One definition, so
+/// a reader of shaped blocks (#s500, `block_json::write_blocks`) finds the run `coalesce_spans`
+/// made. Hidden, as the seam's other plumbing is: core's block stream reads it, and no adapter
+/// needs it.
+#[doc(hidden)]
+pub fn joins_span(b: &Block) -> bool {
+    match b {
+        Block::Thinking { .. } | Block::Attachment(_) => true,
+        Block::ToolUse { name, .. } => is_activity_tool(name) || is_edit_tool(name),
+        _ => false,
+    }
+}
+
 /// Coalesce each **span** of consecutive thinking + activity tool calls (and, since #s23, the
 /// calls that change files) into one `Thinking` block — Claude Code's between-outputs rule (#57;
 /// the full empirical derivation is `design/cc-activity-coalescing.md`). Any other block ends
@@ -1059,6 +1090,14 @@ pub fn is_edit_tool(name: &str) -> bool {
 /// Thinking texts join blank-line separated; durations sum; even a LONE activity
 /// tool folds (CC never leaves one expanded). A run of nothing but edits — no thinking, no other
 /// call — is not a process and is not folded: each edit stays a card of its own (#s23).
+///
+/// Merging its own output again with more of the same kind gives what one pass over the whole
+/// would have (`a_second_pass_merges_as_one_pass_would`): a merged run takes more thinking and
+/// calls as its raw parts did, and what it held still follows it. The block stream relies on it to
+/// state a withdrawn reply where it stood (#s500, `block_json::write_blocks`). It holds wherever
+/// a thinking carries text or a call, as every adapter's does (Codex's textless thinking always
+/// holds calls): a run of thinking with neither draws nothing and its time goes with it, where one
+/// pass would give that time to the thinking after it.
 pub fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
     fn flush(
         texts: &mut Vec<String>,
@@ -1083,6 +1122,11 @@ pub fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
         }
         // Whatever the run produced follows it, in the order it happened.
         out.append(held);
+        // A run that drew nothing (thinking with no text and no call) gives its time to nothing.
+        // It used to carry over into the next run, across whatever ended this one. No adapter's
+        // raw blocks make such a run (Claude's thinking always has text or a placeholder), so no
+        // output moved; a second pass relies on it (#s500, `a_second_pass_merges_as_one_pass_would`).
+        *dur = None;
     }
     let mut out: Vec<Block> = Vec::with_capacity(blocks.len());
     let (mut texts, mut dur, mut tools) = (Vec::new(), None::<u64>, Vec::new());
@@ -1107,9 +1151,7 @@ pub fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
             // #s23: a change joins the run it happened in — an Edit or Write, and a shell command
             // whose result carries an edit diff (`bashEditDiff`, #263), which #s20 had lifted out.
             // The run's line names it and carries its +N −N.
-            Block::ToolUse { ref name, .. } if is_activity_tool(name) || is_edit_tool(name) => {
-                tools.push(b)
-            }
+            Block::ToolUse { .. } if joins_span(&b) => tools.push(b),
             // #256: inside an open run it waits for the run; with no run open there is nothing
             // to wait for, and it emits exactly where it is. That second case is a pasted image
             // in a prompt, and it was always right.
@@ -1129,6 +1171,99 @@ pub fn coalesce_spans(blocks: Vec<Block>) -> Vec<Block> {
 mod tests {
     use super::*;
     // its parse entries + decode helpers now live in `claude_model`.
+
+    /// #s500: shaping a stream, then shaping its output again with the rest of the raw stream, is
+    /// one pass over the whole, at every split. The block stream relies on it to state a
+    /// withdrawn reply (raw blocks) after the run the shaping made before it. And `joins_span`
+    /// names exactly what the pass takes into a run.
+    #[test]
+    fn a_second_pass_merges_as_one_pass_would() {
+        let call = |name: &str| Block::ToolUse {
+            name: name.into(),
+            target: name.to_lowercase(),
+            diffs: Vec::new(),
+            output: None,
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: None,
+            delivered: Vec::new(),
+            sent: None,
+            sent_to: None,
+            saved_output: None,
+        };
+        let think = |text: &str, secs: Option<u64>| Block::Thinking {
+            text: text.into(),
+            duration_secs: secs,
+            tools: Vec::new(),
+        };
+        let img = || {
+            Block::Attachment(Attachment {
+                lines: None,
+                kind: AttachmentKind::Image,
+                name: "shot.png".into(),
+                path: None,
+                content: AttachmentContent::None,
+            })
+        };
+        let streams = vec![
+            vec![
+                Block::UserText("go".into()),
+                think("list", Some(1)),
+                call("Bash"),
+                think("count", Some(2)),
+                Block::ToolResult("note".into()),
+            ],
+            vec![
+                Block::UserText("go".into()),
+                think("a", None),
+                img(),
+                call("Read"),
+                think("", Some(3)),
+                think("b", Some(1)),
+                Block::AssistantText("so".into()),
+                think("c", None),
+            ],
+            vec![
+                img(),
+                call("Edit"),
+                img(),
+                call("Write"),
+                think("then", Some(4)),
+                call("WebFetch"),
+                call("Edit"),
+                Block::ToolResult("x".into()),
+                call("Edit"),
+            ],
+            vec![
+                think("", Some(2)),
+                Block::UserText("go".into()),
+                call("Grep"),
+                call("mcp__s__t"),
+                think("", None),
+                Block::AssistantText("end".into()),
+            ],
+        ];
+        for stream in &streams {
+            let whole = coalesce_spans(stream.clone());
+            for at in 0..=stream.len() {
+                let mut again = coalesce_spans(stream[..at].to_vec());
+                again.extend(stream[at..].iter().cloned());
+                assert_eq!(coalesce_spans(again), whole, "split at {at} of {stream:?}");
+            }
+        }
+        for b in streams.iter().flatten() {
+            let alone = coalesce_spans(vec![Block::UserText("u".into()), b.clone()]);
+            let joined = coalesce_spans(vec![think("t", None), b.clone()]);
+            assert_eq!(
+                joins_span(b),
+                joined.len() == 1 || matches!(b, Block::Attachment(_)),
+                "{b:?}: {alone:?} / {joined:?}"
+            );
+        }
+    }
 
     /// #90: an MCP call inside a thinking+activity run must JOIN the span, not
     /// split it (CC folds the whole run into one line).
@@ -1471,6 +1606,26 @@ mod tests {
         assert_eq!(block_kind(&b).html(), "tool");
         assert_eq!(fold_key(&b), "tool_result");
         assert!(foldable(&b));
+    }
+
+    /// #s500: the mark on a withdrawn reply is a result in kind too, whatever it holds.
+    #[test]
+    fn a_withdrawn_reply_reads_as_a_result() {
+        let b = Block::Withdrawn {
+            note: "n".into(),
+            reply: vec![Block::AssistantText("t".into())],
+        };
+        assert_eq!(block_kind(&b), BlockKind::ToolResult);
+        assert_eq!(block_kind(&b).html(), "tool");
+        assert_eq!(fold_key(&b), "tool_result");
+        assert!(foldable(&b));
+        assert!(!b.opens_turn());
+        // The browser scenario (`scenarios.rs`, #s500) carries this line as a literal so it is red
+        // on the code before the mark: change both together.
+        assert_eq!(
+            WITHDRAWN_LINE,
+            "Retried: the reply gave no usable tool call"
+        );
     }
 
     #[test]

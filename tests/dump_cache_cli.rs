@@ -112,3 +112,318 @@ fn the_flag_goes_with_a_json_dump_only() {
     assert!(!dir.join("cache").exists(), "a refused run wrote nothing");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// #s500: a reply the client withdrew for a broken tool call folds under its mark on the pages
+/// and in the text dump, and the `--json` stream states it as before the mark: byte for byte the
+/// stream of the same transcript with no `retractedMessageUuids` on its note (a client before
+/// 2.1.325). Through both parse paths (the plain dump's whole parse, the cached dump's fold) and
+/// a fold resumed at every line. Shapes where the withdrawn thinking joined the run before it
+/// (Claude's shaping merges thinking into a Bash, Read or Edit run) are the ones that differed.
+#[test]
+fn a_withdrawn_reply_streams_as_before_the_mark_on_every_path() {
+    use serde_json::{json, Value};
+    let ts = |s: u32| format!("2026-11-14T17:00:{s:02}.000Z");
+    let user = |uuid: &str, s: u32, content: Value| json!({"type":"user","cwd":"/w","uuid":uuid,"timestamp":ts(s),"message":{"role":"user","content":content}});
+    let asst = |uuid: &str, s: u32, msg: &str, stop: &str, content: Value| json!({"type":"assistant","uuid":uuid,"timestamp":ts(s),"message":{"id":msg,"role":"assistant","stop_reason":stop,"content":content}});
+    let think = |t: &str| json!([{"type":"thinking","thinking":t,"signature":"x"}]);
+    let bash = |id: &str, cmd: &str| json!([{"type":"tool_use","id":id,"name":"Bash","input":{"command":cmd}}]);
+    let edit = |id: &str| json!([{"type":"tool_use","id":id,"name":"Edit","input":{"file_path":"/w/nests.md","old_string":"a","new_string":"b"}}]);
+    let result =
+        |id: &str, out: &str| json!([{"type":"tool_result","tool_use_id":id,"content":out}]);
+    let note = |ids: &[&str], marked: bool| {
+        let mut n = json!({"type":"user","uuid":"n-1","timestamp":ts(30),"isMeta":true,"turnCompanion":true,
+            "retractedMessageUuids":ids,
+            "message":{"role":"user","content":"The previous response failed to produce a valid tool call. Please retry the tool call now."}});
+        if !marked {
+            n.as_object_mut().unwrap().remove("retractedMessageUuids");
+        }
+        n
+    };
+    let prompt = || user("u-1", 0, json!("count the nests"));
+    let retry = || {
+        vec![
+            asst(
+                "r-1",
+                31,
+                "msg-r",
+                "tool_use",
+                bash("toolu_r", "wc -l nests.md"),
+            ),
+            user("t-r", 32, result("toolu_r", "40 nests.md")),
+            asst(
+                "e-1",
+                33,
+                "msg-e",
+                "end_turn",
+                json!([{"type":"text","text":"Forty nests."}]),
+            ),
+            // A second prompt, so a resume after it reads the mark from the cache's committed blocks.
+            user("u-2", 40, json!("and the eggs?")),
+            asst(
+                "e-2",
+                41,
+                "msg-f",
+                "end_turn",
+                json!([{"type":"text","text":"Twelve eggs."}]),
+            ),
+        ]
+    };
+    // The retried call alone: the stream ends on a run the block stream still holds.
+    let retry_run = || {
+        vec![
+            asst(
+                "r-1",
+                31,
+                "msg-r",
+                "tool_use",
+                bash("toolu_r", "wc -l nests.md"),
+            ),
+            user("t-r", 32, result("toolu_r", "40 nests.md")),
+        ]
+    };
+    let bash_run = || {
+        vec![
+            asst(
+                "a-1",
+                1,
+                "msg-a",
+                "tool_use",
+                think("First list the files."),
+            ),
+            asst("a-2", 2, "msg-a", "tool_use", bash("toolu_a", "ls")),
+            user("t-a", 3, result("toolu_a", "nests.md")),
+        ]
+    };
+    type Shape = (&'static str, Vec<Value>, Vec<&'static str>);
+    let shapes: Vec<Shape> = vec![
+        (
+            "straight after the prompt",
+            vec![
+                asst(
+                    "w-1",
+                    10,
+                    "msg-w",
+                    "tool_use",
+                    think("The count needs the file."),
+                ),
+                asst(
+                    "w-2",
+                    11,
+                    "msg-w",
+                    "tool_use",
+                    json!([{"type":"text","text":"Counting the nests now."}]),
+                ),
+            ],
+            vec!["w-1", "w-2"],
+        ),
+        (
+            "two thinkings straight after the prompt",
+            vec![
+                asst("w-1", 10, "msg-w", "tool_use", think("Find the log.")),
+                asst(
+                    "w-2",
+                    11,
+                    "msg-w",
+                    "tool_use",
+                    think("Then count its lines."),
+                ),
+            ],
+            vec!["w-1", "w-2"],
+        ),
+        (
+            "thinking after a Bash run",
+            [
+                bash_run(),
+                vec![asst(
+                    "w-1",
+                    10,
+                    "msg-w",
+                    "tool_use",
+                    think("Now count the lines."),
+                )],
+            ]
+            .concat(),
+            vec!["w-1"],
+        ),
+        (
+            "thinking after a run that ended on an image",
+            vec![
+                asst("a-1", 1, "msg-a", "tool_use", think("Take a look.")),
+                asst("a-2", 2, "msg-a", "tool_use", bash("toolu_a", "shot")),
+                user(
+                    "t-a",
+                    3,
+                    json!([{"type":"tool_result","tool_use_id":"toolu_a","content":"saved"},
+                        {"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}]),
+                ),
+                asst("w-1", 10, "msg-w", "tool_use", think("It shows the nests.")),
+            ],
+            vec!["w-1"],
+        ),
+        (
+            "thinking after two edits",
+            vec![
+                asst("a-1", 1, "msg-a", "tool_use", edit("toolu_e1")),
+                user("t-1", 2, result("toolu_e1", "ok")),
+                asst("a-2", 3, "msg-b", "tool_use", edit("toolu_e2")),
+                user("t-2", 4, result("toolu_e2", "ok")),
+                asst("w-1", 10, "msg-w", "tool_use", think("Both changed.")),
+            ],
+            vec!["w-1"],
+        ),
+        (
+            "thinking, prose and thinking after a Bash run",
+            [
+                bash_run(),
+                vec![
+                    asst("w-1", 10, "msg-w", "tool_use", think("Now count.")),
+                    asst(
+                        "w-2",
+                        11,
+                        "msg-w",
+                        "tool_use",
+                        json!([{"type":"text","text":"Counting now."}]),
+                    ),
+                    asst("w-3", 12, "msg-w", "tool_use", think("With wc.")),
+                ],
+            ]
+            .concat(),
+            vec!["w-1", "w-2", "w-3"],
+        ),
+        (
+            "redacted thinking after a Bash run",
+            [
+                bash_run(),
+                vec![asst(
+                    "w-1",
+                    10,
+                    "msg-w",
+                    "tool_use",
+                    json!([{"type":"redacted_thinking","data":"x"}]),
+                )],
+            ]
+            .concat(),
+            vec!["w-1"],
+        ),
+    ];
+    // Every shape goes on to the retry and a second prompt; the one after a Bash run also ends on
+    // the mark itself, and on the retried run. Each case but the one ending on the mark names the
+    // text its stream must end with, read from the transcript and not from a stream: the two streams
+    // compared below go through one writer, so a run that writer dropped at the end would drop from
+    // both alike.
+    type Case = (
+        String,
+        Vec<Value>,
+        Vec<&'static str>,
+        Vec<Value>,
+        Option<&'static str>,
+    );
+    let mut cases: Vec<Case> = shapes
+        .iter()
+        .map(|(s, w, ids)| {
+            (
+                s.to_string(),
+                w.clone(),
+                ids.clone(),
+                retry(),
+                Some("Twelve eggs."),
+            )
+        })
+        .collect();
+    let (s, w, ids) = shapes
+        .iter()
+        .find(|(s, _, _)| *s == "thinking after a Bash run")
+        .expect("the shape after a Bash run");
+    cases.push((
+        format!("{s}, ending on the mark"),
+        w.clone(),
+        ids.clone(),
+        Vec::new(),
+        None,
+    ));
+    cases.push((
+        format!("{s}, ending on the retried run"),
+        w.clone(),
+        ids.clone(),
+        retry_run(),
+        Some("wc -l nests.md"),
+    ));
+    let dir = scratch("withdrawn");
+    for (n, (shape, withdrawn, ids, tail, last)) in cases.into_iter().enumerate() {
+        let lines = |marked: bool| -> Vec<String> {
+            [
+                vec![prompt()],
+                withdrawn.clone(),
+                vec![note(&ids, marked)],
+                tail.clone(),
+            ]
+            .concat()
+            .iter()
+            .map(|v| v.to_string() + "\n")
+            .collect()
+        };
+        let file = |k: usize, body: &[String]| -> PathBuf {
+            let p = dir.join(format!(
+                "0f0e0d0c-0000-4000-8000-00000000{n:02}{k:02}.jsonl"
+            ));
+            std::fs::write(&p, body.concat()).unwrap();
+            p
+        };
+        let (marked, plain) = (lines(true), lines(false));
+        let mp = file(1, &marked);
+        let pp = file(2, &plain);
+        let (m, p) = (mp.to_str().unwrap(), pp.to_str().unwrap());
+
+        // The premise: the note naming the reply folds it under a mark; without the key it is the
+        // result line it always was.
+        let (mtext, err, ok) = run(&dir, &["--dump", "-", m]);
+        assert!(ok, "{shape}: {err}");
+        let (ptext, err, ok) = run(&dir, &["--dump", "-", p]);
+        assert!(ok, "{shape}: {err}");
+        let mark = "Retried: the reply gave no usable tool call";
+        assert!(
+            String::from_utf8_lossy(&mtext).contains(mark)
+                && !String::from_utf8_lossy(&ptext).contains(mark),
+            "{shape}: premise, only the marked transcript draws the mark:\n{}",
+            String::from_utf8_lossy(&mtext)
+        );
+
+        let (want, err, ok) = run(&dir, &["--dump", "-", "--json", p]);
+        assert!(ok, "{shape}: {err}");
+        let want = String::from_utf8(want).unwrap();
+        if let Some(last) = last {
+            assert!(
+                want.lines().last().is_some_and(|l| l.contains(last)),
+                "{shape}: the stream ends on what the transcript ends on ({last:?}):\n{want}"
+            );
+        }
+        let (got, err, ok) = run(&dir, &["--dump", "-", "--json", m]);
+        assert!(ok, "{shape}: {err}");
+        assert_eq!(
+            String::from_utf8(got).unwrap(),
+            want,
+            "{shape}: the whole parse"
+        );
+
+        // The fold, cold and then resumed after each line: a cache home of its own each time, the
+        // file grown to the whole transcript between the two dumps.
+        for cut in 0..=marked.len() {
+            let home = dir.join(format!("home-{n}-{cut}"));
+            if cut > 0 {
+                std::fs::write(&mp, marked[..cut].concat()).unwrap();
+                let (_, err, ok) = run(&home, &["--dump", "-", "--json", "--cache", m]);
+                assert!(ok, "{shape}, first {cut} lines: {err}");
+            }
+            std::fs::write(&mp, marked.concat()).unwrap();
+            let (got, err, ok) = run(&home, &["--dump", "-", "--json", "--cache", m]);
+            assert!(ok, "{shape}, resumed after {cut} lines: {err}");
+            assert_eq!(
+                String::from_utf8(got).unwrap(),
+                want,
+                "{shape}: the fold, resumed after {cut} of {} lines",
+                marked.len()
+            );
+        }
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}

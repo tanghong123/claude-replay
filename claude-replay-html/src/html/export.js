@@ -3144,6 +3144,8 @@
   // wrapped in <mark class="hl"> as their blocks materialize. Enter cycles the global
   // hit index, materializing + marking `.cur` on the way (Shift+Enter goes back).
   var q = $("q");
+  // The keys that open it, from the shared table: "/" and the platform's ⌘F or Ctrl+F (#s509).
+  q.placeholder = "Search transcript  ( " + shared.hintFor("search") + " )";
   var hitRecs = [];   // {rec, count, start} per record with hits, in stream order (#50)
   var totalHits = 0;
   function clearHl() {
@@ -3713,7 +3715,9 @@
     var binding = shared.resolveKey(e, "view", e.target);
     if (!binding) return;
     switch (binding.action) {
-      case "search": e.preventDefault(); q.focus(); return;
+      // `/`, and ⌘F or Ctrl+F (#s509): the field focused with its query selected, as a browser's
+      // find opens. In the field (a text field, above) the same press is the browser's.
+      case "search": e.preventDefault(); q.focus(); q.select(); return;
       case "hit-next":
       case "hit-prev":
         if (filter) { e.preventDefault(); filterNav(binding.action === "hit-next" ? 1 : -1); } // #49 next/prev filtered hit
