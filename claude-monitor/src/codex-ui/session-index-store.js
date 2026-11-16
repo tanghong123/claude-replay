@@ -3,7 +3,7 @@ import { backend } from "./backend.js";
 import { groupSessions } from "./shared/session-visibility.js";
 
 export class SessionIndexStore {
-  constructor(handlers, options = {}) { this.handlers = handlers; this.load = options.load; this.group = options.group; this.timer = 0; this.loading = null; this.revision = 0; this.stopped = false; this.generation = 0; }
+  constructor(handlers, options = {}) { this.handlers = handlers; this.backend = options.backend || backend; this.load = options.load; this.group = options.group; this.timer = 0; this.loading = null; this.revision = 0; this.stopped = false; this.generation = 0; }
   start() { this.stopped = false; return this.refresh(); }
   stop() { this.stopped = true; this.generation++; this.loading = null; clearTimeout(this.timer); this.timer = 0; }
   refresh() {
@@ -29,7 +29,7 @@ export class SessionIndexStore {
         let data;
         if (this.load) data = await this.load();
         else {
-          const response = await backend().fetch("/api/sessions", { cache: "no-store" });
+          const response = await this.backend().fetch("/api/sessions", { cache: "no-store" });
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           data = await response.json();
         }
