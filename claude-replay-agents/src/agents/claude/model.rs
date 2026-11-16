@@ -1546,8 +1546,9 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // key. REVISIT (1) met (#s530, measured 2026-11-16 on aries-black):
             // "network_edge_blocked" on ONE record, client 2.1.325, a headless one-shot, with no
             // `resendCannotCure`. The client classes it as blocked on a person (the network or
-            // region, a VPN or proxy; no sign-in changes it), and its text says so; the RENDER
-            // question is the owner's, #s534.
+            // region, a VPN or proxy; no sign-in changes it), and its text says so. The owner chose
+            // to leave it unmarked, since the client's words already name the network or region
+            // (#s534).
             "apiError",
             // #s360 (client 2.1.318): the boolean `true` on the same synthetic API-error record
             // (`isApiErrorMessage`, model "<synthetic>", zero usage, `apiError` and `error` beside
@@ -10977,7 +10978,7 @@ mod tests {
 
     /// #s530: 2.1.325's body type on an API error record the network edge refused is known, not
     /// reported while the sweep asks, and the record folds to its ONE Failure note, the client's
-    /// words alone (no `resendCannotCure`, so no mark; whether it gets one is the owner's, #s534),
+    /// words alone (no `resendCannotCure`, so no mark, as the owner chose on #s534),
     /// never the assistant's prose even with `madeBy` "model", and the direct parse draws the
     /// same. The record is invented (its text is made up). Removing the key from the assistant arm
     /// of the census turns this red.
