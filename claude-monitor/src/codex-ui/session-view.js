@@ -781,6 +781,7 @@ function paintHeader() {
     byId("sessionCrumb").textContent = "Scanning sessions";
     byId("statusChip").className = "status-chip idle";
     byId("statusChip").textContent = "None selected";
+    byId("statusChip").title = "";
     sessionTitle.tabIndex = -1;
     sessionCopyMenu.hidden = true;
     setSessionCopyMenu(false);
@@ -796,7 +797,7 @@ function paintHeader() {
   byId("statusChip").className = `status-chip ${state.state} ${state.reason}`;
   byId("statusChip").innerHTML = `<span class="state-dot ${escapeText(state.state)} ${escapeText(state.reason)}" style="margin:0"></span>${escapeText(state.label)}${row.stateConfidence === "inferred" ? " · inferred" : ""}`;
   // #s520: where the glyphs' bar draws the chip as its dot, its words are its title.
-  byId("statusChip").title = row.stateDetail || state.label;
+  byId("statusChip").title = `${row.stateDetail || state.label}${row.stateConfidence === "inferred" ? " · inferred" : ""}`;
   const meta = recordState.session === row.id ? (recordState.meta || {}) : {};
   const sid = meta.sid || row.id || "";
   const path = meta.path || "";
@@ -2387,7 +2388,7 @@ byId("transcriptSearchInput").onkeydown = event => {
   // Escape leaves the box as a click outside would (#298, the owner; the classic page's `q.blur()`):
   // the query, its count and its marks stay, and the next key is the page's keymap's again. An open
   // filter popover closes with it, as the page-wide Escape closes it.
-  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPopover(null); event.currentTarget.blur(); setPhoneSearch(false); viewRoot.$(".header-search-cluster")?.classList.remove("search-held"); return; }
+  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPopover(null); event.currentTarget.blur(); setPhoneSearch(false); releaseSearch(); return; }
   // An Enter that commits an input method's composition (pinyin, kana) is the input method's; Safari
   // sends it with `isComposing` false and keyCode 229.
   if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
@@ -2528,19 +2529,25 @@ document.addEventListener("pointerdown", event => {
 // #s520: where the box rests as its glyph (the bar the outline's glyphs join), what holds it open is
 // the reader's use of the search, not the field's focus: `search-held` on its cluster, from a focus or
 // a press anywhere inside it (the box, its drop-down, the filter) until a press outside it, a Tab out
-// of it or Escape. Safari and Firefox on a Mac give a pressed button no focus, so the field's blur at
-// the press would fold the box and take the button from under the pointer before its click. A press
-// outside also closes the filter there, which nothing else on a desktop does, so the box folds with it.
+// of it, a press inside the pane's page (which takes the focus into its frame and sends this page no
+// press) or Escape. Safari and Firefox on a Mac give a pressed button no focus, so the field's blur at
+// the press would fold the box and take the button from under the pointer before its click. Leaving
+// also closes the filter there, which nothing else on a desktop does, so the box folds with it.
 const searchCluster = viewRoot.$(".header-search-cluster");
-const holdSearch = held => searchCluster.classList.toggle("search-held", held);
-searchCluster.addEventListener("pointerdown", () => holdSearch(true), { signal });
-searchCluster.addEventListener("focusin", () => holdSearch(true), { signal });
-searchCluster.addEventListener("focusout", event => { if (event.relatedTarget && !searchCluster.contains(event.relatedTarget)) holdSearch(false); }, { signal });
+searchCluster.addEventListener("pointerdown", () => searchCluster.classList.add("search-held"), { signal });
+searchCluster.addEventListener("focusin", () => searchCluster.classList.add("search-held"), { signal });
+searchCluster.addEventListener("focusout", event => { if (event.relatedTarget && !searchCluster.contains(event.relatedTarget)) releaseSearch(); }, { signal });
 document.addEventListener("pointerdown", event => {
-  if (!searchCluster.classList.contains("search-held") || searchCluster.contains(event.target)) return;
-  holdSearch(false);
-  if (layout.arrangement()?.outline === "bar" && byId("navigatorOptions").classList.contains("open")) setPopover(null);
+  if (searchCluster.classList.contains("search-held") && !searchCluster.contains(event.target)) releaseSearch();
 }, { capture: true, signal });
+addEventListener("blur", () => { if (viewRoot.active()?.tagName === "IFRAME") releaseSearch(); }, { signal });
+/** The search is no longer in use: the box may fold, and in the glyphs' bar its filter shuts with it. */
+function releaseSearch() {
+  const cluster = viewRoot.$(".header-search-cluster");
+  if (!cluster?.classList.contains("search-held")) return;
+  cluster.classList.remove("search-held");
+  if (layout.arrangement()?.outline === "bar" && byId("navigatorOptions").classList.contains("open")) setPopover(null);
+}
 phoneSearch.addEventListener("change", () => { if (!phoneSearch.matches) setPhoneSearch(false); }, { signal });
 byId("transcriptSearchInput").addEventListener("focus", () => { if (phoneSearch.matches && byId("navigatorOptions").classList.contains("open")) setPopover(null); });
 const SCOPE_ROWS = [["u", "User messages"], ["a", "Agent replies"], ["t", "Thinking"], ["o", "Tools"], ["w", "Whole words"]];
@@ -3958,7 +3965,15 @@ byId("findPrev").title = `Previous match (${hintFor("hit-prev")})`; byId("findNe
 byId("turnPrev").title = `Previous turn (${hintFor("turn-prev")})`; byId("turnNext").title = `Next turn (${hintFor("turn-next")})`;
 // The header's own turn steppers were in the design but never bound; they step the same way the keys do.
 byId("turnPrev").onclick = () => stepTurn(-1); byId("turnNext").onclick = () => stepTurn(1);
-addEventListener("keydown", event => { if (event.key === "Escape") { setSessionCopyMenu(false); setPopover(null); } }, { signal });
+// #s520: Escape leaves the search wherever the focus is: on a step or the funnel after a press (Chrome
+// focuses a pressed button), or nowhere (Safari and Firefox on a Mac).
+addEventListener("keydown", event => {
+  if (event.key !== "Escape") return;
+  setSessionCopyMenu(false); setPopover(null);
+  const active = viewRoot.active(), cluster = viewRoot.$(".header-search-cluster");
+  if (active && cluster?.contains(active)) active.blur();
+  releaseSearch();
+}, { signal });
 
 // #313 — while a session loads, a veil over the session area says so. It dims what is below the top
 // bars, which already name the new session, and speaks in three phases: loading; after

@@ -446,9 +446,9 @@ screen up to 760px):
   There, read from the arrangement (`pl-outline-bar`), the crumb and its dividers go, the status chip
   is its dot, the gaps tighten, the fold-all control moves into Aa's menu and the search box rests
   as its glyph. A click, a focus or the search key opens it for typing in the room the title and the
-  glyphs give up while it is in use, and it folds back at a press outside the search (which also
-  shuts its filter there), a Tab out of it or Escape: never at the field's blur alone, since Safari
-  and Firefox give a pressed button no focus. The box that takes the heading's place while it is in
+  glyphs give up while it is in use, and it folds back at a press outside the search (the pane's
+  page included), a Tab out of it, or Escape wherever the focus is; each also shuts its filter there.
+  It never folds at the field's blur alone, since Safari and Firefox give a pressed button no focus. The box that takes the heading's place while it is in
   use below a 900px window keeps it by the same rule. At every desktop width the
   title keeps at least its first word (at most 160px), the crumb, the chip and the resting search
   box (down to 150px) giving way first.
