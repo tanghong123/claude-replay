@@ -831,7 +831,7 @@ fn overflow(m: &Value) -> String {
             out,
             " (view {}; past its edge: {})",
             m["viewOverflowX"].as_str().unwrap_or("?"),
-            past.join(", ")
+            md_escape(&past.join(", "))
         );
     }
     out
@@ -849,10 +849,14 @@ fn classes(v: &Value, keep: impl Fn(&str) -> bool) -> String {
         .unwrap_or_else(|| "·".into())
 }
 
-/// A table cell is one line of Markdown: a `|` would split it and a line break (a probe's or a
-/// host's JavaScript stack) would end the table.
+/// A table cell is one line of Markdown that shows the page's text as it is: a `|` would split it,
+/// a line break (a probe's or a host's JavaScript stack) would end the table, and a `<…>` (a stack's
+/// `at <anonymous>:3:7`) would be read as a tag and dropped.
 fn md_escape(s: &str) -> String {
-    s.replace('|', "/")
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('|', "/")
         .replace("\r\n", "<br>")
         .replace(['\r', '\n'], "<br>")
 }
