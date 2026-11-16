@@ -748,7 +748,9 @@ function markTitleWord() {
   const heading = sessionTitle.parentElement, text = sessionTitle.textContent.trim();
   titleRuler ||= document.createElement("canvas").getContext("2d");
   if (!heading || !titleRuler) return;
-  const font = getComputedStyle(sessionTitle).font;
+  // From the longhands: Chrome answers "" for the `font` shorthand when a longhand has no place in it.
+  const style = getComputedStyle(sessionTitle);
+  const font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
   if (`${font}\n${text}` === titleWordKey) return;
   titleWordKey = `${font}\n${text}`;
   const word = text.split(/\s+/)[0] || "";
@@ -793,7 +795,8 @@ function paintHeader() {
     : `${agentName(row.agent)} · ${row._group?.label || ""}`;
   byId("statusChip").className = `status-chip ${state.state} ${state.reason}`;
   byId("statusChip").innerHTML = `<span class="state-dot ${escapeText(state.state)} ${escapeText(state.reason)}" style="margin:0"></span>${escapeText(state.label)}${row.stateConfidence === "inferred" ? " · inferred" : ""}`;
-  byId("statusChip").title = row.stateDetail || "";
+  // #s520: where the glyphs' bar draws the chip as its dot, its words are its title.
+  byId("statusChip").title = row.stateDetail || state.label;
   const meta = recordState.session === row.id ? (recordState.meta || {}) : {};
   const sid = meta.sid || row.id || "";
   const path = meta.path || "";
@@ -2384,7 +2387,7 @@ byId("transcriptSearchInput").onkeydown = event => {
   // Escape leaves the box as a click outside would (#298, the owner; the classic page's `q.blur()`):
   // the query, its count and its marks stay, and the next key is the page's keymap's again. An open
   // filter popover closes with it, as the page-wide Escape closes it.
-  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPopover(null); event.currentTarget.blur(); setPhoneSearch(false); return; }
+  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPopover(null); event.currentTarget.blur(); setPhoneSearch(false); viewRoot.$(".header-search-cluster")?.classList.remove("search-held"); return; }
   // An Enter that commits an input method's composition (pinyin, kana) is the input method's; Safari
   // sends it with `isComposing` false and keyCode 229.
   if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
@@ -2521,6 +2524,22 @@ document.addEventListener("pointerdown", event => {
   if (!searchBox.classList.contains("phone-open") || event.target.closest(".header-search-cluster")) return;
   if (phoneSearch.matches && byId("navigatorOptions").classList.contains("open")) { setPopover(null); return; }
   setPhoneSearch(false);
+}, { capture: true, signal });
+// #s520: where the box rests as its glyph (the bar the outline's glyphs join), what holds it open is
+// the reader's use of the search, not the field's focus: `search-held` on its cluster, from a focus or
+// a press anywhere inside it (the box, its drop-down, the filter) until a press outside it, a Tab out
+// of it or Escape. Safari and Firefox on a Mac give a pressed button no focus, so the field's blur at
+// the press would fold the box and take the button from under the pointer before its click. A press
+// outside also closes the filter there, which nothing else on a desktop does, so the box folds with it.
+const searchCluster = viewRoot.$(".header-search-cluster");
+const holdSearch = held => searchCluster.classList.toggle("search-held", held);
+searchCluster.addEventListener("pointerdown", () => holdSearch(true), { signal });
+searchCluster.addEventListener("focusin", () => holdSearch(true), { signal });
+searchCluster.addEventListener("focusout", event => { if (event.relatedTarget && !searchCluster.contains(event.relatedTarget)) holdSearch(false); }, { signal });
+document.addEventListener("pointerdown", event => {
+  if (!searchCluster.classList.contains("search-held") || searchCluster.contains(event.target)) return;
+  holdSearch(false);
+  if (layout.arrangement()?.outline === "bar" && byId("navigatorOptions").classList.contains("open")) setPopover(null);
 }, { capture: true, signal });
 phoneSearch.addEventListener("change", () => { if (!phoneSearch.matches) setPhoneSearch(false); }, { signal });
 byId("transcriptSearchInput").addEventListener("focus", () => { if (phoneSearch.matches && byId("navigatorOptions").classList.contains("open")) setPopover(null); });

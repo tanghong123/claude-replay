@@ -1350,10 +1350,12 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 @media(min-width:901px) and (max-width:1180px) and (min-height:501px),(min-width:901px) and (max-width:1180px) and (pointer:fine){.header-searchbox:focus-within,.header-searchbox:has(input:not(:placeholder-shown)),.header-searchbox:has(.search-chips.has-chips){width:min(460px,42vw)}}
 /* Below 900px the bar has no room for both (about 520px beside the sidebar), and a box sharing it
    left the title 10px wide: there the box takes the heading's place while the reader TYPES, and at
-   rest — a query held, the reader clicked away — gives it back at its resting width. There the
-   count and the steps fold away until the box is focused again: at 180px they pushed the filter
+   rest — a query held, the reader clicked away — gives it back at its resting width (#s520: at a
+   press outside the box, a Tab out or Escape, as `search-held` says, never at the field's blur alone,
+   which Safari and Firefox on a Mac bring at a press on the box's own buttons). There the
+   count and the steps fold away until the box is in use again: at 180px they pushed the filter
    button out past the box's edge, and a wider resting box took the same pixels from the title. */
-@media(min-width:701px) and (max-width:900px) and (min-height:501px),(min-width:701px) and (max-width:900px) and (pointer:fine){.header-searchbox:focus-within{width:min(392px,52vw)}.topbar:has(.header-searchbox:focus-within)>.session-heading{display:none}.header-searchbox:not(:focus-within) .search-field~:is(.find-count,.find-nav,.search-clear){display:none}}
+@media(min-width:701px) and (max-width:900px) and (min-height:501px),(min-width:701px) and (max-width:900px) and (pointer:fine){:is(.header-searchbox:focus-within,.search-held>.header-searchbox){width:min(392px,52vw)}.topbar:has(:is(.header-searchbox:focus-within,.search-held>.header-searchbox))>.session-heading{display:none}.header-search-cluster:not(.search-held)>.header-searchbox:not(:focus-within) .search-field~:is(.find-count,.find-nav,.search-clear){display:none}}
 
 
 
@@ -1383,7 +1385,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .search-chips.has-chips{display:flex}
 /* Below 900px a focused box with chips has no room for its count as well: 360px less the chips, the
    steps and the filter left the text 7px. The count steps aside while the reader types there. */
-@media(min-width:701px) and (max-width:900px) and (min-height:501px),(min-width:701px) and (max-width:900px) and (pointer:fine){.header-searchbox:focus-within:has(.search-chips.has-chips) .find-count{display:none}}
+@media(min-width:701px) and (max-width:900px) and (min-height:501px),(min-width:701px) and (max-width:900px) and (pointer:fine){:is(.header-searchbox:focus-within,.search-held>.header-searchbox):has(.search-chips.has-chips) .find-count{display:none}}
 .search-chip{display:inline-flex;align-items:center;min-width:0;height:22px;padding:0 2px 0 7px;border-radius:6px;background:color-mix(in srgb,var(--primary) 10%,var(--panel));color:var(--ink);font:10.5px/1 var(--mono);white-space:nowrap}
 .search-chip-key{color:var(--primary);flex:none}
 .search-chip-value{min-width:0;overflow:hidden;text-overflow:ellipsis;margin-left:2px}
@@ -1494,12 +1496,14 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    at their widest (the search box 180 or 286px, chosen by the window's bands) they squeezed the title
    to a letter and pushed Info and the pane's control past the window or under the open pane. There
    the bar gives way in this order, by the arrangement alone: the crumb and its dividers go (the list
-   and Info say both), the status chip is its dot (its colour is the state; the word is in the list
-   and Info), the gaps tighten, fold-all moves into Aa's menu, and the search box rests as its
-   glyph. A click, a focus or the search key opens it, for typing, in the room the title and the
-   outline's glyphs give up while it is in use, and it folds back once the search has nothing focused
-   and no menu open (a held query tints the glyph). So every control keeps its place inside the
-   column, and the title its first word. */
+   and Info say both); the status chip is its dot (its colour is the state, its words its title, the
+   list's and Info's; a chip with no state, a sub-agent's, goes); the gaps tighten; fold-all moves
+   into Aa's menu; and the search box rests as its glyph. A click, a focus or the search key opens
+   it, for typing, in the room the title and the outline's glyphs give up while it is in use
+   (`search-held`, session-view.js: from a press or a focus inside the search until a press outside
+   it, a Tab out or Escape, since Safari gives a pressed button no focus), and it folds back then (a
+   held query tints the glyph). So every control keeps its place inside the column, and the title its
+   first word. */
 #sessionView.pl-outline-bar .workspace>.topbar{column-gap:4px;padding-right:10px}
 #sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster{min-width:0}
 /* The fold-all control is the one the bar can spare: it moves into Aa's menu there (the phone has
@@ -1512,14 +1516,15 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 #sessionView.pl-outline-bar .workspace>.topbar>.session-heading>:is(.header-divider,.crumb){display:none}
 #sessionView.pl-outline-bar .workspace>.topbar>.session-heading>.status-chip{flex:none;gap:0;padding:0 4px;border-color:transparent;background:transparent;font-size:0}
 #sessionView.pl-outline-bar .workspace>.topbar>.session-heading>.status-chip .state-dot{margin:0!important}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(:has(>.navigator-options.open))>.header-searchbox{width:34px;height:34px;padding:0;gap:0;justify-content:center;border-color:transparent;background:transparent;box-shadow:none;cursor:pointer}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(:has(>.navigator-options.open))>.header-searchbox>:is(.find-count,.find-nav,.search-clear,.header-filter,.find-whole){display:none}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(:has(>.navigator-options.open))>.header-searchbox>.search-field{flex:0 0 0;width:0;overflow:hidden}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(:has(>.navigator-options.open))>.header-searchbox:hover{background:var(--hover)}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(:has(>.navigator-options.open))>.header-searchbox.has-query{background:var(--selected);color:var(--blue)}
-#sessionView.pl-outline-bar .workspace>.topbar:is(:has(>.header-search-cluster:focus-within),:has(>.header-search-cluster>.navigator-options.open))>:is(.session-heading,.top-spacer,.phone-pane,#navigatorRailExpand){display:none}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:is(:focus-within,:has(>.navigator-options.open)){flex:1 1 auto;min-width:0}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:is(:focus-within,:has(>.navigator-options.open))>.header-searchbox{width:100%;max-width:none}
+#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>.status-chip:not(:has(.state-dot)){display:none}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox{width:34px;height:34px;padding:0;gap:0;justify-content:center;border-color:transparent;background:transparent;box-shadow:none;cursor:pointer}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox>:is(.find-count,.find-nav,.search-clear,.header-filter,.find-whole){display:none}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox>.search-field{flex:0 0 0;width:0;overflow:hidden}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox:hover{background:var(--hover)}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox.has-query{background:var(--selected);color:var(--blue)}
+#sessionView.pl-outline-bar .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held))>:is(.session-heading,.top-spacer,.phone-pane,#navigatorRailExpand){display:none}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:is(:focus-within,.search-held){flex:1 1 auto;min-width:0}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:is(:focus-within,.search-held)>.header-searchbox{width:100%;max-width:none}
 @media(max-width:760px) and (hover:hover){.drawer-handle:hover{background:var(--hover)}}
 /* The list's rows are touch targets on a touch screen, wherever the list is drawn (#s431 stage 2,
    design/pane-layout.md): a finger needs 44px in an iPad's sidebar as in a phone's drawer, and a
