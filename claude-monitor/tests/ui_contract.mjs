@@ -2713,7 +2713,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // is then never seen at all because the gap it measures is 0.
   assert.match(src, /confirmFollow\(top\) \{/, "a transaction checks the flag against the offset (#213)");
   assert.match(src, /const belief = this\.topBelief\(\);\n\s*if \(belief == null \|\| Math\.abs\(top - belief\) <= 1\) return;/, "…against the engine's BELIEF, not the gap — a gap alone would unfollow on every growth, which adds content below without moving the offset");
-  assert.match(src, /const gap = this\.gapToBottom\(\);\n\s*if \(!this\.readerOwnsPosition\(\)\) \{\n\s*if \(!this\.unheard\) this\.unheard = \{ at: performance\.now\(\) \};\n[^\n]*\n\s*return;\n\s*\}\n\s*const verdict = classifyScroll\(true, true, gap, this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal\);/, "…classified as the late event would classify it while the reader is moving the view; otherwise the late event decides, its stamp being the move's (#s481)");
+  assert.match(src, /const gap = this\.gapToBottom\(\);\n\s*if \(!this\.readerOwnsPosition\(\)\) \{\n\s*if \(!this\.unheard\) this\.unheard = \{ at: performance\.now\(\) \};\n[^\n]*\n\s*return;\n\s*\}\n\s*const verdict = classifyScroll\(true, true, gap, this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal, top < belief\);/, "…classified as the late event would classify it while the reader is moving the view; otherwise the late event decides, its stamp being the move's (#s481)");
   assert.match(src, /tailWaits\(options\) \{\n\s*return !options\.commanded && \(this\.readerOwnsPosition\(\) \|\| !!this\.unheard\);/, "…and until it does, the tail waits");
   assert.match(src, /if \(this\.tailWaits\(options\)\) \{ this\.defer\("tail"\);/, "…which `placeAfter` asks");
   assert.match(src, /&& !!this\.unheard && !options\.commanded && !this\.dragging && !this\.inFlight\(\);\n(?:\s*\/\/.*\n)*\s*if \(holdTail\) p0 = this\.captureDomAnchor\(\) \|\| this\.modelAnchor\(\);/, "…while the follower is held by what is on screen until the event comes: a prepend under an unheard move left the reader on turn 7 of 60 (#s431); never under a held thumb (I14) or a smooth write in flight (§4.10), and a measure that heard nothing new stays quiet for it too (#127)");
@@ -3404,6 +3404,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(classifyScroll(true, true, 40, 2, 2, 80), "unfollow", "held at the true end, a nudge drops the tail — what #127 fixed");
   assert.equal(classifyScroll(true, true, 40, 2, 80, 80), "none", "the classic page holds through a nudge");
   assert.equal(classifyScroll(true, false, 120, 2, 2, 80), "heal", "displacement while pinned is healed");
+  // #s524, the owner's #s542: "A scroll up I make keeps following only at the end".
+  assert.equal(classifyScroll(true, true, 40, 2, 80, 80, true), "unfollow", "a move up the reader makes inside the hold slack drops the pin");
+  assert.equal(classifyScroll(true, true, 1, 2, 80, 80, true), "none", "…except at the true end");
+  assert.equal(classifyScroll(true, true, 40, 2, 80, 80, false), "none", "any other move of theirs keeps it within the hold slack");
+  assert.equal(classifyScroll(true, false, 40, 2, 80, 80, true), "none", "and a move up with no input behind it is displacement, healed past `heal` alone");
   assert.equal(classifyScroll(false, false, 900, 2, 2, 80), "none", "…and means nothing when unpinned");
   const vp = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
   assert.match(vp, /from "\.\/shared\/virtual-window\.js";/, "the app shell drives the module");
@@ -3411,7 +3416,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // the anchor, the observers, the follow state, the thumb and the converge run from one place.
   const engine = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
   assert.match(engine, /this\.prefix = prefixSums\(this\.count, index => this\.heightOf\(index\)\);/);
-  assert.match(engine, /const verdict = classifyScroll\(this\.following, user, this\.gapToBottom\(\), this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal\);/);
+  assert.match(engine, /const up = before != null && top < before - 0\.5;\n\s*const verdict = classifyScroll\(this\.following, user, this\.gapToBottom\(\), this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal, up\);/, "a move up the reader makes is told apart from the rest (#s524)");
 
   assert.match(vp, /slacks: \{ acquire: ACQUIRE_SLACK, hold: HOLD_SLACK, heal: HOLD_SLACK \},/, "both pages now acquire at the true end and hold through a nudge (#127)");
   assert.doesNotMatch(vp, /new ResizeObserver|addEventListener\("scroll"/, "the observers and the scroll listener are the engine's now");

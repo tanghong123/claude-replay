@@ -263,15 +263,19 @@ const UNHEARD_MS = 2000;
  *  for some) must hold nothing past it. */
 const ECHO_MS = 120;
 
-/** Rule 7, the #103 hysteresis: what a scroll means. A scroll with the reader's input behind it
- *  DECIDES following — acquiring the pin needs the true end (`acquire`), keeping it only the old
- *  slack (`hold`); a scroll with no input behind it is displacement, and a followed view that
- *  has drifted more than `heal` from the end is put back. Returns `"follow"`, `"unfollow"`,
- *  `"heal"` or `"none"`. The two pages pass different slacks on purpose — the app shell decides
- *  on the true end in both directions today, the classic page holds at 80px. */
-function classifyScroll(following, userIntent, gap, acquire, hold, heal) {
+/** Rule 7, the #103 hysteresis as the owner's #s542 amends it: what a scroll means. A scroll with
+ *  the reader's input behind it DECIDES following. Acquiring the pin needs the true end
+ *  (`acquire`), and so does keeping it through a move UP the reader made (`up`: "A scroll up I make
+ *  keeps following only at the end", #s524: one Arrow Up at the live end was carried back down by
+ *  the next growth); any other move of theirs keeps it within the old slack (`hold`), so a reader
+ *  near the end does not lose follow to a small move down. A scroll with no input behind it is
+ *  displacement, and a followed view that has drifted more than `heal` from the end is put back.
+ *  Returns `"follow"`, `"unfollow"`, `"heal"` or `"none"`. Both pages pass the same slacks today:
+ *  `acquire` 2px, `hold` and `heal` 80px (the app shell's ACQUIRE_SLACK and HOLD_SLACK in
+ *  viewport.js, the classic page's PIN_SLACK and BOTTOM_SLACK in export.js). */
+function classifyScroll(following, userIntent, gap, acquire, hold, heal, up = false) {
   if (userIntent) {
-    const next = following ? gap <= hold : gap <= acquire;
+    const next = following && !up ? gap <= hold : gap <= acquire;
     if (next === following) return "none";
     return next ? "follow" : "unfollow";
   }
@@ -986,7 +990,7 @@ class VirtualWindow {
       this.trace("follow:unheard", { verdict: "wait", belief, top: Math.round(top), gap: Math.round(gap) });
       return;
     }
-    const verdict = classifyScroll(true, true, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal);
+    const verdict = classifyScroll(true, true, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal, top < belief);
     this.trace("follow:unheard", { verdict, belief, top: Math.round(top), gap: Math.round(gap) });
     if (verdict !== "unfollow") return;
     this.following = false;
@@ -2152,6 +2156,11 @@ class VirtualWindow {
   onScroll(event) {
     // Hidden, an offset the box lost is no move of the reader's (`laidOut`).
     if (!this.laidOut()) return;
+    // Where the engine believed the offset was before this event, read from what it knows (no
+    // layout read): a move up from there is the reader's move up, which keeps following only at
+    // the true end (#s524, the owner's #s542). While a smooth write travels, that is where it was
+    // last seen on its path, not where it is going.
+    const before = this.wrote && typeof this.wrote === "object" ? this.wrote.last : this.topBelief();
     // One read, for the classification, kept as the engine's belief of the offset for the history
     // (`topBelief`): the reader's own scroll is the one move the engine does not make.
     const top = this.frame.scrollTop();
@@ -2182,8 +2191,9 @@ class VirtualWindow {
     this.releaseHold();
     const at = event && event.timeStamp ? event.timeStamp : performance.now();
     const user = this.dragging || at - this.lastInputStamp < this.userIntentMs;
-    const verdict = classifyScroll(this.following, user, this.gapToBottom(), this.slacks.acquire, this.slacks.hold, this.slacks.heal);
-    this.trace("scroll", { user, verdict, gap: Math.round(this.gapToBottom()), lag: Math.round(at - this.lastInputStamp) });
+    const up = before != null && top < before - 0.5;
+    const verdict = classifyScroll(this.following, user, this.gapToBottom(), this.slacks.acquire, this.slacks.hold, this.slacks.heal, up);
+    this.trace("scroll", { user, up, verdict, gap: Math.round(this.gapToBottom()), lag: Math.round(at - this.lastInputStamp) });
     if (verdict === "follow" || verdict === "unfollow") {
       this.following = verdict === "follow";
       this.followChanged();

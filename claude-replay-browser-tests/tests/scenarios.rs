@@ -847,63 +847,149 @@ fn classic_page_the_filter_takes_in_what_arrives() {
 // window, not the filter: with nothing cut, how much of the tail is mounted is the window's
 // business.
 
-/// Rule 7's hysteresis (#127): acquiring the pin needs the true end, KEEPING it only the old
-/// slack. A reader who nudges the view a few pixels is still reading the tail and must keep it;
-/// a real scroll away lets go.
-fn scenario_a_nudge_keeps_the_tail(tab: &headless_chrome::Tab, surface: Surface, _fx: &Fixture) {
-    jump_to_end(tab, surface);
-    await_tail(tab, surface, "a fresh open to land at the tail");
-    settle();
-    assert!(at_tail(tab, surface), "following the tail to begin with");
-    let following = |tab: &headless_chrome::Tab| {
-        match surface {
-            Surface::Classic => eval(tab, "document.body.classList.contains('following')")
-                .as_bool()
-                .unwrap_or(false),
-            // The jump control is the page's own statement of it: shown exactly when NOT following.
-            Surface::AppShell => eval(
-                tab,
-                "document.getElementById('jumpToBottom').getAttribute('aria-hidden') === 'true'",
-            )
+/// Whether the page says it follows the tail: the classic page's body class, the app shell's jump
+/// control (shown exactly when NOT following).
+fn is_following(tab: &headless_chrome::Tab, surface: Surface) -> bool {
+    match surface {
+        Surface::Classic => eval(tab, "document.body.classList.contains('following')")
             .as_bool()
             .unwrap_or(false),
-        }
+        Surface::AppShell => eval(
+            tab,
+            "document.getElementById('jumpToBottom').getAttribute('aria-hidden') === 'true'",
+        )
+        .as_bool()
+        .unwrap_or(false),
+    }
+}
+
+/// One Arrow Up as the browser scrolls with it: the press, where each page hears a key (the classic
+/// page's document, the app shell's transcript), then the browser's 40px. A trusted CDP press of a
+/// key no page prevents repeats for as long as the case runs (#270), so the key's default action is
+/// written here, as `scroll_by` writes a wheel's.
+fn arrow_up(tab: &headless_chrome::Tab, surface: Surface) {
+    let s = surface.scroller();
+    let target = match surface {
+        Surface::Classic => "document.body",
+        Surface::AppShell => s,
     };
-    assert!(following(tab), "…and the page says so");
-    // A nudge — less than the hold slack — is still reading the tail.
-    scroll_by(tab, surface, -40);
-    settle();
-    settle();
-    assert!(
-        following(tab),
-        "a 40px nudge keeps the tail: the pin holds through the old slack"
-    );
-    // A real scroll away lets go.
+    let press = |to: &str| {
+        probe(
+            tab,
+            &format!("(function(){{ var s = {s}; var before = s.scrollTop, want = {to}; {target}.dispatchEvent(new KeyboardEvent('keydown', {{key: 'ArrowUp', bubbles: true, cancelable: true}})); s.scrollTo({{ top: want, behavior: 'instant' }}); return [before, want]; }})()"),
+        )
+    };
+    let asked = press("Math.max(0, s.scrollTop - 40)");
+    let before = asked
+        .get(0)
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    let want = asked
+        .get(1)
+        .and_then(serde_json::Value::as_f64)
+        .unwrap_or(0.0);
+    harness::pause("arrow_up", Duration::from_millis(140));
+    // As `scroll_by` does: retry only an outright refusal, where a scroll event that came more than the
+    // intent window after the press (a loaded box) was read as displacement and healed back.
+    let now = eval(tab, &format!("{s}.scrollTop"))
+        .as_f64()
+        .unwrap_or(want);
+    if (now - before).abs() <= 2.0 && (want - before).abs() > 2.0 {
+        press(&format!("{want}"));
+    }
+}
+
+/// #s524, the owner's #s542: "A scroll up I make keeps following only at the end". A reader following
+/// the live end who presses Arrow Up once, or turns the wheel one small step up, has moved 40px: inside
+/// the 80px hold (#103, #127), which used to keep the pin, so the next growth carried them back down
+/// (measured on both builds in the #s505 WebKit pass: scrollTop 0, -9, -35 and back to 0). Now the move
+/// up lets go, the page says so, and the growth that follows leaves the reader where they went. A real
+/// scroll away lets go as it always did, and the hold still keeps the pin against what no input moved
+/// (`classifyScroll`'s node cases hold that half).
+fn scenario_a_scroll_up_at_the_live_end_stays_up(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    let s = surface.scroller();
+    let top = || {
+        eval(tab, &format!("{s}.scrollTop"))
+            .as_f64()
+            .unwrap_or(-1.0)
+    };
+    for (k, how) in ["one Arrow Up", "one 40px wheel step up"]
+        .iter()
+        .enumerate()
+    {
+        jump_to_end(tab, surface);
+        await_tail(tab, surface, "the reader to be back at the live end");
+        settle();
+        assert!(
+            at_tail(tab, surface) && is_following(tab, surface),
+            "{how}: following the live end to begin with"
+        );
+        let end = top();
+        if k == 0 {
+            arrow_up(tab, surface);
+        } else {
+            scroll_by(tab, surface, -40);
+        }
+        settle();
+        settle();
+        let went = top();
+        assert!(
+            (end - went - 40.0).abs() <= 2.0,
+            "{how}: the reader moved 40px up ({end} -> {went})"
+        );
+        assert!(
+            !is_following(tab, surface),
+            "{how} at the live end lets go of it: a move up keeps following only at the end"
+        );
+        let growth = LiveGrowth::start(
+            fx.path.clone(),
+            growth_script().into_iter().skip(4 * k).take(4).collect(),
+            Duration::from_millis(1200),
+        );
+        assert_eq!(
+            growth.finish(Duration::from_secs(30)),
+            4,
+            "the driver appended the growth"
+        );
+        // > every consumer's poll: the last apply lands.
+        std::thread::sleep(Duration::from_millis(4000));
+        let held = top();
+        assert!(
+            (held - went).abs() <= 2.0 && !at_tail(tab, surface) && !is_following(tab, surface),
+            "{how}: the growth after it left the reader where they went ({went} -> {held}), not carried \
+             back to the end"
+        );
+    }
+    // A real scroll away lets go as it always did, and stays let go.
     scroll_by(tab, surface, -1200);
     settle();
     settle();
     assert!(
-        !following(tab),
+        !is_following(tab, surface),
         "…and a scroll away from the tail unpins, as it always did"
     );
 }
 
 #[test]
 #[ignore = "needs a local Chrome"]
-fn classic_page_a_nudge_keeps_the_tail() {
+fn classic_page_a_scroll_up_at_the_live_end_stays_up() {
     let _serial = serial();
-    let fx = fixture("scenario-nudge-classic", 20);
+    let fx = fixture("scenario-scroll-up-classic", 20);
     let page = open(Surface::Classic, &fx, 0);
-    scenario_a_nudge_keeps_the_tail(&page.tab, Surface::Classic, &fx);
+    scenario_a_scroll_up_at_the_live_end_stays_up(&page.tab, Surface::Classic, &fx);
 }
 
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
-fn app_shell_a_nudge_keeps_the_tail() {
+fn app_shell_a_scroll_up_at_the_live_end_stays_up() {
     let _serial = serial();
-    let fx = fixture("scenario-nudge-app", 20);
+    let fx = fixture("scenario-scroll-up-app", 20);
     let page = open(Surface::AppShell, &fx, 2906);
-    scenario_a_nudge_keeps_the_tail(&page.tab, Surface::AppShell, &fx);
+    scenario_a_scroll_up_at_the_live_end_stays_up(&page.tab, Surface::AppShell, &fx);
 }
 
 // ── scenario: stepping and paging from the top ──────────────────────────────────────────────

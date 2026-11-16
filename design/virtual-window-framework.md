@@ -114,10 +114,11 @@ Three things are the reader's, and only the reader's:
 - **Drag** — the scrollbar thumb is held (#98): the pointer owns the position outright; no anchor,
   no write, until release.
 - **Follow** — pinned to the tail (#103 hysteresis: acquiring needs the true end, keeping it only
-  the hold slack; a scroll with no input behind it that leaves the tail is healed, not honoured).
-  Follow is DROPPED only by the reader: their scroll past the hold slack, or their reshape of the
-  page (#185: growth they asked for is not the tail moving away). One commanded move is held to the
-  acquire rule even while following: a TURN STEP (`[`/`]`, `pin: "acquire"`, #s487, the owner's
+  the hold slack, and through a move UP the reader makes the true end too, the owner's #s542; a
+  scroll with no input behind it that leaves the tail is healed, not honoured).
+  Follow is DROPPED only by the reader: their scroll past the hold slack, or up from the true end
+  (#s524), or their reshape of the page (#185: growth they asked for is not the tail moving away).
+  One commanded move is held to the acquire rule even while following: a TURN STEP (`[`/`]`, `pin: "acquire"`, #s487, the owner's
   #s502) keeps the pin only where it lands at the true end, as a jump to the end would take it. A
   step back from the end of a session whose last turns are short lands within the hold slack, and a
   pin kept there let the tail's converge take the reader straight back to the end.
@@ -183,7 +184,7 @@ write site); the pages' own writes are stage 4's.
 | **I10** | **A jump lands on content.** `P := (target, landing)`; the window is chosen around the target; `place()` puts it there. | #66, #191 | **construction** (`rangeAround`, the landing loop) — but a fling INTO a pad had no anchor at all until #191's model form | construction — the model form of `P` is the fallback source, always |
 | **I11** | **The record under `P` is mounted after every transaction.** The window is chosen around `P`, never around the raw offset, whenever `P` has an anchor source. | #194 (the walk unmounted the record under the reader), #66 | **policy** — `updateWindow` ranges around the anchor; a delta's reconcile mounted above mid-gesture until the lo-hold patch | construction — `range = rangeFor(P)` in `transact()`: `rangeAround` for an anchor or model `P`, `rangeAtEnd` for the tail (stage 5); the lo-hold patch goes |
 | **I12** | **A rewrite that drops `P`'s identity falls back to the model form captured before the rewrite.** The same id naming a different record is detected by index, not trusted. | #165 | **partly** — `indexOfIdentity` scans; a dropped key logs `restore:unmounted` and stays put | construction — `transact()` captures both forms before a rewrite; the anchor is validated by index+key |
-| **I13** | **Follow is dropped only by the reader.** | #103, #165, #185, #213 | **construction** (`classifyScroll` on the reader's scroll; `readerReshaped`; `confirmFollow` before a transaction begins, which applies the reader's own scroll when the browser delivered the event late) | same |
+| **I13** | **Follow is dropped only by the reader.** | #103, #165, #185, #213, #s524 | **construction** (`classifyScroll` on the reader's scroll, a move up keeping it only at the true end; `readerReshaped`; `confirmFollow` before a transaction begins, which applies the reader's own scroll when the browser delivered the event late) | same |
 | **I14** | **Under a drag nothing is written; at release `P` is re-read from where the thumb left it.** | #98, #132 step 3 | construction (`beginDrag`/`endDrag`) | same |
 
 **What today's engine holds by construction:** I3, I5, I6, I10 (mostly), I13, I14.
@@ -504,7 +505,7 @@ Landed as stage 3 (§4.9); until stage 5's `recordsChanged`, the shell's `setUni
 `place()` to the tail — including the ones the per-item and run observers raise when heights
 settle after the mount. The seven `setTimeout(0)` passes go; `bottomTimer` goes. Under a gesture
 while following, tail transactions are deferrable (the growth is below the reader; #165) and the
-reader's scroll past the hold slack unfollows first (I13).
+reader's scroll past the hold slack, or up from the true end (#s524), unfollows first (I13).
 
 ### 4.6 The trace becomes the transaction log
 
@@ -554,7 +555,7 @@ worth stating because the suite was green through all of them:
 4. **A converge follows a change.** The observer's initial notification for every freshly observed
    element is a measure that changes nothing; a tail placed on it anyway snapped a following reader
    who had nudged up inside the hold slack straight back (#127's case, and the classic page's
-   "leave the tail first" cases). An observer-driven measure that measured nothing new places
+   "leave the tail first" cases; since #s524 a nudge up lets go of the tail at once). An observer-driven measure that measured nothing new places
    nothing, as the old converge ran only on `changed`. And the tail's target is the furthest the
    offset can go, not `scrollHeight`: written as `scrollHeight` the browser clamps it and every
    placement reads as a full-viewport correction that was never made (twelve in a row on a quiet
@@ -655,7 +656,9 @@ computed); mounts around it (`rangeFor(P)`, with the caller's `dirtyFrom`); plac
 `frame.scrollTo` site; then does the bookkeeping the swallowed scroll event would have done —
 `syncPosition`, `scheduleRemember`, and the follow decision the classic page already states
 (`following ? atBottom() : atEnd()`): keep the pin within the hold slack when it was held, acquire
-it only at the true end otherwise — computed ONCE at the end, with `followChanged` called only if it
+it only at the true end otherwise (the owner's #s542 amends the reader's own scroll alone, §1.6: a
+scroll up they make keeps the pin only at the true end; a commanded move keeps these rules, and a
+fold's hold is no move of the reader's) — computed ONCE at the end, with `followChanged` called only if it
 differs from where the transaction started, so a jump to the end does not flip the pill twice. The
 one exception is a move the page passes `pin: "acquire"`, which only a turn step does (#s487, the
 owner's #s502): it is decided by the acquire rule whether or not the pin was held, so a step that
