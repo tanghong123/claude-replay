@@ -23,13 +23,27 @@ export const DETACHED_OPTIONS = Object.freeze(["backend", "theme", "address"]);
 const THEMES = Object.freeze(["light", "dark"]);
 /** How often the transcript's tab reads the session index, as the app's list does. */
 const INDEX_POLL_MS = 5000;
+/** The address's keys the tab writes as the reader moves: what names a session, a document's place
+ *  or an image. Every other key is the page's (a host's own route, `trace=viewport`, `windowed=0`)
+ *  and is kept. */
+const OWN_KEYS = Object.freeze(["session", "root", "path", "cap", "from", "to", "since", "sig", "held", "name"]);
+
+/** The page's address with `query` in place of what the tab wrote there before. */
+function placed(query) {
+  const url = new URL(location.href);
+  for (const key of OWN_KEYS) url.searchParams.delete(key);
+  for (const [key, value] of new URLSearchParams(query)) url.searchParams.append(key, value);
+  return url;
+}
 
 /** What an address shows: "session", "markdown", "image", or "none" for an address that names
  *  nothing. */
 export function detachedKind(address) {
   const params = new URLSearchParams(address || "");
   if (params.get("session")) return "session";
-  if (params.get("root")) return "markdown";
+  // `root` at all is a document's address, even an empty one, which the document's tab then says
+  // names no document (as the monitor's `/markdown` did); an image's never carries it.
+  if (params.has("root")) return "markdown";
   if (params.get("path") || params.get("held")) return "image";
   return "none";
 }
@@ -82,8 +96,7 @@ export function mountDetached(element, options = {}) {
     if (!live) return;
     if (title) document.title = title;
     if (!ownsAddress || query == null) return;
-    const url = new URL(location.href);
-    url.search = query;
+    const url = placed(query);
     if (push) url.hash = "";
     if (url.href !== location.href || push) history[push ? "pushState" : "replaceState"](history.state, "", url);
   }
@@ -108,7 +121,7 @@ export function mountDetached(element, options = {}) {
     const box = Object.assign(document.createElement("div"), { id: "sessionView" });
     element.append(box);
     const rows = new Map();
-    let selected = first, timer = 0, polling = false, loading = null, title = "";
+    let selected = first, timer = 0, polling = false, loading = null, again = null, title = "";
     // Whether the session was a row of the index when it was chosen, and has since gone from it (the
     // app's rule: a sub-agent's transcript is never a row, and is never "gone" for it).
     let wasRow = false, gone = false;
@@ -130,20 +143,23 @@ export function mountDetached(element, options = {}) {
       }
       for (const id of [...rows.keys()]) if (!seen.has(id)) rows.delete(id);
       if (wasRow && !gone && !rows.has(selected)) {
+        // As the app does (`sessionGone`): nothing is selected now, and the top bar says so.
         gone = true;
+        selected = "";
         handle.close("Session is gone", "It may have been deleted or moved. This tab keeps reading the index.");
       }
       handle.indexChanged();
     }
+    /** Read the index now. One asked for while a read is out reads again once it is in (that read
+     *  may have left before what the asker knows changed), as the app's list does. */
     function refresh() {
       clearTimeout(timer); timer = 0;
       if (!live) return Promise.resolve();
-      if (!loading) {
-        loading = load().catch(() => {}).finally(() => {
-          loading = null;
-          if (live && polling) timer = setTimeout(refresh, INDEX_POLL_MS);
-        });
-      }
+      if (loading) return (again ||= loading.then(() => { again = null; return refresh(); }));
+      loading = load().catch(() => {}).finally(() => {
+        loading = null;
+        if (live && polling && !again) timer = setTimeout(refresh, INDEX_POLL_MS);
+      });
       return loading;
     }
     const start = () => { polling = true; return refresh(); };
@@ -176,7 +192,7 @@ export function mountDetached(element, options = {}) {
       // rule, #82), where the tab keeps its address.
       parentShown: parent => {
         if (!ownsAddress || !parent || history.length > 1) return;
-        try { const child = location.href; const url = new URL(child); url.search = query(parent); history.replaceState(history.state, "", url); history.pushState(history.state, "", child); } catch (_) {}
+        try { const child = location.href; history.replaceState(history.state, "", placed(query(parent))); history.pushState(history.state, "", child); } catch (_) {}
       },
       onTitle: ({ session, title: said }) => { title = said; if (session) moved({ title, query: query(session) }); else moved({ title }); },
     });
@@ -186,7 +202,12 @@ export function mountDetached(element, options = {}) {
     bindKeymap(keysRoot, () => "view", (action, event) => (live && handle.keys[action] ? handle.keys[action](event) : false));
     if (ownsAddress) addEventListener("popstate", () => { const id = new URLSearchParams(location.search).get("session"); if (id) choose(id, false); }, { signal });
     // The server answers a session by id once its index has listed it, so the first read comes first.
-    start().then(() => { if (!live) return; wasRow = rows.has(selected); handle.select(selected); handle.open(selected); });
+    // A reader who went on to another session before it came (Back, a sub-agent's link) has it open.
+    start().then(() => {
+      if (!live) return;
+      wasRow = rows.has(selected);
+      if (handle.session() !== selected) { handle.select(selected); handle.open(selected); }
+    });
     return handle;
   }
 
@@ -198,7 +219,7 @@ export function mountDetached(element, options = {}) {
     mountStandalone(doc, address, place => moved(place)).then(mounted => {
       if (live) stops.push(() => mounted.unmount());
       else mounted.unmount();
-    }, error => unavailable("This document cannot be shown", error instanceof Unavailable ? error.message : error.message));
+    }, error => unavailable("This document cannot be shown", error instanceof Unavailable ? error.message : `Its viewer failed: ${error.message}`));
   }
 
   // ------------------------------------------------------------------ an image

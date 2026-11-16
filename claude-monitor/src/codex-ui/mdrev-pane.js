@@ -53,8 +53,8 @@ function importBundle(version) {
   return import(backend().mdrevUrl(`/mdrev/${version}/mdrev.js`)).catch(error => { link.remove(); throw error; });
 }
 
-/** The mdrev version the monitor serves NOW, read off its smallest page (`/markdown`, about 700
- *  bytes, which carries `data-mdrev` as this page does); "" when it cannot be read. */
+/** The mdrev version the monitor serves NOW, read off its smallest page (`/markdown`, the detached
+ *  page, under 2 KiB, which carries `data-mdrev` as this page does); "" when it cannot be read. */
 async function servedVersion() {
   try {
     const response = await backend().mdrevFetch("/markdown", { cache: "no-store" });

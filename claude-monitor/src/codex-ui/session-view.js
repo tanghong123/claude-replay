@@ -165,7 +165,8 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    function is refused.
  *  - `parentShown(id)`: the top bar offers a way back to this parent (the app writes the browser's
  *    Back to it for a deep-linked child).
- *  - `openList()`, `openSidebar()`: the top bar's back-to-the-list and reopen controls, the app's.
+ *  - `openList()`, `openSidebar()`: the top bar's back-to-the-list and reopen controls, the app's;
+ *    a host that gives neither gets neither control (#s433).
  *  - `paneLayout(name, on)`: the artifact pane opens or shuts, goes full or is being resized; said
  *    before the view wears the state `on` names (#s431 stage 3), so the app lays out its list for the
  *    pane first and the view decides its arrangement at the box that leaves it.
@@ -648,7 +649,11 @@ layoutHeard = () => { if (!settleOutline()) paneLayoutChanged({ decided: true })
  *  with no `detachTo`, or a host that opened a window itself). */
 function tabAddress(kind, query) {
   const to = options.detachTo;
-  if (typeof to === "string") return `${to}${to.includes("?") ? "&" : "?"}${query}`;
+  if (typeof to === "string") {
+    // The query goes before a fragment the page's address carries, after a query of its own.
+    const cut = to.indexOf("#"), page = cut < 0 ? to : to.slice(0, cut), fragment = cut < 0 ? "" : to.slice(cut);
+    return `${page}${page.includes("?") ? "&" : "?"}${query}${fragment}`;
+  }
   if (typeof to === "function") {
     let answer;
     try { answer = to({ kind, query, href: serverTab(kind, query) }); } catch (error) { (globalThis.reportError || console.error)(error); return ""; }
@@ -3674,6 +3679,10 @@ byId("sessionFoldAll").onclick = () => { const close = recordState.units.some(un
 // top bar") and says when one is pressed.
 byId("mobileBack").onclick = () => options.openList?.();
 byId("sidebarReopen").onclick = () => options.openSidebar?.();
+// A host with no list to go back to, or no sidebar to reopen, gets no control for it (#s433: a
+// transcript in a tab of its own showed a Back that did nothing in a narrow window).
+if (!options.openList) byId("mobileBack").style.setProperty("display", "none", "important");
+if (!options.openSidebar) byId("sidebarReopen").style.setProperty("display", "none", "important");
 addEventListener("hashchange", () => { landedHash = ""; landOnHash(); }, { signal });
 addEventListener("resize", () => { paneLayoutChanged(); updateStickyHeaders(); }, { passive: true, signal });
 // The keymap (parity #11): the classic view's keys, resolved by keymap.js, acted on here.

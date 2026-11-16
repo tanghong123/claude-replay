@@ -285,7 +285,8 @@ fn a_host_serves_a_tab_of_its_own_from_the_kit() {
     let monitor = Monitor::spawn(Kind::V1, 3312, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    harness::answer_in_browser(&tab, kit_answers(r#"detachTo: "/kit-tab","#));
+    // The host's page carries a query of its own, which every tab keeps (the review of #s433).
+    harness::answer_in_browser(&tab, kit_answers(r#"detachTo: "/kit-tab?team=terns","#));
     tab.navigate_to(&monitor.url("kit-host")).unwrap();
     tab.wait_until_navigated().unwrap();
     until(
@@ -364,15 +365,15 @@ fn a_host_serves_a_tab_of_its_own_from_the_kit() {
     assert_eq!(tabs.len(), 3, "three ↗s, three tabs: {tabs:?}");
     assert_eq!(
         tabs[0],
-        format!("/kit-tab?session={SID}"),
+        format!("/kit-tab?team=terns&session={SID}"),
         "the transcript's tab is the host's page with the session"
     );
     assert!(
-        tabs[1].starts_with("/kit-tab?root=") && tabs[1].contains("NOTES.md"),
+        tabs[1].starts_with("/kit-tab?team=terns&root=") && tabs[1].contains("NOTES.md"),
         "the document's tab is the host's page with the held text's place: {tabs:?}"
     );
     assert!(
-        tabs[2].starts_with("/kit-tab?") && tabs[2].contains("held=am-image"),
+        tabs[2].starts_with("/kit-tab?team=terns&") && tabs[2].contains("held=am-image"),
         "the image's tab is the host's page with the copy it was handed: {tabs:?}"
     );
 
@@ -399,7 +400,7 @@ fn a_host_serves_a_tab_of_its_own_from_the_kit() {
     );
     let transcript = harness::probe(
         &tab,
-        "({ kind: window.__tab.kind, error: window.__tab.error, errors: window.__tab.errors, path: location.pathname, session: new URLSearchParams(location.search).get('session'), list: !!document.getElementById('sessionList'), ownNewTab: !!document.getElementById('sessionNewTab'), title: document.title !== 'A kit tab' && document.title.length > 0, monitorUi: performance.getEntriesByType('resource').map(function (e) { return new URL(e.name).pathname; }).filter(function (p) { return p.indexOf('/monitor-ui/') >= 0; }) })",
+        "({ kind: window.__tab.kind, error: window.__tab.error, errors: window.__tab.errors, path: location.pathname, team: new URLSearchParams(location.search).get('team'), session: new URLSearchParams(location.search).get('session'), list: !!document.getElementById('sessionList'), ownNewTab: !!document.getElementById('sessionNewTab'), title: document.title !== 'A kit tab' && document.title.length > 0, monitorUi: performance.getEntriesByType('resource').map(function (e) { return new URL(e.name).pathname; }).filter(function (p) { return p.indexOf('/monitor-ui/') >= 0; }) })",
     );
     load(&tabs[1]);
     until(
@@ -411,7 +412,7 @@ fn a_host_serves_a_tab_of_its_own_from_the_kit() {
     );
     let document = harness::probe(
         &tab,
-        "({ kind: window.__tab.kind, error: window.__tab.error, errors: window.__tab.errors, path: location.pathname, h1: document.querySelector('#detachedView > .detached-doc h1').textContent.trim(), title: document.title, monitorUi: performance.getEntriesByType('resource').map(function (e) { return new URL(e.name).pathname; }).filter(function (p) { return p.indexOf('/monitor-ui/') >= 0; }) })",
+        "({ kind: window.__tab.kind, error: window.__tab.error, errors: window.__tab.errors, path: location.pathname, team: new URLSearchParams(location.search).get('team'), h1: document.querySelector('#detachedView > .detached-doc h1').textContent.trim(), title: document.title, monitorUi: performance.getEntriesByType('resource').map(function (e) { return new URL(e.name).pathname; }).filter(function (p) { return p.indexOf('/monitor-ui/') >= 0; }) })",
     );
     load(&tabs[2]);
     until(
@@ -423,7 +424,7 @@ fn a_host_serves_a_tab_of_its_own_from_the_kit() {
     );
     let image = harness::probe(
         &tab,
-        "({ kind: window.__tab.kind, error: window.__tab.error, errors: window.__tab.errors, path: location.pathname, title: document.title !== 'A kit tab' && document.title.length > 0, monitorUi: performance.getEntriesByType('resource').map(function (e) { return new URL(e.name).pathname; }).filter(function (p) { return p.indexOf('/monitor-ui/') >= 0; }) })",
+        "({ kind: window.__tab.kind, error: window.__tab.error, errors: window.__tab.errors, path: location.pathname, team: new URLSearchParams(location.search).get('team'), title: document.title !== 'A kit tab' && document.title.length > 0, monitorUi: performance.getEntriesByType('resource').map(function (e) { return new URL(e.name).pathname; }).filter(function (p) { return p.indexOf('/monitor-ui/') >= 0; }) })",
     );
     // The handle takes the tab away and leaves the host's element as it gave it.
     let unmounted = harness::probe(
@@ -433,17 +434,17 @@ fn a_host_serves_a_tab_of_its_own_from_the_kit() {
     drop(monitor);
     assert_eq!(
         transcript,
-        serde_json::json!({ "kind": "session", "error": null, "errors": [], "path": "/kit-tab", "session": SID, "list": false, "ownNewTab": false, "title": true, "monitorUi": [] }),
+        serde_json::json!({ "kind": "session", "error": null, "errors": [], "path": "/kit-tab", "team": "terns", "session": SID, "list": false, "ownNewTab": false, "title": true, "monitorUi": [] }),
         "the transcript alone, no list and no ↗ of its own, on the host's route"
     );
     assert_eq!(
         document,
-        serde_json::json!({ "kind": "markdown", "error": null, "errors": [], "path": "/kit-tab", "h1": "Field notes", "title": "NOTES.md", "monitorUi": [] }),
+        serde_json::json!({ "kind": "markdown", "error": null, "errors": [], "path": "/kit-tab", "team": "terns", "h1": "Field notes", "title": "NOTES.md", "monitorUi": [] }),
         "the document in mdrev's viewer, on the host's route"
     );
     assert_eq!(
         image,
-        serde_json::json!({ "kind": "image", "error": null, "errors": [], "path": "/kit-tab", "title": true, "monitorUi": [] }),
+        serde_json::json!({ "kind": "image", "error": null, "errors": [], "path": "/kit-tab", "team": "terns", "title": true, "monitorUi": [] }),
         "the image, on the host's route"
     );
     assert_eq!(
@@ -464,9 +465,10 @@ fn the_monitor_opens_a_transcript_in_a_tab_of_its_own() {
     let stores = Stores::new(&base);
     stores.claude_session(
         SID,
-        &(harness::user_at(
+        &(harness::pasted_image_sized(
             "where do the terns nest this spring?",
             &harness::at("00:01"),
+            harness::WIDE_PNG_B64,
         ) + &harness::assistant_at(
             "on the north spit, past the second dune",
             &harness::at("00:02"),
@@ -503,9 +505,50 @@ fn the_monitor_opens_a_transcript_in_a_tab_of_its_own() {
         Duration::from_secs(30),
         TAB_NOW,
     );
+    // The image the prompt embeds, in the tab's own pane: no ↗ there either.
+    eval(
+        &own,
+        "document.querySelector('.prompt-image').click(); 'ok'",
+    );
+    until(
+        &own,
+        "(function(){ var i = document.querySelector('#previewBody .artifact-stage img'); return !!i && i.naturalWidth > 1; })()",
+        "the pasted image in the tab's pane",
+        Duration::from_secs(20),
+        "(document.getElementById('previewBody') || {}).innerText",
+    );
     let shown = harness::probe(
         &own,
-        "({ path: location.pathname, session: new URLSearchParams(location.search).get('session'), list: !!document.getElementById('sessionList'), ownNewTab: !!document.getElementById('sessionNewTab'), paneNewTab: !!document.querySelector('#previewHead .preview-newtab:not([hidden])'), theme: document.getElementById('sessionView').dataset.theme || 'light' })",
+        "({ path: location.pathname, session: new URLSearchParams(location.search).get('session'), list: !!document.getElementById('sessionList'), ownNewTab: !!document.getElementById('sessionNewTab'), paneNewTab: (function () { var b = document.querySelector('#previewHead .preview-newtab'); return !!b && !b.hidden && b.offsetWidth > 0; })(), theme: document.getElementById('sessionView').dataset.theme || 'light' })",
+    );
+    // Narrow, the view would offer its Back to the list: the tab has no list, so no Back.
+    harness::resize(&own, 700.0, 900.0);
+    until(
+        &own,
+        "document.getElementById('sessionView').classList.contains('pl-max-w-760')",
+        "the tab's view to lay out for a narrow window",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').className",
+    );
+    let back = harness::probe(
+        &own,
+        "getComputedStyle(document.getElementById('mobileBack')).display",
+    );
+    // The address keeps what else it carries (a trace asked for, a host's own key) as the tab
+    // rewrites it with each title.
+    own.navigate_to(&monitor.url(&format!("detached?trace=viewport&session={SID}")))
+        .unwrap();
+    own.wait_until_navigated().unwrap();
+    until(
+        &own,
+        "(document.querySelector('#detachedView > #sessionView #transcript') || {}).innerText.includes('past the second dune') && document.title !== 'Agent Monitor'",
+        "the transcript and its title, again, from an address with a trace",
+        Duration::from_secs(30),
+        TAB_NOW,
+    );
+    let address = harness::probe(
+        &own,
+        "({ trace: new URLSearchParams(location.search).get('trace'), session: new URLSearchParams(location.search).get('session') })",
     );
     // The app's theme, changed in the app's tab, reaches the tab of its own.
     eval(&tab, "localStorage.setItem('am-demo-theme', 'dark'); 'ok'");
@@ -522,5 +565,11 @@ fn the_monitor_opens_a_transcript_in_a_tab_of_its_own() {
         shown,
         serde_json::json!({ "path": "/detached", "session": SID, "list": false, "ownNewTab": false, "paneNewTab": false, "theme": "light" }),
         "the session's transcript alone, at /detached"
+    );
+    assert_eq!(back, "none", "no Back to a list the tab does not have");
+    assert_eq!(
+        address,
+        serde_json::json!({ "trace": "viewport", "session": SID }),
+        "the tab keeps the rest of its address"
     );
 }

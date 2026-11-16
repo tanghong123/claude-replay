@@ -1618,6 +1618,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(detachedKind(standaloneHref({ root: "held", path: "0123/NOTES.md", cap: "d".repeat(64) }).split("?")[1]), "markdown", "a document's, as the pane writes it");
   assert.equal(detachedKind("name=a.png&path=%2Fx%2Fa.png&sig=s"), "image", "an offered image file's");
   assert.equal(detachedKind("?name=a.png&held=am-image%3Ak"), "image", "an embedded image's copy");
+  assert.equal(detachedKind("?root=&path=shot.png"), "markdown", "an empty root is still a document's address, whose tab says it names none");
   assert.equal(detachedKind(""), "none", "an address that names nothing");
   assert.deepEqual([...DETACHED_OPTIONS], ["backend", "theme", "address"]);
   {
@@ -1628,8 +1629,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   }
   // The app opens the transcript's tab at `/detached` and a document's or an image's where it opened
   // before (`/markdown`, `/image`), all one page: the server's own, the `href` the view hands it.
-  assert.ok(appSource.includes("detachTo: ({ href }) => href,"), "the app opens each tab at the server's own page");
-  assert.ok(viewSource.includes("return backend().url(`/detached?${query}`);"), "the server's own transcript tab is /detached");
+  assert.match(appSource, /detachTo:\s*\(\s*\{\s*href\s*\}\s*\)\s*=>\s*href\s*,/, "the app opens each tab at the server's own page");
+  assert.match(viewSource, /return\s+backend\(\)\.url\(\s*`\/detached\?\$\{query\}`\s*\)/, "the server's own transcript tab is /detached");
   assert.deepEqual(standaloneFacts(""), { root: "", path: "", cap: "", range: null }, "an empty address names nothing");
   assert.equal(hintFor("hit-prev"), "N"); assert.equal(hintFor("page-up"), "⇧Space"); assert.equal(hintFor("nope"), "");
   assert.match(appSource, /bindKeymap\(document, /, "the shell binds the keymap once, at the document");
