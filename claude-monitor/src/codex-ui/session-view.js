@@ -257,9 +257,12 @@ function hostValue(node, name) {
 function unwriteStyle(node, name) {
   if (!node) return;
   const wrote = viewWrote.get(node)?.get(name);
-  if (wrote === undefined || node.style.getPropertyValue(name) !== wrote) return;
-  const { value, priority } = hostUnder.get(node)?.get(name) || { value: "", priority: "" };
-  if (value) node.style.setProperty(name, value, priority); else node.style.removeProperty(name);
+  if (wrote === undefined) return;
+  // The host's value written over the view's is the host's: the view has nothing there to take back.
+  if (node.style.getPropertyValue(name) === wrote) {
+    const { value, priority } = hostUnder.get(node)?.get(name) || { value: "", priority: "" };
+    if (value) node.style.setProperty(name, value, priority); else node.style.removeProperty(name);
+  }
   hostUnder.get(node)?.delete(name);
   viewWrote.get(node).delete(name);
 }
@@ -4417,6 +4420,8 @@ var phoneDock;
   // Asked again as the view leaves the phone family (a host widening its pane while the keyboard is
   // up hears no viewport event), so the grid's transform and `keyboardRides` do not outlive the ride.
   let rideAgain = () => {};
+  // The page's offset at rest, in the visual viewport's page coordinates (#s512, in `ride`).
+  let pageBase = 0;
   if (viewport2) {
     const root = viewRoot.styleRoot();
     // The ride moves the host's box by `shift` over iOS's page scroll, on top of whatever transform the
@@ -4436,7 +4441,16 @@ var phoneDock;
       // stale (a host's bar hidden while the reader typed), and on iOS, where the page's scroll and the
       // grid's transform cancel, the box may not move, so no watch of its place hears it.
       const rode = keyboardRides;
-      const pageTop = TOUCH.matches ? viewport2.pageTop : 0;
+      // #s512: on a touch screen the page's offset is iOS's lift for a focused field only while a field
+      // takes the keyboard or a ride is under way. Otherwise it is the reader's own, and a host's page
+      // they scrolled by finger was put back to its top, its box moved for a frame, at every scroll.
+      // That offset at rest (`pageBase`, read by every ride the keyboard has no part in) is what iOS's
+      // lift is measured from and where the page is given back once the keyboard is down, so a pane
+      // low in a tall host page stays where the reader scrolled it through a reply. The app's own page
+      // never scrolls, so its base is 0 and its ride is what it was.
+      const lifts = TOUCH.matches && (typing || rode);
+      if (!lifts) pageBase = TOUCH.matches ? viewport2.pageTop : 0;
+      const pageTop = lifts ? viewport2.pageTop - pageBase : 0;
       if (controls.nativeActive && PHONE.matches) {
         const frame = sharedKeyboardFrame(grid.getBoundingClientRect().height, { height: viewport2.height, scale: viewport2.scale, pageTop });
         // Keep one containing block even at zero offset; Safari pans during keyboard animation.
@@ -4454,9 +4468,10 @@ var phoneDock;
       const shortfall = steady ? Math.max(0, Math.round(root.clientHeight - viewport2.height)) : 0;
       const covered = typing ? shortfall : 0;
       const shift = steady ? Math.max(0, Math.round(pageTop)) : 0;
-      // Once the keyboard is down there is nothing to fight: the page goes back to the top. This reads
-      // the viewport as it is, unguarded, so it acts only as it did before #s451.
-      if (steady && !shortfall && shift) scrollTo(0, 0);
+      // Once the keyboard is down there is nothing to fight: the page goes back to where it rested (the
+      // app's top; a host page, where the reader left it, #s512). This reads the viewport as it is,
+      // unguarded, so it acts only as it did before #s451.
+      if (steady && !shortfall && shift) scrollTo(scrollX, pageBase);
       keyboardRides = shift > 0;
       rideBox(shift, false);
       sessionView.classList.toggle("keyboard-up", covered > 0);
