@@ -235,6 +235,34 @@ function writeStyle(node, name, value) {
   if (!viewWrote.has(node)) viewWrote.set(node, new Map());
   viewWrote.get(node).set(name, node.style.getPropertyValue(name));
 }
+// The host's own value of a property the view writes OVER for a while (the keyboard ride's transform
+// on the host's box), by element and property: what was there when the view wrote over it, with its
+// priority, put back when the view takes its value away (#s511).
+const hostUnder = new Map();
+/** The host's own value of `name` on `node` as the view writes over it: the value there now when it
+ *  is not the one the view last wrote (the host's, which the host may have changed since the view
+ *  last wrote), else the one kept when the view first wrote over it. */
+function hostValue(node, name) {
+  const now = node.style.getPropertyValue(name);
+  const kept = hostUnder.get(node)?.get(name);
+  if (now === viewWrote.get(node)?.get(name)) return kept || { value: "", priority: "" };
+  const host = { value: now, priority: node.style.getPropertyPriority(name) };
+  if (!hostUnder.has(node)) hostUnder.set(node, new Map());
+  hostUnder.get(node).set(name, host);
+  return host;
+}
+/** Take the view's value of `name` off `node` and put the host's back, but only while the value there
+ *  is the one the view wrote: one the view never wrote, or the host has written since, is the host's
+ *  and stays as it is (#s511: the ride with no shift removed a host's own transform from its box). */
+function unwriteStyle(node, name) {
+  if (!node) return;
+  const wrote = viewWrote.get(node)?.get(name);
+  if (wrote === undefined || node.style.getPropertyValue(name) !== wrote) return;
+  const { value, priority } = hostUnder.get(node)?.get(name) || { value: "", priority: "" };
+  if (value) node.style.setProperty(name, value, priority); else node.style.removeProperty(name);
+  hostUnder.get(node)?.delete(name);
+  viewWrote.get(node).delete(name);
+}
 // The view's own stores, fresh for this mount (stage 7): the open session's records and how they are
 // drawn, and how the view is laid out and read, with the reader's remembered choices.
 const recordState = createRecordState();
@@ -4391,6 +4419,17 @@ var phoneDock;
   let rideAgain = () => {};
   if (viewport2) {
     const root = viewRoot.styleRoot();
+    // The ride moves the host's box by `shift` over iOS's page scroll, on top of whatever transform the
+    // host gave it, and with nothing to move (`hold` keeps native mode's containing block at 0) takes
+    // its own value away, putting the host's back. It used to write the shift alone and remove the
+    // property at no shift, which took a host's own transform off its box (#s511): at the mount, at
+    // each focus change at any width, and at each page scroll of a phone reader.
+    const rideBox = (shift, hold) => {
+      if (!grid) return;
+      if (!(shift > 0 || hold)) { unwriteStyle(grid, "transform"); return; }
+      const { value } = hostValue(grid, "transform");
+      writeStyle(grid, "transform", `translateY(${shift}px)${value && value !== "none" ? ` ${value}` : ""}`);
+    };
     const ride = () => {
       const typing = typesInto();
       // The ride ending decides again (#s431 stage 4): the gaps the layout kept while it rode may be
@@ -4402,7 +4441,7 @@ var phoneDock;
         const frame = sharedKeyboardFrame(grid.getBoundingClientRect().height, { height: viewport2.height, scale: viewport2.scale, pageTop });
         // Keep one containing block even at zero offset; Safari pans during keyboard animation.
         keyboardRides = Math.abs(viewport2.scale - 1) < 0.01 && frame.shift > 0;
-        writeStyle(grid, "transform", Math.abs(viewport2.scale - 1) < 0.01 ? `translateY(${frame.shift}px)` : "");
+        rideBox(Math.abs(viewport2.scale - 1) < 0.01 ? frame.shift : 0, Math.abs(viewport2.scale - 1) < 0.01);
         sessionView.classList.toggle("keyboard-up", typing && frame.keyboardOpen);
         writeStyle(root, "--phone-kb", `${typing ? frame.inset : 0}px`);
         if (rode && !keyboardRides) layout.decide();
@@ -4419,7 +4458,7 @@ var phoneDock;
       // the viewport as it is, unguarded, so it acts only as it did before #s451.
       if (steady && !shortfall && shift) scrollTo(0, 0);
       keyboardRides = shift > 0;
-      writeStyle(grid, "transform", shift ? `translateY(${shift}px)` : "");
+      rideBox(shift, false);
       sessionView.classList.toggle("keyboard-up", covered > 0);
       writeStyle(root, "--phone-kb", `${covered}px`);
       if (rode && !keyboardRides) layout.decide();
@@ -4429,8 +4468,9 @@ var phoneDock;
     viewport2.addEventListener("resize", ride, { signal });
     viewport2.addEventListener("scroll", ride, { signal });
     // The page's scroll is the ride's only under iOS's keyboard (a touch screen's, which `ride` reads
-    // for itself, #s497); off a phone this listener has nothing to do.
-    addEventListener("scroll", () => { if (PHONE.matches || grid.style.transform) ride(); }, { passive: true, signal });
+    // for itself, #s497): off a touch screen's phone reader this listener has nothing to do but take
+    // back a transform the ride left (#s511: a desktop host's page asked a ride on every scroll).
+    addEventListener("scroll", () => { if (PHONE.matches && TOUCH.matches || viewWrote.get(grid)?.has("transform")) ride(); }, { passive: true, signal });
     // Focus moving may come with no resize of the visual viewport (a stale shortfall stays short, and
     // a keyboard rising into it leaves the height as it was), so the ride is asked again once focus
     // has settled where it went, whether it left a field or came to one.
@@ -4440,6 +4480,9 @@ var phoneDock;
   // Across the breakpoint the Tasks list changes what it shows (#319: every state on a phone); the
   // desktop's rail comes off or goes back on in the app (#s33, `applySidebar`).
   PHONE.addEventListener("change", () => { placeToolbar(); place(); rideAgain(); if (!PHONE.matches) closePane(); renderNavigator(); paintCompose(); }, { signal });
+  // So does a change of screen (#s511): off a touch screen the page's offset is no keyboard's, and a
+  // transform a ride wrote there would stay until the next scroll or viewport event.
+  TOUCH.addEventListener("change", () => rideAgain(), { signal });
   // Into the wide layout the drop-down has no button (the column shows its panes); out of it, the
   // app sends the column's borrowed list home and the handle speaks of the drawer again.
   WIDE.addEventListener("change", () => { if (WIDE.matches) closePane(); place(); }, { signal });
@@ -4548,9 +4591,12 @@ return fenced({
     taskScrim.remove(); taskPopover.remove();
     for (const [, , id] of PHONE_PANES) { const node = byId(id); if (node && !element.contains(node)) node.remove(); }
     for (const { node, style, values } of hostStyles) {
-      for (const [name, value, priority] of values) {
+      for (const [name, atMount, priorityAtMount] of values) {
         const wrote = viewWrote.get(node)?.get(name);
         if (wrote === undefined || node.style.getPropertyValue(name) !== wrote) continue;
+        // A value the view wrote over the host's (the ride's transform) gives back the host's as it was
+        // when the view last wrote over it, which the host may have changed since the mount (#s511).
+        const { value, priority } = hostUnder.get(node)?.get(name) || { value: atMount, priority: priorityAtMount };
         if (value) node.style.setProperty(name, value, priority); else node.style.removeProperty(name);
       }
       if (style === null && !node.getAttribute("style")) node.removeAttribute("style");

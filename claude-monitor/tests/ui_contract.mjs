@@ -5291,10 +5291,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual([[], [text("\n  ")], [text("Loading…")], [elementNode], [text(" "), comment]].map(nodes => nodes.some(refused)), [false, false, true, true, true], "white space alone is empty; text, an element or a comment is the host's, refused");
   {
     const write = /^function writeStyle\(node, name, value\) \{\n[\s\S]*?\n\}\n/m.exec(body);
-    const restore = /^      for \(const \[name, value, priority\] of values\) \{\n[\s\S]*?\n      \}\n/m.exec(unmount[0]);
-    assert.ok(write && restore, "the view writes the host's styles through one function, and the unmount reads what it wrote");
-    const style = () => { const props = new Map(); return { setProperty: (n, v) => props.set(n, v), removeProperty: n => props.delete(n), getPropertyValue: n => props.get(n) ?? "", props }; };
-    const run = new Function("hostStyles", `const viewWrote = new Map(); ${write[0]}; return { writeStyle, unmount: () => { for (const { node, values } of hostStyles) {\n${restore[0]}} } };`);
+    const under = /^function hostValue\(node, name\) \{\n[\s\S]*?\n\}\n/m.exec(body);
+    const unwrite = /^function unwriteStyle\(node, name\) \{\n[\s\S]*?\n\}\n/m.exec(body);
+    const restore = /^      for \(const \[name, atMount, priorityAtMount\] of values\) \{\n[\s\S]*?\n      \}\n/m.exec(unmount[0]);
+    assert.ok(write && under && unwrite && restore, "the view writes the host's styles through one function, takes its own back through another, and the unmount reads what it wrote");
+    const style = () => { const props = new Map(); return { setProperty: (n, v) => props.set(n, v), removeProperty: n => props.delete(n), getPropertyValue: n => props.get(n) ?? "", getPropertyPriority: () => "", props }; };
+    const run = new Function("hostStyles", `const viewWrote = new Map(), hostUnder = new Map(); ${write[0]}; ${under[0]}; ${unwrite[0]}; return { writeStyle, hostValue, unwriteStyle, unmount: () => { for (const { node, values } of hostStyles) {\n${restore[0]}} } };`);
     const root = { style: style() }, box = { style: style() };
     root.style.setProperty("--preview", "510px"); box.style.setProperty("transform", "translateX(1px)");
     const hosts = [{ node: root, values: [["--preview", "510px", ""], ["--phone-top", "", ""], ["--phone-kb", "", ""]] }, { node: box, values: [["transform", "translateX(1px)", ""]] }];
@@ -5305,6 +5307,23 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     view.unmount();
     assert.deepEqual(Object.fromEntries(root.style.props), { "--preview": "510px", "--phone-kb": "99px" }, "the host's value back where the view's is still there, the view's own removed, a value the host wrote since left alone");
     assert.deepEqual(Object.fromEntries(box.style.props), { transform: "translateX(2px)" }, "and a property the view never wrote is the host's, untouched");
+    // #s511: the ride writes over the host's transform and takes only its own away, giving the host's back.
+    const pane = { style: style() };
+    pane.style.setProperty("transform", "translateX(5px)");
+    const ride = run([{ node: pane, values: [["transform", "translateX(5px)", ""]] }]);
+    ride.unwriteStyle(pane, "transform");
+    assert.equal(pane.style.getPropertyValue("transform"), "translateX(5px)", "taking back a value the view never wrote leaves the host's");
+    const over = shift => ride.writeStyle(pane, "transform", `translateY(${shift}px) ${ride.hostValue(pane, "transform").value}`);
+    over(10); over(12);
+    assert.equal(pane.style.getPropertyValue("transform"), "translateY(12px) translateX(5px)", "the ride writes over the host's value and keeps it under its own");
+    ride.unwriteStyle(pane, "transform");
+    assert.equal(pane.style.getPropertyValue("transform"), "translateX(5px)", "and gives it back as it ends");
+    over(10); pane.style.setProperty("transform", "translateX(6px)"); over(10);
+    assert.equal(pane.style.getPropertyValue("transform"), "translateY(10px) translateX(6px)", "a value the host writes during the ride is kept under it");
+    ride.unmount();
+    assert.equal(pane.style.getPropertyValue("transform"), "translateX(6px)", "and an unmount in the ride gives back the host's value as it last wrote it, not the mount's");
+    over(10); pane.style.setProperty("transform", "translateX(7px)"); ride.unwriteStyle(pane, "transform");
+    assert.equal(pane.style.getPropertyValue("transform"), "translateX(7px)", "a value the host wrote over the ride's is the host's, never taken away");
   }
   assert.match(/^  destroy\(\) \{\n[\s\S]*?\n  \}\n/m.exec(vp)[0], /if \(window\.__viewportViolations === this\.violations\) delete window\.__viewportViolations;/, "the engine's globals go as the viewport is destroyed (and only then), if still this engine's");
   assert.doesNotMatch(vp.slice(0, vp.indexOf("  destroy() {")), /delete window\.__viewport/, "the engine's globals are never taken away while the viewport is built");

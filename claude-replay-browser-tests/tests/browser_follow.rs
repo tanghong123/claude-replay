@@ -5402,6 +5402,158 @@ fn a_desktop_host_page_that_scrolls_keeps_its_offset_beside_a_phone_reader() {
     );
 }
 
+/// #s511 (the review of #s497): the keyboard ride writes a transform on the host's box (the `grid` it
+/// was given) and took it away by removing the property, so a ride with nothing to move removed the
+/// host's OWN transform: at the mount, at each focus change at any width, and at each page scroll of a
+/// phone reader. A host that slides its pane in by a transform (#s467 supports a host moving the box)
+/// saw it jump back as the reader clicked into the search field. In a mouse window: a pane of 400px
+/// (the view a phone reader) that its host moved 12px by a transform before the mount keeps it through
+/// the mount, the search field taking focus and a page scroll, and no other value is ever written
+/// there. On a phone: the ride moves the box over iOS's page scroll on top of the host's transform, a
+/// transform the host changes during the ride is kept under the ride's, the ride's end gives back the
+/// host's, and so does an unmount in the middle of a ride (the host's value as it last wrote it, not
+/// the one at the mount). Red on 06fc5412: the mount and the focus took the host's transform off, and
+/// the ride wrote its own alone.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_host_s_own_transform_on_its_pane_outlives_the_keyboard_ride() {
+    let _serial = serial();
+    let base = base("host-own-transform");
+    let monitor = Monitor::spawn(Kind::V1, 3136, &base, None, true);
+    // A mouse window: the host moves its pane before it mounts the view.
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1400.0, 900.0);
+    harness::open_host_page(&tab, &monitor, "mount=0");
+    harness::eval(
+        &tab,
+        "(function(){ document.body.style.height = '3000px'; var p = document.getElementById('hostPane'); p.style.left = '500px'; p.style.right = 'auto'; p.style.width = '400px'; p.style.transform = 'translateX(12px)'; window.__transforms = []; new MutationObserver(function(){ window.__transforms.push(p.style.transform); }).observe(p, { attributes: true, attributeFilter: ['style'] }); return window.__host.mount(); })()",
+    );
+    harness::until(
+        &tab,
+        &format!("(function(){{ var v = document.getElementById('sessionView'); return !!v && Math.round(v.getBoundingClientRect().width) === 400 && v.classList.contains('pl-phone'); }})() && {VIEW_CAUGHT_UP}"),
+        "the view mounted as a phone reader in the host's 400px pane",
+        Duration::from_secs(10),
+        VIEW_LAYOUT,
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let facts = "JSON.stringify({ coarse: matchMedia('(pointer:coarse)').matches, focused: (document.activeElement || {}).id || '', scroll: Math.round(scrollY), transform: document.getElementById('hostPane').style.transform, written: window.__transforms.filter(function (t) { return t !== 'translateX(12px)'; }) })";
+    let read = |tab: &headless_chrome::Tab| -> serde_json::Value {
+        serde_json::from_str(harness::eval(tab, facts).as_str().unwrap_or("{}")).unwrap_or_default()
+    };
+    let mounted = read(&tab);
+    // The reader opens the search, which focuses its field: a focus change asks for a ride.
+    harness::eval(
+        &tab,
+        "(function(){ document.querySelector('#sessionView .header-searchbox').click(); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(document.activeElement || {}).id === 'transcriptSearchInput'",
+        "the search field to take focus",
+        Duration::from_secs(5),
+        facts,
+    );
+    harness::pause(
+        "the ride a focus change asks for",
+        Duration::from_millis(300),
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let focused = read(&tab);
+    // A page scroll, which asks a phone reader's ride too.
+    harness::eval(&tab, "(function(){ scrollBy(0, 300); return true; })()");
+    harness::pause("any ride a scroll event starts", Duration::from_millis(300));
+    harness::eval(&tab, TWO_FRAMES);
+    let scrolled = read(&tab);
+    for (what, at) in [
+        ("the mount", &mounted),
+        ("the search field taking focus", &focused),
+        ("a page scroll", &scrolled),
+    ] {
+        assert_eq!(
+            (at["coarse"].clone(), at["transform"].clone(), at["written"].clone()),
+            (serde_json::json!(false), serde_json::json!("translateX(12px)"), serde_json::json!([])),
+            "in a mouse window the host's own transform outlives {what}, and nothing else is written there: {at}"
+        );
+    }
+    assert_eq!(
+        (focused["focused"].clone(), scrolled["scroll"].clone()),
+        (
+            serde_json::json!("transcriptSearchInput"),
+            serde_json::json!(300)
+        ),
+        "the field had focus and the page kept its scroll: {focused} {scrolled}"
+    );
+
+    // A phone: the host moves its pane by a transform, and the keyboard comes up.
+    let (_browser2, tab2) = harness::chrome_tab();
+    monitor.pair(&tab2);
+    harness::phone(&tab2, 390, 844);
+    harness::open_host_page(&tab2, &monitor, "");
+    place_host_pane(&tab2, 0, 390);
+    harness::eval(
+        &tab2,
+        "(function(){ var p = document.getElementById('hostPane'); p.style.transform = 'translateX(-20px)'; window.__kb = { top: 0, short: 0 }; Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - window.__kb.short; } }); Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return window.__kb.top; } }); return true; })()",
+    );
+    harness::eval(&tab2, TWO_FRAMES);
+    let transform = "document.getElementById('hostPane').style.transform";
+    let ride = |top: u32, short: u32, event: &str| {
+        harness::eval(
+            &tab2,
+            &format!("(function(){{ window.__kb = {{ top: {top}, short: {short} }}; visualViewport.dispatchEvent(new Event('{event}')); return true; }})()"),
+        );
+    };
+    ride(100, 300, "scroll");
+    harness::until(
+        &tab2,
+        &format!("{transform} === 'translateY(100px) translateX(-20px)'"),
+        "the ride to move the host's box over the page's scroll on top of the host's transform",
+        Duration::from_secs(5),
+        transform,
+    );
+    // The host slides its pane on while the keyboard is up: the ride keeps the new value under its own.
+    harness::eval(
+        &tab2,
+        "(function(){ document.getElementById('hostPane').style.transform = 'translateX(-30px)'; return true; })()",
+    );
+    ride(100, 300, "scroll");
+    harness::until(
+        &tab2,
+        &format!("{transform} === 'translateY(100px) translateX(-30px)'"),
+        "the ride to keep the transform the host changed during it",
+        Duration::from_secs(5),
+        transform,
+    );
+    // The keyboard goes down: the host's transform comes back, as the host last wrote it.
+    ride(0, 0, "resize");
+    harness::until(
+        &tab2,
+        &format!("{transform} === 'translateX(-30px)'"),
+        "the ride's end to give the host's transform back",
+        Duration::from_secs(5),
+        transform,
+    );
+    // Up again, and the host unmounts the view in the middle of the ride.
+    ride(100, 300, "scroll");
+    harness::until(
+        &tab2,
+        &format!("{transform} === 'translateY(100px) translateX(-30px)'"),
+        "the ride to move the box again",
+        Duration::from_secs(5),
+        transform,
+    );
+    let unmounted = harness::eval(
+        &tab2,
+        &format!("(function(){{ window.__view.unmount(); return {transform}; }})()"),
+    );
+    drop(monitor);
+    assert_eq!(
+        unmounted,
+        serde_json::json!("translateX(-30px)"),
+        "an unmount in the middle of a ride gives the host's transform back as the host last wrote it"
+    );
+}
+
 /// #s431 stage 4 (the second delta review of b4ad87a9): the gaps a decision during the keyboard ride
 /// keeps come only from a decision that saw a box while no ride moved it, and the ride's end decides
 /// again. A view its host mounts hidden decided once at 0×0, whose foot read the window's whole height
