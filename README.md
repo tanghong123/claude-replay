@@ -282,7 +282,8 @@ every block).
 
 **`--dump-html`** exports a **single self-contained `.html`** — no network, no
 external assets — that reproduces the TUI's structure in the browser: folding,
-search (`/`), `j/k`/`[ ]` keys, a turn sidebar with scroll-spy, a usage/cost panel,
+search (`/`, or `⌘F`/`Ctrl+F`: a second press there is the browser's find), `j/k`/`[ ]`
+keys, a turn sidebar with scroll-spy, a usage/cost panel,
 light/dark themes (persisted), and click-to-copy on the session id and code fences.
 It honors the same `--fold`/`--unfold`/`--full` flags, but never caps a body — the
 full content is always in the file (grep-able), with long tails hidden behind a

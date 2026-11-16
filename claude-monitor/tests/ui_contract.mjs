@@ -22,7 +22,7 @@ import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeight
 import { taskGlyph, taskStatus as cardStatus, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml, TASK_NO_TITLE, TASK_NO_DETAILS } from "../../claude-replay-html/src/html/shared/task-card.js";
 import { displayName, toolHead, stateLabel, nextHeadStep, headStepState, headStepOf } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
-import { KEYMAP, bindKeymap, hintFor, inGuest, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
+import { COMMAND_KEY, KEYMAP, bindKeymap, hintFor, inGuest, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
 import { isMarkdownName, standaloneFacts, standaloneHref } from "../../claude-monitor/src/codex-ui/mdrev-pane.js";
 import { agentRecordTargets, currentTurnIndex, peerHue, peerLabelRest, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget, taskDetails, artifactRoster, humanTokens, compactionTick } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
@@ -1559,6 +1559,28 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   for (const k of ["n", "[", "]", "j"]) assert.equal(resolveKey(ev(k), "view", inside), null, `${k} inside a guest is the guest's`);
   assert.equal(resolveKey(ev("/"), "view", inside), null, "…including an \"any\" binding");
   assert.equal(resolveKey(ev("n"), "view", outside).action, "hit-next", "outside it the shell keeps its keys");
+  // #s509 (Hong on #s508): ⌘F, Ctrl+F off Apple platforms, opens the session's search — the command
+  // key alone, and from a text field only inside `[data-command-keys]` (the compose box), so the
+  // search field's own press, and every other field's, is the browser's find.
+  const cmd = (key, extra = {}) => ev(key, { [COMMAND_KEY]: true, ...extra });
+  const otherMod = COMMAND_KEY === "metaKey" ? "ctrlKey" : "metaKey";
+  assert.equal(resolveKey(cmd("f"), "view").action, "search", "the command key and F open the session search");
+  assert.equal(resolveKey(cmd("F"), "list").action, "search", "…with Caps Lock on, and from the list");
+  assert.equal(resolveKey(ev("f"), "view"), null, "F alone is no key");
+  for (const extra of [{ shiftKey: true }, { altKey: true }, { [otherMod]: true }]) assert.equal(resolveKey(cmd("f", extra), "view"), null, `with ${Object.keys(extra)[0]} held too it is the browser's`);
+  assert.equal(resolveKey(ev("f", { [otherMod]: true }), "view"), null, "the other modifier is not the command key (Ctrl+F in a Mac's field moves the caret)");
+  assert.equal(resolveKey(cmd("k"), "view"), null, "⌘K stays the shell's own");
+  const searchField = { tagName: "INPUT", closest: () => null };
+  assert.equal(resolveKey(cmd("f"), "view", searchField), null, "in the search field the second press is the browser's");
+  const composeField = { tagName: "TEXTAREA", closest: sel => (sel === "[data-command-keys]" ? {} : null) };
+  assert.equal(resolveKey(cmd("f"), "view", composeField).action, "search", "from the compose box it opens the session search");
+  for (const k of ["/", "j", "n"]) assert.equal(resolveKey(ev(k), "view", composeField), null, `${k} in the compose box is typing`);
+  assert.equal(resolveKey(cmd("f"), "view", inside), null, "inside a guest it is the guest's");
+  assert.match(hintFor("search"), /^\/ or (⌘F|Ctrl\+F)$/, "the hint names both keys");
+  assert.equal(hintFor("search", { command: false }), "/", "without the command binding's, the hint is / alone");
+  assert.equal(hintFor("turn-next", { command: false }), "]", "an action with no command binding keeps its hint");
+  assert.match(viewSource, /const searchHint = \(\) => \{ byId\("transcriptSearchInput"\)\.placeholder = `Search this session  \( \$\{hintFor\("search", \{ command: !phoneSearch\.matches \}\)\} \)`; \};\nsearchHint\(\);\nphoneSearch\.addEventListener\("change", searchHint, \{ signal \}\);/, "a phone's search box names / alone, again as the view crosses the breakpoint");
+  assert.match(viewSource, /byId\("composer"\)\.dataset\.commandKeys = "";/, "the view marks its compose box");
   // ENGAGEMENT: a click on a guest's prose leaves the focus on <body>, so the keydown's target is
   // <body> — and the key is still the guest's until the reader clicks elsewhere. bindKeymap tracks
   // the last mousedown/focusin exactly as mdrev's own key scope does.
@@ -5046,9 +5068,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(previewSrc, /\.\.\.\(this\.actions\.detach === false \? \[\] : \[this\.newTab\]\)/, "the ↗ is kept out of the pane's head with detach off");
   assert.match(viewSource, /detach: shows\("detach"\)/, "the view tells the pane");
   // The app's keymap leaves a key it has no action for to the page, as the view's own does.
-  assert.match(appSource, /action => \(keyActions\[action\] \? keyActions\[action\]\(\) : false\)\);/, "the app takes no key it has no action for");
-  // Engaged: the shared keymap resolves, the view decides by engagement (mdrev's rule), and the
-  // shared module is untouched (the offline pages inline it, and the byte gate reads them).
+  assert.match(appSource, /\(action, event\) => \(keyActions\[action\] \? keyActions\[action\]\(event\) : false\)\);/, "the app takes no key it has no action for (#s509: the action sees the event, so ⌘F with no session selected is left to the browser)");
+  // Engaged: the shared keymap resolves and the view decides by engagement (mdrev's rule). The
+  // keymap is one table for both pages: the offline pages inline it, so a change to it moves the
+  // byte gate's pages too (#s509 changed it).
   assert.match(viewSource, /if \(keyboardMode === "engaged"\) \{/, "the view binds its own keys only when engaged");
   assert.match(viewSource, /const engage = event => \{ engaged = inView\(event\.target\) && !inGuest\(event\.target\); \};/, "engagement is the last press or focus inside the view and outside its guest");
   assert.match(viewSource, /const inView = target => !!target && typeof target\.closest === "function" && element\.contains\(target\);/, "inside the view is inside its element");
