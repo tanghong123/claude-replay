@@ -394,6 +394,17 @@ body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){displa
 .tree-agent .brand-icon{width:12px;height:12px;display:block}
 .tree-agent .agent-monogram text{fill:currentColor;stroke:none;font:700 12px var(--sans,system-ui)}
 .tree-project{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* #s541: a merged source's machine — a small label on a flat row and a project's head, a machine's rows
+   greyed while it does not answer, and a head over the list saying since when, or why it has none. The
+   label keeps to a share of the line, so the project's name, which gives way first, never goes to it. */
+.tree-machine{flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 5px;border-radius:4px;background:color-mix(in srgb,var(--faint) 14%,transparent);color:var(--sub);font:10px/14px var(--mono)}
+.tree-row.project .tree-machine{margin-left:6px}
+.tree-machine.tree-machine-stale{color:var(--amber)}
+.tree-row.machine-stale{opacity:.55}
+.tree-machines{display:flex;flex-direction:column;gap:4px;margin:4px 8px 6px}
+.tree-machine-head{padding:5px 8px;border-radius:7px;background:color-mix(in srgb,var(--faint) 12%,transparent);color:var(--sub);font-size:11px;line-height:15px}
+.tree-machine-head.tree-machine-head-stale{color:var(--amber)}
+.tree-machine-head.tree-machine-head-failed{color:var(--red)}
 #sessionList.sessions-flat .tree-row.session.is-member{padding-left:30px}
 #sessionList.sessions-flat .tree-row.session.is-side{padding-left:calc(16px + var(--side-depth,1) * 14px)}
 /* A list narrower than the app's minimum sidebar (#s431 stage 2, design/pane-layout.md; the list sets

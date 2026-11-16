@@ -673,7 +673,11 @@ rows)". The merged source of D6 is kit code, each part reads a server of its own
 their machine and show a machine gone stale. Building it found the kit still kept one handle for
 the whole page: the list had no `backend` of its own and read whichever handle the view's
 `backend` option had last set, against D5's "never page-wide". #s540 gives the list its own; #s541
-builds the merged source on it.
+builds the merged source on it (`mergedBackend` in the kit, `merged-source.js`): the rows and groups
+of every machine with their ids and keys namespaced, the machine's label on a project's head and a
+flat row, a hide sent to the row's machine, and a stale machine's rows greyed under a head saying
+since when. It answers no app arrangement yet: over more than one machine one is offered only under
+D7's By device, so the per-machine layouts come with D7.
 
 **Still open,** each asked when the phase it holds up comes near, not before:
 

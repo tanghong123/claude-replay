@@ -320,6 +320,8 @@ mod tests {
             "backendHandle",
             "useBackend",
             "persist",
+            "mergedBackend",
+            "splitMachineId",
         ] {
             assert!(
                 INDEX.contains(&format!("export {{ {name}"))

@@ -386,6 +386,10 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .tree-agent .brand-icon{width:12px;height:12px;display:block}
 .tree-agent .agent-monogram text{fill:currentColor;stroke:none;font:700 12px var(--sans,system-ui)}
 .tree-project{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree-machine{flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 5px;border-radius:4px;background:color-mix(in srgb,var(--faint) 14%,transparent);color:var(--sub);font:10px/14px var(--mono)}
+.tree-row.project .tree-machine{margin-left:6px}
+.tree-machine.tree-machine-stale{color:var(--amber)}
+.tree-row.machine-stale{opacity:.55}
 :is(#collapseBtn,#expandBtn)[data-flat]{display:none}
 .sidebar>:where(.session-list)>.arrange-strip{width:var(--sidebar);min-width:var(--sidebar);box-sizing:border-box;padding:2px 12px 6px;flex:none}
 #app.sidebar-off .sidebar>:where(.session-list)>.arrange-strip{display:none}

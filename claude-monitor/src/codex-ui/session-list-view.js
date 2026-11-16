@@ -436,6 +436,33 @@ function treeAction(target, kind) {
   return `<button class="tree-action" type="button" data-ignore-op="${action.op}" data-ignore-key="${escapeText(action.key)}" title="${escapeText(action.title)}" aria-label="${escapeText(action.title)}">${svg(action.icon)}</button>`;
 }
 
+// #s541: the machine a merged source's row or project is on, by its key: its label on a flat row and
+// a project's head, and, while it does not answer, its rows greyed, saying since when (a head over
+// the list says it too, and says why a machine has no rows at all). One monitor's rows have none.
+function machineState(key) {
+  if (!key) return null;
+  return indexState.machines.find(entry => entry.machine === key) || { machine: key, label: key, state: "live", since: null, error: null };
+}
+const clockTime = iso => { const at = iso ? new Date(iso) : null; return at && !Number.isNaN(at.getTime()) ? at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""; };
+function machineWords(entry) {
+  if (entry.state === "stale") return `${entry.label}: not answering${entry.since ? ` since ${clockTime(entry.since)}` : ""}${entry.error ? ` (${entry.error})` : ""}`;
+  if (entry.state === "failed") return `${entry.label}: no answer${entry.error ? ` (${entry.error})` : ""}`;
+  if (entry.state === "waiting") return `${entry.label}: waiting for its first answer`;
+  return entry.label;
+}
+const machineStale = key => machineState(key)?.state === "stale";
+function machineTag(key) {
+  const entry = machineState(key);
+  return entry ? `<span class="tree-machine${machineStale(key) ? " tree-machine-stale" : ""}" title="${escapeText(machineWords(entry))}">${escapeText(entry.label)}</span>` : "";
+}
+/** The heads over the list, one for each machine of a merged source that is not answering, coloured
+ *  by its state (prefixed names: a host's page may style `.stale` or `.failed` for itself). */
+const HEAD_STATE = Object.freeze({ stale: " tree-machine-head-stale", failed: " tree-machine-head-failed" });
+function machineHeadsHtml() {
+  const heads = indexState.machines.filter(entry => entry.state !== "live");
+  return heads.length ? `<div class="tree-machines" role="status">${heads.map(entry => `<div class="tree-machine-head${HEAD_STATE[entry.state] || ""}" data-machine="${escapeText(entry.machine)}">${escapeText(machineWords(entry))}</div>`).join("")}</div>` : "";
+}
+
 // A row, or a fork family's representative (`fam`): the family's state and age, not just the
 // rep's — a forked conversation is "running" when any fork is — plus a fork count that opens
 // the other members, indented, the way the classic rail's ⑂ chip does (#142).
@@ -455,8 +482,8 @@ function sessionTreeRow(row, fam = null, member = false, context = null, side = 
   const sideMark = side ? `<span class="tree-side" role="img" aria-label="Side session" title="${escapeText(side.via || `Started from “${side.starter}” in the Claude desktop app`)}">↳</span>` : "";
   // Over a context line (an arranged row, #s387) the mark rides inside the title's line.
   const title = context && sideMark ? `<span class="tree-title">${sideMark}${escapeText(name || row.name || row.id)}</span>` : `${sideMark}<span class="tree-title">${escapeText(name || row.name || row.id)}</span>`;
-  const main = context ? `<span class="tree-main">${title}<span class="tree-context"><span class="tree-agent" role="img" aria-label="${escapeText(context.agent.name)}" title="${escapeText(context.agent.name)}">${agentGlyph(context.agent.id, context.agent.name)}</span><span class="tree-project" title="${escapeText(context.project.path || context.project.name)}">${escapeText(context.project.name)}</span></span></span>` : title;
-  return `<div class="tree-row session ${context ? "flat" : ""} ${row.id === indexState.selected ? "selected" : ""} ${row.hidden && shows("hiding") ? "is-hidden" : ""} ${member ? "is-member" : ""} ${side ? "is-side" : ""}"${side ? ` style="--side-depth:${side.depth}"` : ""} role="treeitem" tabindex="0" data-session="${escapeText(row.id)}" title="${escapeText(displayState(row).label)} · ${escapeText(row.stateDetail || "")}">${main}<span class="session-end">${chip}${treeAction(row, "session")}${marker}<span class="session-age">${escapeText(newest.activity || row.activity || "")}</span></span></div>`;
+  const main = context ? `<span class="tree-main">${title}<span class="tree-context"><span class="tree-agent" role="img" aria-label="${escapeText(context.agent.name)}" title="${escapeText(context.agent.name)}">${agentGlyph(context.agent.id, context.agent.name)}</span><span class="tree-project" title="${escapeText(context.project.path || context.project.name)}">${escapeText(context.project.name)}</span>${machineTag(row.machine)}</span></span>` : title;
+  return `<div class="tree-row session ${context ? "flat" : ""} ${row.id === indexState.selected ? "selected" : ""} ${row.hidden && shows("hiding") ? "is-hidden" : ""} ${member ? "is-member" : ""} ${side ? "is-side" : ""} ${machineStale(row.machine) ? "machine-stale" : ""}"${side ? ` style="--side-depth:${side.depth}"` : ""} role="treeitem" tabindex="0" data-session="${escapeText(row.id)}" title="${machineStale(row.machine) ? `${escapeText(machineWords(machineState(row.machine)))} · ` : ""}${escapeText(displayState(row).label)} · ${escapeText(row.stateDetail || "")}">${main}<span class="session-end">${chip}${treeAction(row, "session")}${marker}<span class="session-age">${escapeText(newest.activity || row.activity || "")}</span></span></div>`;
 }
 
 /** A family as the list draws it: its representative, its forks while open, then the Claude
@@ -584,7 +611,7 @@ function agentProjectsHtml(agent) {
   for (const project of agent.projects) {
     const rows = project.rows;
     const projectKey = `p:${project.id}`, openProject = !indexState.collapsed.has(projectKey);
-    html += `<div class="tree-row project ${project.hidden ? "is-hidden" : ""}" role="treeitem" tabindex="0" data-toggle="${escapeText(projectKey)}" aria-expanded="${openProject}" title="${escapeText(project.path)}">${svg("folder")}<span class="tree-title">${escapeText(project.name)}</span>${agent.id === "codex" && options.projectActions?.() ? `<button class="native-project-new" type="button" data-native-project="${escapeText(project.nativeProjectId || "")}" data-native-cwd="${escapeText(project.path)}" aria-label="New session in ${escapeText(project.name)}" title="New session in ${escapeText(project.name)}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>` : ""}${project.ignoreKey ? treeAction(project, project.kind) : ""}</div>`;
+    html += `<div class="tree-row project ${project.hidden ? "is-hidden" : ""} ${machineStale(project.machine) ? "machine-stale" : ""}" role="treeitem" tabindex="0" data-toggle="${escapeText(projectKey)}" aria-expanded="${openProject}" title="${escapeText(project.machine ? `${machineWords(machineState(project.machine))} · ${project.path}` : project.path)}">${svg("folder")}<span class="tree-title">${escapeText(project.name)}</span>${machineTag(project.machine)}${agent.id === "codex" && options.projectActions?.() ? `<button class="native-project-new" type="button" data-native-project="${escapeText(project.nativeProjectId || "")}" data-native-cwd="${escapeText(project.path)}" aria-label="New session in ${escapeText(project.name)}" title="New session in ${escapeText(project.name)}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>` : ""}${project.ignoreKey ? treeAction(project, project.kind) : ""}</div>`;
     if (!openProject) continue;
     const overflowKey = `${agent.id}:${project.id}`;
     const expanded = indexState.expandedProjects.has(overflowKey);
@@ -641,7 +668,7 @@ function renderTree() {
   // usually reads the same; rewriting it anyway replaced every row under the reader, and a press
   // that straddled the write, down on a row and up on its replacement, made no click at all: the
   // session tapped just then was not chosen.
-  const treeHtml = html || `<div class="no-results">${filtered ? "No sessions in this filter — Everything, in the filter, shows them all" : "No sessions"}</div>`;
+  const treeHtml = machineHeadsHtml() + (html || `<div class="no-results">${filtered ? "No sessions in this filter — Everything, in the filter, shows them all" : "No sessions"}</div>`);
   // A rewrite drops the focus to <body>, where the next key is no longer the list's: a session row the
   // keyboard focused, a step's or Tab's, keeps it, across the host's select, the index's next read and a
   // fold (stage 4). A row a press focused does not: carried, it would keep every key of the page's in
