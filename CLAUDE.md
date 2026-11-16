@@ -1135,7 +1135,7 @@ delivered is offered (`ToolUse::delivered` → `head.files`), not only the first
   text column), `contact.html` and an MP4 sweep per surface, which needs `ffmpeg` (without one the
   run says so at its start and skips only the videos). Each cell starts from a neutral page of the
   monitor's origin with storage cleared; a control in a layer parked by its own state (the shut
-  pane, the shut drawer, the outline folded off a phone) is not checked and is listed in the cell's
+  pane, the shut drawer) is not checked and is listed in the cell's
   JSON. A cell the probe could not measure is flagged everywhere and the run exits 1. It is an
   example so the suite's `--ignored` runs never take it in; run it before and after a layout change
   to see what moved.

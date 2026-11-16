@@ -20,8 +20,8 @@
 //! box of each part (the session list, the session, the right pane, the outline), the chrome's
 //! controls that a pointer cannot reach at their centre (hit-tested with `elementFromPoint`; what
 //! sits inside a scroller — the transcript, the session tree, the pane's body, the outline's lists —
-//! is left out, and so is a layer parked by its own state, named in `PROBE`: the shut right pane, the
-//! shut drawer, the outline folded off a phone; each one set aside is listed in the cell's JSON), how
+//! is left out, and so is a layer parked by its own state, named in `PROBE`: the shut right pane and
+//! the shut drawer; each one set aside is listed in the cell's JSON), how
 //! far the page and the transcript overflow sideways, how far what the view draws reaches past its
 //! edges (a parked layer is not drawn), and the width of the transcript's text column, beside a
 //! screenshot.
@@ -452,9 +452,9 @@ fn forget(tab: &headless_chrome::Tab, monitor: &harness::Monitor, dark: bool) ->
 /// (`.preview`: past the view's edge where it lies over the session, a 0px track where it is a
 /// column); the phone's drawer while `#app` wears `app-drawer` and `mobile-detail` (`.sidebar`
 /// pushed off the left edge), except on a wide phone held sideways, where the list is a column and
-/// `mobile-detail` parks nothing; and the outline folded off a narrow phone view
-/// (`.workspace.navigator-off .session-navigator` under `pl-phone.pl-max-w-900`; elsewhere
-/// `navigator-off` is the glyphs' rail, on the screen). Each control set aside so is listed in
+/// `mobile-detail` parks nothing. (A phone view hides the outline outright, which `shown()`
+/// already leaves out; elsewhere `navigator-off` is the glyphs' rail, on the screen, so it parks
+/// nothing either.) Each control set aside so is listed in
 /// `skipped` with its reason, and the rest of what is not checked is counted in `notChecked`.
 const PROBE: &str = r#"(function(cell){ try {
 var W = innerWidth, H = innerHeight;
@@ -481,7 +481,6 @@ var sidebar = app && app.querySelector(':scope > .sidebar');
 var parked = function (e) {
   if (paneShut && pv && pv.contains(e)) return 'the right pane, shut (preview-off)';
   if (sidebar && has(app, 'app-drawer') && has(app, 'mobile-detail') && !WIDE && sidebar.contains(e)) return 'the drawer, shut (mobile-detail)';
-  if (has(v, 'pl-phone') && has(v, 'pl-max-w-900')) { var nav = e.closest('.workspace.navigator-off .session-navigator'); if (nav && v.contains(nav)) return "the outline, folded off a phone's view (navigator-off)"; }
   return null;
 };
 // Where the open pane lies OVER the session, a control it covers is set apart rather than missed:
@@ -850,8 +849,12 @@ fn classes(v: &Value, keep: impl Fn(&str) -> bool) -> String {
         .unwrap_or_else(|| "·".into())
 }
 
+/// A table cell is one line of Markdown: a `|` would split it and a line break (a probe's or a
+/// host's JavaScript stack) would end the table.
 fn md_escape(s: &str) -> String {
     s.replace('|', "/")
+        .replace("\r\n", "<br>")
+        .replace(['\r', '\n'], "<br>")
 }
 
 fn report(dir: &Path, records: &[Value], took: Duration, videos: &Videos) {
@@ -867,8 +870,8 @@ fn report(dir: &Path, records: &[Value], took: Duration, videos: &Videos) {
          an upright phone view, or a phone held sideways with the pane full or beside its list), a \
          control it covers is one of those checked but set aside, not counted as unreachable; where \
          the pane is beside the session, a control under it is unreachable like any other. \
-         A control in a layer parked by its own state (the shut right pane, the shut drawer, the outline \
-         folded off a phone) is not checked; each cell's JSON lists them under `skipped`. *Overflow* is how far the page and the \
+         A control in a layer parked by its own state (the shut right pane, the shut drawer) \
+         is not checked; each cell's JSON lists them under `skipped`. *Overflow* is how far the page and the \
          transcript scroll sideways and how far what the view DRAWS reaches past its left or right \
          edge (a shown box, cut by the ancestors that clip it; a parked layer such as the shut \
          right pane is not drawn and does not count; the cell's JSON keeps the view's raw \
