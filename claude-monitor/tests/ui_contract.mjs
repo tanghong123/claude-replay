@@ -4929,6 +4929,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(String(mount({ backend: "/b" })), /^refused: .*backend handle/, "a backend that is not a handle is refused");
   assert.match(listSource, /^const listBackend = \(\) => options\.backend \|\| backend\(\);$/m, "the list reads its own server, else the page's");
   assert.equal((listSource.match(/\bbackend\(\)\.fetch/g) || []).length, 0, "and never the page's handle directly");
+  assert.match(listSource, /^\}, \{ backend: listBackend \}\);$/m, "its index reads the same server");
   assert.match(String(mount({}, { id: "tree", childNodes: [] })), /^refused: .*#tree/, "an element with another id is refused");
   assert.match(String(mount({}, { id: "", childNodes: [{ nodeType: 1 }] })), /^refused: .*host's nodes/, "and one holding the host's nodes");
   assert.match(listSource, /^const shows = name => options\.show\?\.\[name\] !== false;$/m, "each control is shown unless switched off");
