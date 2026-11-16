@@ -231,6 +231,14 @@ one, which Back returns from. Its options, each optional, are in `index.d.ts`: `
 and `address` (a query to read in place of your page's own, which the tab then leaves alone). The
 handle has `kind`, `setTheme(theme)` and `unmount()`.
 
+Your page's address may carry a query and a fragment of its own (`/agents/detached?team=x#top`):
+the ↗ adds what to show to the query and keeps the fragment last, and the tab keeps your keys as
+it rewrites the address. Its own are `session`, `root`, `path`, `cap`, `from`, `to`, `since`,
+`sig`, `held` and `name`: leave those names to it, since it reads them to choose what to show and
+rewrites them as the reader moves. It writes the query back in its standard form (`a+b` for
+`a%20b`, `x=` for a bare `x`), so read your keys with `URLSearchParams`. A fragment reaches the
+transcript's view, which reads one naming a record (`#b12`) as the place to open at.
+
 The transcript's tab is a reader: the session view with no list, its keys bound at the page, its
 index read every 5 seconds, with no writes and no ↗ of its own. Its page needs the Mermaid line
 of section 3 too.

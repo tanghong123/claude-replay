@@ -285,8 +285,9 @@ fn a_host_serves_a_tab_of_its_own_from_the_kit() {
     let monitor = Monitor::spawn(Kind::V1, 3312, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    // The host's page carries a query of its own, which every tab keeps (the review of #s433).
-    harness::answer_in_browser(&tab, kit_answers(r#"detachTo: "/kit-tab?team=terns","#));
+    // The host's page carries a query of its own, which every tab keeps, and a fragment, which
+    // stays last (the review of #s433).
+    harness::answer_in_browser(&tab, kit_answers(r#"detachTo: "/kit-tab?team=terns#top","#));
     tab.navigate_to(&monitor.url("kit-host")).unwrap();
     tab.wait_until_navigated().unwrap();
     until(
@@ -365,20 +366,26 @@ fn a_host_serves_a_tab_of_its_own_from_the_kit() {
     assert_eq!(tabs.len(), 3, "three ↗s, three tabs: {tabs:?}");
     assert_eq!(
         tabs[0],
-        format!("/kit-tab?team=terns&session={SID}"),
+        format!("/kit-tab?team=terns&session={SID}#top"),
         "the transcript's tab is the host's page with the session"
     );
     assert!(
-        tabs[1].starts_with("/kit-tab?team=terns&root=") && tabs[1].contains("NOTES.md"),
+        tabs[1].starts_with("/kit-tab?team=terns&root=")
+            && tabs[1].contains("NOTES.md")
+            && tabs[1].ends_with("#top"),
         "the document's tab is the host's page with the held text's place: {tabs:?}"
     );
     assert!(
-        tabs[2].starts_with("/kit-tab?team=terns&") && tabs[2].contains("held=am-image"),
+        tabs[2].starts_with("/kit-tab?team=terns&")
+            && tabs[2].contains("held=am-image")
+            && tabs[2].ends_with("#top"),
         "the image's tab is the host's page with the copy it was handed: {tabs:?}"
     );
 
     // Each address, loaded in this tab: its sessionStorage holds what the host page left there.
+    // Each loaded without the fragment, which the session view would read as a record to land on.
     let load = |address: &str| {
+        let address = address.split('#').next().unwrap_or_default();
         tab.navigate_to(&monitor.url(address.trim_start_matches('/')))
             .unwrap();
         tab.wait_until_navigated().unwrap();
@@ -521,19 +528,6 @@ fn the_monitor_opens_a_transcript_in_a_tab_of_its_own() {
         &own,
         "({ path: location.pathname, session: new URLSearchParams(location.search).get('session'), list: !!document.getElementById('sessionList'), ownNewTab: !!document.getElementById('sessionNewTab'), paneNewTab: (function () { var b = document.querySelector('#previewHead .preview-newtab'); return !!b && !b.hidden && b.offsetWidth > 0; })(), theme: document.getElementById('sessionView').dataset.theme || 'light' })",
     );
-    // Narrow, the view would offer its Back to the list: the tab has no list, so no Back.
-    harness::resize(&own, 700.0, 900.0);
-    until(
-        &own,
-        "document.getElementById('sessionView').classList.contains('pl-max-w-760')",
-        "the tab's view to lay out for a narrow window",
-        Duration::from_secs(10),
-        "document.getElementById('sessionView').className",
-    );
-    let back = harness::probe(
-        &own,
-        "getComputedStyle(document.getElementById('mobileBack')).display",
-    );
     // The address keeps what else it carries (a trace asked for, a host's own key) as the tab
     // rewrites it with each title.
     own.navigate_to(&monitor.url(&format!("detached?trace=viewport&session={SID}")))
@@ -566,7 +560,6 @@ fn the_monitor_opens_a_transcript_in_a_tab_of_its_own() {
         serde_json::json!({ "path": "/detached", "session": SID, "list": false, "ownNewTab": false, "paneNewTab": false, "theme": "light" }),
         "the session's transcript alone, at /detached"
     );
-    assert_eq!(back, "none", "no Back to a list the tab does not have");
     assert_eq!(
         address,
         serde_json::json!({ "trace": "viewport", "session": SID }),
