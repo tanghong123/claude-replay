@@ -15469,9 +15469,10 @@ fn scenario_a_focused_fold_head_keeps_its_focus_through_growth(
 }
 
 /// The fixture for #s504: a short session whose last turn is still running, its steps a Bash call,
-/// a line of progress and a Read. The app shell draws those steps as one process unit at the end,
-/// and a prompt arriving extends that unit, so it is drawn again (`Projection.rebuild`), with both
-/// heads in it: the Read's the last head, the Bash call's the one before.
+/// a line of progress and a Read. The app shell draws the Bash call and the Read as process units
+/// either side of that prose, and a prompt arriving commits the running turn, so every unit from its
+/// prompt on is drawn again (`Projection.rebuild` from `committed_from`): the Read's head is the last
+/// head, the Bash call's the one before.
 fn growth_focus_fixture(name: &str) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
@@ -15513,9 +15514,10 @@ fn app_shell_a_focused_fold_head_keeps_its_focus_through_growth() {
 /// markup has and the new one gets only after it is drawn, must not count, and (2) a queued prompt
 /// picked up moves the next one into its place (#165), which must not be given the focus. Either
 /// way the focus may stay on the body, as before #s504; it must never go to another element.
-/// `queued` ends the session with two queued prompts, for (2). (1) has none: a queued marker after
-/// the process unit keeps that unit out of the redraw a plain prompt and reply bring (measured, the
-/// unit's old link still connected), and (1) needs the unit drawn again.
+/// `queued` ends the session with two queued prompts, for (2). (1) has none: a queued marker keeps
+/// its turn open, so a prompt that matches no marker only appends and the unit holding the links is
+/// not drawn again (measured: the old link still connected), while without them the prompt commits
+/// the turn and every unit from its prompt on is drawn again, which (1) needs.
 fn growth_focus_review_fixture(name: &str, queued: bool) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
@@ -15566,7 +15568,7 @@ fn review_grow(tab: &headless_chrome::Tab, fx: &Fixture, prompt: &str, reply: &s
     settle();
 }
 
-/// (1) A search marks "see" before the first link of the progress line; the reader focuses that
+/// (1) A search marks "see" before the first link of the reply's prose; the reader focuses that
 /// link; the session grows. The restored focus is that link, never the second one.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
@@ -15581,7 +15583,7 @@ fn app_shell_a_focus_restored_after_growth_counts_no_search_mark() {
     let hits = harness::search(tab, Surface::AppShell, "see");
     assert!(
         hits >= 1,
-        "premise, the search finds the progress line: {hits} hits"
+        "premise, the search finds the reply's prose: {hits} hits"
     );
     settle();
     let north = "#transcript a[href=\"https://example.com/north\"]";
@@ -15602,7 +15604,7 @@ fn app_shell_a_focus_restored_after_growth_counts_no_search_mark() {
     assert_eq!(
         gone,
         serde_json::json!(true),
-        "premise, the growth drew the progress line's unit again"
+        "premise, the growth drew the prose's unit again"
     );
     assert_eq!(
         after, before,
