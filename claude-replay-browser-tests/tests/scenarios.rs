@@ -15384,6 +15384,274 @@ fn app_shell_command_f_opens_the_session_search() {
     scenario_command_f_opens_the_session_search(&page.tab, Surface::AppShell);
 }
 
+/// #s504 — a fold head the reader focused with `k` keeps the focus when the session grows. A prompt
+/// arriving commits the open turn, and the app shell redraws every unit from that turn's first one
+/// with identical markup; a head focused there is a node of the old markup. Where the focus is after
+/// the growth is read and printed; then the same head must have it, and `k` must go on from it to the
+/// head before it, not start over from the last one.
+fn scenario_a_focused_fold_head_keeps_its_focus_through_growth(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // A head by its record and its text, the record found the page's own way: the classic page's
+    // mounted item (`data-idx`), the app shell's record row (`data-block-index`).
+    let (heads, record) = match surface {
+        Surface::Classic => (".fold-h", "data-idx"),
+        Surface::AppShell => ("button.renderer-head", "data-block-index"),
+    };
+    let js = format!(
+        "window.__s504id = function (h) {{ var r = h && h.closest && h.closest('[{record}]'); return h ? {{ record: r ? r.getAttribute('{record}') : null, text: (h.textContent || '').trim().slice(0, 60) }} : null; }}; \
+         window.__s504heads = function () {{ return [...document.querySelectorAll({heads:?})].filter(function (h) {{ return h.offsetParent !== null; }}); }}; 'ok'"
+    );
+    eval(tab, &js);
+    // The focused element: which head (by record and text), its place among the visible heads, the
+    // head before it, and whether it is the very node focused before the growth.
+    let focus = "(function(){ var a = document.activeElement, hs = window.__s504heads(), at = hs.indexOf(a); \
+        return JSON.stringify({ tag: a ? a.tagName : null, head: at, of: hs.length, id: at >= 0 ? window.__s504id(a) : null, prev: at > 0 ? window.__s504id(hs[at - 1]) : null, \
+        same: !!window.__s504 && a === window.__s504, oldConnected: !!window.__s504 && window.__s504.isConnected }); })()";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(eval(tab, focus).as_str().expect("a reading")).expect("JSON")
+    };
+    // `k` as the reader presses it: on whatever has the focus, bubbling to the page's keymap.
+    let press_k = || {
+        eval(tab, "(document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'k', bubbles: true, cancelable: true })); 'ok'");
+        settle();
+    };
+    press_k();
+    let before = read();
+    assert!(
+        before["head"].as_i64().unwrap_or(-1) >= 1 && !before["prev"].is_null(),
+        "{surface:?}: k focuses the last head, with one before it: {before}"
+    );
+    eval(tab, "window.__s504 = document.activeElement; 'kept'");
+    let grown = format!("{}.scrollHeight", surface.scroller());
+    let height = eval(tab, &grown).as_i64().unwrap_or(0);
+    harness::append(
+        &fx.path,
+        &user_at("now count the skua burrows", &now_minus(20)),
+    );
+    harness::append(&fx.path, &assistant_at("Twelve burrows.", &now_minus(10)));
+    // The growth has landed once the reply is drawn or the column has grown by it (a reader the
+    // reveal took off the tail may not have it mounted).
+    until(
+        tab,
+        &format!(
+            "document.body.textContent.includes('Twelve burrows.') || {grown} > {height} + 40"
+        ),
+        "the prompt and the reply to arrive",
+        Duration::from_secs(20),
+        &grown,
+    );
+    settle();
+    settle();
+    let after = read();
+    eprintln!("s504 {surface:?}: before {before}; after the growth {after}");
+    assert_eq!(
+        after["oldConnected"],
+        serde_json::json!(false),
+        "{surface:?}: premise, the growth drew the head's unit again: {after}"
+    );
+    assert_eq!(
+        after["id"], before["id"],
+        "{surface:?}: after the growth the same head has the focus: before {before}, after {after}"
+    );
+    press_k();
+    let next = read();
+    eprintln!("s504 {surface:?}: k after the growth {next}");
+    assert_eq!(
+        next["id"], before["prev"],
+        "{surface:?}: k goes on from it to the head before it: before {before}, after k {next}"
+    );
+}
+
+/// The fixture for #s504: a short session whose last turn is still running, its steps a Bash call,
+/// a line of progress and a Read. The app shell draws the Bash call and the Read as process units
+/// either side of that prose, and a prompt arriving commits the running turn, so every unit from its
+/// prompt on is drawn again (`Projection.rebuild` from `committed_from`): the Read's head is the last
+/// head, the Bash call's the one before.
+fn growth_focus_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("tally the tern colony", &now_minus(90));
+    t += &harness::bash_call_at("wc -l nests.txt", "t-504-bash", &now_minus(85));
+    t += &tool_result_lines("t-504-bash", 3, &now_minus(84));
+    t += &assistant_at("Now the burrows.", &now_minus(80));
+    t += &read_tool_at("t-504-read", "/tmp/burrows.txt", &now_minus(75));
+    t += &tool_result_lines("t-504-read", 4, &now_minus(74));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_focused_fold_head_keeps_its_focus_through_growth() {
+    let _serial = serial();
+    let fx = growth_focus_fixture("growth-focus-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_focused_fold_head_keeps_its_focus_through_growth(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_a_focused_fold_head_keeps_its_focus_through_growth() {
+    let _serial = serial();
+    let fx = growth_focus_fixture("growth-focus-app");
+    let page = open(Surface::AppShell, &fx, 3136);
+    scenario_a_focused_fold_head_keeps_its_focus_through_growth(&page.tab, Surface::AppShell, &fx);
+}
+
+/// #s504's review, the restore's two wrong elements, in the app shell. A place in a unit is counted
+/// in its old markup and followed in the new one, so (1) the search's `<mark>`s, which the old
+/// markup has and the new one gets only after it is drawn, must not count, and (2) a queued prompt
+/// picked up moves the next one into its place (#165), which must not be given the focus. Either
+/// way the focus may stay on the body, as before #s504; it must never go to another element.
+/// `queued` ends the session with two queued prompts, for (2). (1) has none: a queued marker keeps
+/// its turn open, so a prompt that matches no marker only appends and the unit holding the links is
+/// not drawn again (measured: the old link still connected), while without them the prompt commits
+/// the turn and every unit from its prompt on is drawn again, which (1) needs.
+fn growth_focus_review_fixture(name: &str, queued: bool) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("tally the tern colony", &now_minus(90));
+    t += &harness::bash_call_at("wc -l nests.txt", "t-504-bash", &now_minus(85));
+    t += &tool_result_lines("t-504-bash", 3, &now_minus(84));
+    t += &assistant_at(
+        "see [the north spit](https://example.com/north) and [the south spit](https://example.com/south) first",
+        &now_minus(80),
+    );
+    t += &read_tool_at("t-504-read", "/tmp/burrows.txt", &now_minus(75));
+    t += &tool_result_lines("t-504-read", 4, &now_minus(74));
+    if queued {
+        t += &queued_at("queued one: count the skua burrows", &now_minus(70));
+        t += &queued_at("queued two: then the petrel nests", &now_minus(65));
+    }
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// What has the focus in the app shell: a link by its address, an element by its tag and its
+/// record's text, or the body.
+fn review_focus(tab: &headless_chrome::Tab) -> String {
+    let focus = "(function(){ var a = document.activeElement; if (!a || a === document.body) return 'body'; if (a.tagName === 'A') return 'link ' + a.getAttribute('href'); var r = a.closest('[data-block-index]'); return a.tagName + ' ' + (r ? r.textContent.replace(/\\s+/g, ' ').trim().slice(0, 80) : ''); })()";
+    eval(tab, focus).as_str().unwrap_or("").to_string()
+}
+
+/// The session grows by a prompt and its reply, and the page has drawn them.
+fn review_grow(tab: &headless_chrome::Tab, fx: &Fixture, prompt: &str, reply: &str, age: u64) {
+    let height = eval(tab, "document.getElementById('transcript').scrollHeight")
+        .as_i64()
+        .unwrap_or(0);
+    harness::append(&fx.path, &user_at(prompt, &now_minus(age)));
+    harness::append(&fx.path, &assistant_at(reply, &now_minus(age - 2)));
+    until(
+        tab,
+        &format!("document.body.textContent.includes({reply:?}) || document.getElementById('transcript').scrollHeight > {height} + 40"),
+        "the prompt and the reply to arrive",
+        Duration::from_secs(20),
+        "document.getElementById('transcript').scrollHeight",
+    );
+    settle();
+    settle();
+}
+
+/// (1) A search marks "see" before the first link of the reply's prose; the reader focuses that
+/// link; the session grows. The restored focus is that link, never the second one.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_a_focus_restored_after_growth_counts_no_search_mark() {
+    let _serial = serial();
+    let fx = growth_focus_review_fixture("growth-focus-marks-app", false);
+    let page = open(Surface::AppShell, &fx, 3137);
+    let tab = &page.tab;
+    jump_to_end(tab, Surface::AppShell);
+    await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
+    settle();
+    let hits = harness::search(tab, Surface::AppShell, "see");
+    assert!(
+        hits >= 1,
+        "premise, the search finds the reply's prose: {hits} hits"
+    );
+    settle();
+    let north = "#transcript a[href=\"https://example.com/north\"]";
+    eval(tab, &format!("(function(){{ var l = document.querySelector({north:?}); if (l) l.focus(); return 'ok'; }})()"));
+    let before = review_focus(tab);
+    let marked = eval(tab, &format!("(function(){{ var l = document.querySelector({north:?}); return !!l && !!l.parentElement.querySelector(':scope > mark'); }})()"));
+    assert!(
+        before == "link https://example.com/north" && marked == serde_json::json!(true),
+        "premise, the first link has the focus with a search mark before it: {before}, marked {marked}"
+    );
+    eval(tab, "window.__s504r = document.activeElement; 'kept'");
+    review_grow(tab, &fx, "now the burrows", "Twelve burrows.", 40);
+    let after = review_focus(tab);
+    let gone = eval(tab, "!window.__s504r.isConnected");
+    eprintln!(
+        "s504 review (1): before {before}; after the growth {after}, the old link gone {gone}"
+    );
+    assert_eq!(
+        gone,
+        serde_json::json!(true),
+        "premise, the growth drew the prose's unit again"
+    );
+    assert_eq!(
+        after, before,
+        "after the growth the same link has the focus, the search's marks counted for nothing"
+    );
+}
+
+/// (2) The reader focuses the first queued prompt's head; the agent picks that prompt up, and the
+/// next queued prompt moves into its place (#165). The focus must not go to that one.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_a_focus_restored_after_a_pickup_is_not_the_next_queued_prompt() {
+    let _serial = serial();
+    let fx = growth_focus_review_fixture("growth-focus-pickup-app", true);
+    let page = open(Surface::AppShell, &fx, 3138);
+    let tab = &page.tab;
+    jump_to_end(tab, Surface::AppShell);
+    await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
+    settle();
+    let heads = eval(tab, "(function(){ var hs = [...document.querySelectorAll('#transcript button.renderer-head')].filter(function (h) { var r = h.closest('[data-block-index]'); return r && r.textContent.includes('queued one'); }); if (hs[0]) hs[0].focus(); return hs.length; })()");
+    let queued = review_focus(tab);
+    assert!(
+        queued.starts_with("BUTTON") && queued.contains("queued one"),
+        "premise, the first queued prompt's head has the focus: {queued} ({heads} heads)"
+    );
+    eval(tab, "window.__s504r = document.activeElement; 'kept'");
+    review_grow(
+        tab,
+        &fx,
+        "queued one: count the skua burrows",
+        "Eleven burrows.",
+        20,
+    );
+    let picked = review_focus(tab);
+    let markers = eval(tab, "JSON.stringify({ gone: !window.__s504r.isConnected, one: [...document.querySelectorAll('#transcript .renderer-queue')].some(function (q) { return q.textContent.includes('queued one'); }), two: [...document.querySelectorAll('#transcript .renderer-queue')].some(function (q) { return q.textContent.includes('queued two'); }) })");
+    eprintln!("s504 review (2): before {queued}; after the pickup {picked}; {markers}");
+    assert_eq!(
+        markers.as_str().unwrap_or(""),
+        r#"{"gone":true,"one":false,"two":true}"#,
+        "premise, the pickup took the first queued prompt and drew its unit again, the second still queued"
+    );
+    assert!(
+        !picked.contains("queued two"),
+        "a pickup gave the focus to the next queued prompt's head: before {queued}, after {picked}"
+    );
+}
+
 /// #299 — the owner: "the icons for various agents are hardly recognizable, please use the
 /// official ones" (a screenshot of the collapsed rail: an asterisk, a knot, a robot). Claude
 /// sessions wear the official Claude mark — since #s209 the one Anthropic published to the Agent
@@ -15624,6 +15892,15 @@ fn app_shell_the_rail_opens_an_agent_s_sessions_and_the_filter_in_flyouts() {
         );
 
         // A click pins Codex's flyout; Escape closes it and gives the focus back to the mark.
+        // The mark is stamped before the click (#s482, below): stamped after it, a refresh landing
+        // while the flyout opened had rewritten the marks already and the stamp went on the new ones.
+        eval(
+            &tab,
+            &format!(
+                "(function () {{ {}.__kept = true; return 'ok'; }})()",
+                mark("Codex")
+            ),
+        );
         eval(&tab, &format!("{}.click(); 'ok'", mark("Codex")));
         until_open("the pinned flyout for Codex");
         let seen = read();
@@ -15639,27 +15916,73 @@ fn app_shell_the_rail_opens_an_agent_s_sessions_and_the_filter_in_flyouts() {
         // saying so. The open sets that mark's aria-expanded itself, and while the marks' HTML
         // carried it, the next refresh rewrote them: new buttons on the screen, which on an iPad
         // spend a tap that meets them as a hover. (The resource timings are cleared first, so a
-        // full buffer cannot hide the refresh.)
+        // full buffer cannot hide the refresh.) #s493: the flyout's rows likewise, which a tap
+        // choosing a session from a pinned flyout meets.
         let refreshes = "performance.getEntriesByType('resource').filter(function (e) { return /\\/api\\/sessions(\\?|$)/.test(e.name); }).length";
+        let codex_row = "document.querySelector('#railFlyout [data-session]')";
+        // A row carries its age ("just now", "1m") and its state, which move with the clock, so a
+        // refresh may find the body really changed and rightly write it again. The body is kept as
+        // it read at the stamp: a rewrite of a body that reads the same fails, one of a body that
+        // changed stamps again and waits for the next refresh.
+        let stamp_rows = format!("(function () {{ performance.clearResourceTimings(); var f = document.getElementById('railFlyout'); f.__body = f.innerHTML; {codex_row}.__kept = true; return 'ok'; }})()");
+        let rows_kept = format!("(function () {{ var f = document.getElementById('railFlyout'), r = {codex_row}; return JSON.stringify({{ kept: !!(r && r.__kept), same: f.innerHTML === f.__body }}); }})()");
+        eval(&tab, &stamp_rows);
+        for attempt in 0.. {
+            harness::until(
+                &tab,
+                &format!("{refreshes} >= 1"),
+                "an index refresh with the flyout open",
+                Duration::from_secs(15),
+                refreshes,
+            );
+            settle();
+            if attempt == 0 {
+                assert_eq!(
+                    eval(
+                        &tab,
+                        &format!("(function () {{ var m = {}; return JSON.stringify([!!(m && m.__kept), m && m.getAttribute('aria-expanded')]); }})()", mark("Codex")),
+                    ),
+                    "[true,\"true\"]",
+                    "at {width}px: a refresh with the flyout open keeps the rail's marks, the open one expanded"
+                );
+            }
+            let rows: serde_json::Value =
+                serde_json::from_str(eval(&tab, &rows_kept).as_str().unwrap_or("{}")).unwrap();
+            if rows["kept"] == true {
+                break;
+            }
+            assert!(
+                rows["same"] == false && attempt < 3,
+                "at {width}px: a refresh that changes nothing keeps the pinned flyout's rows (try {attempt}): {rows}"
+            );
+            eval(&tab, &stamp_rows);
+        }
+        // #s493: when the marks are drawn again while the flyout is open (the selection moving to
+        // Codex gives its mark the selected class), the next placing (a resize here) keeps the
+        // flyout beside the mark on the screen. It measured the mark the flyout opened from, gone
+        // from the page and so all zeros, and put the flyout at the window's corner.
         eval(
             &tab,
-            &format!("(function () {{ performance.clearResourceTimings(); {}.__kept = true; return 'ok'; }})()", mark("Codex")),
+            &format!("(function () {{ history.pushState({{}}, '', '?session=' + encodeURIComponent({:?})); dispatchEvent(new PopStateEvent('popstate')); return 'ok'; }})()", ids[0]),
         );
         harness::until(
             &tab,
-            &format!("{refreshes} >= 1"),
-            "an index refresh with the flyout open",
-            Duration::from_secs(15),
-            refreshes,
+            &format!("(function () {{ var m = {}; return !!m && m.classList.contains('selected') && !m.__kept; }})()", mark("Codex")),
+            "the rail's marks drawn again with Codex's selected",
+            Duration::from_secs(10),
+            "document.getElementById('sidebarMiniAgents').innerHTML.slice(0, 300)",
         );
+        eval(&tab, "dispatchEvent(new Event('resize')); 'ok'");
         settle();
-        assert_eq!(
-            eval(
-                &tab,
-                &format!("(function () {{ var m = {}; return JSON.stringify([!!(m && m.__kept), m && m.getAttribute('aria-expanded')]); }})()", mark("Codex")),
-            ),
-            "[true,\"true\"]",
-            "at {width}px: a refresh with the flyout open keeps the rail's marks, the open one expanded"
+        let beside = eval(
+            &tab,
+            &format!("(function () {{ var m = {}.getBoundingClientRect(), f = document.getElementById('railFlyout'); var r = f.getBoundingClientRect(); return JSON.stringify({{ open: !f.hidden, beside: Math.abs(r.left - m.right - 8) <= 1, expanded: {}.getAttribute('aria-expanded'), at: [Math.round(r.left), Math.round(r.top), Math.round(m.right), Math.round(m.top)] }}); }})()", mark("Codex"), mark("Codex")),
+        );
+        let beside: serde_json::Value =
+            serde_json::from_str(beside.as_str().unwrap_or("{}")).unwrap();
+        assert!(
+            beside["open"] == true && beside["beside"] == true && beside["expanded"] == "true",
+            "at {width}px: with the marks drawn again, the flyout stays open beside its mark, which says it is open: {beside}"
         );
         fire(&mark("Codex"), "pointerleave");
         std::thread::sleep(Duration::from_millis(600));
