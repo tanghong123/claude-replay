@@ -1126,6 +1126,19 @@ delivered is offered (`ToolUse::delivered` → `head.files`), not only the first
   stable for a while). Read Chrome's console
   before diagnosing a "timed out waiting for …" on a shell:
   `chrome --headless=new --enable-logging=stderr --v=0 <url>` prints `CONSOLE … Uncaught …`.
+  **The width study (#s517)** is a study, not a gate: `cargo run -p claude-replay-browser-tests
+  --example study_widths -- [--only <text>]` (after the release build above; port 3517) drives the
+  app shell at a row of window sizes and the session view at a row of host-pane sizes, mouse and
+  touch, the right pane shut and open, on the harness's hermetic world, and writes
+  `target/study-widths/<run>/`: `report.md` (per cell the layout classes, each part's box, the
+  chrome's controls a pointer cannot reach, how far what the view draws reaches past its edges, the
+  text column), `contact.html` and an MP4 sweep per surface, which needs `ffmpeg` (without one the
+  run says so at its start and skips only the videos). Each cell starts from a neutral page of the
+  monitor's origin with storage cleared; a control in a layer parked by its own state (the shut
+  pane, the shut drawer) is not checked and is listed in the cell's
+  JSON. A cell the probe could not measure is flagged everywhere and the run exits 1. It is an
+  example so the suite's `--ignored` runs never take it in; run it before and after a layout change
+  to see what moved.
   **The viewport trace (#192)** is how a scroll/blank-space report carries its own geometry:
   open either page with `?trace=viewport` (or set `localStorage.viewportTrace = "1"` to keep it
   across reloads) and the shared engine records every decision it makes — one entry per
