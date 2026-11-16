@@ -11956,7 +11956,11 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     let narrow = at(540, false, "the app");
     fits(&narrow, "the app at 540px");
     // A click on the folded search box opens it to its width, for typing, and still inside the column.
-    harness::click_when_settled(&tab, ".workspace>.topbar .header-searchbox", "the search box");
+    harness::click_when_settled(
+        &tab,
+        ".workspace>.topbar .header-searchbox",
+        "the search box",
+    );
     harness::until(
         &tab,
         "document.activeElement && document.activeElement.id === 'transcriptSearchInput' && document.querySelector('.workspace>.topbar .header-searchbox').getBoundingClientRect().width >= 200 && document.getElementById('sessionView').getAnimations({ subtree: true }).filter(function (a) { return a instanceof CSSTransition; }).length === 0",
@@ -11978,16 +11982,100 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         typed_bad.is_empty(),
         "the open search box and the controls beside it stay inside the column: {typing}"
     );
-    harness::eval(
-        &tab,
-        "document.getElementById('transcriptSearchInput').blur(); 1",
-    );
+    // A press outside the search folds it back to its glyph.
+    let box_width = "document.querySelector('.workspace>.topbar .header-searchbox').getBoundingClientRect().width";
+    let press_outside = || {
+        let at = harness::probe(
+            &tab,
+            "(function(){ var r = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(); return { x: Math.round(r.left + 5), y: Math.round(r.top + r.height * 0.6) }; })()",
+        );
+        tab.click_point(headless_chrome::browser::tab::point::Point {
+            x: at["x"].as_f64().unwrap_or(0.0),
+            y: at["y"].as_f64().unwrap_or(0.0),
+        })
+        .expect("a press on the transcript");
+    };
+    let folded = format!("{box_width} < 60 && document.getElementById('sessionTitle').getBoundingClientRect().width > 0 && document.getElementById('navigatorRailExpand').getBoundingClientRect().width > 0 && !document.getElementById('navigatorOptions').classList.contains('open')");
+    press_outside();
     harness::until(
         &tab,
-        "document.querySelector('.workspace>.topbar .header-searchbox').getBoundingClientRect().width < 60",
-        "the search box to fold back to its glyph",
+        &folded,
+        "the search box to fold back to its glyph at a press outside",
         Duration::from_secs(5),
-        "document.querySelector('.workspace>.topbar .header-searchbox').getBoundingClientRect().width",
+        box_width,
+    );
+    // The search key opens it too.
+    harness::key(&tab, "/", false);
+    harness::until(
+        &tab,
+        &format!("document.activeElement && document.activeElement.id === 'transcriptSearchInput' && {box_width} >= 200"),
+        "the search key to open the search box",
+        Duration::from_secs(5),
+        box_width,
+    );
+    press_outside();
+    harness::until(
+        &tab,
+        &folded,
+        "the search box to fold back",
+        Duration::from_secs(5),
+        box_width,
+    );
+    // As Safari and Firefox on a Mac press a button: no focus for it, so the field loses its focus at
+    // the press. The open box's step and filter still take their click, and a press outside then shuts
+    // the filter and folds the box, the heading and the outline's control back in the bar.
+    harness::eval(
+        &tab,
+        "window.__noButtonFocus = function (e) { if (!e.target.closest || !e.target.closest('button')) return; e.preventDefault(); var a = document.activeElement; if (a && a !== document.body && a.blur) a.blur(); }; document.addEventListener('mousedown', window.__noButtonFocus, true); 1",
+    );
+    harness::click_when_settled(
+        &tab,
+        ".workspace>.topbar .header-searchbox",
+        "the search box",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ var i = document.getElementById('transcriptSearchInput'); i.value = 'lorem'; i.dispatchEvent(new Event('input', { bubbles: true })); if (/⏎/.test(document.getElementById('transcriptSearchCount').textContent)) i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return 1; })()",
+    );
+    let count = "document.getElementById('transcriptSearchCount').textContent";
+    harness::until(
+        &tab,
+        &format!("/\\d/.test({count}) && !/⏎/.test({count}) && document.getElementById('findNext').getBoundingClientRect().width > 0"),
+        "the query's matches counted, with the steps shown",
+        Duration::from_secs(10),
+        count,
+    );
+    // The count says how many, not which, so the step is read off the current hit's mark: its
+    // record and its place among that record's marks.
+    let hit = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'); if (!m) return 'none'; var r = m.closest('[data-block-index]'); return (r ? r.dataset.blockIndex : '?') + ':' + (r ? Array.prototype.indexOf.call(r.querySelectorAll('mark.search-mark'), m) : -1); })()";
+    let before = harness::eval(&tab, hit);
+    harness::click_when_settled(&tab, "#findNext", "the next match");
+    harness::until(
+        &tab,
+        &format!("{hit} !== 'none' && {hit} !== {before}"),
+        "a press on ↓ with no focus for the button to step to the next match",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ hit: {hit}, before: {before}, count: {count}, width: {box_width}, held: document.querySelector('.header-search-cluster').className, next: document.getElementById('findNext').getBoundingClientRect().width, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName) }})"),
+    );
+    harness::click_when_settled(&tab, "#filterTranscriptBtn", "the search filter");
+    harness::until(
+        &tab,
+        "document.getElementById('navigatorOptions').classList.contains('open')",
+        "a press on the filter with no focus for the button to open its menu",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ width: {box_width}, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName) }})"),
+    );
+    press_outside();
+    harness::until(
+        &tab,
+        &folded,
+        "a press outside to shut the filter and fold the box, the heading and the outline's control back",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ width: {box_width}, menu: document.getElementById('navigatorOptions').className, title: document.getElementById('sessionTitle').getBoundingClientRect().width }})"),
+    );
+    harness::eval(
+        &tab,
+        "document.removeEventListener('mousedown', window.__noButtonFocus, true); 1",
     );
     // The bar's fold-all control is the one it spares there: it is in Aa's menu, and still folds.
     harness::click_when_settled(&tab, "#readingBtn", "Aa");
@@ -11998,15 +12086,43 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         Duration::from_secs(5),
         "({ row: !!document.querySelector('#readingOptions [data-fold-all]'), bar: getComputedStyle(document.getElementById('sessionFoldAll')).display })",
     );
+    let closed = "document.querySelectorAll('[data-process-surface].closed').length";
+    let processes = harness::eval(
+        &tab,
+        "document.querySelectorAll('[data-process-surface]').length",
+    );
+    assert!(
+        processes.as_i64().unwrap_or(0) > 0,
+        "the fixture draws an agent process to fold: {processes}"
+    );
+    let closed_before = harness::eval(&tab, closed);
+    harness::click_when_settled(
+        &tab,
+        "#readingOptions [data-fold-all]",
+        "fold-all in Aa's menu",
+    );
+    harness::until(
+        &tab,
+        &format!("{closed} !== {closed_before}"),
+        "fold-all in Aa's menu to fold or open every agent process",
+        Duration::from_secs(5),
+        closed,
+    );
     harness::eval(&tab, "document.getElementById('readingBtn').click(); 1");
     // 500px: the narrowest under the handle, the session at M.
     fits(&at(500, false, "the app"), "the app at 500px");
     // 600px: beside the rail, the session 526px.
     fits(&at(600, false, "the app"), "the app at 600px");
     // 1100px, the pane open beside the session: the session 512px, its bar beside the pane's tabs.
-    fits(&at(1100, true, "the app"), "the app at 1100px, the pane open");
+    fits(
+        &at(1100, true, "the app"),
+        "the app at 1100px, the pane open",
+    );
     // 1040px, the pane open: the session at M.
-    fits(&at(1040, true, "the app"), "the app at 1040px, the pane open");
+    fits(
+        &at(1040, true, "the app"),
+        "the app at 1040px, the pane open",
+    );
 
     // A host's pane, the view the whole page.
     harness::clear_metrics(&tab);
@@ -12024,6 +12140,18 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         "a host's 1000px pane, the pane open",
     );
     fits(&at(490, false, "the host"), "a host's 490px pane");
+    // A host that switched Aa off keeps fold-all in the bar, in Aa's room.
+    harness::clear_metrics(&tab);
+    harness::resize(&tab, 1000.0, 900.0);
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}&hide=reading"));
+    let no_aa = at(1000, true, "the host without Aa");
+    fits(&no_aa, "a host's 1000px pane without Aa");
+    assert!(
+        no_aa["bar"].as_array().is_some_and(|b| b
+            .iter()
+            .any(|x| x.as_str().unwrap_or("").starts_with("#sessionFoldAll "))),
+        "without Aa, fold-all stays in the bar: {no_aa}"
+    );
     harness::clear_metrics(&tab);
     drop(monitor);
 }
