@@ -230,10 +230,11 @@ try {
   const list = window.__list = mountSessionList(document.getElementById("sessionList"), {
     backend: backendHandle({ base: "/list-server", paired: true }),
   });
+  let chosen = "";
   const view = window.__view = mountSessionView(document.getElementById("sessionView"), {
     grid: document.getElementById("pane"),
     backend: backendHandle({ paired: true }),
-    selectedId: () => view.session(),
+    selectedId: () => chosen,
     sessionRow: () => null,
     sessionWorkers: () => [],
     selectSession: () => {},
@@ -243,6 +244,7 @@ try {
     resumeIndex: () => {},
   });
   list.start();
+  chosen = "{{VIEWED}}";
   view.select("{{VIEWED}}");
   view.open("{{VIEWED}}");
   host.mounted = true;

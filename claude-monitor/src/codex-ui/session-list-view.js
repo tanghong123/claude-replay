@@ -137,7 +137,7 @@ for (const [name, shown] of Object.entries(options.show || {})) {
 }
 const keyboardMode = options.keyboard ?? "engaged";
 if (!KEYBOARD_MODES.includes(keyboardMode)) throw new Error(`mountSessionList takes its keyboard "engaged" or "page", not ${said(keyboardMode)}`);
-if (options.backend != null && typeof options.backend?.fetch !== "function") throw new Error(`mountSessionList takes its backend as a backend handle (backendHandle()), not ${said(options.backend)}`);
+if (options.backend != null && typeof options.backend.fetch !== "function") throw new Error(`mountSessionList takes its backend as a backend handle (backendHandle()), not ${said(options.backend)}`);
 /** The server the list reads now: its own, or the page's (#s540). */
 const listBackend = () => options.backend || backend();
 if (element.id && element.id !== "sessionList") throw new Error(`mountSessionList draws into an element whose id is sessionList, or that has none; this one is #${element.id}`);

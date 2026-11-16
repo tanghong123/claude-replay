@@ -27,9 +27,11 @@ const ROUTES: &[&str] = &[
     "mermaid",
 ];
 
-/// A line that hands its server path to the handle.
+/// A line that hands its server path to the handle: the page's (`backend()`), or the session
+/// list's own, which is the page's unless the host gave the list one (#s540).
 const THROUGH_THE_HANDLE: &[&str] = &[
     "backend().fetch(",
+    "listBackend().fetch(",
     "backend().url(",
     "backend().mdrevUrl(",
     "backend().mdrevFetch(",
