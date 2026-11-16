@@ -11903,7 +11903,7 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     // What the bar shows, read where a reader would: each shown control's box against the session's
     // column (`.workspace`) and the open pane, and what a pointer at its centre reaches; the title's
     // room against its first word (a Range over the word, and the ellipsis a longer title draws).
-    let probe = "(function(){ var v = document.getElementById('sessionView'); var ws = v.querySelector('.workspace'), bar = ws.querySelector(':scope>.topbar'); var pv = v.classList.contains('preview-off') ? null : v.querySelector('.preview'); var W = ws.getBoundingClientRect(), P = pv ? pv.getBoundingClientRect() : null; var r4 = function (b) { return [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)]; }; var name = function (e) { return !e ? 'nothing' : e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + String(e.getAttribute('class') || '').split(' ')[0]; }; var bad = []; var shown = [].filter.call(bar.querySelectorAll('button, .header-searchbox'), function (e) { var b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && getComputedStyle(e).visibility !== 'hidden'; }); ['phoneInfo', 'previewBtn'].forEach(function (id) { if (shown.indexOf(document.getElementById(id)) < 0) bad.push('#' + id + ' is not shown'); }); shown.forEach(function (e) { var b = e.getBoundingClientRect(), hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2), why = []; if (b.left < W.left - 0.5 || b.right > W.right + 0.5) why.push('outside the session column ' + r4(W)); if (P && b.right > P.left + 0.5) why.push('under the pane from ' + Math.round(P.left)); if (!hit || !(hit === e || e.contains(hit))) why.push('its centre reaches ' + name(hit)); if (why.length) bad.push(name(e) + ' ' + r4(e.getBoundingClientRect()) + ': ' + why.join(', ')); }); var t = document.getElementById('sessionTitle'), text = t.textContent.trim(), word = text.split(/\\s+/)[0], node = t.firstChild, at = t.textContent.indexOf(word); var range = document.createRange(); range.setStart(node, at); range.setEnd(node, at + word.length); var cs = getComputedStyle(t), room = t.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); var ctx = document.createElement('canvas').getContext('2d'); ctx.font = cs.font; var need = range.getBoundingClientRect().width + (text.length > word.length ? ctx.measureText('\\u2026').width : 0); var tb = t.getBoundingClientRect(); if (room + 0.5 < need) bad.push('the title has ' + Math.round(room) + 'px of the ' + Math.ceil(need) + 'px its first word \"' + word + '\" needs'); if (tb.left < W.left - 0.5 || tb.right > W.right + 0.5) bad.push('the title ' + r4(tb) + ' is outside the session column'); var box = bar.querySelector('.header-searchbox'); return { width: innerWidth, classes: v.className, workspace: r4(W), pane: P ? r4(P) : null, title: text, search: Math.round(box.getBoundingClientRect().width), focused: document.activeElement ? document.activeElement.id : '', bar: shown.map(function (e) { return name(e) + ' ' + r4(e.getBoundingClientRect()); }), bad: bad }; })()";
+    let probe = "(function(){ var v = document.getElementById('sessionView'); var ws = v.querySelector('.workspace'), bar = ws.querySelector(':scope>.topbar'); var pv = v.classList.contains('preview-off') ? null : v.querySelector('.preview'); var W = ws.getBoundingClientRect(), P = pv ? pv.getBoundingClientRect() : null; var r4 = function (b) { return [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)]; }; var name = function (e) { return !e ? 'nothing' : e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + String(e.getAttribute('class') || '').split(' ')[0]; }; var bad = []; var shown = [].filter.call(bar.querySelectorAll('button, .header-searchbox'), function (e) { var b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && getComputedStyle(e).visibility !== 'hidden'; }); ['phoneInfo', 'previewBtn'].forEach(function (id) { if (shown.indexOf(document.getElementById(id)) < 0) bad.push('#' + id + ' is not shown'); }); shown.forEach(function (e) { var b = e.getBoundingClientRect(), hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2), why = []; if (b.left < W.left - 0.5 || b.right > W.right + 0.5) why.push('outside the session column ' + r4(W)); if (P && b.right > P.left + 0.5) why.push('under the pane from ' + Math.round(P.left)); if (!hit || !(hit === e || e.contains(hit))) why.push('its centre reaches ' + name(hit)); if (why.length) bad.push(name(e) + ' ' + r4(e.getBoundingClientRect()) + ': ' + why.join(', ')); }); var t = document.getElementById('sessionTitle'), text = t.textContent.trim(), word = text.split(/\\s+/)[0], node = t.firstChild, at = t.textContent.indexOf(word); var range = document.createRange(); range.setStart(node, at); range.setEnd(node, at + word.length); var cs = getComputedStyle(t), room = t.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); var ctx = document.createElement('canvas').getContext('2d'); ctx.font = cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily; var need = range.getBoundingClientRect().width + (text.length > word.length ? ctx.measureText('\\u2026').width : 0); var tb = t.getBoundingClientRect(); if (room + 0.5 < need) bad.push('the title has ' + Math.round(room) + 'px of the ' + Math.ceil(need) + 'px its first word \"' + word + '\" needs'); if (tb.left < W.left - 0.5 || tb.right > W.right + 0.5) bad.push('the title ' + r4(tb) + ' is outside the session column'); var box = bar.querySelector('.header-searchbox'); return { width: innerWidth, classes: v.className, workspace: r4(W), pane: P ? r4(P) : null, title: text, search: Math.round(box.getBoundingClientRect().width), focused: document.activeElement ? document.activeElement.id : '', bar: shown.map(function (e) { return name(e) + ' ' + r4(e.getBoundingClientRect()); }), bad: bad }; })()";
     let settled = |width: u32, open: bool| {
         format!("innerWidth === {width} && {VIEW_CAUGHT_UP} && document.getElementById('sessionView').classList.contains('preview-off') === {} && document.getElementById('sessionView').getAnimations({{ subtree: true }}).filter(function (a) {{ return a instanceof CSSTransition; }}).length === 0 && document.getElementById('sessionTitle').textContent === 'Harbour tide table notes'", !open)
     };
@@ -12057,6 +12057,29 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         Duration::from_secs(5),
         &format!("JSON.stringify({{ hit: {hit}, before: {before}, count: {count}, width: {box_width}, held: document.querySelector('.header-search-cluster').className, next: document.getElementById('findNext').getBoundingClientRect().width, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName) }})"),
     );
+    // Escape leaves the search with the focus nowhere, as it is after that press.
+    let escape = "(function(){ (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); return 1; })()";
+    harness::eval(&tab, escape);
+    harness::until(
+        &tab,
+        &folded,
+        "Escape after a press on ↓ with no focus for the button to fold the box",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ width: {box_width}, held: document.querySelector('.header-search-cluster').className, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName) }})"),
+    );
+    let reopened = format!("{box_width} >= 200 && document.getElementById('findNext').getBoundingClientRect().width > 0");
+    harness::click_when_settled(
+        &tab,
+        ".workspace>.topbar .header-searchbox",
+        "the search box",
+    );
+    harness::until(
+        &tab,
+        &reopened,
+        "the search box to open again with its query",
+        Duration::from_secs(5),
+        box_width,
+    );
     harness::click_when_settled(&tab, "#filterTranscriptBtn", "the search filter");
     harness::until(
         &tab,
@@ -12077,6 +12100,110 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         &tab,
         "document.removeEventListener('mousedown', window.__noButtonFocus, true); 1",
     );
+    // As Chrome presses a button, which takes the focus: a Tab out of the open filter's rows shuts the
+    // filter and folds the box, and Escape with the focus on ↓ folds it too.
+    harness::click_when_settled(
+        &tab,
+        ".workspace>.topbar .header-searchbox",
+        "the search box",
+    );
+    harness::until(
+        &tab,
+        &reopened,
+        "the search box to open again with its query",
+        Duration::from_secs(5),
+        box_width,
+    );
+    harness::click_when_settled(&tab, "#filterTranscriptBtn", "the search filter");
+    harness::until(
+        &tab,
+        "document.getElementById('navigatorOptions').classList.contains('open') && document.activeElement === document.getElementById('filterTranscriptBtn')",
+        "a press on the filter to open its menu, the focus on the filter",
+        Duration::from_secs(5),
+        "JSON.stringify({ menu: document.getElementById('navigatorOptions').className, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName) })",
+    );
+    // Tab's own focus moves, made by script: a CDP Tab the page does not prevent never comes back up.
+    harness::eval(
+        &tab,
+        "(function(){ var rows = document.querySelectorAll('#navigatorOptions button, #navigatorOptions input'); rows[rows.length - 1].focus(); document.getElementById('previewBtn').focus(); return document.activeElement.id; })()",
+    );
+    harness::until(
+        &tab,
+        &folded,
+        "a Tab out of the open filter to shut it and fold the box",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ width: {box_width}, menu: document.getElementById('navigatorOptions').className, held: document.querySelector('.header-search-cluster').className, focused: document.activeElement && document.activeElement.id }})"),
+    );
+    harness::click_when_settled(
+        &tab,
+        ".workspace>.topbar .header-searchbox",
+        "the search box",
+    );
+    harness::until(
+        &tab,
+        &reopened,
+        "the search box to open again with its query",
+        Duration::from_secs(5),
+        box_width,
+    );
+    harness::click_when_settled(&tab, "#findNext", "the next match");
+    harness::until(
+        &tab,
+        "document.activeElement === document.getElementById('findNext')",
+        "a press on ↓ to give it the focus",
+        Duration::from_secs(5),
+        "document.activeElement && (document.activeElement.id || document.activeElement.tagName)",
+    );
+    harness::eval(&tab, escape);
+    harness::until(
+        &tab,
+        &folded,
+        "Escape with the focus on ↓ to fold the box",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ width: {box_width}, held: document.querySelector('.header-search-cluster').className, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName) }})"),
+    );
+    // A press inside a frame (the pane's page is one) sends this page no press; the focus going into
+    // the frame leaves the search all the same.
+    harness::click_when_settled(
+        &tab,
+        ".workspace>.topbar .header-searchbox",
+        "the search box",
+    );
+    harness::until(
+        &tab,
+        &reopened,
+        "the search box to open again with its query",
+        Duration::from_secs(5),
+        box_width,
+    );
+    harness::eval(
+        &tab,
+        "(function(){ var f = document.createElement('iframe'); f.id = 's520Frame'; f.srcdoc = '<p style=\"margin:0;height:200px\">a page</p>'; f.style.cssText = 'position:fixed;left:20px;bottom:20px;width:200px;height:120px;z-index:99;border:0;background:#fff'; document.body.appendChild(f); return 1; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var f = document.getElementById('s520Frame'); return !!f && !!f.contentDocument && f.contentDocument.readyState === 'complete' && !!f.contentDocument.querySelector('p'); })()",
+        "the frame to load",
+        Duration::from_secs(5),
+        "String(!!document.getElementById('s520Frame'))",
+    );
+    let inside = harness::probe(
+        &tab,
+        "(function(){ var r = document.getElementById('s520Frame').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()",
+    );
+    tab.click_point(headless_chrome::browser::tab::point::Point {
+        x: inside["x"].as_f64().unwrap_or(0.0),
+        y: inside["y"].as_f64().unwrap_or(0.0),
+    })
+    .expect("a press inside the frame");
+    harness::until(
+        &tab,
+        &folded,
+        "a press inside a frame to fold the box",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ width: {box_width}, held: document.querySelector('.header-search-cluster').className, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName), hasFocus: document.hasFocus() }})"),
+    );
+    harness::eval(&tab, "document.getElementById('s520Frame').remove(); 1");
     // The bar's fold-all control is the one it spares there: it is in Aa's menu, and still folds.
     harness::click_when_settled(&tab, "#readingBtn", "Aa");
     harness::until(
@@ -12117,6 +12244,45 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     fits(
         &at(1100, true, "the app"),
         "the app at 1100px, the pane open",
+    );
+    // There the view is wider than the session (the pane beside it), so the bar takes the search box
+    // rules of the next band up; a press on ↓ with no focus for the button still steps there.
+    harness::eval(
+        &tab,
+        "document.addEventListener('mousedown', window.__noButtonFocus, true); 1",
+    );
+    harness::click_when_settled(
+        &tab,
+        ".workspace>.topbar .header-searchbox",
+        "the search box",
+    );
+    harness::until(
+        &tab,
+        &reopened,
+        "the search box to open with its query beside the pane",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ width: {box_width}, view: document.getElementById('sessionView').getBoundingClientRect().width, classes: document.getElementById('sessionView').className }})"),
+    );
+    let before = harness::eval(&tab, hit);
+    harness::click_when_settled(&tab, "#findNext", "the next match");
+    harness::until(
+        &tab,
+        &format!("{hit} !== 'none' && {hit} !== {before}"),
+        "a press on ↓ with no focus for the button, beside the pane, to step to the next match",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ hit: {hit}, before: {before}, width: {box_width}, next: document.getElementById('findNext').getBoundingClientRect().width, view: document.getElementById('sessionView').getBoundingClientRect().width, classes: document.getElementById('sessionView').className }})"),
+    );
+    press_outside();
+    harness::until(
+        &tab,
+        &folded,
+        "a press outside to fold the box beside the pane",
+        Duration::from_secs(5),
+        box_width,
+    );
+    harness::eval(
+        &tab,
+        "document.removeEventListener('mousedown', window.__noButtonFocus, true); 1",
     );
     // 1040px, the pane open: the session at M.
     fits(
