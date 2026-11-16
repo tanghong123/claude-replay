@@ -1634,8 +1634,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   .phone-pane-jump .task-state{flex:none}
   .phone-pane-jump-count{font:500 11.5px/1 var(--mono);color:var(--faint)}
   /* The task's card is a sheet over the session and over the list it was chosen from; the scrim
-     dims both, and a tap on it closes the card. */
+     dims both, and a tap on it closes the card. That tap is spent closing (#s510): the scrim stays,
+     clear, until the tap's click has passed (`catching`), as the pane's dim does (#s55). */
   .task-scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:59;background:rgba(14,19,31,.42)}
+  .task-scrim.catching:not([hidden]){background:transparent}
 
   #sessionView .sv-session-main,#sessionView .workspace.navigator-off .sv-session-main{grid-template-columns:0 minmax(0,1fr)}
   #sessionView .session-navigator{display:none!important}
@@ -2004,8 +2006,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      (z 59, above), and so does the view's top bar, which would cover the handle. So while it is open
      the handle rises over the view and is drawn as the dim draws what lies under it (the glyph mixed
      with the scrim's rgba(14,19,31,.42), its clear ground showing the dimmed bar), and takes no press:
-     a tap there reaches the dim, which closes the card, as when the dim lay over it (1.521.0). */
-  #app:has(>#sessionView.pl-boxed.pl-phone>.task-scrim:not([hidden]))>.drawer-handle{z-index:60;pointer-events:none;color:color-mix(in srgb,var(--ink) 58%,rgb(14 19 31))}
+     a tap there reaches the dim, which closes the card, as when the dim lay over it (1.521.0). Once
+     the card has closed, the dim stays clear until that tap's click has passed (#s510), and so does
+     the handle's refusal of the press, or the click would reach it; only its dimmed colour goes. */
+  #app:has(>#sessionView.pl-boxed.pl-phone>.task-scrim:not([hidden]))>.drawer-handle{z-index:60;pointer-events:none}
+  #app:has(>#sessionView.pl-boxed.pl-phone>.task-scrim:not([hidden]):not(.catching))>.drawer-handle{color:color-mix(in srgb,var(--ink) 58%,rgb(14 19 31))}
 }
 
 /* #s32 — between the phone and 1180px the preview is an overlay (reference.css), and at

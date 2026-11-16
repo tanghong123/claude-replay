@@ -5297,6 +5297,111 @@ fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
     );
 }
 
+/// #s497 (the second delta review of #s431 stage 4): a desktop host page that scrolls keeps its offset
+/// while the session view in its pane is a phone reader (a 400px pane, under 490px of the view). The
+/// keyboard ride answers iOS scrolling the page to bring a focused field above its keyboard, and it
+/// also ran on every scroll of the page once the view was in its phone family: with a mouse and no
+/// keyboard, the page's offset read as iOS's, so the ride snapped the host's page back to its top and
+/// gave its box a `translateY` of that offset for a frame. Here the reader scrolls the page by a mouse
+/// wheel and then by a script (a key, the scrollbar), and the page keeps each offset, the pane never
+/// transformed. Red on 081be59e, where the page went back to 0.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_desktop_host_page_that_scrolls_keeps_its_offset_beside_a_phone_reader() {
+    use headless_chrome::protocol::cdp::Input::{DispatchMouseEvent, DispatchMouseEventTypeOption};
+    let _serial = serial();
+    let base = base("host-page-scroll");
+    let monitor = Monitor::spawn(Kind::V1, 3119, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1400.0, 900.0);
+    harness::open_host_page(&tab, &monitor, "");
+    place_host_pane(&tab, 500, 400);
+    // A page taller than the window, and every transform written on the host's box from here on.
+    harness::eval(
+        &tab,
+        "(function(){ document.body.style.height = '3000px'; var p = document.getElementById('hostPane'); window.__transforms = []; new MutationObserver(function(){ if (p.style.transform) window.__transforms.push(p.style.transform); }).observe(p, { attributes: true, attributeFilter: ['style'] }); return true; })()",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let facts = "JSON.stringify({ phone: document.getElementById('sessionView').classList.contains('pl-phone'), coarse: matchMedia('(pointer:coarse)').matches, scroll: Math.round(scrollY), transform: document.getElementById('hostPane').style.transform, transforms: window.__transforms })";
+    let before: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default();
+    assert!(
+        before["phone"] == true && before["coarse"] == false && before["scroll"] == 0,
+        "the view is a phone reader in a mouse window's page at its top: {before}"
+    );
+    // The reader's wheel, over the host's page beside the pane.
+    tab.call_method(DispatchMouseEvent {
+        Type: DispatchMouseEventTypeOption::MouseWheel,
+        x: 200.0,
+        y: 600.0,
+        modifiers: None,
+        timestamp: None,
+        button: None,
+        buttons: None,
+        click_count: None,
+        force: None,
+        tangential_pressure: None,
+        tilt_x: None,
+        tilt_y: None,
+        twist: None,
+        delta_x: Some(0.0),
+        delta_y: Some(300.0),
+        pointer_Type: None,
+    })
+    .expect("a mouse wheel");
+    harness::until(
+        &tab,
+        "Math.round(scrollY) === 300",
+        "the page to keep the 300px the wheel scrolled it",
+        Duration::from_secs(5),
+        facts,
+    );
+    harness::pause("any ride a scroll event starts", Duration::from_millis(300));
+    harness::eval(&tab, TWO_FRAMES);
+    let wheeled: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default();
+    // A scroll the page is given by a script (a key, the scrollbar).
+    harness::eval(&tab, "(function(){ scrollBy(0, 200); return true; })()");
+    harness::pause("any ride a scroll event starts", Duration::from_millis(300));
+    harness::eval(&tab, TWO_FRAMES);
+    let scripted: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default();
+    // The ride is asked by more than the page's scroll: focus moving and the visual viewport's own
+    // events. Neither may take the page's offset for iOS's either.
+    harness::eval(
+        &tab,
+        "(function(){ document.dispatchEvent(new FocusEvent('focusin')); visualViewport.dispatchEvent(new Event('resize')); visualViewport.dispatchEvent(new Event('scroll')); return true; })()",
+    );
+    harness::pause(
+        "the ride focus and the viewport ask for",
+        Duration::from_millis(300),
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let asked: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default();
+    drop(monitor);
+    assert_eq!(
+        (wheeled["scroll"].clone(), wheeled["transforms"].clone()),
+        (serde_json::json!(300), serde_json::json!([])),
+        "the page keeps the wheel's offset and its pane is never transformed: {wheeled}"
+    );
+    assert_eq!(
+        (scripted["scroll"].clone(), scripted["transforms"].clone()),
+        (serde_json::json!(500), serde_json::json!([])),
+        "the page keeps a scripted offset and its pane is never transformed: {scripted}"
+    );
+    assert_eq!(
+        (asked["scroll"].clone(), asked["transforms"].clone()),
+        (serde_json::json!(500), serde_json::json!([])),
+        "a ride focus or the visual viewport asks for leaves the page's offset alone: {asked}"
+    );
+}
+
 /// #s431 stage 4 (the second delta review of b4ad87a9): the gaps a decision during the keyboard ride
 /// keeps come only from a decision that saw a box while no ride moved it, and the ride's end decides
 /// again. A view its host mounts hidden decided once at 0×0, whose foot read the window's whole height
@@ -17454,6 +17559,123 @@ fn a_phone_task_card_dims_what_is_behind_it() {
         "a tap on the dimmed view to close the card and lift the scrim",
         Duration::from_secs(5),
         "document.getElementById('taskPopover').hidden",
+    );
+}
+
+/// #s510, seen on #s496's walk: a wide phone held sideways, its list column showing Tasks, a task's
+/// card open, and a tap on the dim where the sidebar handle lies beneath it. The card closed and the
+/// column hid as well: the dim went at the touch, and the tap's click then landed on the handle. A
+/// tap on the dim is spent closing the card, as the pane's dim's is (#s55). A tap on the dim
+/// elsewhere still closes the card, and the handle answers the next tap.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_wide_phone_s_task_card_dim_spends_its_tap_on_closing_the_card() {
+    let _serial = serial();
+    let base = harness::base("wide-phone-task-dim");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        PHONE_SID,
+        &harness::long_session(8, harness::Shape::default()),
+    );
+    stores.claude_tasks(
+        PHONE_SID,
+        &[
+            (
+                "1",
+                "count the tern nests on the north shore",
+                "in_progress",
+            ),
+            ("2", "count the skua burrows by the cliff", "pending"),
+            ("3", "map the petrel colony", "pending"),
+        ],
+    );
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3141, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    harness::phone(&tab, 956, 440);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    m.pair(&tab);
+    harness::eval(&tab, "localStorage.removeItem('am-phone-column'); 'ok'");
+    m.open(&tab, &format!("?ui=app&session={PHONE_SID}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user') && innerWidth === 956 && !!document.querySelector('#columnSwitch [data-column-tab=tasks]') && getComputedStyle(document.getElementById('columnSwitch')).display !== 'none'",
+        "the session beside its list column at the phone's size",
+        Duration::from_secs(20),
+        "innerWidth + 'x' + innerHeight + ' ' + document.getElementById('app').className",
+    );
+    const COLUMN: &str = "JSON.stringify({ stored: localStorage.getItem('am-phone-column'), off: document.getElementById('app').classList.contains('phone-column-off'), expanded: document.getElementById('drawerHandle').getAttribute('aria-expanded') })";
+    let column = || -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, COLUMN).as_str().unwrap_or("{}"))
+            .unwrap_or_default()
+    };
+    assert_eq!(column()["off"], false, "the column is shown: {}", column());
+    let tasks = page_point(&tab, "the column's Tasks tab", "(function(){ var b = document.querySelector('#columnSwitch [data-column-tab=tasks]').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); })()");
+    harness::finger_tap(&tab, tasks[0], tasks[1]);
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#columnPane .work-task-head').length === 3",
+        "the column to list the session's three tasks",
+        Duration::from_secs(10),
+        "document.querySelectorAll('#columnPane .work-task-head').length",
+    );
+    let open_card = || {
+        let row = page_point(&tab, "a task row in the column", "(function(){ var r = [...document.querySelectorAll('#columnPane .work-task-head')].map(function (h) { return h.getBoundingClientRect(); }).find(function (b) { var e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!e && !!e.closest('#columnPane .work-task-head'); }); return r ? JSON.stringify([r.left + r.width / 2, r.top + r.height / 2]) : 'none'; })()");
+        harness::finger_tap(&tab, row[0], row[1]);
+        harness::until(
+            &tab,
+            "!document.getElementById('taskPopover').hidden",
+            "the task's card to open",
+            Duration::from_secs(5),
+            "document.getElementById('taskPopover').hidden",
+        );
+        std::thread::sleep(Duration::from_millis(600));
+    };
+    // The dim is gone once the card is closed and the scrim neither shown nor catching.
+    let closed = |what: &str| {
+        harness::until(
+            &tab,
+            "document.getElementById('taskPopover').hidden && getComputedStyle(document.getElementById('taskScrim')).display === 'none'",
+            what,
+            Duration::from_secs(6),
+            "document.getElementById('taskPopover').hidden + ' ' + document.getElementById('taskScrim').className + ' ' + getComputedStyle(document.getElementById('taskScrim')).display",
+        );
+    };
+    open_card();
+    let handle = page_point(&tab, "the sidebar handle", "(function(){ var b = document.getElementById('drawerHandle').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); })()");
+    let under = harness::eval(&tab, &format!("(function(){{ var e = document.elementFromPoint({}, {}); return e ? (e.id || e.className) : null; }})()", handle[0], handle[1]));
+    assert_eq!(
+        under,
+        serde_json::Value::String("taskScrim".into()),
+        "the card's dim lies over the handle"
+    );
+    harness::finger_tap(&tab, handle[0], handle[1]);
+    closed("a tap on the dim over the handle to close the card and lift the dim");
+    std::thread::sleep(Duration::from_millis(300));
+    let after = column();
+    assert_eq!(
+        (after["off"].clone(), after["stored"].clone()),
+        (serde_json::Value::Bool(false), serde_json::Value::Null),
+        "the tap closed the card and nothing else: the column is still shown: {after}"
+    );
+    // A tap on the dim elsewhere still closes the card.
+    open_card();
+    let elsewhere = page_point(&tab, "a point on the dim away from the card and the handle", "(function(){ var s = document.getElementById('taskScrim'), h = document.getElementById('drawerHandle').getBoundingClientRect(); var p = [[innerWidth - 90, 50], [innerWidth / 2, 50], [innerWidth - 90, innerHeight / 3]].find(function (q) { return document.elementFromPoint(q[0], q[1]) === s && (q[0] > h.right + 40 || q[1] > h.bottom + 40); }); return p ? JSON.stringify(p) : 'none'; })()");
+    harness::finger_tap(&tab, elsewhere[0], elsewhere[1]);
+    closed("a tap on the dim elsewhere to close the card and lift the dim");
+    assert_eq!(
+        column()["off"],
+        false,
+        "…and leave the column shown: {}",
+        column()
+    );
+    // And the handle answers the next tap.
+    harness::finger_tap(&tab, handle[0], handle[1]);
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('phone-column-off') && localStorage.getItem('am-phone-column') === '0'",
+        "the next tap on the handle to hide the column",
+        Duration::from_secs(5),
+        COLUMN,
     );
 }
 
