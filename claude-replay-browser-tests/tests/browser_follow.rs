@@ -3113,8 +3113,9 @@ fn the_session_list_in_a_host_unmounts_and_mounts_again() {
         Duration::from_secs(60),
         "document.getElementById('tree').innerText",
     );
-    // A section's menu open and closed, the filter's sheet open and closed: every listener bound.
-    let escape = "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))";
+    // A section's menu open and closed, the filter's sheet open and closed: every listener bound. The
+    // Escape is the reader's in the list, so it is dispatched there (#s559: a host's is the host's).
+    let escape = "document.getElementById('sessionList').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))";
     harness::eval(
         &tab,
         "document.querySelector('#tree .arranged-head [data-section-view]').click()",
@@ -3413,9 +3414,10 @@ fn the_session_list_in_a_host_places_its_layers_by_their_controls_in_a_transform
         &tab,
         "(function(){ var m = document.getElementById('sectionViewMenu'), a = document.querySelector('#tree .arranged-head [data-section-view]'); var r = m.getBoundingClientRect(), c = a.getBoundingClientRect(); var x = r.left + r.width / 2, y = r.top + Math.min(r.height / 2, 40); var hit = document.elementFromPoint(x, y); return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom), anchorRight: Math.round(c.right), anchorBottom: Math.round(c.bottom), pressedAt: window.__anchorAtPress, margin: Math.round(parseFloat(getComputedStyle(m).marginTop) || 0), inWindow: r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight, pressed: !!hit && m.contains(hit) }; })()",
     );
+    // The reader's Escape in the list closes the menu (#s559: a host's is the host's).
     harness::eval(
         &tab,
-        "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))",
+        "document.getElementById('sessionList').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))",
     );
     harness::eval(&tab, "document.getElementById('filterBtn').click()");
     harness::until(
@@ -3501,6 +3503,268 @@ fn the_session_list_in_a_host_places_its_layers_by_their_controls_in_a_transform
     assert_eq!(
         clipped["lastPressed"], true,
         "and its last row takes a press there: {clipped}"
+    );
+}
+
+/// #s559, after #s535 did the same for the session view: a host's Escape is the host's. Mounted with
+/// its default, `keyboard: "engaged"`, the session list closes its layers on Escape only while the
+/// reader works in it, or when the browser hands the Escape to the list itself (the focus inside it).
+/// The filter's sheet and a section's menu, each opened by a press and a click: a focus that goes to
+/// the host's own button leaves each open and an Escape there is the host's (the section menu's used to
+/// be stopped from reaching it); with the focus back in the list, Escape closes each. A press on the
+/// host that keeps the focus on the filter's button (a control that cancels its mousedown) ends the
+/// engagement, and an Escape at that button still closes the sheet. With a host that places the rail,
+/// a flyout a hover opened closes on Escape while the pointer is on its mark, the focus left on the
+/// host's button (WCAG 1.4.13, as the view's Info peek); one a click pinned stays open on the host's
+/// Escape. With `keyboard: "page"` (the app's) the list is always engaged, so the host's Escape closes
+/// the sheet as before. Keys are dispatched where the focus is (`PRESS`), so no CDP key is left
+/// repeating (#270). Before #s559 every one of these Escapes closed the list's layer.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_list_in_a_host_closes_its_layers_on_escape_only_while_the_reader_works_in_it() {
+    let _serial = serial();
+    let base = base("list-host-escape");
+    let stores = Stores::new(&base);
+    let ids = [
+        "cccccccc-0000-4000-8000-0000000005f1",
+        "cccccccc-0000-4000-8000-0000000005f2",
+    ];
+    list_host_world(&stores, &ids);
+    stores.app_session("local_f1", ids[0], "App first", 60, None);
+    stores.app_session("local_f2", ids[1], "App second", 120, None);
+    stores.app_settings(&[("cg-plan", "Planning", &["local_f2"])]);
+    let monitor = Monitor::spawn(Kind::V1, 3152, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1200.0, 900.0);
+    harness::open_list_host_page_with(&tab, &monitor, "mount=0");
+    harness::eval(
+        &tab,
+        "localStorage.setItem('am-prod-session-arrange', 'claude-app'); localStorage.setItem('am-prod-session-filter', '[\"recent\",\"blocked\",\"idle\"]'); 'ok'",
+    );
+    let layers = "({ sheet: !!document.getElementById('sessionFilter') && !document.getElementById('sessionFilter').hidden, menu: !!document.getElementById('sectionViewMenu') && !document.getElementById('sectionViewMenu').hidden, flyout: !!document.getElementById('railFlyout') && !document.getElementById('railFlyout').hidden })";
+    let state = |what: &str| -> serde_json::Value {
+        std::thread::sleep(Duration::from_millis(400));
+        harness::probe(
+            &tab,
+            &format!("(function(){{ var l = {layers}; var a = document.activeElement; l.active = a ? (a.id || (a.dataset && (a.dataset.sectionView || a.dataset.miniAgent) ? 'list:' + (a.dataset.sectionView ? 'section' : 'mark') : a.tagName)) : null; l.what = {what:?}; return l; }})()"),
+        )
+    };
+    let host_keys = "window.__host.keys.filter(function (k) { return k.key === 'Escape'; }).map(function (k) { return k.prevented; })";
+    // A press and then a click on what `js` gives, as a mouse makes them: the press engages the list.
+    let press_click = |js: &str| {
+        harness::eval(
+            &tab,
+            &format!("(function(){{ var e = {js}; e.dispatchEvent(new PointerEvent('pointerdown', {{ bubbles: true }})); e.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }})); e.click(); return 'ok'; }})()"),
+        );
+    };
+    // The real pointer moved onto what `js` gives: a hover, which presses nothing. It aims at the
+    // middle of the part inside the window: no list stylesheet reaches a mark placed in the host's
+    // rail, so its icon draws at the default size, wider than the 48px rail, past the window's edge.
+    let hover = |js: &str| {
+        let v = harness::probe(
+            &tab,
+            &format!("(function(){{ var r = ({js}).getBoundingClientRect(); var l = Math.max(r.left, 0), t = Math.max(r.top, 0), w = Math.min(r.right, innerWidth - 1), b = Math.min(r.bottom, innerHeight - 1); return [(l + w) / 2, (t + b) / 2]; }})()"),
+        );
+        tab.move_mouse_to_point(headless_chrome::browser::tab::point::Point {
+            x: v[0].as_f64().unwrap(),
+            y: v[1].as_f64().unwrap(),
+        })
+        .expect("the pointer moves");
+    };
+    let host_focus = "document.getElementById('hostButton').focus(); 'ok'";
+    let escape = format!("{PRESS}('Escape')");
+    let anchor = "document.querySelector('#tree .arranged-head [data-section-view]')";
+    let mut seen = Vec::new();
+    // The list drawn by itself, its controls and sheet in its own head.
+    harness::open_list_host_page_with(&tab, &monitor, "");
+    until_list_drawn(&tab);
+    harness::until(
+        &tab,
+        &format!("!!{anchor}"),
+        "the list arranged like the Claude app, its sections' menus offered",
+        Duration::from_secs(60),
+        "document.getElementById('tree').innerText",
+    );
+    hover("document.getElementById('hostButton')");
+    press_click("document.getElementById('filterBtn')");
+    seen.push(state("engaged: the filter's sheet opened"));
+    harness::eval(&tab, host_focus);
+    harness::probe(&tab, &escape);
+    seen.push(state("engaged: Escape on the host's button"));
+    harness::eval(&tab, "document.getElementById('filterBtn').focus(); 'ok'");
+    harness::probe(&tab, &escape);
+    seen.push(state(
+        "engaged: Escape with the focus back on the filter's button",
+    ));
+    press_click(anchor);
+    harness::eval(&tab, host_focus);
+    harness::probe(&tab, &escape);
+    seen.push(state(
+        "engaged: a section's menu, Escape on the host's button",
+    ));
+    harness::eval(&tab, &format!("{anchor}.focus(); 'ok'"));
+    harness::probe(&tab, &escape);
+    seen.push(state(
+        "engaged: Escape with the focus back on the section's control",
+    ));
+    press_click("document.getElementById('filterBtn')");
+    harness::eval(&tab, "document.getElementById('filterBtn').focus(); 'ok'");
+    harness::eval(
+        &tab,
+        "document.getElementById('hostButton').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); 'ok'",
+    );
+    seen.push(state(
+        "engaged: the sheet, the focus on its button, then a press on the host that kept it",
+    ));
+    harness::probe(&tab, &escape);
+    seen.push(state(
+        "engaged: Escape on the filter's button, the last press the host's",
+    ));
+    seen.push(harness::probe(&tab, host_keys));
+    // A host that places the list's parts, its rail among them, and the rail drawn.
+    harness::open_list_host_page_with(&tab, &monitor, "mount=0");
+    harness::eval(
+        &tab,
+        "window.__host.mount(window.__host.placing); window.__list.compact(true); 'ok'",
+    );
+    let mark = "document.querySelector('#sidebarMiniAgents [data-mini-agent]')";
+    harness::until(
+        &tab,
+        &format!("!!{mark} && {mark}.getBoundingClientRect().width > 0"),
+        "the rail's agent marks drawn in the host's rail",
+        Duration::from_secs(30),
+        "JSON.stringify({ rail: document.getElementById('hostRail').innerHTML.slice(0, 200), errors: window.__host.errors })",
+    );
+    hover("document.getElementById('hostButton')");
+    harness::eval(&tab, host_focus);
+    hover(mark);
+    harness::until(
+        &tab,
+        "!document.getElementById('railFlyout').hidden",
+        "a hover on a mark to open its flyout",
+        Duration::from_secs(5),
+        "document.getElementById('railFlyout').outerHTML.slice(0, 200)",
+    );
+    seen.push(state(
+        "rail: a hover opened a mark's flyout, the focus on the host's button",
+    ));
+    harness::probe(&tab, &escape);
+    seen.push(state("rail: Escape with the pointer on the mark"));
+    press_click(mark);
+    hover("document.getElementById('hostButton')");
+    harness::eval(&tab, host_focus);
+    seen.push(state(
+        "rail: a click pinned the flyout, the focus on the host's button",
+    ));
+    harness::probe(&tab, &escape);
+    seen.push(state("rail: Escape on the host's button"));
+    seen.push(harness::probe(&tab, host_keys));
+    // The page's keyboard, the app's: the list is always engaged.
+    harness::open_list_host_page_with(&tab, &monitor, "keyboard=page");
+    until_list_drawn(&tab);
+    press_click("document.getElementById('filterBtn')");
+    harness::eval(&tab, host_focus);
+    seen.push(state(
+        "page: the sheet opened, the focus on the host's button",
+    ));
+    harness::probe(&tab, &escape);
+    seen.push(state("page: Escape on the host's button"));
+    drop(monitor);
+    let t = serde_json::json!(true);
+    let f = serde_json::json!(false);
+    let at = |i: usize, key: &str| seen[i][key].clone();
+    assert_eq!(
+        at(0, "sheet"),
+        t,
+        "engaged: the filter's sheet opens: {}",
+        seen[0]
+    );
+    assert_eq!(
+        (at(1, "sheet"), at(1, "active")),
+        (t.clone(), serde_json::json!("hostButton")),
+        "engaged: an Escape on the host's button is the host's and leaves the sheet open: {}",
+        seen[1]
+    );
+    assert_eq!(
+        at(2, "sheet"),
+        f,
+        "engaged: with the focus back in the list, Escape closes the sheet: {}",
+        seen[2]
+    );
+    assert_eq!(
+        (at(3, "menu"), at(3, "active")),
+        (t.clone(), serde_json::json!("hostButton")),
+        "engaged: an Escape on the host's button leaves a section's menu open: {}",
+        seen[3]
+    );
+    assert_eq!(
+        at(4, "menu"),
+        f,
+        "engaged: with the focus back on the section's control, Escape closes its menu: {}",
+        seen[4]
+    );
+    assert_eq!(
+        (at(5, "sheet"), at(5, "active")),
+        (t.clone(), serde_json::json!("filterBtn")),
+        "engaged: the sheet stays open and its button keeps the focus through the host's press: {}",
+        seen[5]
+    );
+    assert_eq!(
+        at(6, "sheet"),
+        f,
+        "engaged: an Escape the browser hands to the list is the list's, whatever the last press was: {}",
+        seen[6]
+    );
+    // Five Escapes: the host heard all but the one the section's menu takes and stops as it closes,
+    // and none was prevented.
+    assert_eq!(
+        seen[7],
+        serde_json::json!([false, false, false, false]),
+        "engaged: the host's own listener heard every Escape but the section menu's own: {}",
+        seen[7]
+    );
+    assert_eq!(
+        (at(8, "flyout"), at(8, "active")),
+        (t.clone(), serde_json::json!("hostButton")),
+        "rail: a hover on a mark opens its flyout, the focus left on the host's button: {}",
+        seen[8]
+    );
+    assert_eq!(
+        (at(9, "flyout"), at(9, "active")),
+        (f.clone(), serde_json::json!("hostButton")),
+        "rail: Escape closes a flyout a hover opened while the pointer is on its mark, and leaves the focus in the host: {}",
+        seen[9]
+    );
+    assert_eq!(
+        at(10, "flyout"),
+        t,
+        "rail: a click pins the flyout: {}",
+        seen[10]
+    );
+    assert_eq!(
+        at(11, "flyout"),
+        t,
+        "rail: a pinned flyout stays open on the host's Escape: {}",
+        seen[11]
+    );
+    assert_eq!(
+        seen[12],
+        serde_json::json!([false, false]),
+        "rail: the host heard both Escapes, none prevented: {}",
+        seen[12]
+    );
+    assert_eq!(
+        (at(13, "sheet"), at(13, "active")),
+        (t.clone(), serde_json::json!("hostButton")),
+        "page: the sheet opens and the focus goes to the host's button: {}",
+        seen[13]
+    );
+    assert_eq!(
+        at(14, "sheet"),
+        f,
+        "page: the list is always engaged, so the host's Escape closes the sheet as before: {}",
+        seen[14]
     );
 }
 

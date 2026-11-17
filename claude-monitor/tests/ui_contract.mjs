@@ -5003,7 +5003,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     }
     calls.push(body.slice(m.index, i + 1));
   }
-  assert.equal(calls.length, 10, `the scan read the list's listeners on the page: the section menu's, the filter's and the flyout's three each, and the last key's (${calls.length})`);
+  assert.equal(calls.length, 11, `the scan read the list's listeners on the page: the section menu's, the filter's and the flyout's three each, the last key's and the engagement's (${calls.length})`);
   assert.deepEqual(calls.filter(call => !/\bsignal \}\)$/.test(call)), [], "every one carries the list's signal");
   assert.match(body, /^const life = new AbortController\(\), signal = life\.signal;$/m, "the list's lifetime is one signal");
   for (const name of ["setTimeout", "clearTimeout"]) assert.match(body, new RegExp(`^const ${name} = `, "m"), `the list keeps every timer it starts (${name})`);
