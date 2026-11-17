@@ -12,8 +12,8 @@
 //! `?windowed=1`, which picks that path, and queues every read of the head (`queue_the_head`) so it
 //! decides when each piece arrives. Searching the earlier turns on the server while the head is out
 //! (#s278, stage 3) is here too, and so is what a reader keeps of a long session (#s285). Ports
-//! 2770–2779, 2782–2784 for what a reader keeps, 2785–2789 for stage 3, 2790 and 2791 (the sandbox
-//! holds 2780–2781).
+//! 2770–2779, 2782–2784 for what a reader keeps, 2785–2789 for stage 3, 2790 and 2791, and 2792 for
+//! a pull in flight across a start over (#s562; the sandbox holds 2780–2781).
 
 mod harness;
 
@@ -801,6 +801,110 @@ fn a_stale_epoch_while_the_head_fills_starts_over() {
     );
     let whole = state(&tab);
     assert_eq!(whole["rows"], 60, "{whole}");
+    assert_eq!(
+        harness::eval(&tab, VIOLATIONS).as_str(),
+        Some("[]"),
+        "no invariant broken"
+    );
+}
+
+/// #s562 (Hong, in the app: "undefined is not an object (evaluating 'record.head')；retrying"): a
+/// pull in flight when the session starts over (a head read met a stale epoch) answers the cursor it
+/// was sent with. Applied to the emptied store it was a resync whose open turn went on from the
+/// index the old cursor held, so the store's truncate lengthened the empty array to it and the view
+/// read an empty slot. The reply is dropped now: the session is opened tail-first again, no error is
+/// shown, and it is read whole, the open turn's prompt included.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_pull_in_flight_when_the_session_starts_over_leaves_no_empty_slot() {
+    let _serial = serial();
+    let base = harness::base("by-turn-stale-pull");
+    let stores = harness::Stores::new(&base);
+    let path = stores.claude_session(SID, &session(60));
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2792, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    m.pair(&tab);
+    harness::queue_the_head(&tab, false);
+    harness::hold_pulls(&tab);
+    m.open(
+        &tab,
+        &format!("?ui=app&session={SID}&windowed=1&tailBudget=8192&headPiece=4096"),
+    );
+    harness::until(
+        &tab,
+        "window.__tailFrom != null && !!document.querySelector('.transcript .turn.user')",
+        "the tail drawn",
+        Duration::from_secs(20),
+        STATE,
+    );
+    harness::until(
+        &tab,
+        LAID_OUT,
+        "the placeholders laid out",
+        Duration::from_secs(10),
+        STATE,
+    );
+    // An open turn, so the cursor holds a provisional index above 0.
+    let now = harness::now_minus(0);
+    harness::append(&path, &harness::user_at("one more prompt", &now));
+    harness::append(&path, &harness::assistant_at("working on it", &now));
+    let drawn = "[].some.call(document.querySelectorAll('.transcript .turn.user'), function (e) { return e.textContent.indexOf('one more prompt') >= 0; })";
+    harness::until(
+        &tab,
+        drawn,
+        "the open turn drawn",
+        Duration::from_secs(10),
+        STATE,
+    );
+    harness::until(
+        &tab,
+        "window.__heldReads.length >= 1",
+        "a head read waiting",
+        Duration::from_secs(10),
+        STATE,
+    );
+    // The next pull waits, sent with the cursor the store holds now; meanwhile a head read is
+    // refused with a stale epoch, and the store starts over under it.
+    harness::eval(&tab, "window.__holdPull = true; 1");
+    harness::until(
+        &tab,
+        "window.__heldPulls.length >= 1",
+        "a pull held",
+        Duration::from_secs(10),
+        STATE,
+    );
+    harness::eval(&tab, "window.__answer409 = 1; window.__release(1); 1");
+    harness::until(
+        &tab,
+        "!document.querySelector('.transcript .turn.user')",
+        "the session started over (the transcript emptied)",
+        Duration::from_secs(10),
+        STATE,
+    );
+    harness::eval(&tab, "window.__holdPull = false; window.__releasePulls()");
+    harness::until(
+        &tab,
+        "window.__tailPulls >= 2 || window.__toastLog.length > 0",
+        "the session opened again, or an error shown",
+        Duration::from_secs(15),
+        "JSON.stringify({ tailPulls: window.__tailPulls, toasts: window.__toastLog })",
+    );
+    std::thread::sleep(Duration::from_millis(1500));
+    let toasts = harness::eval(&tab, "JSON.stringify(window.__toastLog)");
+    assert_eq!(
+        toasts.as_str(),
+        Some("[]"),
+        "no error after the late reply (the old store applied it to the emptied one and left empty slots)"
+    );
+    release_until(&tab, WHOLE, "the head to be read whole after the start over");
+    harness::until(&tab, drawn, "the open turn drawn again", Duration::from_secs(10), STATE);
+    let whole = state(&tab);
+    assert_eq!(whole["rows"], 61, "{whole}");
+    assert_eq!(
+        harness::eval(&tab, "JSON.stringify(window.__toastLog)").as_str(),
+        Some("[]"),
+        "no error while it was read again"
+    );
     assert_eq!(
         harness::eval(&tab, VIOLATIONS).as_str(),
         Some("[]"),

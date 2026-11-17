@@ -126,11 +126,19 @@ export class RecordStore {
         if (generation === this.generation && !this.records.length) this.handlers.waiting?.();
       }, WAITING_AFTER_MS);
     }
+    // The reply answers THIS cursor (#s562). `recover` starts the session over without a new
+    // generation, so a pull in flight when a head read or the turn index met a 409 came back to a
+    // fresh cursor and an empty store, and was applied there as a resync: with the open turn's
+    // provisional zone going on from `provisional_from` above 0, its truncate LENGTHENED the empty
+    // array to that index, and the empty slots threw at `record.head` in the view, as Hong saw in
+    // the app. A reply to a cursor the store no longer holds is dropped; the next pull asks again.
+    const asked = this.cursor;
+    const stale = () => generation !== this.generation || this.cursor !== asked;
     try {
       // Only a store that holds nothing asks for the tail: a fresh open, or one that recovered.
       const tail = this.tailBudget && !this.records.length ? `&tail=${this.tailBudget}` : "";
       const response = await backend().fetch(`/pull?${pullQuery(this.session, this.cursor)}${tail}`, { cache: "no-store" });
-      if (generation !== this.generation) return;
+      if (stale()) return;
       if (response.status === 404) {
         if (this.refreshEmpty()) return;
         // A turn arrives over the native stream before its first rollout reaches the
@@ -142,7 +150,7 @@ export class RecordStore {
       }
       if (!response.ok) throw new Error(`pull HTTP ${response.status}`);
       const reply = await response.json();
-      if (generation !== this.generation) return;
+      if (stale()) return;
       this.confirmedEmpty = false; this.missingSince = null;
       if (reply.t === "redirect" && reply.url) { location.assign(reply.url.startsWith("/") ? backend().url(reply.url) : reply.url); return; }
       if (reply.t === "error") throw new Error(reply.message || "Session stream unavailable");
@@ -155,7 +163,7 @@ export class RecordStore {
         if (!records.ok) throw new Error(`records HTTP ${records.status}`);
         reply.committed = parseRecords(await this.read(records, ext.len, generation));
       } else reply.committed = [];
-      if (generation === this.generation) {
+      if (!stale()) {
         // A tail-first answer: the committed zone starts past records nobody has sent yet.
         const headCount = !this.records.length && reply.committed_ext?.len && reply.committed_from > 0 ? reply.committed_from : 0;
         this.apply(reply, headCount);
@@ -522,8 +530,13 @@ export class RecordStore {
     const cut = !!owed && !headCount && plan.changedFrom < owed.count;
     if ((plan.resync && !headCount) || cut) { this.head = null; this.index = null; this.fills = []; }
     for (const step of plan.steps) {
-      if (step.op === "truncate") this.records.length = step.to;
-      else this.records.push(...step.records);
+      if (step.op === "truncate") {
+        // A truncate only shortens the store, except into a tail-first open's head, whose slots
+        // take the placeholder below. One that would lengthen it past that is a reply to records
+        // this store does not hold (#s562), and its empty slots would reach the view: start over.
+        if (step.to > this.records.length && step.to > headCount) { this.recover(); return; }
+        this.records.length = step.to;
+      } else this.records.push(...step.records);
     }
     // A placeholder left with no head to fill it would wait for ever: start over instead.
     if (cut && this.records.includes(PENDING)) { this.recover(); return; }
