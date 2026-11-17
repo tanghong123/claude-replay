@@ -14271,6 +14271,111 @@ fn info_s_card_closes_after_a_keyboard_peek_and_a_second_real_click() {
     );
 }
 
+/// #s556, from #s548's review: a keyboard reader could not close Info's card from Info. Enter on a
+/// focused Info pinned the card; a second Enter unpinned it, and the close then kept it open as a
+/// peek because Info held a keyboard focus (#s548), with aria-expanded still true. Escape closes only
+/// a pinned card, so only moving focus closed it. Here each Info gets a keyboard focus (as in #s548's
+/// case), then Enter four times: pinned, closed, pinned, closed, with aria-expanded following.
+/// An Enter the page leaves alone repeats in this Chrome (#270), so a window listener that runs after
+/// every page listener prevents it and clicks the focused button once, as Enter's own activation
+/// would. It counts the presses it saw, and those a page listener had already prevented, so a page
+/// that took the Enter for itself fails the case instead of hiding behind the stand-in.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn info_s_card_closes_on_a_second_enter_from_a_keyboard_focus() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-info-enter", 3146);
+    let open = "document.getElementById('infoPopover').classList.contains('open')";
+    harness::eval(&tab, "(function(){ var b = document.createElement('button'); b.id = 'caseAway'; b.type = 'button'; b.textContent = 'away'; b.style.cssText = 'position:fixed;left:0;bottom:0;z-index:9999'; document.body.appendChild(b); window.__focusNext = null; window.__enters = 0; window.__enterTaken = 0; document.addEventListener('keydown', function (e) { if (e.key !== 'F8') return; e.preventDefault(); e.stopImmediatePropagation(); var n = document.getElementById(window.__focusNext); if (n) n.focus(); }, true); addEventListener('keydown', function (e) { if (e.key !== 'Enter') return; if (e.defaultPrevented) { window.__enterTaken++; return; } e.preventDefault(); window.__enters++; if (document.activeElement) document.activeElement.click(); }); return 'ok'; })()");
+    let key_focus = |id: &str| {
+        harness::eval(&tab, &format!("window.__focusNext = '{id}'; 'ok'"));
+        tab.press_key("F8").expect("F8");
+        harness::probe(&tab, &format!("(function(){{ var a = document.activeElement; return {{ on: a && a.id === '{id}', visible: !!a && a.matches(':focus-visible'), active: a ? a.id || a.tagName : null }}; }})()"))
+    };
+    // As in #s548's case: an open card past the peek's 140 ms close, a shut one within three seconds.
+    let settles = |want: bool| -> bool {
+        let end = Instant::now() + Duration::from_millis(if want { 500 } else { 3000 });
+        loop {
+            let seen = harness::eval(&tab, open) == true;
+            if !want && !seen {
+                return true;
+            }
+            if Instant::now() >= end {
+                return seen == want;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    let expanded = |id: &str| {
+        harness::eval(
+            &tab,
+            &format!("document.getElementById('{id}').getAttribute('aria-expanded')"),
+        )
+    };
+    let at = |id: &str, width: f64| {
+        harness::resize(&tab, width, 900.0);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && !!document.getElementById('{id}') && document.getElementById('{id}').getBoundingClientRect().width > 0 && {VIEW_CAUGHT_UP}"),
+            &format!("{id} drawn in a {width}px window"),
+            Duration::from_secs(15),
+            "document.getElementById('sessionView').className",
+        );
+    };
+    let mut wrong = Vec::new();
+    let mut presses: i64 = 0;
+    for (id, width) in [("outlineFooterInfo", 1400.0), ("outlineRailInfo", 1000.0)] {
+        at(id, width);
+        let on = key_focus(id);
+        assert!(
+            on["on"] == true && on["visible"] == true,
+            "{id}: the case's key gives a keyboard focus (:focus-visible): {on}"
+        );
+        for (n, want) in [(1, true), (2, false), (3, true), (4, false)] {
+            tab.press_key("Enter").expect("Enter");
+            presses += 1;
+            let seen = harness::probe(
+                &tab,
+                "({ enters: window.__enters, taken: window.__enterTaken })",
+            );
+            assert!(
+                seen["enters"] == presses && seen["taken"] == 0,
+                "{id}: every Enter reaches the window unprevented, where the case activates the focused button: {seen} after {presses} presses"
+            );
+            let still = key_focus_held(&tab, id);
+            if !still {
+                wrong.push(format!("{id}: Enter {n} moved the keyboard focus off Info"));
+            }
+            if !settles(want) {
+                let (is, not) = if want {
+                    ("shut", "open")
+                } else {
+                    ("open", "shut")
+                };
+                wrong.push(format!("{id}: after Enter {n} the card is {is}, not {not}"));
+            }
+            let aria = expanded(id);
+            let want_aria = if want { "true" } else { "false" };
+            if aria != want_aria {
+                wrong.push(format!("{id}: aria-expanded reads {aria} after Enter {n}"));
+            }
+        }
+        key_focus("caseAway");
+    }
+    assert!(
+        wrong.is_empty(),
+        "Enter on a keyboard-focused Info pins its card and a second Enter closes it: {wrong:#?}"
+    );
+}
+
+/// Whether `id` still holds a keyboard focus (`:focus-visible`).
+fn key_focus_held(tab: &headless_chrome::Tab, id: &str) -> bool {
+    harness::eval(
+        tab,
+        &format!("(function(){{ var a = document.activeElement; return !!a && a.id === '{id}' && a.matches(':focus-visible'); }})()"),
+    ) == true
+}
+
 /// #159 layout, reported with a screenshot: the Outline title had drifted to the centre and the
 /// selector's rows were 24px squares with their labels spilling outside the menu.
 ///
