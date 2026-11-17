@@ -156,9 +156,10 @@ the page's keymap (`keyboard: "page"`, withheld today) unoffered: only `mountApp
 host is offered `mountApp`. A new kit category is not needed; whether `mountApp` should one day be
 offered to other hosts is a later question.
 
-That the kit carries the mount is Hong's yes on agent-monitor-app #s9 ("the kit ships the whole web
-app as one mount for the native app"): one artifact, one pin, the kit's tests holding every byte.
-The second entry is how the kit carries it while keeping it withheld. Two shapes outside the kit
+That the kit carries the mount is Hong's "Yes." on agent-monitor-app #s9, to the proposal that the
+kit ship the whole web app as one mount for the native app, its native integration through options
+the kit names for the native app under its contract tests: one artifact, one pin, the kit's tests
+holding every byte. The second entry is how the kit carries it while keeping those options withheld. Two shapes outside the kit
 were weighed and set aside for that reason: the app building the mount from claude-replay's source
 tree at the pinned tag (its build would need this repository and its generated files, and the kit's
 tests would no longer hold what it ships), and a separate tarball beside the kit (a second artifact
