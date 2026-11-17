@@ -202,8 +202,11 @@ it:
   A script in an agent's page must not open Safari or another app's URL with no tap, and WebKit
   cannot tell a tap from a script's `click()`: both reach the delegate as `.linkActivated`, by the
   user (#s418, measured). So no navigation out of a frame goes ahead by itself: the app asks first,
-  in a sheet naming the address, and opens it in the browser only on the reader's yes. The session
-  view lets its host supply that frame ("Customizing", frames, step 4).
+  in a sheet naming the address, and opens it in the browser only on the reader's yes; a move a
+  script makes by setting the frame's address is refused, as the main frame's is, and a frame asks
+  again only after the reader has touched the page since its last sheet closed, so a page clicking
+  its own link in a loop cannot keep the sheet up. The session view lets its host supply that
+  frame ("Customizing", frames, step 4).
 - **The main frame never loads a page under `/k/`**: the navigation delegate refuses it. A file the
   page saves is never a WebKit download of an `app://` address: WebKit's download path does not use
   the scheme handler, and such a download fails at once with an unsupported URL (#s418, measured,
@@ -236,9 +239,13 @@ page at `app://monitor/kit/` runs under a strict content security policy: `scrip
 `default-src 'none'`; `style-src app://monitor/kit/ 'unsafe-inline'` (the components set inline
 styles, and the diagram runtime writes a `<style>` into its drawings); `font-src app://monitor/kit/
 data:`; `connect-src` and `img-src` the app's own origin plus `data:` and `blob:` (an embedded
-image is downloaded by fetching its `data:` address); `frame-src app-frame:`; `form-action 'none'`;
-`base-uri 'none'`. An agent's page is not under it, being on its own scheme. The scripts the page
-loads from a monitor today come from the app's bundle instead, under `/kit/`: mdrev's guest (D8) and
+image is downloaded by fetching its `data:` address); `frame-src app-frame: http: https: mailto: tel:
+sms:` (an agent's page is framed from `app-frame:`, and the other sources are where a link out of
+it may go, so that its navigation reaches the navigation delegate, which cancels it and asks in the
+sheet; with `app-frame:` alone WebKit stopped it first and the link went nowhere, and the delegate
+still lets a frame load nothing but its own page); `form-action 'none'`; `base-uri 'none'`. An
+agent's page is not under it, being on its own scheme. The scripts the page loads from a monitor
+today come from the app's bundle instead, under `/kit/`: mdrev's guest (D8) and
 the diagram runtime (`/mermaid/<version>.js`, found today through the page head's
 `mermaid-runtime` meta), which each host vendors until a second host needs them in the kit
 ("Delivery").
