@@ -5137,6 +5137,21 @@ fn place_host_pane(tab: &headless_chrome::Tab, left: u32, width: u32) -> serde_j
     harness::probe(tab, VIEW_LAYOUT)
 }
 
+/// A field of the host's page with the focus, as a field takes the keyboard on a phone (#s512: iOS lifts
+/// the page for a focused field alone, and the view's ride reads the page's offset as that lift only
+/// while a field has the focus or a ride is under way). Fixed at the window's top left, outside the
+/// view; made once.
+fn focus_host_field(tab: &headless_chrome::Tab) {
+    harness::until(
+        tab,
+        "(function(){ var i = document.getElementById('hostField'); if (!i) { i = document.createElement('input'); i.id = 'hostField'; i.type = 'text'; i.style.cssText = 'position:fixed;top:0;left:0;width:40px;height:20px'; document.body.appendChild(i); } i.focus(); return document.activeElement === i; })()",
+        "a field of the host's page to take the focus",
+        Duration::from_secs(5),
+        "(document.activeElement || {}).id || ''",
+    );
+    harness::eval(tab, TWO_FRAMES);
+}
+
 /// One placement of the host's pane: its left edge and width, whether the view is to read as a phone,
 /// the width its bands are to read, and the layout classes it must and must not wear.
 type HostPlacement = (
@@ -6207,10 +6222,12 @@ fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
     );
     // That step resized the view, a decision of the whole layout, which holds: the count hears a hold.
     let resized = harness::eval(&tab, "window.__holds");
-    // The keyboard up in that pane (the review of stage 4): iOS scrolls the page 100px and the view's
-    // ride moves the host's box (the `grid` it was given) back over it. The view, placed for the
-    // keyboard, keeps the gaps it read at the bar, still boxed 40px from the top; on the code before it
-    // a ride read no gaps, unboxing a pane under a bar for as long as the keyboard was up.
+    // The keyboard up in that pane (the review of stage 4): a field takes it (one of the host's, #s512:
+    // iOS lifts the page only for a focused field), iOS scrolls the page 100px and the view's ride moves
+    // the host's box (the `grid` it was given) back over it. The view, placed for the keyboard, keeps
+    // the gaps it read at the bar, still boxed 40px from the top; on the code before it a ride read no
+    // gaps, unboxing a pane under a bar for as long as the keyboard was up.
+    focus_host_field(&tab);
     harness::eval(
         &tab,
         "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 200; } }); Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return 100; } }); visualViewport.dispatchEvent(new Event('scroll')); return true; })()",
@@ -6361,6 +6378,381 @@ fn a_desktop_host_page_that_scrolls_keeps_its_offset_beside_a_phone_reader() {
     );
 }
 
+/// #s511 (the review of #s497): the keyboard ride writes a transform on the host's box (the `grid` it
+/// was given) and took it away by removing the property, so a ride with nothing to move removed the
+/// host's OWN transform: at the mount, at each focus change at any width, and at each page scroll of a
+/// phone reader. A host that slides its pane in by a transform (#s467 supports a host moving the box)
+/// saw it jump back as the reader clicked into the search field. In a mouse window: a pane of 400px
+/// (the view a phone reader) that its host moved 12px by a transform before the mount keeps it through
+/// the mount, the search field taking focus and a page scroll, and no other value is ever written
+/// there. On a phone: the ride moves the box over iOS's page scroll on top of the host's transform, a
+/// transform the host changes during the ride is kept under the ride's, the ride's end gives back the
+/// host's, and so does an unmount in the middle of a ride (the host's value as it last wrote it, not
+/// the one at the mount). Red on 06fc5412: the mount and the focus took the host's transform off, and
+/// the ride wrote its own alone.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_host_s_own_transform_on_its_pane_outlives_the_keyboard_ride() {
+    let _serial = serial();
+    let base = base("host-own-transform");
+    let monitor = Monitor::spawn(Kind::V1, 3136, &base, None, true);
+    // A mouse window: the host moves its pane before it mounts the view.
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1400.0, 900.0);
+    harness::open_host_page(&tab, &monitor, "mount=0");
+    harness::eval(
+        &tab,
+        "(function(){ document.body.style.height = '3000px'; var p = document.getElementById('hostPane'); p.style.left = '500px'; p.style.right = 'auto'; p.style.width = '400px'; p.style.transform = 'translateX(12px)'; window.__transforms = []; new MutationObserver(function(){ window.__transforms.push(p.style.transform); }).observe(p, { attributes: true, attributeFilter: ['style'] }); return window.__host.mount(); })()",
+    );
+    harness::until(
+        &tab,
+        &format!("(function(){{ var v = document.getElementById('sessionView'); return !!v && Math.round(v.getBoundingClientRect().width) === 400 && v.classList.contains('pl-phone'); }})() && {VIEW_CAUGHT_UP}"),
+        "the view mounted as a phone reader in the host's 400px pane",
+        Duration::from_secs(10),
+        VIEW_LAYOUT,
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let facts = "JSON.stringify({ coarse: matchMedia('(pointer:coarse)').matches, focused: (document.activeElement || {}).id || '', scroll: Math.round(scrollY), transform: document.getElementById('hostPane').style.transform, written: window.__transforms.filter(function (t) { return t !== 'translateX(12px)'; }) })";
+    let read = |tab: &headless_chrome::Tab| -> serde_json::Value {
+        serde_json::from_str(harness::eval(tab, facts).as_str().unwrap_or("{}")).unwrap_or_default()
+    };
+    let mounted = read(&tab);
+    // The reader opens the search, which focuses its field: a focus change asks for a ride.
+    harness::eval(
+        &tab,
+        "(function(){ document.querySelector('#sessionView .header-searchbox').click(); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(document.activeElement || {}).id === 'transcriptSearchInput'",
+        "the search field to take focus",
+        Duration::from_secs(5),
+        facts,
+    );
+    harness::pause(
+        "the ride a focus change asks for",
+        Duration::from_millis(300),
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let focused = read(&tab);
+    // A page scroll, which asks a phone reader's ride too.
+    harness::eval(&tab, "(function(){ scrollBy(0, 300); return true; })()");
+    harness::pause("any ride a scroll event starts", Duration::from_millis(300));
+    harness::eval(&tab, TWO_FRAMES);
+    let scrolled = read(&tab);
+    for (what, at) in [
+        ("the mount", &mounted),
+        ("the search field taking focus", &focused),
+        ("a page scroll", &scrolled),
+    ] {
+        assert_eq!(
+            (at["coarse"].clone(), at["transform"].clone(), at["written"].clone()),
+            (serde_json::json!(false), serde_json::json!("translateX(12px)"), serde_json::json!([])),
+            "in a mouse window the host's own transform outlives {what}, and nothing else is written there: {at}"
+        );
+    }
+    assert_eq!(
+        (focused["focused"].clone(), scrolled["scroll"].clone()),
+        (
+            serde_json::json!("transcriptSearchInput"),
+            serde_json::json!(300)
+        ),
+        "the field had focus and the page kept its scroll: {focused} {scrolled}"
+    );
+
+    // A phone: the host moves its pane by a transform, and the keyboard comes up.
+    let (_browser2, tab2) = harness::chrome_tab();
+    monitor.pair(&tab2);
+    harness::phone(&tab2, 390, 844);
+    harness::open_host_page(&tab2, &monitor, "");
+    place_host_pane(&tab2, 0, 390);
+    // A field of the host's takes the keyboard (#s512: iOS lifts the page only for a focused field).
+    focus_host_field(&tab2);
+    harness::eval(
+        &tab2,
+        "(function(){ var p = document.getElementById('hostPane'); p.style.transform = 'translateX(-20px)'; window.__kb = { top: 0, short: 0 }; Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - window.__kb.short; } }); Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return window.__kb.top; } }); return true; })()",
+    );
+    harness::eval(&tab2, TWO_FRAMES);
+    let transform = "document.getElementById('hostPane').style.transform";
+    let ride = |top: u32, short: u32, event: &str| {
+        harness::eval(
+            &tab2,
+            &format!("(function(){{ window.__kb = {{ top: {top}, short: {short} }}; visualViewport.dispatchEvent(new Event('{event}')); return true; }})()"),
+        );
+    };
+    ride(100, 300, "scroll");
+    harness::until(
+        &tab2,
+        &format!("{transform} === 'translateY(100px) translateX(-20px)'"),
+        "the ride to move the host's box over the page's scroll on top of the host's transform",
+        Duration::from_secs(5),
+        transform,
+    );
+    // The host slides its pane on while the keyboard is up: the ride keeps the new value under its own.
+    harness::eval(
+        &tab2,
+        "(function(){ document.getElementById('hostPane').style.transform = 'translateX(-30px)'; return true; })()",
+    );
+    ride(100, 300, "scroll");
+    harness::until(
+        &tab2,
+        &format!("{transform} === 'translateY(100px) translateX(-30px)'"),
+        "the ride to keep the transform the host changed during it",
+        Duration::from_secs(5),
+        transform,
+    );
+    // The keyboard goes down: the host's transform comes back, as the host last wrote it.
+    ride(0, 0, "resize");
+    harness::until(
+        &tab2,
+        &format!("{transform} === 'translateX(-30px)'"),
+        "the ride's end to give the host's transform back",
+        Duration::from_secs(5),
+        transform,
+    );
+    // Up again, and the host unmounts the view in the middle of the ride.
+    ride(100, 300, "scroll");
+    harness::until(
+        &tab2,
+        &format!("{transform} === 'translateY(100px) translateX(-30px)'"),
+        "the ride to move the box again",
+        Duration::from_secs(5),
+        transform,
+    );
+    let unmounted = harness::eval(
+        &tab2,
+        &format!("(function(){{ window.__view.unmount(); return {transform}; }})()"),
+    );
+    drop(monitor);
+    assert_eq!(
+        unmounted,
+        serde_json::json!("translateX(-30px)"),
+        "an unmount in the middle of a ride gives the host's transform back as the host last wrote it"
+    );
+}
+
+/// #s512 (left open by #s497): on a touch screen the keyboard ride read ANY page offset as the one iOS
+/// makes to lift a focused field above its keyboard (#s41), so a host page on an iPad or a phone,
+/// scrolled by the reader's finger beside a phone reader (a 400px pane), went back to its top at each
+/// scroll and its pane was given a `translateY` of the offset for a frame. And a reader who scrolled
+/// such a page down to its pane and then tapped into a field of the view had the whole offset taken
+/// for iOS's lift: the box moved by all of it, and the page went back to its top as the keyboard went
+/// down. Here a touch gesture beside the pane scrolls the page with nothing focused: the page keeps its
+/// offset and no transform is ever written. Then the search field takes focus there, iOS's lift is
+/// modelled as the page scrolled 150px more under a keyboard 300px tall: the box moves by the 150px
+/// alone, and as the keyboard goes down the page goes back to where the reader left it, the transform
+/// with it. Last the host locks its scroll for a modal of its own (`overflow: hidden` on its body) and
+/// the field lets go of focus: the page and the box are left alone. Red on c723f926: the gesture's
+/// offset was snapped to 0, and the lift was read as the whole offset and ended at the page's top; and
+/// on 0642dfac, which read a clipped page as one that cannot scroll, the lock moved the box by the
+/// whole offset and sent the page to its top (#s512's third review).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_touch_host_page_keeps_the_offset_the_reader_scrolled_it_to_beside_a_phone_reader() {
+    use headless_chrome::protocol::cdp::Input::{GestureSourceType, SynthesizeScrollGesture};
+    let _serial = serial();
+    let base = base("host-touch-scroll");
+    let monitor = Monitor::spawn(Kind::V1, 3137, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::phone(&tab, 820, 1180);
+    harness::open_host_page(&tab, &monitor, "");
+    place_host_pane(&tab, 400, 400);
+    // A page taller than the window, and every transform the host's box takes from here on, each once.
+    harness::eval(
+        &tab,
+        "(function(){ document.body.style.height = '3000px'; var p = document.getElementById('hostPane'), last = p.style.transform; window.__transforms = []; new MutationObserver(function(){ var t = p.style.transform; if (t !== last) { last = t; if (t) window.__transforms.push(t); } }).observe(p, { attributes: true, attributeFilter: ['style'] }); return true; })()",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let facts = "JSON.stringify({ phone: document.getElementById('sessionView').classList.contains('pl-phone'), coarse: matchMedia('(pointer:coarse)').matches, focused: (document.activeElement || {}).id || '', scroll: Math.round(scrollY), transform: document.getElementById('hostPane').style.transform, transforms: window.__transforms })";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default()
+    };
+    let before = read();
+    assert!(
+        before["phone"] == true && before["coarse"] == true && before["scroll"] == 0 && before["focused"] == "",
+        "the view is a phone reader on a touch screen, in a page at its top with nothing focused: {before}"
+    );
+    // The reader's finger, on the host's page beside the pane: 400px down, no fling.
+    tab.call_method(SynthesizeScrollGesture {
+        x: 200.0,
+        y: 800.0,
+        x_distance: Some(0.0),
+        y_distance: Some(-400.0),
+        x_overscroll: None,
+        y_overscroll: None,
+        prevent_fling: Some(true),
+        speed: Some(800),
+        gesture_source_Type: Some(GestureSourceType::Touch),
+        repeat_count: None,
+        repeat_delay_ms: None,
+        interaction_marker_name: None,
+    })
+    .expect("a touch scroll gesture");
+    harness::pause("any ride a scroll event starts", Duration::from_millis(300));
+    harness::eval(&tab, TWO_FRAMES);
+    let scrolled = read();
+    let at = scrolled["scroll"].as_i64().unwrap_or(0);
+    // The search field takes focus where the reader is: then iOS lifts the page 150px for it under a
+    // keyboard 300px tall (the page really scrolled, the keyboard shadowed as the other ride cases do).
+    harness::eval(
+        &tab,
+        "(function(){ document.querySelector('#sessionView .header-searchbox').click(); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(document.activeElement || {}).id === 'transcriptSearchInput'",
+        "the search field to take focus",
+        Duration::from_secs(5),
+        facts,
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    harness::eval(
+        &tab,
+        &format!("(function(){{ Object.defineProperty(visualViewport, 'height', {{ configurable: true, get: function () {{ return innerHeight - 300; }} }}); scrollTo(0, {lifted}); visualViewport.dispatchEvent(new Event('resize')); return true; }})()", lifted = at + 150),
+    );
+    harness::until(
+        &tab,
+        &format!("Math.round(scrollY) === {} && document.getElementById('hostPane').style.transform === 'translateY(150px)'", at + 150),
+        "the ride to move the box by iOS's lift alone",
+        Duration::from_secs(5),
+        facts,
+    );
+    let lifted = read();
+    // The keyboard goes down: the page goes back to where the reader left it, and the transform goes.
+    harness::eval(
+        &tab,
+        "(function(){ delete visualViewport.height; visualViewport.dispatchEvent(new Event('resize')); return true; })()",
+    );
+    harness::until(
+        &tab,
+        &format!("Math.round(scrollY) === {at} && document.getElementById('hostPane').style.transform === ''"),
+        "the page given back to the reader's offset as the keyboard went down",
+        Duration::from_secs(5),
+        facts,
+    );
+    harness::pause(
+        "any ride the page's scroll back starts",
+        Duration::from_millis(300),
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let ended = read();
+    // The host's scroll lock, the page where the reader left it, and the field letting go of focus.
+    harness::eval(
+        &tab,
+        "(function(){ document.body.style.overflow = 'hidden'; if (document.activeElement) document.activeElement.blur(); return true; })()",
+    );
+    harness::pause("the ride the focus change asks", Duration::from_millis(300));
+    harness::eval(&tab, TWO_FRAMES);
+    let locked = read();
+    drop(monitor);
+    assert!(
+        at >= 200 && scrolled["transforms"] == serde_json::json!([]),
+        "a page the reader's finger scrolled keeps its offset, and its pane is never transformed: {scrolled}"
+    );
+    assert_eq!(
+        lifted["transforms"],
+        serde_json::json!(["translateY(150px)"]),
+        "with a field focused the ride moves the box by iOS's lift alone, never by the reader's offset: {lifted}"
+    );
+    assert_eq!(
+        (ended["scroll"].clone(), ended["transform"].clone()),
+        (serde_json::json!(at), serde_json::json!("")),
+        "the keyboard down gives the page back to the reader's offset: {ended}"
+    );
+    assert!(
+        locked["focused"] == ""
+            && locked["scroll"] == serde_json::json!(at)
+            && locked["transform"] == ""
+            && locked["transforms"] == lifted["transforms"],
+        "a host's scroll lock keeps the page where its reader left it, and its box unmoved: {locked}"
+    );
+}
+
+/// #s512's review (of e28e3a00): the ride reads the page's offset as iOS's lift whatever has focus only
+/// where the page cannot scroll at all, and gives it back to the top, as it did before #s512; a page
+/// that scrolls keeps the offset its reader left it at. The app's own page is the first kind, so its
+/// ride is what it was by construction rather than by assumption. On a phone, upright and sideways,
+/// with a long session open: the app's page has no scroll range, at rest and with the search field
+/// focused; and an offset iOS leaves behind with nothing focused (shadowed, 120px, as a field that
+/// blurred with no ride would leave it) is given back to the top, the app moved over it meanwhile, and
+/// the transform goes with it. Red on e28e3a00, which took that offset for the page's rest and kept it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_app_page_cannot_scroll_so_its_keyboard_ride_rests_at_its_top() {
+    let _serial = serial();
+    let base = base("app-page-range");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000512";
+    stores.claude_session(sid, &harness::long_session(30, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3138, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let facts = "JSON.stringify({ range: document.documentElement.scrollHeight - document.documentElement.clientHeight, phone: !!document.getElementById('sessionView') && document.getElementById('sessionView').classList.contains('pl-phone'), w: innerWidth, h: innerHeight, focused: (document.activeElement || {}).id || '' })";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default()
+    };
+    let mut seen = Vec::new();
+    for (width, height) in [(390, 844), (844, 390)] {
+        harness::phone(&tab, width, height);
+        tab.navigate_to(&monitor.url(&format!("?ui=app&session={sid}")))
+            .unwrap();
+        tab.wait_until_navigated().unwrap();
+        harness::until(
+            &tab,
+            "document.querySelectorAll('.virtual-window .turn.user').length >= 3",
+            "the app shell to draw the session's turns",
+            Duration::from_secs(20),
+            facts,
+        );
+        harness::eval(&tab, TWO_FRAMES);
+        let rest = read();
+        // An offset iOS left behind, nothing focused: the ride gives the page back to its top.
+        let left: serde_json::Value = serde_json::from_str(
+            harness::eval(
+                &tab,
+                "(async function(){ var app = document.getElementById('app'), put = window.scrollTo, asked = []; window.scrollTo = function (x, y) { asked.push(typeof x === 'object' && x ? x.top : y); return put.apply(this, arguments); }; var frames = function () { return new Promise(function (r) { requestAnimationFrame(function () { requestAnimationFrame(r); }); }); }; Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return 120; } }); visualViewport.dispatchEvent(new Event('scroll')); await frames(); var during = app.style.transform; delete visualViewport.pageTop; visualViewport.dispatchEvent(new Event('scroll')); await frames(); window.scrollTo = put; return JSON.stringify({ asked: asked, during: during, after: app.style.transform, focused: (document.activeElement || {}).id || '' }); })()",
+            )
+            .as_str()
+            .unwrap_or("{}"),
+        )
+        .unwrap_or_default();
+        // The search open and its field focused: where a reply or a search stands before iOS lifts.
+        harness::eval(
+            &tab,
+            "(function(){ var b = document.querySelector('#sessionView .header-searchbox'); if (b) b.click(); return !!b; })()",
+        );
+        harness::until(
+            &tab,
+            "(document.activeElement || {}).id === 'transcriptSearchInput'",
+            "the search field to take focus",
+            Duration::from_secs(5),
+            facts,
+        );
+        harness::eval(&tab, TWO_FRAMES);
+        seen.push((width, height, rest, read(), left));
+    }
+    drop(monitor);
+    let flat = |v: &serde_json::Value| v["range"].as_f64().is_some_and(|r| r < 1.0);
+    for (width, height, rest, typing, left) in &seen {
+        assert!(
+            rest["phone"] == true && flat(rest) && flat(typing),
+            "a phone's app page has no scroll range, at rest and with a field focused ({width}x{height}): {rest} {typing}"
+        );
+        assert!(
+            left["focused"] == ""
+                && left["asked"].as_array().is_some_and(|a| a.iter().any(|y| y.as_f64() == Some(0.0)))
+                && left["during"] == "translateY(120px)"
+                && left["after"] == "",
+            "an offset iOS left behind with nothing focused is given back to the top, the app moved over it \
+             until then, and nothing is left on it after ({width}x{height}): {left}"
+        );
+    }
+}
+
 /// #s431 stage 4 (the second delta review of b4ad87a9): the gaps a decision during the keyboard ride
 /// keeps come only from a decision that saw a box while no ride moved it, and the ride's end decides
 /// again. A view its host mounts hidden decided once at 0×0, whose foot read the window's whole height
@@ -6382,12 +6774,14 @@ fn the_session_view_in_a_host_reads_its_gaps_again_around_the_keyboard_ride() {
     harness::open_host_page(&tab, &monitor, "mount=0");
     let facts = "(function(){ var v = document.getElementById('sessionView'), p = document.getElementById('hostPane'); return { paneY: v ? v.style.getPropertyValue('--pane-y') : null, paneB: v ? v.style.getPropertyValue('--pane-b') : null, boxed: v ? v.classList.contains('pl-boxed') : null, top: v ? Math.round(v.getBoundingClientRect().top) : null, transform: p.style.transform, scroll: Math.round(scrollY) }; })()";
     let seen = format!("JSON.stringify({facts})");
-    // Mounted hidden; the keyboard up (shadowed, as the move case does) before the pane is shown.
+    // Mounted hidden; the keyboard up (shadowed, as the move case does) before the pane is shown, for a
+    // field of the host's page (#s512: iOS lifts the page only for a focused field).
     harness::eval(
         &tab,
         "document.getElementById('hostPane').hidden = true; window.__host.mount(); 'ok'",
     );
     harness::eval(&tab, TWO_FRAMES);
+    focus_host_field(&tab);
     harness::eval(
         &tab,
         "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 200; } }); Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return 100; } }); visualViewport.dispatchEvent(new Event('scroll')); return true; })()",
