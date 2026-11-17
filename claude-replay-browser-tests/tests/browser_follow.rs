@@ -14062,14 +14062,14 @@ fn the_app_shell_keeps_cost_visible_with_info_behind_a_glyph() {
     );
 }
 
-/// #s545, found on the iPad Simulator: a TAP on Info opened nothing. A touch sends `pointerleave` as
-/// the finger lifts, BEFORE its click, so the peek's 140 ms close started then and shut the card the
-/// click had just pinned. A mouse sends no `pointerleave` before its click, which is why the case
-/// above (#170) never saw it. And the rail's Info could not be closed by pressing it: the page-wide
-/// press that closes a pinned card counted it as a press outside, so a second press's `pointerdown`
-/// closed the card and its click pinned it again. Each Info control is pressed here as a finger does
-/// (enter, down, up, out, leave, then the click) and as a mouse does (enter, down, up, click), twice:
-/// the first press pins the card past the close, the second closes it.
+/// #s545, found on the iPad Simulator: a TAP on Info opened nothing. A touch sends `pointerleave`
+/// as the finger lifts, BEFORE its click, so the peek's 140 ms close started then and shut the
+/// card the click had just pinned. A mouse sends no `pointerleave` before its click, which is why
+/// the case above (#170) never saw it. And the rail's Info could not be closed by pressing it: the
+/// page-wide press that closes a pinned card counted it as a press outside, so a second press's
+/// `pointerdown` closed the card and its click pinned it again. Each Info control is pressed here
+/// as a finger does (enter, down, up, out, leave, then the click) and as a mouse does (enter, down,
+/// up, click), twice: the first press pins the card past the close, the second closes it.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_tap_on_info_pins_the_card_and_a_second_press_closes_it() {
@@ -14098,9 +14098,20 @@ fn a_tap_on_info_pins_the_card_and_a_second_press_closes_it() {
             for (press_no, want) in [(1, true), (2, false)] {
                 let did = harness::eval(&tab, &press(id, kind));
                 assert_eq!(did, "ok", "{id}: pressed ({kind})");
-                // Past the peek's 140 ms close.
-                std::thread::sleep(Duration::from_millis(500));
-                let seen = harness::eval(&tab, open);
+                // An open card must still be open past the peek's 140 ms close; a shut one may take
+                // that close to shut, so it is waited for.
+                let mut seen = serde_json::Value::Null;
+                let end = Instant::now() + Duration::from_millis(if want { 500 } else { 3000 });
+                while Instant::now() < end {
+                    seen = harness::eval(&tab, open);
+                    if !want && seen == false {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                if want {
+                    seen = harness::eval(&tab, open);
+                }
                 if seen != want {
                     wrong.push(format!(
                         "{id}, {kind} press {press_no}: the card is {} (wanted {})",

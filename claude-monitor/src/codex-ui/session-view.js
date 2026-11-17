@@ -3436,8 +3436,9 @@ panesMenu.onclick = event => {
     trigger.setAttribute("aria-expanded", String(open));
   };
   const peek = () => { clearTimeout(closeTimer); show(true); };
-  // A touch sends pointerleave as the finger lifts, BEFORE its click (#s545), so a tap's peek starts
-  // this close and the click pins the card inside its 140 ms: the close must not outlive a pin.
+  // A touch sends pointerleave as the finger lifts, BEFORE its click (#s545). So a tap's
+  // pointerleave starts this close, and its click pins the card inside the 140 ms: the close must
+  // not outlive a pin.
   const leave = () => {
     if (pinned) return;
     clearTimeout(closeTimer);
@@ -3470,8 +3471,8 @@ panesMenu.onclick = event => {
     railInfo.removeAttribute("data-nav-card-open");
     railInfo.id = "outlineRailInfo";
     railInfo.title = "Session details";
-    // A press on it is not a press outside (#s545): unmarked, a second press's pointerdown closed the
-    // pinned card and its click pinned it again, so it never closed.
+    // A press on it is not a press outside (#s545). Unmarked, a second press's pointerdown closed
+    // the pinned card and its click pinned it again, so it never closed.
     railInfo.dataset.infoTrigger = "";
     for (const type of ["pointerenter", "focus"]) railInfo.addEventListener(type, peek);
     railInfo.addEventListener("pointerleave", leave);
