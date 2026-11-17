@@ -206,11 +206,12 @@ it:
   A link out is asked about, in a sheet naming the address, only when the reader clicked it, and
   opened in the browser only on their yes. The app hears the reader's clicks with a script in a
   content world of its own, which the agent's page cannot reach: it reports each click the engine
-  marks trusted (a finger, a key, an assistive device; never a script's `click()` or
-  `dispatchEvent`) with the address of the link, and a frame's navigation is asked about only when
-  such a click on that address came within a second of it (agent-monitor-app #s12, walked with a
-  finger). A page clicking its own link, once or in a loop, raises no sheet. The session view lets
-  its host supply that frame ("Customizing", frames, step 4).
+  marks trusted, never a script's `click()` or `dispatchEvent`, with the address of the link, and
+  a frame's navigation is asked about only when such a click on that address came within a second
+  of it (agent-monitor-app #s12). A finger's tap was walked and is trusted; a key's click (Enter on
+  a focused link) and an assistive device's should be marked trusted too, and were not walked. A
+  page clicking its own link, once or in a loop, raises no sheet. The session view lets its host
+  supply that frame ("Customizing", frames, step 4).
 - **The main frame never loads a page under `/k/`**: the navigation delegate refuses it. A file the
   page saves is never a WebKit download of an `app://` address: WebKit's download path does not use
   the scheme handler, and such a download fails at once with an unsupported URL (#s418, measured,
@@ -508,10 +509,10 @@ its formula could retire too. Removing a feature is the owner's (section 5).
 - **Only the app's own page uses the relay**: the key is in its requests' path and nowhere else, and
   reaches the page by a main-frame script, never a handler (D3). A navigation out of the app's
   schemes, from the main frame or a frame, opens in the browser only after the reader says yes in a
-  sheet naming the address, since WebKit cannot tell a tap from a script's click (#s418). A
-  download from the main frame of a `blob:` address passes; one of the relay's `/file` is fetched by
-  the app itself and handed to the share sheet; every other download, and every download from a
-  frame, is refused.
+  sheet naming the address, since the navigation delegate cannot tell a tap from a script's click
+  (#s418); a frame's is asked about only on the reader's own click (D3). A download from the main
+  frame of a `blob:` address passes; one of the relay's `/file` is fetched by the app itself and
+  handed to the share sheet; every other download, and every download from a frame, is refused.
 - **No token on disk but the Keychain's**: pairing and the relay use a session with no cookie store
   (D3, D4).
 - **Reveal is relayed only to this Mac's own monitor** (D8).
