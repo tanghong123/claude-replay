@@ -14062,6 +14062,61 @@ fn the_app_shell_keeps_cost_visible_with_info_behind_a_glyph() {
     );
 }
 
+/// #s545, found on the iPad Simulator: a TAP on Info opened nothing. A touch sends `pointerleave` as
+/// the finger lifts, BEFORE its click, so the peek's 140 ms close started then and shut the card the
+/// click had just pinned. A mouse sends no `pointerleave` before its click, which is why the case
+/// above (#170) never saw it. And the rail's Info could not be closed by pressing it: the page-wide
+/// press that closes a pinned card counted it as a press outside, so a second press's `pointerdown`
+/// closed the card and its click pinned it again. Each Info control is pressed here as a finger does
+/// (enter, down, up, out, leave, then the click) and as a mouse does (enter, down, up, click), twice:
+/// the first press pins the card past the close, the second closes it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_tap_on_info_pins_the_card_and_a_second_press_closes_it() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-info-tap", 3143);
+    let open = "document.getElementById('infoPopover').classList.contains('open')";
+    let press = |id: &str, kind: &str| {
+        let leave = if kind == "touch" {
+            "p('pointerout', true); p('pointerleave', false);"
+        } else {
+            ""
+        };
+        format!("(function(){{ var b = document.getElementById('{id}'); if (!b || !b.getBoundingClientRect().width) return 'no ' + '{id}'; var p = function (type, bubbles) {{ b.dispatchEvent(new PointerEvent(type, {{ bubbles: bubbles, cancelable: true, composed: true, pointerType: '{kind}', pointerId: 7, isPrimary: true }})); }}; p('pointerover', true); p('pointerenter', false); p('pointerdown', true); p('pointerup', true); {leave} b.click(); return 'ok'; }})()")
+    };
+    let mut wrong = Vec::new();
+    for (id, width) in [("outlineFooterInfo", 1400.0), ("outlineRailInfo", 1000.0)] {
+        harness::resize(&tab, width, 900.0);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && !!document.getElementById('{id}') && document.getElementById('{id}').getBoundingClientRect().width > 0 && {VIEW_CAUGHT_UP}"),
+            &format!("{id} drawn in a {width}px window"),
+            Duration::from_secs(15),
+            "document.getElementById('sessionView').className",
+        );
+        for kind in ["touch", "mouse"] {
+            for (press_no, want) in [(1, true), (2, false)] {
+                let did = harness::eval(&tab, &press(id, kind));
+                assert_eq!(did, "ok", "{id}: pressed ({kind})");
+                // Past the peek's 140 ms close.
+                std::thread::sleep(Duration::from_millis(500));
+                let seen = harness::eval(&tab, open);
+                if seen != want {
+                    wrong.push(format!(
+                        "{id}, {kind} press {press_no}: the card is {} (wanted {})",
+                        if seen == true { "open" } else { "shut" },
+                        if want { "open" } else { "shut" }
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "a press on Info pins its card and a second press closes it: {wrong:#?}"
+    );
+}
+
 /// #159 layout, reported with a screenshot: the Outline title had drifted to the centre and the
 /// selector's rows were 24px squares with their labels spilling outside the menu.
 ///
