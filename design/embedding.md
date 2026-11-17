@@ -197,8 +197,10 @@ by the native app (#s407). None can drift from the others.
 
 Each release publishes a kit beside its binaries, with its digest, as mdrev does. It holds:
 
-- the module: the two components, and the detached page from a later kit;
-- its stylesheet;
+- the module: the two components, and the detached page from a later kit; from step 9, in a
+  second entry for the native app only (`native-app.js`, not declared, not in the guide and not in
+  `package.json`'s `exports`), the web app's mount with the markup of the app's shell;
+- its stylesheets (from step 9, the app shell's too);
 - type declarations;
 - the contract and the guide;
 - the conformance check.
@@ -233,8 +235,10 @@ page of its own.
   still reach ours by name, so the view's classes the host styles are named `sv-<name>`
   (`design/session-view-component.md`, stage 5). What it changes on its
   side is its lead's to schedule.
-- **The native app** (#s407) mounts both components in its own window, reaching each paired
-  monitor through the backend handle that `design/monitor-hub.md` describes.
+- **The native app** (#s407) mounts the web app whole, the two components in the monitor page's
+  own chrome, through `mountApp` (step 9), reaching each paired monitor through the backend handle
+  that `design/monitor-hub.md` describes. Until step 9 it mounts both components in a window of
+  its own (#s415, revised by #s551).
 
 ## The order of the work
 
@@ -257,6 +261,9 @@ page of its own.
 6. **Layout by device and pane size**, with the width tests.
 7. **The kit**, with its guide and conformance check, ready for the collaboration app.
 8. **Detached views**, in a later kit.
+9. **The web app as one mount**, for the native app (#s551, `design/app-mount.md`): the app shell
+   becomes `mountApp`, with the monitor's page its first host, then one list over several machines
+   and the options only the native app is given.
 
 Each step lands on its own, with the app working at every step.
 
