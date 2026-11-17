@@ -12202,12 +12202,13 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
 /// 480–547px: a 554–621px window beside the rail, a 490–553px one under the drawer's handle, a
 /// 1035–1102px one with the right pane open beside the session, a host's pane of the same), the bar
 /// holds its title, the search box, Aa, Turns, Tasks, Agents, the outline's control, Info and the
-/// pane's control. It used to lay them out at their widest: the search box kept 180 or 286px, so the
-/// title was squeezed to one letter and Info and the pane's control went past the window or under
-/// the open pane's tabs. Every control the bar shows lies inside the session's column, never under
-/// the pane, and a pointer at its centre reaches it; the title shows at least its first word; and the
-/// search box, folded to its glyph there, opens to its width on a click and folds back. A finger's
-/// press on it opens nothing as it lands; the tap's click opens it, with its field focused (#s547).
+/// pane's control. It used to lay them out at their widest: the search box kept 180 or 286px, so
+/// the title was squeezed to one letter and Info and the pane's control went past the window or
+/// under the open pane's tabs. Every control the bar shows lies inside the session's column, never
+/// under the pane, and a pointer at its centre reaches it; the title shows at least its first word;
+/// and the search box, folded to its glyph there, opens to its width on a click and folds back. A
+/// finger's press on it opens nothing as it lands; the tap's click opens it, with its field focused
+/// (#s547).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
@@ -12222,8 +12223,9 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     // What the bar shows, read where a reader would: each shown control's box against the session's
-    // column (`.workspace`) and the open pane, and what a pointer at its centre reaches; the title's
-    // room against its first word (a Range over the word, and the ellipsis a longer title draws).
+    // column (`.workspace`) and the open pane, and what a pointer at its centre reaches; the
+    // title's room against its first word (a Range over the word, and the ellipsis a longer title
+    // draws).
     let probe = "(function(){ var v = document.getElementById('sessionView'); var ws = v.querySelector('.workspace'), bar = ws.querySelector(':scope>.topbar'); var pv = v.classList.contains('preview-off') ? null : v.querySelector('.preview'); var W = ws.getBoundingClientRect(), P = pv ? pv.getBoundingClientRect() : null; var r4 = function (b) { return [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)]; }; var name = function (e) { return !e ? 'nothing' : e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + String(e.getAttribute('class') || '').split(' ')[0]; }; var bad = []; var shown = [].filter.call(bar.querySelectorAll('button, .header-searchbox'), function (e) { var b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && getComputedStyle(e).visibility !== 'hidden'; }); ['phoneInfo', 'previewBtn'].forEach(function (id) { if (shown.indexOf(document.getElementById(id)) < 0) bad.push('#' + id + ' is not shown'); }); shown.forEach(function (e) { var b = e.getBoundingClientRect(), hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2), why = []; if (b.left < W.left - 0.5 || b.right > W.right + 0.5) why.push('outside the session column ' + r4(W)); if (P && b.right > P.left + 0.5) why.push('under the pane from ' + Math.round(P.left)); if (!hit || !(hit === e || e.contains(hit))) why.push('its centre reaches ' + name(hit)); if (why.length) bad.push(name(e) + ' ' + r4(e.getBoundingClientRect()) + ': ' + why.join(', ')); }); var t = document.getElementById('sessionTitle'), text = t.textContent.trim(), word = text.split(/\\s+/)[0], node = t.firstChild, at = t.textContent.indexOf(word); var range = document.createRange(); range.setStart(node, at); range.setEnd(node, at + word.length); var cs = getComputedStyle(t), room = t.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); var ctx = document.createElement('canvas').getContext('2d'); ctx.font = cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily; var need = range.getBoundingClientRect().width + (text.length > word.length ? ctx.measureText('\\u2026').width : 0); var tb = t.getBoundingClientRect(); if (room + 0.5 < need) bad.push('the title has ' + Math.round(room) + 'px of the ' + Math.ceil(need) + 'px its first word \"' + word + '\" needs'); if (tb.left < W.left - 0.5 || tb.right > W.right + 0.5) bad.push('the title ' + r4(tb) + ' is outside the session column'); var box = bar.querySelector('.header-searchbox'); return { width: innerWidth, classes: v.className, workspace: r4(W), pane: P ? r4(P) : null, title: text, search: Math.round(box.getBoundingClientRect().width), focused: document.activeElement ? document.activeElement.id : '', bar: shown.map(function (e) { return name(e) + ' ' + r4(e.getBoundingClientRect()); }), bad: bad }; })()";
     let settled = |width: u32, open: bool| {
         format!("innerWidth === {width} && {VIEW_CAUGHT_UP} && document.getElementById('sessionView').classList.contains('preview-off') === {} && document.getElementById('sessionView').getAnimations({{ subtree: true }}).filter(function (a) {{ return a instanceof CSSTransition; }}).length === 0 && document.getElementById('sessionTitle').textContent === 'Harbour tide table notes'", !open)
@@ -12276,7 +12278,8 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     // 540px: the drawer's handle at the bar's left, the session 520px.
     let narrow = at(540, false, "the app");
     fits(&narrow, "the app at 540px");
-    // A click on the folded search box opens it to its width, for typing, and still inside the column.
+    // A click on the folded search box opens it to its width, for typing, and still inside the
+    // column.
     harness::click_when_settled(
         &tab,
         ".workspace>.topbar .header-searchbox",
@@ -12342,10 +12345,11 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         Duration::from_secs(5),
         box_width,
     );
-    // A finger's press on the glyph changes nothing as it lands (#s547's iPad walk): WebKit spends a
-    // tap whose press shows content as a hover and sends no click, so a box held open at the press
-    // left its field without the focus, and nothing could be typed. The press is the page's own
-    // pointerdown as a finger gives it; the tap's click then opens the box with the field focused.
+    // A finger's press on the glyph changes nothing as it lands (#s547's iPad walk): WebKit spends
+    // a tap whose press shows content as a hover and sends no click, so a box held open at the
+    // press left its field without the focus, and nothing could be typed. The press is the page's
+    // own pointerdown as a finger gives it; the tap's click then opens the box with the field
+    // focused.
     let finger = harness::probe(
         &tab,
         "(function(){ var box = document.querySelector('.workspace>.topbar .header-searchbox'); var r = box.getBoundingClientRect(); var at = { pointerType: 'touch', isPrimary: true, bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }; box.dispatchEvent(new PointerEvent('pointerdown', at)); var held = document.querySelector('.header-search-cluster').classList.contains('search-held'); box.dispatchEvent(new PointerEvent('pointerup', at)); box.click(); return { held: held }; })()",
@@ -12369,9 +12373,9 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         Duration::from_secs(5),
         box_width,
     );
-    // As Safari and Firefox on a Mac press a button: no focus for it, so the field loses its focus at
-    // the press. The open box's step and filter still take their click, and a press outside then shuts
-    // the filter and folds the box, the heading and the outline's control back in the bar.
+    // As Safari and Firefox on a Mac press a button: no focus for it, so the field loses its focus
+    // at the press. The open box's step and filter still take their click, and a press outside then
+    // shuts the filter and folds the box, the heading and the outline's control back in the bar.
     harness::eval(
         &tab,
         "window.__noButtonFocus = function (e) { if (!e.target.closest || !e.target.closest('button')) return; e.preventDefault(); var a = document.activeElement; if (a && a !== document.body && a.blur) a.blur(); }; document.addEventListener('mousedown', window.__noButtonFocus, true); 1",
@@ -12448,8 +12452,8 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         &tab,
         "document.removeEventListener('mousedown', window.__noButtonFocus, true); 1",
     );
-    // As Chrome presses a button, which takes the focus: a Tab out of the open filter's rows shuts the
-    // filter and folds the box, and Escape with the focus on ↓ folds it too.
+    // As Chrome presses a button, which takes the focus: a Tab out of the open filter's rows shuts
+    // the filter and folds the box, and Escape with the focus on ↓ folds it too.
     harness::click_when_settled(
         &tab,
         ".workspace>.topbar .header-searchbox",
@@ -12470,7 +12474,8 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         Duration::from_secs(5),
         "JSON.stringify({ menu: document.getElementById('navigatorOptions').className, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName) })",
     );
-    // Tab's own focus moves, made by script: a CDP Tab the page does not prevent never comes back up.
+    // Tab's own focus moves, made by script: a CDP Tab the page does not prevent never comes back
+    // up.
     harness::eval(
         &tab,
         "(function(){ var rows = document.querySelectorAll('#navigatorOptions button, #navigatorOptions input'); rows[rows.length - 1].focus(); document.getElementById('previewBtn').focus(); return document.activeElement.id; })()",
@@ -12510,8 +12515,8 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         Duration::from_secs(5),
         &format!("JSON.stringify({{ width: {box_width}, held: document.querySelector('.header-search-cluster').className, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName) }})"),
     );
-    // A press inside a frame (the pane's page is one) sends this page no press; the focus going into
-    // the frame leaves the search all the same.
+    // A press inside a frame (the pane's page is one) sends this page no press; the focus going
+    // into the frame leaves the search all the same.
     harness::click_when_settled(
         &tab,
         ".workspace>.topbar .header-searchbox",
@@ -12593,8 +12598,8 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         &at(1100, true, "the app"),
         "the app at 1100px, the pane open",
     );
-    // There the view is wider than the session (the pane beside it), so the bar takes the search box
-    // rules of the next band up; a press on ↓ with no focus for the button still steps there.
+    // There the view is wider than the session (the pane beside it), so the bar takes the search
+    // box rules of the next band up; a press on ↓ with no focus for the button still steps there.
     harness::eval(
         &tab,
         "document.addEventListener('mousedown', window.__noButtonFocus, true); 1",
