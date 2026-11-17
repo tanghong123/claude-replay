@@ -5,7 +5,9 @@
 > across the globe, and having a remote aggregation point will add more constraints." He then set
 > Agent Monitor's direction as an embeddable module and a standalone app built from two components
 > (`design/embedding.md`, #s408), and said yes to this app being one more host of those components
-> with its own chrome (#s415). Its code lives in a private repository,
+> with its own chrome (#s415). On 2026-11-17 he revised that (#s551): the app is the web app itself,
+> mounted whole from the kit, with its native integration as options the kit names for it
+> (`design/app-mount.md`, D2). Its code lives in a private repository,
 > `tanghong123/agent-monitor-app`, installed through TestFlight on his own account (#s413, #s414).
 > This draft designs that app. The monitor stays a single-machine service
 > (`design/claude-monitor.md`, "What this is not"); what spans machines is an app on the reader's
@@ -25,8 +27,8 @@ keeps his word.)
 
 **The design, in short.** A native app, for iPhone, iPad and Mac from one codebase. It pairs with
 each machine directly, by the QR code `--pair-phone` already shows, and keeps each token in the
-Keychain. In a web view it mounts the two components `design/embedding.md` builds, the session list
-and the session view, from the kit it bundles. Their requests go to a custom URL scheme whose handler
+Keychain. In a web view it mounts the web app itself, the session list and the session view in the
+monitor page's own chrome, from the kit it bundles (`design/app-mount.md`). Their requests go to a custom URL scheme whose handler
 is a relay on the device itself: it sends each request to the machine it is for, over the tailnet,
 with that machine's token. A merged source lets the session list read every machine at once, and a
 chosen session opens on its own machine. The app needs no change to any monitor.
@@ -98,7 +100,16 @@ latency and a dependency on one machine, and holds every token in one place. (c)
 monitor's gate and keeps N full credentials where any injected script can read them. (d) is not one
 list and does not work from a phone.
 
-### D2 — The app hosts the two components (decided, #s415)
+### D2 — The app hosts the web app (decided, #s415; revised by #s551)
+
+**Revised on 2026-11-17** (#s551, Hong: *"I want the same experience as the current web app on
+desktop and mobile, but need the native integration on ios devices"*). The app mounts the web app
+whole, the list and the view in the chrome the monitor's page draws around them, from one kit mount
+(`mountApp`, `design/app-mount.md`). The layout, the top bar and where the list goes are the
+mount's, as in a browser. The app keeps pairing and the Keychain, the relay (D3), the share sheet,
+the sheet before a link leaves the app, and running only bundled code. Its native integration goes
+through options the kit names for it alone. The text below is the decision as #s415 made it, kept
+for its reasoning, which still holds: one list and one view, never a second renderer.
 
 The app is one more host of the components `design/embedding.md` builds ("The pieces", 2 and 3):
 the **session list**, with its filter and arrangements, and the **session view**, with its turn bar,
@@ -598,7 +609,8 @@ is built in its own repository, and starts with what it can learn before the kit
 
 - A native app on the reader's device, not a hub (#s411, D1).
 - The app is one more host of the session list and session view components, with its own native
-  chrome (#s408, #s415, D2).
+  chrome (#s408, #s415, D2). Revised on 2026-11-17: the app hosts the web app whole, its native
+  integration as options the kit names for it (#s551, D2, `design/app-mount.md`).
 - Its code in a new private repository, `tanghong123/agent-monitor-app`, installed through
   TestFlight on his account (#s413, #s414).
 
