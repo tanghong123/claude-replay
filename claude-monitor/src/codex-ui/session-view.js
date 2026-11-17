@@ -2988,9 +2988,9 @@ addEventListener("pointerdown", event => {
 }, { capture: true, signal });
 // The filter menu closes on a press outside the search cluster too, as Aa's menu does (#s546): off
 // the phone only the funnel and Escape closed it, so a click into the transcript left it open over
-// what it filters. The query and its marks stay. A phone's open box keeps its own rule (a tap outside
-// closes the top layer only, the filter first, #s49); a view that became a phone with the menu open
-// and no box open has none, so this one closes it there.
+// what it filters. The query and its marks stay. A phone's open box keeps its own rule (a tap
+// outside closes the top layer only, the filter first, #s49); a view that became a phone with the
+// menu open and no box open has none, so this one closes it there.
 addEventListener("pointerdown", event => {
   if (!byId("navigatorOptions").classList.contains("open")) return;
   if (phoneSearch.matches && searchBox.classList.contains("phone-open")) return;

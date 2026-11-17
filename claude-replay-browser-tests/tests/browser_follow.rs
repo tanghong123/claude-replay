@@ -21473,9 +21473,10 @@ fn a_phone_s_filter_and_keyboard_never_share_the_screen() {
 /// #s546, found on the iPad Simulator and true of a mouse too: off the phone only the funnel and
 /// Escape closed the filter menu, so a press into the transcript left it open over what it filters.
 /// It now closes on a press outside the search cluster, as Aa's menu does, and the query, its count
-/// and its marks stay; a press inside the menu keeps it open. Pressed with a real mouse (CDP) and a
-/// real finger (Chrome's synthesized tap), each at a point the page says holds nothing to press. The
-/// phone keeps its own rule, the top layer first (`a_phone_s_filter_and_keyboard_never_share_the_screen`).
+/// and its marks stay; a press inside the menu keeps it open. Pressed with a real mouse (CDP) and
+/// a real finger (Chrome's synthesized tap), each at a point the page says holds nothing to press.
+/// The phone keeps its own rule, the top layer first
+/// (`a_phone_s_filter_and_keyboard_never_share_the_screen`).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn off_the_phone_a_press_outside_closes_the_filter_menu_and_keeps_the_query() {
@@ -21512,20 +21513,35 @@ fn off_the_phone_a_press_outside_closes_the_filter_menu_and_keeps_the_query() {
     let plain_point = |selector: &str| -> (f64, f64) {
         let found = harness::eval(
             &tab,
-            &format!("(function(){{ var box = document.querySelector('{selector}'); if (!box) return null; var r = box.getBoundingClientRect(); for (var fy = 0.15; fy < 0.95; fy += 0.07) for (var fx = 0.05; fx < 0.95; fx += 0.06) {{ var x = r.left + r.width * fx, y = r.top + r.height * fy, e = document.elementFromPoint(x, y); if (!e || !box.contains(e)) continue; var c = e.closest('button, a, input, label, select, textarea, summary, mark, [role=button], [data-scope], [data-tool], [data-fold], [tabindex]'); if (c && c !== box && box.contains(c)) continue; return [x, y]; }} return null; }})()"),
+            &format!("(function(){{ var box = document.querySelector('{selector}'); if (!box) return null; var r = box.getBoundingClientRect(); for (var fy = 0.15; fy < 0.95; fy += 0.07) for (var fx = 0.05; fx < 0.95; fx += 0.06) {{ var x = r.left + r.width * fx, y = r.top + r.height * fy, e = document.elementFromPoint(x, y); if (!e || !box.contains(e)) continue; var c = e.closest('button, a, input, label, select, textarea, summary, mark, [role=button], [data-scope], [data-tool], [data-fold], [data-reference-path], [tabindex]'); if (c && c !== box && box.contains(c)) continue; return [x, y]; }} return null; }})()"),
         );
         let x = found[0]
             .as_f64()
             .unwrap_or_else(|| panic!("no plain point inside {selector}"));
         (x, found[1].as_f64().unwrap())
     };
+    // Each press's pointer type, as the window's capture phase hears it, ahead of the page's own.
+    harness::eval(
+        &tab,
+        "(function(){ window.__pressTypes = []; addEventListener('pointerdown', function (e) { window.__pressTypes.push(e.pointerType); }, true); return 1; })()",
+    );
     let press = |(x, y): (f64, f64), finger: bool| {
+        harness::eval(&tab, "window.__pressTypes.length = 0; 1");
         if finger {
             harness::finger_tap(&tab, x, y);
         } else {
             tab.click_point(headless_chrome::browser::tab::point::Point { x, y })
                 .expect("a mouse press");
         }
+    };
+    // The press that pressed first was of its kind: a finger tap whose click never came gets a
+    // CDP mouse press from `finger_tap`, and that one would close the menu without a touch.
+    let pressed_as = |kind: &str, want: &str| {
+        let first = harness::eval(&tab, "window.__pressTypes[0] || null");
+        assert_eq!(
+            first, want,
+            "the {kind} press reached the page as {want}: {first}"
+        );
     };
     for (kind, finger) in [("mouse", false), ("finger", true)] {
         harness::eval(
@@ -21535,7 +21551,9 @@ fn off_the_phone_a_press_outside_closes_the_filter_menu_and_keeps_the_query() {
         let why = format!("the funnel to open the filter menu ({kind})");
         harness::until(&tab, open, &why, Duration::from_secs(5), state);
         // A press inside the menu is not a press outside.
+        let want = if finger { "touch" } else { "mouse" };
         press(plain_point("#navigatorOptions"), finger);
+        pressed_as(kind, want);
         std::thread::sleep(Duration::from_millis(300));
         let inside = harness::probe(&tab, state);
         assert_eq!(
@@ -21544,6 +21562,7 @@ fn off_the_phone_a_press_outside_closes_the_filter_menu_and_keeps_the_query() {
         );
         // A press in the transcript closes it, and the query, its count and its marks stay.
         press(plain_point("#transcript"), finger);
+        pressed_as(kind, want);
         harness::until(
             &tab,
             &format!("!{open}"),
