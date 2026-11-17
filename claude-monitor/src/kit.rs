@@ -3,10 +3,13 @@
 //! session list from one release it pins and upgrades on purpose. [`files`] lays it out:
 //!
 //! - `package.json`: the release's version;
-//! - `bundle/`: `index.js`, the kit's one entry (`kit/index.js`), and every module it imports,
-//!   found by walking the imports from it, each exactly as this release's monitor serves it at
+//! - `bundle/`: `index.js`, the kit's entry for hosts (`kit/index.js`); `native-app.js`, its second
+//!   entry (`kit/native-app.js`, #s551), the web app as one mount for agent-monitor's native app,
+//!   which `package.json` does not export and no host is offered; every module the two import,
+//!   found by walking the imports from them, each exactly as this release's monitor serves it at
 //!   `/monitor-ui/` ([`ui::asset`]), so `shared/` is a directory where the source tree has a link;
-//!   the view's and the list's stylesheets; and `index.d.ts`, what the two take and answer;
+//!   the view's and the list's stylesheets, and the app's (`app-shell.css`, the mount's); and
+//!   `index.d.ts`, what the two components take and answer;
 //! - `docs/`: the guide (`kit/embedding-guide.md`, this release's facts written in) and the
 //!   backend contract (`docs/backend-contract.md`);
 //! - `conform.mjs`: the conformance check a host runs against its own server (#s434);
@@ -24,14 +27,17 @@ use crate::ui;
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 const INDEX: &str = include_str!("../kit/index.js");
+/// The kit's second entry (#s551, design/app-mount.md): `mountApp`, for the native app alone.
+const NATIVE_APP: &str = include_str!("../kit/native-app.js");
 const TYPES: &str = include_str!("../kit/index.d.ts");
 const GUIDE: &str = include_str!("../kit/embedding-guide.md");
 const CONFORM: &str = include_str!("../kit/conform.mjs");
 const CONTRACT: &str = include_str!("../../docs/backend-contract.md");
 const LICENSE: &str = include_str!("../../LICENSE");
 
-/// The stylesheets the kit carries beside the modules: the view's and the list's.
-const STYLESHEETS: [&str; 2] = ["session-view.css", "session-list.css"];
+/// The stylesheets the kit carries beside the modules: the view's and the list's, and the app's chrome
+/// and page, which the mount draws in (#s551).
+const STYLESHEETS: [&str; 3] = ["session-view.css", "session-list.css", "app-shell.css"];
 
 /// The kit's directory, and its archive's name less `.tar.gz`.
 pub fn name() -> String {
@@ -103,11 +109,12 @@ fn relative_imports(dir: &str, source: &str) -> Result<Vec<String>, String> {
     Ok(found.into_iter().collect())
 }
 
-/// The modules the kit's entry imports and the ones they import, each named as the monitor serves
-/// it under `/monitor-ui/` (`session-view.js`, `shared/time.js`), in path order.
+/// The modules the kit's two entries import and the ones they import, each named as the monitor
+/// serves it under `/monitor-ui/` (`session-view.js`, `shared/time.js`), in path order.
 pub fn modules() -> Result<Vec<String>, String> {
     let mut seen = BTreeSet::new();
     let mut todo = relative_imports("", INDEX)?;
+    todo.extend(relative_imports("", NATIVE_APP)?);
     while let Some(name) = todo.pop() {
         if seen.contains(&name) {
             continue;
@@ -150,6 +157,10 @@ pub fn files() -> Result<Vec<(String, Vec<u8>)>, String> {
     let mut out = BTreeMap::new();
     out.insert("package.json".to_string(), package_json().into_bytes());
     out.insert("bundle/index.js".to_string(), INDEX.as_bytes().to_vec());
+    out.insert(
+        "bundle/native-app.js".to_string(),
+        NATIVE_APP.as_bytes().to_vec(),
+    );
     out.insert("bundle/index.d.ts".to_string(), TYPES.as_bytes().to_vec());
     for name in modules()?.iter().map(String::as_str).chain(STYLESHEETS) {
         out.insert(format!("bundle/{name}"), served(name)?);
@@ -213,9 +224,10 @@ mod tests {
             .collect()
     }
 
-    /// The bundle is the entry and its closure: every module the walk found, and nothing else but
-    /// the two stylesheets and the declarations. The walk starts at `kit/index.js` and must reach
-    /// both components, their backend and the list's store.
+    /// The bundle is the two entries and their closure: every module the walk found, and nothing else
+    /// but the three stylesheets and the declarations. The walk starts at `kit/index.js` and
+    /// `kit/native-app.js` and must reach both components, their backend, the list's store and the
+    /// web app's mount with its shell (#s551).
     #[test]
     fn the_bundle_is_the_entry_and_every_module_it_imports() {
         let modules = modules().unwrap();
@@ -224,6 +236,8 @@ mod tests {
             "session-list-view.js",
             "backend.js",
             "state.js",
+            "app-mount.js",
+            "app-shell-markup.js",
         ] {
             assert!(
                 modules.iter().any(|m| m == entry),
@@ -236,15 +250,21 @@ mod tests {
         );
         assert!(
             !modules.iter().any(|m| m == "app.js"),
-            "the app is not in the kit: nothing the entry imports reaches it"
+            "the monitor page's host script is not in the kit: neither entry reaches it"
         );
+        for native in ["native-entry.js", "native-mode.js", "native-menu.js"] {
+            assert!(
+                !modules.iter().any(|m| m == native),
+                "nor native mode, the monitor's own: {native}"
+            );
+        }
         let kit = kit();
         let bundle: BTreeSet<&str> = kit
             .keys()
             .filter_map(|path| path.strip_prefix("bundle/"))
             .collect();
         let mut expected: BTreeSet<&str> = modules.iter().map(String::as_str).collect();
-        expected.extend(["index.js", "index.d.ts"]);
+        expected.extend(["index.js", "native-app.js", "index.d.ts"]);
         expected.extend(STYLESHEETS);
         assert_eq!(
             bundle, expected,
@@ -276,7 +296,7 @@ mod tests {
             let Some(name) = path.strip_prefix("bundle/") else {
                 continue;
             };
-            if name.starts_with("index.") {
+            if name.starts_with("index.") || name == "native-app.js" {
                 continue;
             }
             let file = std::fs::read(tree.join(name))
@@ -306,6 +326,8 @@ mod tests {
         let package: serde_json::Value = serde_json::from_str(&text(&kit, "package.json")).unwrap();
         assert_eq!(package["version"], VERSION);
         assert_eq!(package["type"], "module");
+        // A host resolving the package reaches the components alone, never the mount (#s551).
+        assert_eq!(package["exports"], "./bundle/index.js");
         assert_eq!(name(), format!("agent-monitor-kit-{VERSION}"));
     }
 
@@ -331,6 +353,24 @@ mod tests {
                 "index.d.ts declares {name}"
             );
         }
+    }
+
+    /// The second entry (#s551) exports the mount and nothing else, and the first does not: a host
+    /// importing `index.js` is offered what it was before.
+    #[test]
+    fn the_second_entry_exports_the_mount_alone() {
+        let kit = kit();
+        let native = text(&kit, "bundle/native-app.js");
+        let exports: Vec<&str> = native
+            .lines()
+            .filter(|line| line.starts_with("export "))
+            .collect();
+        assert_eq!(
+            exports,
+            ["export { mountApp } from \"./app-mount.js\";"],
+            "native-app.js exports mountApp alone"
+        );
+        assert!(!INDEX.contains("mountApp") && !INDEX.contains("app-mount"));
     }
 
     /// The options each component takes that the kit does not offer a host: the ones
@@ -359,6 +399,13 @@ mod tests {
         "layer",
         "place",
     ];
+    /// What the web app's mount takes (#s551, design/app-mount.md, "Kept for the native app, as
+    /// `frame` is"): `mountApp` itself is withheld, exported from the second entry alone, and so is
+    /// every option it takes, its own list (`MOUNT_OPTIONS` in app-mount.js) and this one kept in
+    /// step. A name the view or the list also takes (`backend`) is declared for them; the rest are
+    /// the mount's alone and appear in neither the declarations nor the guide. Each later stage adds
+    /// its options to both lists.
+    const APP_WITHHELD: [&str; 2] = ["backend", "version"];
 
     /// The declarations follow each component's own lists: every option it takes but the ones the
     /// kit withholds, each optional control, and the view's required options as its doc comment
@@ -415,6 +462,44 @@ mod tests {
                 .into_iter()
                 .collect();
             assert_eq!(shown, optional, "{controls} declares the optional controls");
+        }
+        // The mount: its options are this list's, and neither it nor what only it takes is offered.
+        let mount = include_str!("codex-ui/app-mount.js");
+        let taken: BTreeSet<String> = frozen_list(mount, "MOUNT_OPTIONS").into_iter().collect();
+        let withheld: BTreeSet<String> = APP_WITHHELD.iter().map(|n| n.to_string()).collect();
+        assert_eq!(
+            taken, withheld,
+            "APP_WITHHELD names every option mountApp takes, and no other"
+        );
+        for text in [TYPES, GUIDE] {
+            for name in ["mountApp", "native-app", "app-mount"] {
+                assert!(!text.contains(name), "neither offers {name}");
+            }
+        }
+        let components: BTreeSet<String> = frozen_list(view, "MOUNT_OPTIONS")
+            .into_iter()
+            .chain(frozen_list(list, "MOUNT_OPTIONS"))
+            .collect();
+        for name in APP_WITHHELD.iter().filter(|n| !components.contains(**n)) {
+            assert!(
+                !GUIDE.contains(&format!("`{name}`")),
+                "the guide offers no option of the mount's alone: {name}"
+            );
+            for interface in [
+                "SessionViewOptions",
+                "SessionListOptions",
+                "SessionViewControls",
+                "SessionListControls",
+            ] {
+                assert!(
+                    !members(TYPES, interface).iter().any(|(n, _)| n == name),
+                    "{interface} declares no option of the mount's alone: {name}"
+                );
+            }
+            assert!(
+                !TYPES.contains(&format!("`{name}`")) && !TYPES.contains(&format!("{name}?:")),
+                "index.d.ts names no option of the mount's alone: {name}"
+            );
         }
         let doc = &view[view.find("Required: ").unwrap()..];
         let doc = &doc[..doc.find(". The rest").unwrap()];
