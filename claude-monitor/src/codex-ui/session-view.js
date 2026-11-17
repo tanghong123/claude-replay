@@ -3436,9 +3436,11 @@ panesMenu.onclick = event => {
     trigger.setAttribute("aria-expanded", String(open));
   };
   const peek = () => { clearTimeout(closeTimer); show(true); };
-  // A touch sends pointerleave as the finger lifts, BEFORE its click (#s545). So a tap's
-  // pointerleave starts this close, and its click pins the card inside the 140 ms: the close must
-  // not outlive a pin.
+  // Only a mouse peeks (#s545). A finger's pointerenter comes as it lands, and WebKit spends a tap
+  // whose hover shows content as that hover, with no click: on the iPad every tap on Info peeked,
+  // sent no click to pin, and its pointerleave as the finger lifted closed what it had shown.
+  const hover = event => { if (event.pointerType === "mouse") peek(); };
+  const unhover = event => { if (event.pointerType === "mouse") leave(); };
   const leave = () => {
     if (pinned) return;
     clearTimeout(closeTimer);
@@ -3446,9 +3448,10 @@ panesMenu.onclick = event => {
       if (!pinned && !popover.contains(viewRoot.active()) && viewRoot.active() !== trigger) show(false);
     }, 140);
   };
-  for (const type of ["pointerenter", "focus"]) trigger.addEventListener(type, peek);
+  trigger.addEventListener("pointerenter", hover);
+  trigger.addEventListener("focus", peek);
   for (const node of [trigger, popover]) {
-    node.addEventListener("pointerleave", leave);
+    node.addEventListener("pointerleave", unhover);
     node.addEventListener("focusout", leave);
   }
   popover.addEventListener("pointerenter", () => clearTimeout(closeTimer));
@@ -3474,8 +3477,9 @@ panesMenu.onclick = event => {
     // A press on it is not a press outside (#s545). Unmarked, a second press's pointerdown closed
     // the pinned card and its click pinned it again, so it never closed.
     railInfo.dataset.infoTrigger = "";
-    for (const type of ["pointerenter", "focus"]) railInfo.addEventListener(type, peek);
-    railInfo.addEventListener("pointerleave", leave);
+    railInfo.addEventListener("pointerenter", hover);
+    railInfo.addEventListener("focus", peek);
+    railInfo.addEventListener("pointerleave", unhover);
     railInfo.addEventListener("click", pin);
   }
 }
