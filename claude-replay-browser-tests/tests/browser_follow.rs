@@ -21470,6 +21470,83 @@ fn a_phone_s_filter_and_keyboard_never_share_the_screen() {
     );
 }
 
+/// #s546, found on the iPad Simulator and true of a mouse too: off the phone nothing but the funnel
+/// closed the filter menu, so a press into the transcript left it open over what it filters. It now
+/// closes on a press outside the search cluster, as Aa's menu does, and the query and its count stay.
+/// A press inside the menu keeps it open. The phone keeps its own rule, the top layer first
+/// (`a_phone_s_filter_and_keyboard_never_share_the_screen`). Pressed as a mouse and as a finger.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn off_the_phone_a_press_outside_closes_the_filter_menu_and_keeps_the_query() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-filter-outside", 3144);
+    harness::resize(&tab, 1400.0, 900.0);
+    let open = "document.getElementById('navigatorOptions').classList.contains('open')";
+    let state = "(function(){ var i = document.getElementById('transcriptSearchInput'); return { open: document.getElementById('navigatorOptions').classList.contains('open'), value: i.value, count: document.getElementById('transcriptSearchCount').textContent.trim(), phone: document.getElementById('sessionView').classList.contains('pl-phone') }; })()";
+    harness::until(
+        &tab,
+        &format!("innerWidth === 1400 && {VIEW_CAUGHT_UP}"),
+        "a 1400px window at rest",
+        Duration::from_secs(15),
+        state,
+    );
+    harness::eval(
+        &tab,
+        "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'noted'; b.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()",
+    );
+    harness::until(
+        &tab,
+        "(parseInt(document.getElementById('transcriptSearchCount').textContent, 10) || 0) > 0",
+        "the query to count its matches",
+        Duration::from_secs(10),
+        state,
+    );
+    let before = harness::probe(&tab, state);
+    assert_eq!(
+        before["phone"], false,
+        "the view is not the phone reader: {before}"
+    );
+    let press = |selector: &str, kind: &str| {
+        format!("(function(){{ var e = document.querySelector('{selector}'); if (!e) return 'no ' + '{selector}'; var r = e.getBoundingClientRect(), x = r.left + Math.min(40, r.width / 2), y = r.top + Math.min(60, r.height / 2); var p = function (type) {{ e.dispatchEvent(new PointerEvent(type, {{ bubbles: true, cancelable: true, composed: true, pointerType: '{kind}', pointerId: 9, isPrimary: true, clientX: x, clientY: y }})); }}; p('pointerdown'); p('pointerup'); return 'ok'; }})()")
+    };
+    for kind in ["mouse", "touch"] {
+        harness::eval(
+            &tab,
+            "document.getElementById('filterTranscriptBtn').click(); 'ok'",
+        );
+        harness::until(
+            &tab,
+            open,
+            &format!("the funnel to open the filter menu ({kind})"),
+            Duration::from_secs(5),
+            state,
+        );
+        // A press inside the menu is not a press outside.
+        assert_eq!(harness::eval(&tab, &press("#navigatorOptions", kind)), "ok");
+        std::thread::sleep(Duration::from_millis(300));
+        let inside = harness::probe(&tab, state);
+        assert_eq!(
+            inside["open"], true,
+            "a press inside the menu keeps it open ({kind}): {inside}"
+        );
+        // A press in the transcript closes it, and the query and its count stay.
+        assert_eq!(harness::eval(&tab, &press("#transcript", kind)), "ok");
+        harness::until(
+            &tab,
+            &format!("!{open}"),
+            &format!("a press in the transcript to close the filter menu ({kind})"),
+            Duration::from_secs(3),
+            state,
+        );
+        let after = harness::probe(&tab, state);
+        assert_eq!(
+            (&after["value"], &after["count"]),
+            (&before["value"], &before["count"]),
+            "the query and its count outlive the menu closing ({kind}): {after}"
+        );
+    }
+}
+
 /// #s39 (design/phone-landscape.md §3.5c, approved by the owner on 2026-10-08): on a phone the compose
 /// box is the dock's third mode, as Messages does it. With write mode on, a ✎ circle joins the dock in
 /// place of the floating compose button; a tap turns the dock into the reply box, which rides the
