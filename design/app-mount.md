@@ -159,13 +159,14 @@ offered to other hosts is a later question.
 That the kit carries the mount is Hong's "Yes." on agent-monitor-app #s9, to the proposal that the
 kit ship the whole web app as one mount for the native app, its native integration through options
 the kit names for the native app under its contract tests: one artifact, one pin, the kit's tests
-holding every byte. The second entry is how the kit carries it while keeping those options withheld. Two shapes outside the kit
-were weighed and set aside for that reason: the app building the mount from claude-replay's source
-tree at the pinned tag (its build would need this repository and its generated files, and the kit's
-tests would no longer hold what it ships), and a separate tarball beside the kit (a second artifact
-to publish, check and pin in step). The kit's `package.json` keeps `exports` naming `index.js`
-alone, so a host resolving the package reaches only what it is offered; the app loads
-`native-app.js` by its path in the bundle, as its page loads the kit's files under `/kit/` today.
+holding every byte. The second entry is how the kit carries it while keeping those options
+withheld. Two shapes outside the kit were weighed and set aside for that reason: the app building
+the mount from claude-replay's source tree at the pinned tag (its build would need this repository
+and its generated files, and the kit's tests would no longer hold what it ships), and a separate
+tarball beside the kit (a second artifact to publish, check and pin in step). The kit's
+`package.json` keeps `exports` naming `index.js` alone, so a host resolving the package reaches only
+what it is offered; the app loads `native-app.js` by its path in the bundle, as its page loads the
+kit's files under `/kit/` today.
 
 - **`frame`**: an agent's HTML page in a frame on the app's own scheme, passed to the view as now.
   No "frame gone" event is added. The view asks for a page's address once per tab and keeps it for
