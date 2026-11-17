@@ -244,7 +244,9 @@ image is downloaded by fetching its `data:` address); `frame-src app-frame: http
 sms:` (an agent's page is framed from `app-frame:`, and the other sources are where a link out of
 it may go, so that its navigation reaches the navigation delegate, which cancels it and asks in the
 sheet; with `app-frame:` alone WebKit stopped it first and the link went nowhere, and the delegate
-still lets a frame load nothing but its own page); `form-action 'none'`; `base-uri 'none'`. An
+still lets a frame load nothing but its own page; a `mailto:`, `tel:` or `sms:` link in the frame
+still goes nowhere, since WebKit stops a sandboxed frame's move to such a scheme before the
+delegate, as a browser does: walked, agent-monitor-app #s12); `form-action 'none'`; `base-uri 'none'`. An
 agent's page is not under it, being on its own scheme. The scripts the page loads from a monitor
 today come from the app's bundle instead, under `/kit/`: mdrev's guest (D8) and
 the diagram runtime (`/mermaid/<version>.js`, found today through the page head's
