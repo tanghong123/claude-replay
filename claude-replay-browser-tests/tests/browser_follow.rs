@@ -2192,7 +2192,9 @@ fn the_session_view_in_a_host_takes_its_keys_only_while_the_reader_works_in_it()
 /// `keyboard: "engaged"`, the session view closes its layers on Escape only while the reader works
 /// in it, as it answers its keymap: with Info's card pinned and the Reading menu open, a focus that
 /// goes to the host's own button leaves both open, an Escape pressed there leaves both open, and once
-/// the focus is back in the view an Escape closes each; the host's own listener hears both. With `keyboard: "page"` (the app's) the view is always engaged, so the same Escape from the
+/// the focus is back in the view an Escape closes each; the host's own listener hears both. A hover
+/// engages nothing, yet a peek it opened on Info closes on Escape with the focus still on the host's
+/// button and the pointer still on Info (#s557's rule, WCAG 1.4.13). With `keyboard: "page"` (the app's) the view is always engaged, so the same Escape from the
 /// host's button closes them as before. The view's other page-wide Escapes (the task card, a phone's
 /// pane sheet) read the same test. Keys are dispatched by script where the focus is (`PRESS`), so no
 /// CDP key is left repeating (#270).
@@ -2226,6 +2228,18 @@ fn the_session_view_in_a_host_closes_its_layers_on_escape_only_while_the_reader_
         )
     };
     let host_keys = "window.__host.keys.filter(function (k) { return k.key === 'Escape'; }).map(function (k) { return k.prevented; })";
+    // The real pointer moved onto an element (`js` gives it): a hover, which presses nothing.
+    let hover = |js: &str| {
+        let v = harness::probe(
+            &tab,
+            &format!("(function(){{ var r = ({js}).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"),
+        );
+        tab.move_mouse_to_point(headless_chrome::browser::tab::point::Point {
+            x: v[0].as_f64().unwrap(),
+            y: v[1].as_f64().unwrap(),
+        })
+        .expect("the pointer moves");
+    };
     let mut seen = Vec::new();
     for mode in ["engaged", "page"] {
         let query = if mode == "page" {
@@ -2241,6 +2255,8 @@ fn the_session_view_in_a_host_closes_its_layers_on_escape_only_while_the_reader_
             Duration::from_secs(20),
             "document.getElementById('sessionView') ? document.getElementById('sessionView').className : 'no view'",
         );
+        // The pointer rests on the host's button, off the view, so no hover is the view's.
+        hover("document.getElementById('hostButton')");
         harness::eval(&tab, &open_both);
         seen.push(state(&format!("{mode}: both opened")));
         harness::eval(&tab, "document.getElementById('hostButton').focus(); 'ok'");
@@ -2256,6 +2272,15 @@ fn the_session_view_in_a_host_closes_its_layers_on_escape_only_while_the_reader_
             back["taken"] = taken;
             seen.push(back);
             seen.push(harness::probe(&tab, host_keys));
+            // A hover opens Info's peek and engages nothing: with the focus on the host's button,
+            // Escape still closes it, the pointer resting on Info (#s557, WCAG 1.4.13).
+            harness::eval(&tab, "document.getElementById('hostButton').focus(); 'ok'");
+            hover(info);
+            seen.push(state(
+                "engaged: a hover on Info, the focus on the host's button",
+            ));
+            harness::probe(&tab, &format!("{PRESS}('Escape')"));
+            seen.push(state("engaged: Escape with the pointer on Info"));
         }
     }
     drop(monitor);
@@ -2293,22 +2318,34 @@ fn the_session_view_in_a_host_closes_its_layers_on_escape_only_while_the_reader_
         seen[4]
     );
     assert_eq!(
-        both(&seen[5]),
-        (t.clone(), t.clone()),
-        "page: both opened: {}",
+        (seen[5]["info"].clone(), seen[5]["active"].clone()),
+        (t.clone(), serde_json::json!("hostButton")),
+        "engaged: a hover on Info opens its peek, the focus left on the host's button: {}",
         seen[5]
     );
     assert_eq!(
-        both(&seen[6]),
-        (t.clone(), t.clone()),
-        "page: a focus on the host's button leaves both open: {}",
+        seen[6]["info"],
+        f,
+        "engaged: Escape closes a peek a hover opened, the pointer still on Info, whatever the last press was: {}",
         seen[6]
     );
     assert_eq!(
         both(&seen[7]),
+        (t.clone(), t.clone()),
+        "page: both opened: {}",
+        seen[7]
+    );
+    assert_eq!(
+        both(&seen[8]),
+        (t.clone(), t.clone()),
+        "page: a focus on the host's button leaves both open: {}",
+        seen[8]
+    );
+    assert_eq!(
+        both(&seen[9]),
         (f.clone(), f.clone()),
         "page: the view is always engaged, so the same Escape closes both as before: {}",
-        seen[7]
+        seen[9]
     );
 }
 

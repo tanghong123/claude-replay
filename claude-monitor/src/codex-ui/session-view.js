@@ -579,8 +579,10 @@ if (keyboardMode === "engaged") {
 // The Escape the view hears on the whole page, which closes its layers (Info's card, the copy menu,
 // the search's popovers, the task card, a phone's pane sheet), is its own only while the reader works
 // in it (#s535), like its keymap: a host whose own dialog Escape closes must not close ours with it.
-// With the page's keyboard the view is always engaged, as before.
-const viewEscape = event => event.key === "Escape" && engaged;
+// A hover is working in it too, though it engages nothing: a card a hover opened (Info's peek, the
+// copy menu) must close on Escape without the pointer moving (#s557, WCAG 1.4.13), whatever the last
+// press was. With the page's keyboard the view is always engaged, as before.
+const viewEscape = event => event.key === "Escape" && (engaged || element.matches(":hover"));
 
 // #s25: the pane changes the TRANSCRIPT's layout only where it is a grid column (a wide desktop).
 // Elsewhere — a phone, or below 1180px — it lies over the transcript, whose width and so every
