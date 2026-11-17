@@ -21971,6 +21971,120 @@ fn a_phone_s_filter_and_keyboard_never_share_the_screen() {
     );
 }
 
+/// #s546, found on the iPad Simulator and true of a mouse too: off the phone only the funnel and
+/// Escape closed the filter menu, so a press into the transcript left it open over what it filters.
+/// It now closes on a press outside the search cluster, as Aa's menu does, and the query, its count
+/// and its marks stay; a press inside the menu keeps it open. Pressed with a real mouse (CDP) and
+/// a real finger (Chrome's synthesized tap), each at a point the page says holds nothing to press.
+/// The phone keeps its own rule, the top layer first
+/// (`a_phone_s_filter_and_keyboard_never_share_the_screen`).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn off_the_phone_a_press_outside_closes_the_filter_menu_and_keeps_the_query() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-filter-outside", 3144);
+    harness::resize(&tab, 1400.0, 900.0);
+    let open = "document.getElementById('navigatorOptions').classList.contains('open')";
+    let state = "(function(){ var i = document.getElementById('transcriptSearchInput'); return { open: document.getElementById('navigatorOptions').classList.contains('open'), value: i.value, count: document.getElementById('transcriptSearchCount').textContent.trim(), marks: document.querySelectorAll('#transcript mark.search-mark').length, phone: document.getElementById('sessionView').classList.contains('pl-phone') }; })()";
+    harness::until(
+        &tab,
+        &format!("innerWidth === 1400 && {VIEW_CAUGHT_UP}"),
+        "a 1400px window at rest",
+        Duration::from_secs(15),
+        state,
+    );
+    harness::eval(
+        &tab,
+        "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'noted'; b.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()",
+    );
+    harness::until(
+        &tab,
+        "(parseInt(document.getElementById('transcriptSearchCount').textContent, 10) || 0) > 0 && document.querySelectorAll('#transcript mark.search-mark').length > 0",
+        "the query to count and mark its matches",
+        Duration::from_secs(10),
+        state,
+    );
+    let before = harness::probe(&tab, state);
+    assert_eq!(
+        before["phone"], false,
+        "the view is not the phone reader: {before}"
+    );
+    // A point inside `selector` whose element has nothing to press between it and `selector` (no
+    // control, link, fold or field), so a real press there presses nothing but the place.
+    let plain_point = |selector: &str| -> (f64, f64) {
+        // `probe`, not `eval`: an array comes back from CDP by reference, which `eval` reads as null.
+        let found = harness::probe(
+            &tab,
+            &format!("(function(){{ var box = document.querySelector('{selector}'); if (!box) return null; var r = box.getBoundingClientRect(), seen = []; for (var fy = 0.15; fy < 0.95; fy += 0.07) for (var fx = 0.05; fx < 0.95; fx += 0.06) {{ var x = r.left + r.width * fx, y = r.top + r.height * fy, e = document.elementFromPoint(x, y); if (!e || !box.contains(e)) continue; var c = e.closest('button, a, input, label, select, textarea, summary, mark, [role=button], [data-scope], [data-tool], [data-fold], [data-reference-path], [tabindex]'); if (c && c !== box && box.contains(c)) {{ seen.push((c.id || c.className || c.tagName) + ''); continue; }} return [x, y]; }} return {{ none: seen.slice(0, 8) }}; }})()"),
+        );
+        let x = found[0]
+            .as_f64()
+            .unwrap_or_else(|| panic!("no plain point inside {selector}: {found}"));
+        (x, found[1].as_f64().unwrap())
+    };
+    // Each press's pointer type, as the window's capture phase hears it, ahead of the page's own.
+    harness::eval(
+        &tab,
+        "(function(){ window.__pressTypes = []; addEventListener('pointerdown', function (e) { window.__pressTypes.push(e.pointerType); }, true); return 1; })()",
+    );
+    let press = |(x, y): (f64, f64), finger: bool| {
+        harness::eval(&tab, "window.__pressTypes.length = 0; 1");
+        if finger {
+            harness::finger_tap(&tab, x, y);
+        } else {
+            tab.click_point(headless_chrome::browser::tab::point::Point { x, y })
+                .expect("a mouse press");
+        }
+    };
+    // The press that pressed first was of its kind: a finger tap whose click never came gets a
+    // CDP mouse press from `finger_tap`, and that one would close the menu without a touch.
+    let pressed_as = |kind: &str, want: &str| {
+        let first = harness::eval(&tab, "window.__pressTypes[0] || null");
+        assert_eq!(
+            first, want,
+            "the {kind} press reached the page as {want}: {first}"
+        );
+    };
+    for (kind, finger) in [("mouse", false), ("finger", true)] {
+        harness::eval(
+            &tab,
+            "document.getElementById('filterTranscriptBtn').click(); 'ok'",
+        );
+        let why = format!("the funnel to open the filter menu ({kind})");
+        harness::until(&tab, open, &why, Duration::from_secs(5), state);
+        // A press inside the menu is not a press outside: on its Scope heading, the one place in it
+        // that is not a row or a control.
+        let want = if finger { "touch" } else { "mouse" };
+        press(
+            plain_point("#navigatorOptions .scope-menu-head strong"),
+            finger,
+        );
+        pressed_as(kind, want);
+        std::thread::sleep(Duration::from_millis(300));
+        let inside = harness::probe(&tab, state);
+        assert_eq!(
+            inside["open"], true,
+            "a press inside the menu keeps it open ({kind}): {inside}"
+        );
+        // A press in the transcript closes it, and the query, its count and its marks stay.
+        press(plain_point("#transcript"), finger);
+        pressed_as(kind, want);
+        harness::until(
+            &tab,
+            &format!("!{open}"),
+            &format!("a press in the transcript to close the filter menu ({kind})"),
+            Duration::from_secs(3),
+            state,
+        );
+        let after = harness::probe(&tab, state);
+        assert_eq!(
+            (&after["value"], &after["count"], &after["marks"]),
+            (&before["value"], &before["count"], &before["marks"]),
+            "the query, its count and its marks outlive the menu closing ({kind}): {after}"
+        );
+    }
+}
+
 /// #s39 (design/phone-landscape.md §3.5c, approved by the owner on 2026-10-08): on a phone the compose
 /// box is the dock's third mode, as Messages does it. With write mode on, a ✎ circle joins the dock in
 /// place of the floating compose button; a tap turns the dock into the reply box, which rides the
