@@ -20967,6 +20967,110 @@ fn a_phone_dock_keeps_one_row_with_a_query_and_a_chip() {
     );
 }
 
+/// #s516, seen on the iOS Simulator in #s509's walk: on the iPhone 17 Pro upright the OPEN search box,
+/// empty, sized its field to the placeholder ("Search this session  ( / )", 181px in a 178px strip,
+/// 158px with the keyboard down), and with the caret at the end the strip scrolled the hint's first
+/// letters away ("Search this session (" with the keyboard down). An empty field fills its room from
+/// the start and shows the first of the whole hint, "Search this session" and "Search" that fits it,
+/// with the field focused (the keyboard up, the magnifier gone) and blurred (the magnifier back), at
+/// the widths of the smallest phones (320px, 360px), the 17 Pro and the 17 Pro Max upright. Each
+/// read waits for the fit to have caught up with the strip's room, which changes after the focus
+/// moves (the magnifier) and is refitted by the strip's own resize observer.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_empty_search_box_shows_its_whole_placeholder() {
+    let _serial = serial();
+    let (_m, _b, tab) = phone_world(3145, "phone-search-empty", 402, 874);
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, gx, gy);
+    harness::until(
+        &tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')",
+        "a tap on the search to open it",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    // What the field shows, and the widths of the placeholder it shows and of each text it could
+    // show, in the field's own font (through the page's own measuring twin, which every fit sets
+    // again).
+    let read = "(function(){ var i = document.getElementById('transcriptSearchInput'), f = document.getElementById('searchField'), m = document.querySelector('.search-field-measure'), cs = getComputedStyle(i); var measure = function (t) { m.style.font = cs.font; m.style.letterSpacing = cs.letterSpacing; m.textContent = t; return Math.ceil(m.getBoundingClientRect().width); }; var ir = i.getBoundingClientRect(), fr = f.getBoundingClientRect(); return JSON.stringify({ placeholder: i.placeholder, hint: i.dataset.hint || '', input: Math.round(ir.width), field: f.clientWidth, scroll: Math.round(f.scrollLeft), left: Math.round(ir.left - fr.left), shown: measure(i.placeholder), whole: measure(i.dataset.hint || ''), short: measure('Search this session'), shortest: measure('Search'), focused: document.activeElement === i }); })()";
+    // The fit has caught up with the strip: the empty field is exactly the strip's room.
+    let caught_up = |focused: bool| {
+        format!(
+            "(function(){{ var i = document.getElementById('transcriptSearchInput'), f = document.getElementById('searchField'); return (document.activeElement === i) === {focused} && parseInt(i.style.width, 10) === Math.max(48, Math.floor(f.clientWidth)); }})()"
+        )
+    };
+    let mut fits = Vec::new();
+    for width in [402u32, 320, 360, 440] {
+        if width != 402 {
+            harness::phone(&tab, width, 874);
+            harness::until(
+                &tab,
+                &format!("innerWidth === {width}"),
+                "the window to take the new width",
+                Duration::from_secs(5),
+                "innerWidth",
+            );
+        }
+        for focused in [true, false] {
+            let js = if focused {
+                "document.getElementById('transcriptSearchInput').focus()"
+            } else {
+                "document.getElementById('transcriptSearchInput').blur()"
+            };
+            harness::eval(&tab, js);
+            harness::until(
+                &tab,
+                &caught_up(focused),
+                &format!("{width}px: the empty field fitted to its strip"),
+                Duration::from_secs(5),
+                read,
+            );
+            let raw = harness::eval(&tab, read);
+            let s: serde_json::Value = serde_json::from_str(raw.as_str().unwrap_or(""))
+                .unwrap_or_else(|_| panic!("{width}px: the field was not read: {raw}"));
+            let n = |k: &str| s[k].as_i64().unwrap_or(-1);
+            let state = if focused { "focused" } else { "blurred" };
+            assert_eq!(
+                s["focused"], focused,
+                "{width}px {state}: the field's focus: {s}"
+            );
+            assert!(
+                s["hint"].as_str().is_some_and(|h| h.contains("( / )")),
+                "{width}px {state}: the box's hint names / on a phone: {s}"
+            );
+            assert!(
+                n("input") <= n("field") + 1 && n("left") >= 0 && n("scroll") == 0,
+                "{width}px {state}: the empty field is inside its strip, from its start: {s}"
+            );
+            assert!(
+                n("shown") + 8 <= n("input"),
+                "{width}px {state}: the placeholder shows whole: {s}"
+            );
+            let whole_fits = n("whole") + 8 <= n("field");
+            let want = if whole_fits {
+                s["hint"].as_str().unwrap_or("").to_string()
+            } else if n("short") + 8 <= n("field") {
+                "Search this session".to_string()
+            } else {
+                "Search".to_string()
+            };
+            assert_eq!(
+                s["placeholder"].as_str(),
+                Some(want.as_str()),
+                "{width}px {state}: the first of the whole hint, \"Search this session\" and \"Search\" that fits: {s}"
+            );
+            fits.push(whole_fits);
+        }
+    }
+    // Chrome's fonts are not iOS's, so which width cuts the key is Chrome's own; the cases above hold
+    // whatever it is, and both ways are taken somewhere: the key is neither always kept nor always cut.
+    assert!(
+        fits.iter().any(|f| *f) && fits.iter().any(|f| !*f),
+        "the whole hint fits at some widths and not at others (focused, blurred per width): {fits:?}"
+    );
+}
+
 /// #353, the owner's phone on 1.339.0 (typing in the open box beside a scope chip and a tool chip:
 /// "hing" for the query, "0 hi…" for the count, the arrows high): "1) only show single char selector
 /// for scope; 2) allow the whole search query to scroll left when the whole chips+query exceeds the

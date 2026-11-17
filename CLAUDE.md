@@ -273,7 +273,10 @@ never wraps (#352, `a_phone_dock_keeps_one_row_with_a_query_and_a_chip`): the CL
 is its count, steps and ✕ — its chips (a scope chip is its letters alone, a tool chip wears a wrench;
 the word visually hidden, #353) wait in the open box. There the chips and the field are ONE strip
 (`.search-field`, wrapped at load) that scrolls as a whole, the field as wide as its text, so the end
-being typed stays in view; the count hangs as a tag ABOVE the find pill at its left; and the step
+being typed stays in view (an EMPTY field fills the strip from its start and shows the whole hint, or
+the first of "Search this session" and "Search" that fits, refitted by the strip's resize observer as
+the magnifier gives way while the field holds the focus, #s516: the hint cut its first letters on a 17 Pro
+upright); the count hangs as a tag ABOVE the find pill at its left; and the step
 arrows are SVG, centred. A tool chip is its wrench and the tools' own single-character
 selectors (`o(B)` reads "B", #355), and beside chips the field shows no placeholder. **The query is
 ONE prefix at the start of the box** (#367, `design/in-session-search.md` §9): letters u a t o w
