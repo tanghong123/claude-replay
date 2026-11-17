@@ -1,6 +1,7 @@
 # The web app as one mount, for the native app
 
-> **DRAFT 5** (#s551, 2026-11-17). Not built. Reviewed on #s551. It carries Hong's rulings of the
+> **DRAFT 5** (#s551, 2026-11-17). Stage 2 (the mount for one server) is built; the rest is not.
+> Reviewed on #s551. It carries Hong's rulings of the
 > same day: #s553 (a Machines row), #s554 (shared review in the app) and #s555 (Review on an iPad).
 >
 > Hong's choice of 2026-11-17, closing agent-monitor-app #s9: *"I want the same experience as the

@@ -8,6 +8,10 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    dark-scheme selection (a slate band under dark text), scrollbars and form controls. */
 :root{color-scheme:light}:root[data-theme="dark"]{color-scheme:dark}
 .transcript{scroll-behavior:auto}
+/* #s551 stage 2 (design/app-mount.md): the wrapper the web app is mounted into draws no box, so
+   `#app` and its three fixed layers are laid out as the body's own children were, and `.app`'s
+   `height:100%` still reads the body's height. */
+.app-mount{display:contents}
 /* #s429 stage 2, then #s431 stage 1 (design/pane-layout.md): the session view's own element, which
    carries its state, is a box that lays out its three parts itself, in the app as in a host: the
    session, the resizer and the right pane, the tracks #app's grid gave them. Its width is its track's,

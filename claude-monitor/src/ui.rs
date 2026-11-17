@@ -6,11 +6,10 @@
 use claude_replay_html::HttpResponse;
 
 const PAGE_HEAD: &str = include_str!("codex-ui/page-head.html");
-/// The demo's shell with an empty `#sessionView` where the session view's markup was: the view builds
-/// itself there from `session-view-markup.js` (#s429 stage 4). Likewise an empty `#sessionList` where
-/// the tree was, which the session list fills from `session-list-markup.js` (#s430 stage 3). All are
-/// generated from the demo.
-const APP_SHELL: &str = include_str!("codex-ui/app-shell.html");
+/// The empty wrapper the web app is mounted into (#s551, design/app-mount.md, stage 2): `app.js` calls
+/// `mountApp` on it as the page loads, which draws the app's shell there (`app-shell-markup.js`, the
+/// demo's shell with an empty `#sessionView` and an empty `#sessionList`, generated from the demo).
+const APP_MOUNT: &str = "<div id=\"appMount\"></div>\n";
 const PAGE_TAIL: &str = include_str!("codex-ui/page-tail.html");
 
 /// The app shell for ONE request. The classic view it was once switched with is retired (#s98),
@@ -34,7 +33,7 @@ pub fn page(version: &str, paired: bool) -> String {
             "{{MDREV}}",
             claude_replay_html::mdrev_version().unwrap_or(""),
         );
-    format!("{head}{APP_SHELL}{PAGE_TAIL}")
+    format!("{head}{APP_MOUNT}{PAGE_TAIL}")
 }
 
 /// The page a Markdown document opens in when the preview pane sends it to a tab of its own (#271):
@@ -139,6 +138,16 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
         "monitor-ui/app.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/app.js").as_slice(),
+        ),
+        // The web app as one mount (#s551, design/app-mount.md): `mountApp` and the app's shell it
+        // draws, which `app.js` mounts on the monitor's page and the kit carries for the native app.
+        "monitor-ui/app-mount.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/app-mount.js").as_slice(),
+        ),
+        "monitor-ui/app-shell-markup.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/app-shell-markup.js").as_slice(),
         ),
         "monitor-ui/icons.js" => (
             "text/javascript; charset=utf-8",
@@ -535,9 +544,11 @@ mod tests {
     /// new one fails, named with its line, until it hangs on `#sessionView` or is listed here.
     #[test]
     fn the_view_s_styles_hang_on_its_own_element() {
-        // The app's own chrome, which the app draws around the view (app-shell.html, app.js): a
-        // rule naming one of these is the app's, whatever it hangs on.
+        // The app's own chrome, which the app draws around the view (app-shell.html, app-mount.js):
+        // a rule naming one of these is the app's, whatever it hangs on. `.app-mount` is the wrapper
+        // the web app is mounted in (#s551), which draws no box.
         const APP_CHROME: &[&str] = &[
+            ".app-mount",
             ".sidebar",
             ".side-head",
             ".head-actions",
@@ -1078,14 +1089,25 @@ mod tests {
     #[test]
     fn page_is_the_reference_shell_without_mock_runtime() {
         let page = page("test", false);
-        assert!(page.contains(APP_SHELL));
-        // The view's markup is not in the page: the view builds itself from its own (stage 4).
-        assert!(page.contains(r#"<div class="session-view preview-off" id="sessionView"></div>"#));
-        assert!(!page.contains(r#"<main class="workspace">"#));
+        // The page carries the wrapper alone, and `mountApp` draws the app's shell in it (#s551).
+        assert!(page.contains(APP_MOUNT));
+        assert!(!page.contains(r#"id="app""#));
+        let shell = include_str!("codex-ui/app-shell.html");
+        let module = include_str!("codex-ui/app-shell-markup.js");
+        assert!(
+            module.contains(&format!(
+                "export const APP_SHELL_MARKUP = {};",
+                serde_json::to_string(shell).unwrap()
+            )),
+            "the shell's module holds the shell, exactly"
+        );
+        // The view's markup is not in the shell: the view builds itself from its own (stage 4).
+        assert!(shell.contains(r#"<div class="session-view preview-off" id="sessionView"></div>"#));
+        assert!(!shell.contains(r#"<main class="workspace">"#));
         // Nor the list's: it builds itself in an empty `#sessionList` (#s430 stage 3).
-        assert!(page.contains(r#"<div class="session-list" id="sessionList"></div>"#));
-        assert!(!page.contains(r#"id="tree""#));
-        assert!(!page.contains(r#"id="collapseBtn""#));
+        assert!(shell.contains(r#"<div class="session-list" id="sessionList"></div>"#));
+        assert!(!shell.contains(r#"id="tree""#));
+        assert!(!shell.contains(r#"id="collapseBtn""#));
         assert!(page.contains(r#"src="monitor-ui/app.js""#));
         assert!(!page.contains("sample-transcript-data.js"));
         assert!(!page.contains("REAL_TRANSCRIPT"));
@@ -1101,6 +1123,11 @@ mod tests {
     fn every_module_the_shell_imports_is_served() {
         let sources: &[(&str, &str)] = &[
             ("app.js", include_str!("codex-ui/app.js")),
+            ("app-mount.js", include_str!("codex-ui/app-mount.js")),
+            (
+                "app-shell-markup.js",
+                include_str!("codex-ui/app-shell-markup.js"),
+            ),
             ("native-mode.js", include_str!("codex-ui/native-mode.js")),
             ("native-menu.js", include_str!("codex-ui/native-menu.js")),
             (
@@ -1425,7 +1452,7 @@ mod tests {
                 >= 100,
             "session-view.css reads a phone as the layout module's classes"
         );
-        // #s431 stage 3: the app lays its list out by the owner's order (`arrangeList`, app.js), and its
+        // #s431 stage 3: the app lays its list out by the owner's order (`arrangeList`, app-mount.js), and its
         // sheet reads the drawer as the order's class, so the app's phone and wide-window queries went
         // to the derivation (`appGate`, scripts/session-view-css.mjs). What asks a query still says what
         // a phone is, and a wide window's rule written in production.css is still held to the rule above.

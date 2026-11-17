@@ -38,8 +38,12 @@ artifacts mode. "The classic page" below means export.js, the offline viewer's p
 **The session view is a module of its own** (#s429, `design/session-view-component.md`, embedding's
 step 4): `session-view.js` holds the transcript, the turn bar and search, the outline panes, the
 artifact pane, the compose box and the phone dock and sheets, behind `mountSessionView(element,
-options)`; `app.js` keeps the app around it (the session list, the drawer and rail, the brand, the
-theme, the session search and the toast) and mounts it. What a host may change is the view's options
+options)`; `app-mount.js` keeps the app around it (the session list, the drawer and rail, the brand,
+the theme, the session search and the toast) and mounts it, behind `mountApp(element, options)`
+(#s551, `design/app-mount.md`: once per page, never undone, its options one list it refuses any
+other name by, and a refused call draws nothing); the monitor's page carries an empty wrapper,
+`#appMount`, which `app.js` mounts the web app into with the page's own server and version. What a
+host may change is the view's options
 (stage 6; the doc comment over `mountSessionView` is the reference, every name is in `MOUNT_OPTIONS`
 and any other is refused, and the contract's mount interface cases hold them): `theme`; `show`, the
 optional controls by name (`reading`, `history`, `detach`, each shown unless `false`, booleans only;
@@ -895,7 +899,8 @@ extraction stays exact. **The page loads neither `reference.css` nor `production
 `session-view.css` (the session view's, every rule hung on `#sessionView`) from those two, through
 `scripts/session-view-css.mjs`, and the contract requires the byte match. A rule is still written in
 `production.css`; then run the script. A new class the app draws goes in one of the classifier's
-lists, which the contract checks against `app.js` and the shell. **The view draws no class the
+lists, which the contract checks against `app-mount.js` and the shell (which the mount draws from
+`app-shell-markup.js`, generated beside `app-shell.html` and held to it byte for byte). **The view draws no class the
 collaboration app styles in its own page** (#s438, where the view sits in a pane and a host's
 `.primary{…}` would reach ours by class): the view's are `sv-session-main`, `sv-task-card` and its
 `sv-task-card-*` family, `sv-pinned` and `sv-primary` (the app's confirm button keeps `.primary`),
@@ -917,7 +922,10 @@ relative paths; the served bytes still come from the html crate through `ui::ass
 `agent-monitor-kit-<version>.tar.gz` and its `.sha256` (`scripts/kit.sh`, run by the Release
 workflow), the two components for a host to mount from a pinned release. Its `bundle/` is
 `claude-monitor/kit/index.js` and every module that imports, walked from it and taken from `ui::asset()`
-byte for byte (`src/kit.rs`), so a new import joins the kit by itself; a new mount option or optional
+byte for byte (`src/kit.rs`), so a new import joins the kit by itself; the walk also starts from
+`kit/native-app.js`, the second entry (#s551): `mountApp`, the whole web app for the native app,
+which `package.json` does not export and nothing declares (`APP_WITHHELD` in `kit.rs`, kept in step
+with the mount's own `MOUNT_OPTIONS`), with `app-shell.css` beside the two components' stylesheets; a new mount option or optional
 control goes in `kit/index.d.ts` too (`the_declarations_follow_each_components_options` refuses one
 missing), and the guide (`kit/embedding-guide.md`) says it for a host. The kit offers only what the
 owner ruled a host may change and what mounting needs: an option it withholds (`VIEW_WITHHELD`,
