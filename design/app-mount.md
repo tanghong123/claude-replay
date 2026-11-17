@@ -1,7 +1,8 @@
 # The web app as one mount, for the native app
 
-> **DRAFT 2** (#s551, 2026-11-17). Not built. Draft 1 (3e0674bf) was reviewed by hd-replay
-> (`review-3e0674bf.md` on #s551); this draft answers it. Hong's choice of 2026-11-17, closing
+> **DRAFT 3** (#s551, 2026-11-17). Not built. hd-replay reviewed draft 1 (3e0674bf,
+> `review-3e0674bf.md` on #s551) and draft 2 (2b2f1531, `review-2b2f1531.md`); this draft answers
+> both. Hong's choice of 2026-11-17, closing
 > agent-monitor-app #s9: *"I want the same experience as the current web app on desktop and
 > mobile, but need the native integration on ios devices"*, then "Yes" to doing it this way, then
 > *"I'd like to have a single session list that combines sessions from multiple devices"*. It revises
@@ -53,8 +54,8 @@ through options the kit's contract cases hold, kept for the native app as `frame
 
 ### One entry point, once per page
 
-`mountApp(element, options)` draws the web app into `element` and returns a handle. It is called
-once per document and never unmounted: a second call throws. That is not a choice of style: the
+`mountApp(element, options)` draws the web app into `element` and returns nothing: no member
+changes a mounted app. It is called once per document and never unmounted: a second call throws. That is not a choice of style: the
 web app is built on things a page has one of, and the design names them so the refusal is
 deliberate:
 
@@ -81,10 +82,13 @@ wrapper.
 
 **What the host's page carries.** The mount takes the whole viewport (`app-shell.css` owns `html`
 and `body`), so the page is the mount's: the viewport meta with `viewport-fit=cover`, a
-`color-scheme` meta, and the three stylesheets in order. The body's data move into options:
-`version` (the brand), and per machine, `paired` and mdrev's release, which each handle already
-carries. In the app the brand shows the kit's release, since that is the code the app runs; each
-machine's own version shows in its list head.
+`color-scheme` meta, the three stylesheets in order, and the `mermaid-runtime` meta on the
+monitor's page, where the view reads the runtime's path (under `assets` the mount names it
+instead). The body's data move into options: `version` (the brand), and per machine, `paired` and
+mdrev's release, which each handle already carries. In the app the brand shows the kit's release,
+since that is the code the app runs. A machine's own version is not in the list: neither the merged
+source nor `/api/sessions` carries one, and #s541 draws a machine's head only while it is not live.
+The app's Machines screen shows each machine's version, read as D2's "Versions" has it.
 
 ### The monitor's page is its first host
 
@@ -151,15 +155,22 @@ host is offered `mountApp`. A new kit category is not needed; whether `mountApp`
 offered to other hosts is a later question.
 
 - **`frame`**: an agent's HTML page in a frame on the app's own scheme, passed to the view as now.
-  The app keeps the pages it frames in a store it bounds itself, so no "frame gone" event is added.
+  No "frame gone" event is added. The view asks for a page's address once per tab and keeps it for
+  the tab's life, so the app may drop an address only when no tab can still hold it: when the web
+  view reloads, and when the mount moves the view to another machine.
 - **`assets`**: where mdrev's bundle and the Mermaid runtime load from, apart from each machine's
   routes. The app bundles the releases the kit's release pins (the app's `pins.js`; D3: no code from
   a machine runs in the page). Today the view takes both from its handle: mdrev's bundle and its
   routes through one base (`mdrevUrl`, in `mdrev-pane.js`), and the Mermaid runtime through `url`
   from the page's `mermaid-runtime` meta (`session-view.js`), so the app wraps each handle to send
-  those few paths to its bundle. With `assets` the mount tells the view where the code loads from,
-  every route, mdrev's included, still goes through the row's handle, and the wrapped `url` and
-  `mdrevUrl` members go.
+  those few paths to its bundle. `assets` is an option of the view, withheld from hosts
+  (`VIEW_WITHHELD`), which the mount passes on: the view loads mdrev's bundle and the Mermaid
+  runtime from it, and every route, mdrev's included, still goes through the row's handle, whose
+  `mdrev` base names the routes alone. The wrapped `url` and `mdrevUrl` members go. A machine whose
+  monitor pins a newer mdrev than the bundled one reads with the older guest, the direction #s352
+  never had to be safe in; mdrev's conformance check is run with the bundled guest against the
+  newest monitor release as well as the oldest (D8), and a machine the guest fails is listed with
+  a note to update the app.
 - **The theme**: the web app's own toggle is the app's theme setting, kept in the page's storage on
   the app's scheme. `theme` names the theme to start in when nothing is stored, which the app sets
   from the device's appearance. No other theme control is added.
@@ -219,7 +230,10 @@ offered more than today.
    - (a) a "Machines" row in the sidebar's nav, beside Search, and a glyph on the rail after the
      filter, drawn only where the app passes `onMachines` (a withheld option). A nav row fits at
      every width the nav shows, the drawer and a wide phone's column included, so it takes no
-     slot in the head and needs no other control to give way;
+     slot in the head and needs no other control to give way. The nav is hidden on the rail and in
+     a column showing a pane, which is why the rail has a glyph of its own. Both are drawn by script
+     (production-only chrome, as the session filter is), their classes added to
+     `scripts/session-view-css.mjs`'s lists;
    - (b) a native control over the web view (no kit change), which covers part of the page the
      mount lays out and has to dodge its top bar and dock at every width;
    - (c) none (no kit change): the app's screens only at a first launch and from iOS's Settings.
@@ -229,13 +243,34 @@ offered more than today.
    `api/mdrev-review/`) writes to colleagues' threads and pushes to a review store, beyond the
    writes Hong chose. Alternatives:
    - (a) out, with the relay refusing `api/mdrev-review/` (the boundary) and Review not drawn in the
-     app, through `show.review`, an optional control of the view withheld from hosts;
+     app, through `show.review`, an optional control of the view withheld from hosts. The kit
+     cannot withhold a control today: its test makes the view's declared controls equal its
+     `OPTIONAL_CONTROLS`, so (a) adds a list of withheld controls to `kit.rs` beside
+     `VIEW_WITHHELD`;
    - (b) out with no kit change: the relay refuses, Review is still drawn, and its sheet fails to
      reach the review routes;
    - (c) in: shared review as on the web app, the relay passing its routes to the machine, each
      push and share going out as the reader.
 
    Recommended: (a) for the first release; (c) is a later step if he wants it.
+
+**What became of what he asked to see** (his "sounds good" covered a switch to hide Review, a
+signal to free agent pages, `paneLayout` and the keyboard mode):
+- hiding Review is item 2 above;
+- the frame-done signal is dropped: the app frees a page's address when the web view reloads or the
+  view moves to another machine (`frame`, above);
+- `paneLayout` is not needed: the mount lays its parts out itself;
+- the keyboard mode stays withheld: only `mountApp` binds the page's keymap, and no host is offered
+  `mountApp`.
+
+**Two shapes that ship the mount without a kit entry**, weighed against the second entry:
+- the app builds the mount from claude-replay's source tree at the pinned tag (no kit change; the
+  app's build then needs this repository and its generated files, and the kit's tests no longer
+  hold what it ships);
+- a separate tarball beside the kit (no change to the kit's own contents; a second artifact to
+  publish, check and pin in step).
+
+The second entry is recommended: one artifact, one pin, the kit's tests holding every byte.
 
 Nothing else is offered. If a later review finds an item none of these covers, it goes to him the
 same way.
@@ -259,17 +294,23 @@ same way.
 ## The order
 
 1. **#s540 and #s541 land** (in flight).
-2. **The mount, for one server.** `app-mount.js` with `mountApp` (and the kit's `native-app.js`
-   entry), the shell as a generated module,
+2. **The mount, for one server.** `app-mount.js` with `mountApp`, the shell as a generated module,
    the wrapper with the three layers, `version` as an option; `app.js` its host on the monitor's
-   page. The whole browser suite and a Simulator walk show nothing changed. Released.
+   page. In the kit (`kit.rs`): a second entry, `native-app.js`; the walk starting from both
+   entries; `app-shell.css` added to the stylesheets; the bundle test widened to that set, and
+   still asserting `app.js` is not in the kit. The whole browser suite and a Simulator walk show
+   nothing changed. Released.
 3. **Machines in the mount**, on #s541: `machines`, the view remounted per machine with the ids
    mapped, the keymap read at the key, write mode per machine, ⌘K's machines, `assets` and the
    fallback off. A browser case with two hermetic monitors. No control into the app's screens yet.
    Released.
 4. **The rest for the native app**: the start theme, `show` passed on, and, once Hong has ruled,
-   the way into the app's screens and Review's place. Contract cases for every withheld option, and a
-   kit page case under the app's policy. Released.
+   the way into the app's screens and Review's place. `mountApp` refuses any option it does not
+   name, as the view does (`MOUNT_OPTIONS`), and the contract cases hold each withheld option by
+   name: a second mount throws, `machines` without `assets` throws, a name not in the list is
+   refused, `assets` reaches mdrev's bundle and the Mermaid runtime while every route goes through
+   the row's handle, and the start theme yields to a stored one. A kit page case under the app's
+   policy. Released.
 5. **agent-monitor-app #s13** mounts it and drops its own chrome.
 
 Each stage lands on its own, with the monitor's page working at every step.
