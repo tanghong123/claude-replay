@@ -166,7 +166,8 @@ export class RecordStore {
       if (!stale()) {
         // A tail-first answer: the committed zone starts past records nobody has sent yet.
         const headCount = !this.records.length && reply.committed_ext?.len && reply.committed_from > 0 ? reply.committed_from : 0;
-        this.apply(reply, headCount);
+        // A reply that made the store start over leaves nothing to read a head for (#s562).
+        if (!this.apply(reply, headCount)) return;
         if (headCount) {
           this.head = { count: headCount, len: reply.committed_ext.offset, epoch: reply.epoch };
           this.loadIndex(generation, this.head);
@@ -519,6 +520,7 @@ export class RecordStore {
     return { from: fill.from, to: fill.from + fill.records.length };
   }
 
+  /** Apply a pull's reply; false when it made the store start over instead (`recover`). */
   apply(reply, headCount = 0) {
     const plan = reducePull(this.cursor, this.records.length, reply);
     // A resync drops everything, a head still in flight with it: that head belongs to a log the
@@ -532,14 +534,15 @@ export class RecordStore {
     for (const step of plan.steps) {
       if (step.op === "truncate") {
         // A truncate only shortens the store, except into a tail-first open's head, whose slots
-        // take the placeholder below. One that would lengthen it past that is a reply to records
-        // this store does not hold (#s562), and its empty slots would reach the view: start over.
-        if (step.to > this.records.length && step.to > headCount) { this.recover(); return; }
+        // take the placeholder below. A backstop to `poll`'s check of the cursor it asked with
+        // (#s562): a reply that would lengthen the store past that head answers records it does
+        // not hold, and its empty slots would reach the view, so the session starts over instead.
+        if (step.to > this.records.length && step.to > headCount) { this.recover(); return false; }
         this.records.length = step.to;
       } else this.records.push(...step.records);
     }
     // A placeholder left with no head to fill it would wait for ever: start over instead.
-    if (cut && this.records.includes(PENDING)) { this.recover(); return; }
+    if (cut && this.records.includes(PENDING)) { this.recover(); return false; }
     // The shared plan truncated the empty store to `headCount` before appending the tail, which
     // leaves that many empty slots: they are the head, still to come.
     for (let i = 0; i < headCount; i++) this.records[i] = PENDING;
@@ -551,5 +554,6 @@ export class RecordStore {
     // The placeholders a cut replaced are the head landing, to the page (#314): it is reported as
     // one, so the reader keeps the turn they were on and the change waits for a still view (#340).
     if (plan.changedFrom !== Infinity || reply.meta) this.handlers.update?.({ records: this.records, meta: this.meta, changedFrom: plan.changedFrom === Infinity ? this.records.length : plan.changedFrom, ...(cut ? { prepended: owed.count } : {}) });
+    return true;
   }
 }

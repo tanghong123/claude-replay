@@ -723,7 +723,8 @@ assert.deepEqual(store.cursor, { epoch: 0, committed: 0, gen: 0, index: 0 });
 {
   const realFetch = globalThis.fetch;
   const goesOn = () => ({ epoch: 4, committed_from: 1, committed_ext: null, committed: [], provisional_gen: 1, provisional_from: 1, provisional: [{ kind: "bash", id: "r3", head: { name: "Bash" }, body: [] }], meta: null });
-  const racing = new RecordStore({ update: () => {}, reset: () => {} });
+  let racingResets = 0;
+  const racing = new RecordStore({ update: () => {}, reset: () => racingResets++ });
   racing.session = "s";
   racing.apply({ epoch: 4, committed_from: 0, committed: [{ kind: "user", id: "r1", turn: 1, body: [] }], provisional_gen: 1, provisional_from: 0, provisional: [{ kind: "assistant", id: "r2", phase: "commentary", body: [] }], meta: null });
   let release;
@@ -737,10 +738,11 @@ assert.deepEqual(store.cursor, { epoch: 0, committed: 0, gen: 0, index: 0 });
     racing.stop();
     assert.equal(racing.records.length, 0, "a reply to the cursor the store held before it started over is dropped, holes and all");
     assert.deepEqual(racing.cursor, { epoch: 0, committed: 0, gen: 0, index: 0 }, "…and the next pull asks from the fresh cursor");
+    assert.equal(racingResets, 1, "…dropped before it is applied: only the start over itself reset the view (applied, the guard below would start over again)");
   } finally { globalThis.fetch = realFetch; }
   let resets = 0;
   const holed = new RecordStore({ update: () => {}, reset: () => resets++ });
-  holed.apply(goesOn());
+  assert.equal(holed.apply(goesOn()), false, "apply says it started over");
   assert.equal(resets, 1, "a truncate that would lengthen the store (no head to fill it) starts the session over");
   assert.equal(holed.records.length, 0, "…and leaves no empty slot");
 }
