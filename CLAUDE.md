@@ -46,7 +46,8 @@ optional controls by name (`reading`, `history`, `detach`, each shown unless `fa
 a control off is not drawn and takes no key; the app passes none); and `keyboard`, `"engaged"` by
 default (the view binds its keymap in the capture phase and answers, as the pane's image viewer
 does, only while the reader's last press or focus is inside it, as mdrev does, and so does the
-Escape that closes its layers, except a layer a hover holds open, #s535) or `"page"`, the
+Escape that closes its layers, except a layer a hover holds open, and one the focus inside it
+receives, #s535, #s560) or `"page"`, the
 app's: the view binds none and the app's one keymap at the document routes keys to the handle's
 `keys`; and `room`, a function answering how much wider the host could make the view by narrowing
 what it lays beside it (the app: its list's width less 232; 0 without it, #s476). What the view

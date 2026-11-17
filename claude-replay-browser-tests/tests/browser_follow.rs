@@ -2195,8 +2195,10 @@ fn the_session_view_in_a_host_takes_its_keys_only_while_the_reader_works_in_it()
 /// the focus is back in the view an Escape closes each. A pointer resting on the transcript is not
 /// working in the view: with it there the host's Escape still closes neither. A hover engages
 /// nothing, yet a peek it opened on Info closes on Escape with the focus still on the host's button
-/// and the pointer still on Info (#s557's rule, WCAG 1.4.13). The host's own listener hears every
-/// Escape, none prevented. With `keyboard: "page"` (the app's) the view is always engaged, so the same Escape from the
+/// and the pointer still on Info (#s557's rule, WCAG 1.4.13). An Escape the browser hands to the
+/// view itself is the view's: with a peek opened by a focus on Info and a press on the host that kept
+/// the focus there, Escape closes it (#s560's review). The host's own listener hears every Escape,
+/// none prevented. With `keyboard: "page"` (the app's) the view is always engaged, so the same Escape from the
 /// host's button closes them as before. The view's other page-wide Escapes (the task card, a phone's
 /// pane sheet) read the same test. Keys are dispatched by script where the focus is (`PRESS`), so no
 /// CDP key is left repeating (#270).
@@ -2289,6 +2291,22 @@ fn the_session_view_in_a_host_closes_its_layers_on_escape_only_while_the_reader_
             ));
             harness::probe(&tab, &format!("{PRESS}('Escape')"));
             seen.push(state("engaged: Escape with the pointer on Info"));
+            // A focus on Info opens its peek and engages the view; a press on the host that keeps
+            // the focus there (a control that cancels its mousedown) ends the engagement. The
+            // Escape goes to Info itself, so it is the view's and closes the peek (#s560's review).
+            hover("document.getElementById('hostButton')");
+            harness::eval(&tab, &format!("{info}.focus(); 'ok'"));
+            harness::eval(
+                &tab,
+                "document.getElementById('hostButton').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); 'ok'",
+            );
+            let mut kept = state(
+                "engaged: a peek on Info's focus, then a press on the host that kept the focus",
+            );
+            kept["onInfo"] = harness::probe(&tab, &format!("document.activeElement === {info}"));
+            seen.push(kept);
+            harness::probe(&tab, &format!("{PRESS}('Escape')"));
+            seen.push(state("engaged: Escape on Info, the last press the host's"));
             seen.push(harness::probe(&tab, host_keys));
         }
     }
@@ -2341,23 +2359,35 @@ fn the_session_view_in_a_host_closes_its_layers_on_escape_only_while_the_reader_
         seen[6]
     );
     assert_eq!(
-        seen[7],
-        serde_json::json!([false, false, false, false]),
-        "engaged: the host's own listener heard every Escape, the view preventing and stopping none: {}",
+        (seen[7]["info"].clone(), seen[7]["onInfo"].clone()),
+        (t.clone(), t.clone()),
+        "engaged: a focus on Info opens its peek and keeps the focus through the host's press: {}",
         seen[7]
     );
-    assert_eq!(both(&seen[8]), open, "page: both opened: {}", seen[8]);
     assert_eq!(
-        both(&seen[9]),
-        open,
-        "page: a focus on the host's button leaves both open: {}",
-        seen[9]
+        seen[8]["info"],
+        f,
+        "engaged: an Escape the browser hands to Info is the view's and closes the peek, whatever the last press was: {}",
+        seen[8]
     );
     assert_eq!(
-        both(&seen[10]),
+        seen[9],
+        serde_json::json!([false, false, false, false, false]),
+        "engaged: the host's own listener heard every Escape, the view preventing and stopping none: {}",
+        seen[9]
+    );
+    assert_eq!(both(&seen[10]), open, "page: both opened: {}", seen[10]);
+    assert_eq!(
+        both(&seen[11]),
+        open,
+        "page: a focus on the host's button leaves both open: {}",
+        seen[11]
+    );
+    assert_eq!(
+        both(&seen[12]),
         shut,
         "page: the view is always engaged, so the same Escape closes both as before: {}",
-        seen[10]
+        seen[12]
     );
 }
 
@@ -14781,7 +14811,9 @@ fn info_s_peek_closes_on_escape_from_a_keyboard_focus_or_a_hover() {
 /// on the caption opens it, and with the focus on the page Escape closes it, and it stays shut
 /// with the pointer still there; a focus on a row inside keeps it open, and Escape closes it and gives
 /// the focus back to the caption. In a host page (keyboard "engaged") with the focus on the host's
-/// button, a menu the pointer is on still closes on Escape. Keys are dispatched where the focus is
+/// button, a menu the pointer is on still closes on Escape; and a menu its caption's focus opened
+/// closes on an Escape at the caption after a press on the host that kept the focus there (the
+/// review: the caption's own Escape listener had gone with the fix). Keys are dispatched where the focus is
 /// (`PRESS`), so no CDP key is left repeating (#270).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
@@ -14847,6 +14879,21 @@ fn the_outline_panes_menu_closes_on_escape_from_a_hover_or_a_focus_inside_it() {
     seen.push(state("host: hovered, the focus on the host's button"));
     harness::probe(&tab, &format!("{PRESS}('Escape')"));
     seen.push(state("host: Escape, the pointer still on the caption"));
+    // A focus on the caption opens the menu and engages the view; a press on the host that keeps the
+    // focus there ends the engagement. The Escape goes to the caption itself, so it is the view's.
+    hover("document.getElementById('hostButton')");
+    harness::eval(&tab, &format!("{trigger}.focus(); 'ok'"));
+    harness::eval(
+        &tab,
+        "document.getElementById('hostButton').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); 'ok'",
+    );
+    seen.push(state(
+        "host: a focus on the caption, then a press on the host that kept it",
+    ));
+    harness::probe(&tab, &format!("{PRESS}('Escape')"));
+    seen.push(state(
+        "host: Escape on the caption, the last press the host's",
+    ));
     drop(monitor);
     let t = serde_json::json!(true);
     let f = serde_json::json!(false);
@@ -14882,6 +14929,17 @@ fn the_outline_panes_menu_closes_on_escape_from_a_hover_or_a_focus_inside_it() {
         seen[5]["open"], f,
         "host: a menu the pointer is on closes on Escape, the focus in the host: {}",
         seen[5]
+    );
+    assert_eq!(
+        (seen[6]["open"].clone(), seen[6]["active"].clone()),
+        (t.clone(), serde_json::json!("navigatorPanesTrigger")),
+        "host: a focus on the caption opens the menu and keeps the focus through the host's press: {}",
+        seen[6]
+    );
+    assert_eq!(
+        seen[7]["open"], f,
+        "host: an Escape the browser hands to the caption is the view's, whatever the last press was: {}",
+        seen[7]
     );
 }
 

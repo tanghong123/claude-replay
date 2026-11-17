@@ -571,9 +571,9 @@ bindComponentEvents(transcript, recordState, {
 // (`keyboard: "engaged"`); with the page's keyboard (`"page"`, the app's) the view is always engaged,
 // as before.
 let engaged = keyboardMode === "page";
+const inView = target => !!target && typeof target.closest === "function" && element.contains(target) && !inGuest(target);
 if (keyboardMode === "engaged") {
-  const inView = target => !!target && typeof target.closest === "function" && element.contains(target);
-  const engage = event => { engaged = inView(event.target) && !inGuest(event.target); };
+  const engage = event => { engaged = inView(event.target); };
   for (const type of ["pointerdown", "mousedown", "focusin"]) document.addEventListener(type, engage, { capture: true, signal });
 }
 // The Escape the view hears on the whole page, which closes its layers (Info's card, the copy menu,
@@ -583,8 +583,11 @@ if (keyboardMode === "engaged") {
 // not working in it (a keyboard reader leaves it on the transcript), but a layer a hover holds open
 // (Info's peek, the copy menu) is the reader's while the pointer is on it or its trigger, so those
 // two also close on Escape then, whatever the last press was (#s557, WCAG 1.4.13: content a hover
-// shows is dismissible without moving the pointer).
-const viewEscape = event => event.key === "Escape" && engaged;
+// shows is dismissible without moving the pointer). An Escape the browser hands to the view itself
+// (the focus inside it, outside a guest) is the view's too, whatever the last press was (#s560's
+// review): a press outside that kept the focus here (a host's toolbar control that cancels its
+// mousedown, a scrollbar) left a menu open by the control holding the focus, deaf to its Escape.
+const viewEscape = event => event.key === "Escape" && (engaged || inView(event.target));
 const hovered = (...nodes) => nodes.some(node => !!node && node.matches(":hover"));
 
 // #s25: the pane changes the TRANSCRIPT's layout only where it is a grid column (a wide desktop).
@@ -3419,7 +3422,8 @@ panesMenu.onclick = event => {
   panesMenu.addEventListener("pointerenter", () => clearTimeout(panesCloseTimer));
   // Escape closes the menu wherever the reader is (#s560), as it does Info's peek (#s557, WCAG
   // 1.4.13: what a hover shows is dismissible without moving the pointer): when the Escape is the
-  // view's (#s535), or while the pointer is on the menu or its caption. A focus inside the menu goes
+  // view's (#s535; the focus on the caption or in the menu makes it so), or while the pointer is on
+  // the menu or its caption. A focus inside the menu goes
   // back to the caption FIRST, since the caption's focus listener opens the menu, and the close then
   // shuts it; nothing new arrives while the pointer and the focus stay, so it stays shut.
   addEventListener("keydown", event => {
