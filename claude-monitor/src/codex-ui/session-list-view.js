@@ -77,7 +77,11 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    keys, and the host calls `keys[action]` from its own keymap (shared/keymap.js's "list" actions).
  *    In either mode Enter and Space on a focused row activate it, as a click does, and the list hears
  *    the document's keys, taking none, to tell the keyboard's focus on a row from a press's: only the
- *    keyboard's is given back when the tree is rewritten.
+ *    keyboard's is given back when the tree is rewritten. Engaged, the Escape that closes the list's
+ *    layers (a section's menu, the filter's sheet, the rail's flyout) is the list's only while the
+ *    reader works in it (their last press or focus inside it or a part it drew elsewhere) or the focus
+ *    is inside it, and a flyout a hover opened also closes while the pointer is on it or its mark
+ *    (#s559); a host's own Escape is left to the host. "page" keeps every such Escape the list's.
  *  - `persist()`: remember the list's choices, at each moment the list changes one.
  *  - `onOpen({ id, push })`: the reader chose a session in the list (a row, the rail's flyout, the
  *    list keys), `push` whether it is a new place in the history. The list has not moved its
@@ -407,7 +411,7 @@ function openSectionMenu(key, label, anchor) {
       placeSectionMenu();
     });
     document.addEventListener("pointerdown", event => { if (sectionMenu && !sectionMenu.hidden && !sectionMenu.contains(event.target) && event.target !== sectionScrim && !event.target.closest?.("[data-section-view]")) closeSectionMenu(false); }, { capture: true, signal });
-    document.addEventListener("keydown", event => { if (event.key === "Escape" && sectionMenu && !sectionMenu.hidden) { event.stopPropagation(); closeSectionMenu(true); } }, { capture: true, signal });
+    document.addEventListener("keydown", event => { if (listEscape(event) && sectionMenu && !sectionMenu.hidden) { event.stopPropagation(); closeSectionMenu(true); } }, { capture: true, signal });
     addEventListener("resize", () => { if (sectionMenu.hidden) return; placeSheet(); placeSectionMenu(); }, { signal });
   }
   if (sectionMenuKey === key && !sectionMenu.hidden) { closeSectionMenu(false); return; }
@@ -791,7 +795,7 @@ filterSheet.addEventListener("click", event => {
   setBuckets(next);
 });
 document.addEventListener("click", event => { if (!filterSheet.hidden && !filterSheet.contains(event.target) && !filterBtn.contains(event.target) && !filterMini.contains(event.target)) toggleFilterSheet(false); }, { signal });
-document.addEventListener("keydown", event => { if (event.key === "Escape" && !filterSheet.hidden) toggleFilterSheet(false); }, { signal });
+document.addEventListener("keydown", event => { if (listEscape(event) && !filterSheet.hidden) toggleFilterSheet(false); }, { signal });
 
 // The collapsed rail's flyouts (#300, the owner: "only showing the agent icon is point-less, please
 // show the projects and sessions for the agent in a float window", and the same for the filter).
@@ -925,7 +929,14 @@ railFlyout.addEventListener("keydown", event => {
   if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeRailFlyout(true); return; }
   if (railFlyoutFor !== "filter" && ["Enter", " "].includes(event.key) && event.target.closest("[role=treeitem]")) { event.preventDefault(); event.target.click(); }
 });
-document.addEventListener("keydown", event => { if (event.key === "Escape" && !railFlyout.hidden) { event.stopPropagation(); closeRailFlyout(true); } }, { capture: true, signal });
+// A flyout a hover opened (not pinned by a click) is the reader's while the pointer is on it or on
+// what opened it, whatever the last press was (#s559, as the view's Info peek, #s557, WCAG 1.4.13):
+// it closes on Escape then, and leaves the key and the focus where they were.
+document.addEventListener("keydown", event => {
+  if (event.key !== "Escape" || railFlyout.hidden) return;
+  if (listEscape(event)) { event.stopPropagation(); closeRailFlyout(true); }
+  else if (!railFlyoutPinned && hovered(railFlyout, railMarks, filterMini)) closeRailFlyout(false);
+}, { capture: true, signal });
 document.addEventListener("pointerdown", event => { if (!railFlyout.hidden && !railFlyout.contains(event.target) && !railMarks.contains(event.target) && !filterMini.contains(event.target)) closeRailFlyout(false); }, { capture: true, signal });
 addEventListener("resize", () => { if (!railFlyout.hidden) placeRailFlyout(); }, { signal });
 /** The arrangement the list draws: the reader's, or by agent and project while the arrangements are
@@ -1135,6 +1146,26 @@ if (options.place) {
   if (hasSheet) head.append(filterSheet);
   element.prepend(head);
 }
+
+// Engagement (#s559), the session view's rule (#s535): whether the reader is working in the list, from
+// where their last press or focus landed, in the capture phase: inside the list's element or one of
+// the parts it drew elsewhere (the controls, the filter's sheet and rail button, the agent marks, the
+// rail's flyout, a section's menu and its scrim, wherever a host placed them). The list's keymap
+// answers only on its own rows already; the Escape it hears on the whole page, which closes its
+// section menu, its filter's sheet and the rail's flyout (and, for the first and the last, keeps the
+// key from going on and gives the focus back to their control), is its own only while the reader works
+// in it, or when the browser hands it to the list itself (the focus inside it): a host whose own
+// dialog Escape closes must not close ours with it, nor lose its focus to us. With the page's keyboard
+// (`"page"`, the app's) the list is always engaged, as before. The three listeners above read these at
+// a key, after the mount.
+const inList = target => !!target && typeof target.closest === "function"
+  && [element, controls, filterSheet, filterMini, railMarks, railFlyout, sectionMenu, sectionScrim].some(node => !!node && node.contains(target));
+let engaged = keyboardMode === "page";
+if (keyboardMode === "engaged") {
+  for (const type of ["pointerdown", "mousedown", "focusin"]) document.addEventListener(type, event => { engaged = inList(event.target); }, { capture: true, signal });
+}
+function listEscape(event) { return event.key === "Escape" && (engaged || inList(event.target)); }
+function hovered(...nodes) { return nodes.some(node => !!node && node.matches(":hover")); }
 
 tree.innerHTML = '<div class="no-results">Scanning sessions…</div>'; treeWritten = null;
 railMarks.innerHTML = ""; railWritten = null;
