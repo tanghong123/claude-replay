@@ -14774,6 +14774,117 @@ fn info_s_peek_closes_on_escape_from_a_keyboard_focus_or_a_hover() {
     );
 }
 
+/// #s560, from #s535's third review: the Outline caption's panes menu opens on a hover or a focus of
+/// its caption, but Escape closed it only from the caption's own focus, so a menu a hover opened
+/// could not be dismissed without moving the pointer (WCAG 1.4.13, as #s557 made Info's peek), and
+/// one holding the focus on a row could not be dismissed at all. In the app shell: the real pointer
+/// on the caption opens it, and with the focus on the page Escape closes it, and it stays shut
+/// with the pointer still there; a focus on a row inside keeps it open, and Escape closes it and gives
+/// the focus back to the caption. In a host page (keyboard "engaged") with the focus on the host's
+/// button, a menu the pointer is on still closes on Escape. Keys are dispatched where the focus is
+/// (`PRESS`), so no CDP key is left repeating (#270).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_outline_panes_menu_closes_on_escape_from_a_hover_or_a_focus_inside_it() {
+    let _serial = serial();
+    let (monitor, _browser, tab) = shell_with_a_session("appshell-panes-escape", 3151);
+    let sid = "cccccccc-0000-4000-8000-000000000160";
+    let open = "document.getElementById('navigatorPanesMenu').classList.contains('open')";
+    let hover = |js: &str| {
+        let v = harness::probe(
+            &tab,
+            &format!("(function(){{ var r = ({js}).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"),
+        );
+        tab.move_mouse_to_point(headless_chrome::browser::tab::point::Point {
+            x: v[0].as_f64().unwrap(),
+            y: v[1].as_f64().unwrap(),
+        })
+        .expect("the pointer moves");
+    };
+    let state = |what: &str| -> serde_json::Value {
+        std::thread::sleep(Duration::from_millis(500));
+        harness::probe(
+            &tab,
+            &format!("(function(){{ var a = document.activeElement; return {{ open: {open}, active: a ? a.id || a.className || a.tagName : null, what: {what:?} }}; }})()"),
+        )
+    };
+    let trigger = "document.getElementById('navigatorPanesTrigger')";
+    let drawn = |where_: &str| {
+        harness::until(
+            &tab,
+            &format!("!!{trigger} && {trigger}.getBoundingClientRect().width > 0 && !!document.querySelector('.transcript')"),
+            &format!("the Outline caption drawn ({where_})"),
+            Duration::from_secs(20),
+            "document.getElementById('sessionView') ? document.getElementById('sessionView').className : 'no view'",
+        );
+    };
+    let mut seen = Vec::new();
+    harness::resize(&tab, 1400.0, 900.0);
+    drawn("the app shell");
+    // A hover opens it; the focus on the page, off the caption; Escape closes it, the pointer still
+    // there.
+    hover(trigger);
+    harness::eval(
+        &tab,
+        "if (document.activeElement) document.activeElement.blur(); 'ok'",
+    );
+    seen.push(state("app: hovered, the focus on the page"));
+    harness::probe(&tab, &format!("{PRESS}('Escape')"));
+    seen.push(state("app: Escape, the pointer still on the caption"));
+    // A focus on a row inside keeps it open; Escape closes it and gives the focus to the caption.
+    hover("document.querySelector('.transcript')");
+    harness::eval(&tab, &format!("{trigger}.focus(); 'ok'"));
+    harness::eval(&tab, "(function(){ var b = document.querySelector('#navigatorPanesMenu button'); if (b) b.focus(); return !!b; })()");
+    seen.push(state("app: the focus on a row inside"));
+    harness::probe(&tab, &format!("{PRESS}('Escape')"));
+    seen.push(state("app: Escape from the row"));
+    // A host page: the focus on the host's button, the pointer on the caption.
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}"));
+    drawn("the host page");
+    hover("document.getElementById('hostButton')");
+    harness::eval(&tab, "document.getElementById('hostButton').focus(); 'ok'");
+    hover(trigger);
+    seen.push(state("host: hovered, the focus on the host's button"));
+    harness::probe(&tab, &format!("{PRESS}('Escape')"));
+    seen.push(state("host: Escape, the pointer still on the caption"));
+    drop(monitor);
+    let t = serde_json::json!(true);
+    let f = serde_json::json!(false);
+    assert_eq!(
+        (seen[0]["open"].clone(), seen[0]["active"].clone()),
+        (t.clone(), serde_json::json!("BODY")),
+        "app: a hover opens the menu, the focus on the page: {}",
+        seen[0]
+    );
+    assert_eq!(
+        seen[1]["open"], f,
+        "app: Escape closes a menu a hover opened, and it stays shut with the pointer there: {}",
+        seen[1]
+    );
+    assert_eq!(
+        seen[2]["open"], t,
+        "app: a focus on a row inside keeps the menu open: {}",
+        seen[2]
+    );
+    assert_eq!(
+        (seen[3]["open"].clone(), seen[3]["active"].clone()),
+        (f.clone(), serde_json::json!("navigatorPanesTrigger")),
+        "app: Escape from a row closes the menu and gives the focus to the caption: {}",
+        seen[3]
+    );
+    assert_eq!(
+        (seen[4]["open"].clone(), seen[4]["active"].clone()),
+        (t.clone(), serde_json::json!("hostButton")),
+        "host: a hover opens the menu, the focus on the host's button: {}",
+        seen[4]
+    );
+    assert_eq!(
+        seen[5]["open"], f,
+        "host: a menu the pointer is on closes on Escape, the focus in the host: {}",
+        seen[5]
+    );
+}
+
 /// #159 layout, reported with a screenshot: the Outline title had drifted to the centre and the
 /// selector's rows were 24px squares with their labels spilling outside the menu.
 ///

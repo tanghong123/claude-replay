@@ -3417,7 +3417,17 @@ panesMenu.onclick = event => {
     node.addEventListener("focusout", schedulePanesClose);
   }
   panesMenu.addEventListener("pointerenter", () => clearTimeout(panesCloseTimer));
-  panesTrigger.addEventListener("keydown", event => { if (event.key === "Escape") setPanesMenu(false); });
+  // Escape closes the menu wherever the reader is (#s560), as it does Info's peek (#s557, WCAG
+  // 1.4.13: what a hover shows is dismissible without moving the pointer): when the Escape is the
+  // view's (#s535), or while the pointer is on the menu or its caption. A focus inside the menu goes
+  // back to the caption FIRST, since the caption's focus listener opens the menu, and the close then
+  // shuts it; nothing new arrives while the pointer and the focus stay, so it stays shut.
+  addEventListener("keydown", event => {
+    if (event.key !== "Escape" || !panesMenu.classList.contains("open")) return;
+    if (!viewEscape(event) && !hovered(panesTrigger, panesMenu)) return;
+    if (panesMenu.contains(viewRoot.active())) panesTrigger.focus();
+    setPanesMenu(false);
+  }, { signal });
 }
 {
   // The Info card leaves the stack and its BODY becomes the popover's content, so everything
