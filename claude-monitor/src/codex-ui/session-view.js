@@ -2986,6 +2986,14 @@ readingBtn.onclick = () => setPopover(readingOptions.classList.contains("open") 
 addEventListener("pointerdown", event => {
   if (!readingCluster.contains(event.target) && readingOptions.classList.contains("open")) setPopover(null);
 }, { capture: true, signal });
+// Off the phone the filter menu closes on a press outside the search cluster too, as Aa's menu does
+// (#s546): nothing else closed it but the funnel, so a click into the transcript left it open over
+// what it filters. The query and its marks stay. The phone keeps its own rule (a tap outside closes
+// the top layer only, the filter first, #s49).
+addEventListener("pointerdown", event => {
+  if (phoneSearch.matches || !byId("navigatorOptions").classList.contains("open")) return;
+  if (!event.target.closest?.(".header-search-cluster")) setPopover(null);
+}, { capture: true, signal });
 /** The size control reads as a RELATIVE step, never as a pixel count (#160). An absolute "11px"
  *  pins the reader to one base size and forecloses the variable sizes we want later — the
  *  adjustment has always been relative, so say so: 0 at the default, +n and −n either side. */
