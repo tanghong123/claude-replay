@@ -12206,7 +12206,8 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
 /// title was squeezed to one letter and Info and the pane's control went past the window or under
 /// the open pane's tabs. Every control the bar shows lies inside the session's column, never under
 /// the pane, and a pointer at its centre reaches it; the title shows at least its first word; and the
-/// search box, folded to its glyph there, opens to its width on a click and folds back.
+/// search box, folded to its glyph there, opens to its width on a click and folds back. A finger's
+/// press on it opens nothing as it lands; the tap's click opens it, with its field focused (#s547).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
@@ -12338,6 +12339,33 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         &tab,
         &folded,
         "the search box to fold back",
+        Duration::from_secs(5),
+        box_width,
+    );
+    // A finger's press on the glyph changes nothing as it lands (#s547's iPad walk): WebKit spends a
+    // tap whose press shows content as a hover and sends no click, so a box held open at the press
+    // left its field without the focus, and nothing could be typed. The press is the page's own
+    // pointerdown as a finger gives it; the tap's click then opens the box with the field focused.
+    let finger = harness::probe(
+        &tab,
+        "(function(){ var box = document.querySelector('.workspace>.topbar .header-searchbox'); var r = box.getBoundingClientRect(); var at = { pointerType: 'touch', isPrimary: true, bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }; box.dispatchEvent(new PointerEvent('pointerdown', at)); var held = document.querySelector('.header-search-cluster').classList.contains('search-held'); box.dispatchEvent(new PointerEvent('pointerup', at)); box.click(); return { held: held }; })()",
+    );
+    assert_eq!(
+        finger["held"], false,
+        "a finger's press on the folded search box opens nothing as it lands: {finger}"
+    );
+    harness::until(
+        &tab,
+        &format!("document.activeElement && document.activeElement.id === 'transcriptSearchInput' && {box_width} >= 200"),
+        "a finger's tap to open the search box with its field focused",
+        Duration::from_secs(5),
+        box_width,
+    );
+    press_outside();
+    harness::until(
+        &tab,
+        &folded,
+        "the search box to fold back after the finger's tap",
         Duration::from_secs(5),
         box_width,
     );

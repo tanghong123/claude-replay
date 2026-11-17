@@ -2528,13 +2528,17 @@ document.addEventListener("pointerdown", event => {
 }, { capture: true, signal });
 // #s520: where the box rests as its glyph (the bar the outline's glyphs join), what holds it open is
 // the reader's use of the search, not the field's focus: `search-held` on its cluster, from a focus or
-// a press anywhere inside it (the box, its drop-down, the filter) until a press outside it, a Tab out
-// of it, a press inside the pane's page (which takes the focus into its frame and sends this page no
-// press) or Escape. Safari and Firefox on a Mac give a pressed button no focus, so the field's blur at
-// the press would fold the box and take the button from under the pointer before its click. Leaving
-// also closes the filter there, which nothing else on a desktop does, so the box folds with it.
+// a mouse's press anywhere inside it (the box, its drop-down, the filter) until a press outside it, a
+// Tab out of it, a press inside the pane's page (which takes the focus into its frame and sends this
+// page no press) or Escape. Safari and Firefox on a Mac give a pressed button no focus, so the field's
+// blur at the press would fold the box and take the button from under the pointer before its click.
+// A finger's press holds nothing: WebKit spends a tap whose press shows content as a hover and sends
+// no click, so on an iPad the box opened at the press and its field never took the focus (#s547's
+// walk). A finger opens it by the click, which focuses the field, and iOS leaves the focus in the
+// field when a button is tapped. Leaving also closes the filter there, which nothing else on a
+// desktop does, so the box folds with it.
 const searchCluster = viewRoot.$(".header-search-cluster");
-searchCluster.addEventListener("pointerdown", () => searchCluster.classList.add("search-held"), { signal });
+searchCluster.addEventListener("pointerdown", event => { if (event.pointerType === "mouse") searchCluster.classList.add("search-held"); }, { signal });
 searchCluster.addEventListener("focusin", () => searchCluster.classList.add("search-held"), { signal });
 searchCluster.addEventListener("focusout", event => { if (event.relatedTarget && !searchCluster.contains(event.relatedTarget)) releaseSearch(); }, { signal });
 document.addEventListener("pointerdown", event => {
