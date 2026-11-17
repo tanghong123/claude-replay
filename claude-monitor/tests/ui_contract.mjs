@@ -715,6 +715,38 @@ store.recover();
 assert.deepEqual(store.records, [], "409 recovery drops records tied to the stale epoch");
 assert.deepEqual(store.cursor, { epoch: 0, committed: 0, gen: 0, index: 0 });
 
+// #s562: a pull in flight when the store starts over (`recover`, after a head read or the turn index
+// met a 409) answers the cursor it was sent with. Applied to the fresh cursor it was a resync whose
+// open turn went on from `provisional_from` 1, so the truncate LENGTHENED the emptied array and left
+// a hole, which threw at `record.head` in the view (Hong, in the app). It is dropped, the next pull
+// asks again, and a truncate that would lengthen the store past a tail-first head starts it over.
+{
+  const realFetch = globalThis.fetch;
+  const goesOn = () => ({ epoch: 4, committed_from: 1, committed_ext: null, committed: [], provisional_gen: 1, provisional_from: 1, provisional: [{ kind: "bash", id: "r3", head: { name: "Bash" }, body: [] }], meta: null });
+  let racingResets = 0;
+  const racing = new RecordStore({ update: () => {}, reset: () => racingResets++ });
+  racing.session = "s";
+  racing.apply({ epoch: 4, committed_from: 0, committed: [{ kind: "user", id: "r1", turn: 1, body: [] }], provisional_gen: 1, provisional_from: 0, provisional: [{ kind: "assistant", id: "r2", phase: "commentary", body: [] }], meta: null });
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  try {
+    globalThis.fetch = async () => { await gate; return new Response(JSON.stringify(goesOn()), { status: 200 }); };
+    const pulling = racing.poll(racing.generation);
+    racing.recover();
+    release();
+    await pulling;
+    racing.stop();
+    assert.equal(racing.records.length, 0, "a reply to the cursor the store held before it started over is dropped, holes and all");
+    assert.deepEqual(racing.cursor, { epoch: 0, committed: 0, gen: 0, index: 0 }, "…and the next pull asks from the fresh cursor");
+    assert.equal(racingResets, 1, "…dropped before it is applied: only the start over itself reset the view (applied, the guard below would start over again)");
+  } finally { globalThis.fetch = realFetch; }
+  let resets = 0;
+  const holed = new RecordStore({ update: () => {}, reset: () => resets++ });
+  assert.equal(holed.apply(goesOn()), false, "apply says it started over");
+  assert.equal(resets, 1, "a truncate that would lengthen the store (no head to fill it) starts the session over");
+  assert.equal(holed.records.length, 0, "…and leaves no empty slot");
+}
+
 // #314 (design/tail-first-open.md): a tail-first open. The shared plan leaves the head the pull
 // skipped as empty slots; the store fills them with the one PENDING placeholder before anyone
 // hears of the records, the projection folds them into ONE pending unit (taking the tail's leading

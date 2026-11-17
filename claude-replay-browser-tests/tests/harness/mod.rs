@@ -4548,6 +4548,34 @@ pub fn queue_the_head(tab: &headless_chrome::Tab, hold_index: bool) {
     .expect("the head's reads are queued");
 }
 
+/// #s562: hold the session's `/pull` requests while `window.__holdPull` is set (each is SENT when
+/// `window.__releasePulls()` lets it go, so the server answers it then, for the cursor in its
+/// address), and log every toast the page shows and every error it does not catch in
+/// `window.__toastLog`. Install it before the page loads, after `queue_the_head` when both are used.
+pub fn hold_pulls(tab: &headless_chrome::Tab) {
+    use headless_chrome::protocol::cdp::Page;
+    tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+        source: r#"(function(){
+          var real = window.fetch, last = '';
+          window.__holdPull = false; window.__heldPulls = []; window.__toastLog = [];
+          window.__releasePulls = function () { var n = window.__heldPulls.length; while (window.__heldPulls.length) window.__heldPulls.shift()(); return n; };
+          window.fetch = function (input, init) {
+            var url = String(input && input.url || input), self = this;
+            if (/\/pull\?/.test(url) && window.__holdPull) return new Promise(function (res) { window.__heldPulls.push(function () { res(real.call(self, input, init)); }); });
+            return real.call(this, input, init);
+          };
+          window.addEventListener('error', function (e) { window.__toastLog.push('error: ' + (e.message || e)); });
+          window.addEventListener('unhandledrejection', function (e) { window.__toastLog.push('rejection: ' + String(e.reason && e.reason.message || e.reason)); });
+          setInterval(function () { var t = document.getElementById('toast'); var s = t ? t.textContent.trim() : ''; if (s && s !== last) window.__toastLog.push(s); last = s; }, 25);
+        })();"#
+            .to_string(),
+        world_name: None,
+        include_command_line_api: None,
+        run_immediately: None,
+    })
+    .expect("the pulls are held");
+}
+
 /// Answer every `/turn-index` read with a refusal (#s276), as a server from before the turn index
 /// would: the page then reads the panes from the records it has, as it did before.
 pub fn refuse_the_index(tab: &headless_chrome::Tab) {
