@@ -3,7 +3,8 @@
 > **DRAFT 4** (#s551, 2026-11-17). Not built. hd-replay reviewed draft 1 (3e0674bf,
 > `review-3e0674bf.md` on #s551), draft 2 (2b2f1531, `review-2b2f1531.md`) and draft 3 (643662fd,
 > clean). Draft 4 writes in Hong's two rulings of the same day, #s553 (a Machines row) and #s554
-> (shared review in the app), and the one question #s554 opens, Review on an iPad.
+> (shared review in the app), and his answer to the one question #s554 opened, Review on an iPad
+> (#s555).
 >
 > Hong's choice of 2026-11-17, closing agent-monitor-app #s9: *"I want the same experience as the
 > current web app on desktop and mobile, but need the native integration on ios devices"*, then
@@ -255,23 +256,22 @@ offered more than today.
 - **Shared review** (#s554: "In, as on the web app"): as above, under Writes. The alternatives were
   out, with Review hidden through a withheld control, or out with Review drawn and failing.
 
-**For his ruling: Review on an iPad.** On the web app, shared review lives in two places. A phone
-(the view's phone query) gets the Review sheet, and the view draws Review there only. A desktop gets
-the detached tab, the pane's ↗, which opens the document on a page of its own. In the app an iPad
-takes the desktop's layout, its ↗ is off (`detach: false`, since the app opens no second window yet),
-and the detached page is not in the kit until embedding's step 8. So "as on the web app" gives an
-iPhone shared review with no kit change, an iPad in a narrow Split View too (the phone query holds
-there), and an iPad at full width nothing. Goal: shared review on every device the app runs on.
-Alternatives:
-- (a) a withheld option of the view, `reviewSheet`, which the mount passes in the native app: the
-  phone's Review and its sheet offered at every width, until the detached page comes. No host is
-  offered it, and what `detach: false` does for every other host is unchanged;
-- (b) no kit change: a full-width iPad has no shared review until the detached page comes in a later
-  kit (embedding's step 8, the hub's phase 4);
-- (c) not offered: the view drawing Review wherever `detach` is off, for every host, which changes
-  what a host that turns ↗ off gets.
-
-Recommended: (a). Filed for him with (b) the default, since (a) is more than his yes named.
+- **Review on an iPad** (#s555: "The phone's Review sheet on an iPad too (native app only)"): a
+  withheld option of the view, `reviewSheet` (in `VIEW_WITHHELD`), which the mount passes in the
+  native app: the phone's Review and its sheet offered at every width, until the detached page
+  comes. No other host is offered it, and what `detach: false` does for every other host is
+  unchanged.
+  - Why: on the web app, shared review lives in two places. A phone (the view's phone query) gets
+    the Review sheet, and the view draws Review there only. A desktop gets the detached tab, the
+    pane's ↗, which opens the document on a page of its own. In the app an iPad takes the desktop's
+    layout with its ↗ off (`detach: false`, since the app opens no second window yet), and the
+    detached page is not in the kit until embedding's step 8. Without the option, an iPad at full
+    width had no shared review, while an iPhone and an iPad in a narrow Split View did.
+  - The Mac app has the same gap until it opens windows of its own (agent-monitor-app
+    `docs/mac-app.md`, slice 3), and passes the same option.
+  - The alternatives were no kit change, leaving a full-width iPad without shared review until the
+    detached page comes, and (not offered) the view drawing Review wherever `detach` is off, for
+    every host, which would change what a host that turns ↗ off gets.
 
 Nothing else is offered. If a later review finds an item none of these covers, it goes to him the
 same way.
@@ -328,12 +328,13 @@ The second entry is recommended: one artifact, one pin, the kit's tests holding 
    fallback off. A browser case with two hermetic monitors. No control into the app's screens yet.
    Released.
 4. **The rest for the native app**: the start theme, `show` passed on, the Machines row and its
-   rail glyph (`onMachines`, #s553), and, once Hong has ruled, Review on an iPad (#s555).
+   rail glyph (`onMachines`, #s553), and Review at every width (`reviewSheet`, #s555).
    `mountApp` refuses any option it does not name, as the view does (`MOUNT_OPTIONS`), and the
    contract cases hold each withheld option by name: a second mount throws, `machines` without
    `assets` throws, a name not in the list is refused, `assets` reaches mdrev's bundle and the
-   Mermaid runtime while every route goes through the row's handle, and the start theme yields to a
-   stored one. A kit page case under the app's policy. Released.
+   Mermaid runtime while every route goes through the row's handle, the start theme yields to a
+   stored one, and Review is drawn at a desktop width only where `reviewSheet` is passed. A kit
+   page case under the app's policy. Released.
 5. **agent-monitor-app #s13** mounts it and drops its own chrome.
 
 Each stage lands on its own, with the monitor's page working at every step.
@@ -353,6 +354,10 @@ Each stage lands on its own, with the monitor's page working at every step.
   `the_detached_tab_offers_shared_review_and_the_pane_does_not` builds one, with a push, a share and
   a subscription from the sheet reaching each machine's own store; mdrev's `conform` on each
   machine's review prefix with the bundled guest.
+- **Review at every width**: on the kit page at a desktop width, Review drawn and its sheet opened,
+  a note shared and the sheet closed where the mount passes `reviewSheet`; no Review there where it
+  does not; the monitor's page unchanged
+  (`the_detached_tab_offers_shared_review_and_the_pane_does_not` still passes).
 - **The width study** (#s517) run on the kit page as on the monitor's.
 - **The app's walk** on the Simulator: an iPhone upright and sideways, and an iPad, light and dark,
   with the Review sheet opened, a note shared and the sheet closed on each.
