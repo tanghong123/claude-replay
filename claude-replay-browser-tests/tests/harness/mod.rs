@@ -2569,7 +2569,9 @@ pub const DOWNLOADS_READ_WAIT: Duration = Duration::from_secs(5);
 /// there to answer, and the read sat in the kernel for two hours. So it runs on a thread of
 /// its own, and one that has not answered within [`DOWNLOADS_READ_WAIT`] skips the check with
 /// one stderr line, as an unreadable folder always did. The thread is left behind: a read
-/// stuck in the kernel cannot be stopped.
+/// stuck in the kernel cannot be stopped. So the case goes on, but whether the test binary can
+/// then EXIT while that read waits on the prompt was not measured: `cargo test` may still wait
+/// for it at the end of the run.
 pub struct HomeDownloads {
     dir: Option<PathBuf>,
     before: Option<std::collections::BTreeSet<String>>,
@@ -2646,12 +2648,19 @@ pub fn list_names_with(
             );
             None
         }
-        Err(_) => {
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
             eprintln!(
                 "harness: reading {} has not answered in {:.1}s (macOS may be asking for access to \
                  it, with nobody there to answer); not checking that it gains nothing",
                 dir.display(),
                 wait.as_secs_f64()
+            );
+            None
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            eprintln!(
+                "harness: the read of {} failed without an answer; not checking that it gains nothing",
+                dir.display()
             );
             None
         }

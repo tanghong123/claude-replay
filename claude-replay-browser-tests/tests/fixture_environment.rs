@@ -313,7 +313,7 @@ fn a_downloads_read_that_never_answers_is_given_up_after_its_wait() {
         "a read that never answered checks nothing: {names:?}"
     );
     assert!(
-        took >= wait && took < wait * 10,
+        took >= wait && took < wait + std::time::Duration::from_secs(10),
         "given up after its wait, not before it or long after: {took:?}"
     );
 }
