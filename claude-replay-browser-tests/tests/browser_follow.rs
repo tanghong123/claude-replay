@@ -14376,6 +14376,157 @@ fn key_focus_held(tab: &headless_chrome::Tab, id: &str) -> bool {
     ) == true
 }
 
+/// #s557, from #s556's review: Escape closed Info's card only while it was pinned, so a peek (the
+/// card a hover or a keyboard focus on Info opens) could not be dismissed without moving the pointer
+/// or the focus (WCAG 1.4.13). On each Info: a keyboard focus opens a peek, Escape closes it, and it
+/// stays shut with the focus still there; Enter pins it and Escape still closes it; a hover opens a
+/// peek, Escape closes it, and it stays shut with the pointer still there. aria-expanded follows.
+/// An Escape or Enter the page leaves unprevented repeats in this Chrome (#270), so a window listener
+/// after every page listener prevents each one and, for Enter, clicks the focused button once, as
+/// #s556's case does. It counts every key it sees, so a page listener that stopped one fails the case.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn info_s_peek_closes_on_escape_from_a_keyboard_focus_or_a_hover() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-info-escape", 3147);
+    let open = "document.getElementById('infoPopover').classList.contains('open')";
+    harness::eval(&tab, "(function(){ var b = document.createElement('button'); b.id = 'caseAway'; b.type = 'button'; b.textContent = 'away'; b.style.cssText = 'position:fixed;left:0;bottom:0;z-index:9999'; document.body.appendChild(b); window.__focusNext = null; window.__keys = 0; document.addEventListener('keydown', function (e) { if (e.key !== 'F8') return; e.preventDefault(); e.stopImmediatePropagation(); var n = document.getElementById(window.__focusNext); if (n) n.focus(); }, true); addEventListener('keydown', function (e) { if (e.key !== 'Enter' && e.key !== 'Escape') return; window.__keys++; if (e.defaultPrevented) return; e.preventDefault(); if (e.key === 'Enter' && document.activeElement) document.activeElement.click(); }); return 'ok'; })()");
+    let key_focus = |id: &str| {
+        harness::eval(&tab, &format!("window.__focusNext = '{id}'; 'ok'"));
+        tab.press_key("F8").expect("F8");
+        harness::probe(&tab, &format!("(function(){{ var a = document.activeElement; return {{ on: a && a.id === '{id}', visible: !!a && a.matches(':focus-visible'), active: a ? a.id || a.tagName : null }}; }})()"))
+    };
+    let point = |id: &str| {
+        let v = harness::probe(&tab, &format!("(function(){{ var r = document.getElementById('{id}').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"));
+        headless_chrome::browser::tab::point::Point {
+            x: v[0].as_f64().unwrap(),
+            y: v[1].as_f64().unwrap(),
+        }
+    };
+    // As in #s548's case: an open card past the peek's 140 ms close, a shut one within three seconds.
+    let settles = |want: bool| -> bool {
+        let end = Instant::now() + Duration::from_millis(if want { 500 } else { 3000 });
+        loop {
+            let seen = harness::eval(&tab, open) == true;
+            if !want && !seen {
+                return true;
+            }
+            if Instant::now() >= end {
+                return seen == want;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    // A card Escape closed stays shut: still shut half a second on.
+    let stays_shut = || {
+        std::thread::sleep(Duration::from_millis(500));
+        harness::eval(&tab, open) != true
+    };
+    let expanded = |id: &str| {
+        harness::eval(
+            &tab,
+            &format!("document.getElementById('{id}').getAttribute('aria-expanded')"),
+        )
+    };
+    let at = |id: &str, width: f64| {
+        harness::resize(&tab, width, 900.0);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && !!document.getElementById('{id}') && document.getElementById('{id}').getBoundingClientRect().width > 0 && {VIEW_CAUGHT_UP}"),
+            &format!("{id} drawn in a {width}px window"),
+            Duration::from_secs(15),
+            "document.getElementById('sessionView').className",
+        );
+    };
+    let mut presses: i64 = 0;
+    let mut press = |key: &str| {
+        tab.press_key(key).expect("a key");
+        presses += 1;
+        let seen = harness::eval(&tab, "window.__keys");
+        assert!(
+            seen == presses,
+            "every Enter and Escape reaches the window's last listener: {seen} of {presses}"
+        );
+    };
+    let mut wrong = Vec::new();
+    for (id, width) in [("outlineFooterInfo", 1400.0), ("outlineRailInfo", 1000.0)] {
+        at(id, width);
+        tab.move_mouse_to_point(point("caseAway"))
+            .expect("the pointer off Info");
+
+        // A keyboard peek, then Escape.
+        let on = key_focus(id);
+        assert!(
+            on["on"] == true && on["visible"] == true,
+            "{id}: the case's key gives a keyboard focus (:focus-visible): {on}"
+        );
+        if !settles(true) {
+            wrong.push(format!("{id}: a keyboard focus did not open the peek"));
+        }
+        press("Escape");
+        if !settles(false) {
+            wrong.push(format!("{id}: Escape left a keyboard peek open"));
+        } else if !stays_shut() {
+            wrong.push(format!(
+                "{id}: the peek came back after Escape, the focus still on Info"
+            ));
+        }
+        if !key_focus_held(&tab, id) {
+            wrong.push(format!("{id}: Escape moved the keyboard focus off Info"));
+        }
+        if expanded(id) != "false" {
+            wrong.push(format!(
+                "{id}: aria-expanded reads {} after Escape on a keyboard peek",
+                expanded(id)
+            ));
+        }
+
+        // A pinned card still closes on Escape.
+        press("Enter");
+        if !settles(true) || expanded(id) != "true" {
+            wrong.push(format!("{id}: Enter did not pin the card"));
+        }
+        press("Escape");
+        if !settles(false) {
+            wrong.push(format!("{id}: Escape left a pinned card open"));
+        }
+        if expanded(id) != "false" {
+            wrong.push(format!(
+                "{id}: aria-expanded reads {} after Escape on a pinned card",
+                expanded(id)
+            ));
+        }
+
+        // A hover peek, the focus elsewhere, then Escape.
+        key_focus("caseAway");
+        tab.move_mouse_to_point(point(id))
+            .expect("the pointer onto Info");
+        if !settles(true) {
+            wrong.push(format!("{id}: a hover did not open the peek"));
+        }
+        press("Escape");
+        if !settles(false) {
+            wrong.push(format!("{id}: Escape left a hover peek open"));
+        } else if !stays_shut() {
+            wrong.push(format!(
+                "{id}: the peek came back after Escape, the pointer still on Info"
+            ));
+        }
+        if expanded(id) != "false" {
+            wrong.push(format!(
+                "{id}: aria-expanded reads {} after Escape on a hover peek",
+                expanded(id)
+            ));
+        }
+        tab.move_mouse_to_point(point("caseAway"))
+            .expect("the pointer leaves");
+    }
+    assert!(
+        wrong.is_empty(),
+        "Escape closes Info's card, a peek by keyboard or hover as well as a pinned one: {wrong:#?}"
+    );
+}
+
 /// #159 layout, reported with a screenshot: the Outline title had drifted to the centre and the
 /// selector's rows were 24px squares with their labels spilling outside the menu.
 ///
