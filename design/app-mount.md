@@ -1,6 +1,7 @@
 # The web app as one mount, for the native app
 
-> **DRAFT 1** (#s551, 2026-11-17). Not built. Hong's choice of 2026-11-17, closing
+> **DRAFT 2** (#s551, 2026-11-17). Not built. Draft 1 (3e0674bf) was reviewed by hd-replay
+> (`review-3e0674bf.md` on #s551); this draft answers it. Hong's choice of 2026-11-17, closing
 > agent-monitor-app #s9: *"I want the same experience as the current web app on desktop and
 > mobile, but need the native integration on ios devices"*, then "Yes" to doing it this way, then
 > *"I'd like to have a single session list that combines sessions from multiple devices"*. It revises
@@ -10,10 +11,10 @@
 ## What it is for
 
 The native app (`tanghong123/agent-monitor-app`) should be the web app: the same session list with
-its drawer and rail, the same session view, the same search, filter and theme, laid out as the
-monitor's own page lays them out, the phone's on an iPhone and the desktop's on an iPad. What it adds
-is what only an app on the device can do: pairing with each machine, the relay, the share sheet, the
-sheet before a link leaves the app, and one list over every machine.
+its drawer and rail, the same session view, the same search, filter, theme and writes, laid out as
+the monitor's own page lays them out, the phone's on an iPhone and the desktop's on an iPad. What it
+adds is what only an app on the device can do: pairing with each machine, the relay, the share sheet,
+the sheet before a link leaves the app, and one list over every machine.
 
 Today the app gets less. It mounts the kit's two parts, the session list and the session view, in
 chrome of its own (#s415): one machine at a time, read-only, a layout of its own (list and session
@@ -23,99 +24,145 @@ app would make two copies of one interface, drifting apart. And the app reaches 
 in four places to get what it has (agent-monitor-app #s9): the view's `frame` and `paneLayout`
 options, the handle's `url`, `mdrevUrl` and `local` members, and two of the view's CSS rules.
 
-So the kit ships the web app itself as one mount. The app mounts it, and its native integration goes
-through options the kit names for it, each held by the kit's tests.
+So the kit ships the web app itself as one mount, and the app mounts it. Its native integration goes
+through options the kit's contract cases hold, kept for the native app as `frame` is kept today.
 
 ## What the web app is today
 
 - **Script:** `app.js` (683 lines), a module that runs as the monitor's page loads. It mounts the
   list (`mountSessionList`) and the view (`mountSessionView`) as a host would, and keeps what is the
-  app's: the brand and version, the theme toggle, write mode with its switch and confirm dialog, the
-  session search (⌘K, a jump-to), the toast, the list's layout from the window (the drawer, the rail
-  or the list at a width, `arrangeApp`), the phone's drawer handle and scrim, a wide phone's column
-  switch, the address (`?session=`) and its history, the keymap, and native mode's installer.
-- **Markup:** the page's shell (`app-shell.html`, from the generated reference shell): `#app` with
-  the sidebar's head, the list's element, the view's element, ⌘K's layer, the confirm dialog, the
-  toast.
-- **Page-wide:** `app-shell.css` puts its tokens on `:root` (16 rules, 11 more for dark) and has
-  rules for `html` and `body`; `app.js` listens on `window` (`popstate`, `keydown`) and reads
-  `location` and `localStorage`.
+  app's: the brand and version, the theme toggle, write mode with its switch, help and confirm
+  dialog, the session search (⌘K, a jump-to), the toast, the list's layout from the window (the
+  drawer, the rail or the list at a width, `arrangeApp`), the phone's drawer handle and scrim, a
+  wide phone's column switch, the address (`?session=`) and its history, the keymap, and the hook
+  native mode's entry wraps (`native-entry.js` wraps the write switch as it loads).
+- **Markup:** the page's shell, which `ui::page` puts into the page (`APP_SHELL`): `#app` with the
+  sidebar, the list's element and the view's element, and beside `#app`, at the body's level, three
+  fixed layers: ⌘K's (`#searchLayer`), the confirm dialog (`#confirmLayer`) and the toast.
+- **The page's head and body:** the viewport meta (with `viewport-fit=cover`, which the safe-area
+  insets need), `color-scheme`, the three stylesheets in order, the `mermaid-runtime` meta, and
+  `data-version`, `data-paired` and `data-mdrev` on the body.
+- **Page-wide styles:** `app-shell.css` owns the document: `*`, `html, body {height: 100%}`,
+  `body {overflow: hidden}`, the button resets, `.app {width: 100vw; height: 100dvh}`, its tokens on
+  `:root` (55 rules name it) with the theme read from `:root[data-theme]`, and media queries on the
+  window.
 - **One server:** the view takes `backend()`, the page's one handle, and write mode reads whether
-  the page is paired.
+  that handle is paired.
 
 ## Decisions
 
-### One entry point that takes the whole page
+### One entry point, once per page
 
-`mountApp(element, options)` draws the web app into `element` and returns a handle (`unmount`, and
-the members below). It draws the app's markup itself, from the same shell the monitor's page
-carries, which a test holds byte for byte. It mounts the list and the view inside, as `app.js`
-does today. And it owns the page: the document's address, the root's theme, the page-wide styles and
-the page's keymap.
+`mountApp(element, options)` draws the web app into `element` and returns a handle. It is called
+once per document and never unmounted: a second call throws. That is not a choice of style: the
+web app is built on things a page has one of, and the design names them so the refusal is
+deliberate:
 
-So there is one per document, for a host whose whole page is the web app. The native app is that
-host. A host that wants the session in a pane of its own page (the collaboration app) keeps mounting
-the two parts, as `design/embedding.md` has it.
+- the stores in `state.js` (`indexState`, `searchState`, `controlState`), module singletons;
+- the page-wide backend handle (`backend()`), which each view mount sets;
+- mdrev's bundle, imported once per page (`mdrev-pane.js`);
+- the elements found by fixed ids (`#app`, `#sessionView` through `viewRoot`, `#themeBtn`,
+  `#drawerHandle`, `#columnSwitch`, the resizer, the three layers);
+- the root's custom properties (`--sidebar-user`, and the view's) and the root's theme;
+- the document's keymap (`bindKeymap(document, …)`, which cannot be unbound), the window's
+  listeners, the address and history, and the storage keys;
+- the phone queries, read against the window.
 
-Two other shapes were weighed:
-- **The app's chrome as a component a host places in a pane.** It would mean re-scoping every
-  page-wide rule and every window-sized layout rule to an element, and no host has asked for it.
-- **The kit ships the page itself**, an HTML entry that the host configures through globals. That
-  is an untyped contract: nothing for the kit's declaration test to hold, and nothing to refuse a
-  wrong name.
+So nothing needs a teardown, and `app.js`'s listeners need no `signal`. A host that wants the web
+app gone drops the page; the native app reloads its web view (below).
+
+**What `element` is.** A wrapper holding `#app` and the three layers as siblings, as the body holds
+them today. The layers cannot go inside `#app`: the view sets a `transform` on `#app` while a
+phone's keyboard is up, which makes `#app` the containing block of anything fixed inside it, and the
+confirm dialog, which a pane grant raises while the reader composes, would be misplaced exactly
+then. The shell becomes a generated module (as `session-view-markup.js` is), from the same shell
+the monitor's page carries, held byte for byte by a test; the monitor's page carries an empty
+wrapper.
+
+**What the host's page carries.** The mount takes the whole viewport (`app-shell.css` owns `html`
+and `body`), so the page is the mount's: the viewport meta with `viewport-fit=cover`, a
+`color-scheme` meta, and the three stylesheets in order. The body's data move into options:
+`version` (the brand), and per machine, `paired` and mdrev's release, which each handle already
+carries. In the app the brand shows the kit's release, since that is the code the app runs; each
+machine's own version shows in its list head.
 
 ### The monitor's page is its first host
 
-`app.js` becomes the monitor's page calling `mountApp` with its own server, then installing native
-mode as now. So the web app and the native app run the same code, and every browser case of the app
-shell tests the mount. This is embedding's "The standalone app becomes a host", one level up.
+The mount's code moves to `app-mount.js`. `app.js` stays the monitor page's host script: it calls
+`mountApp` as it loads, with the page's own server, so `native-entry.js`, which imports `app.js` and
+wraps the write switch as it is evaluated, finds the switch bound, as now. The web app and the native
+app then run the same code, and every browser case of the app shell tests the mount. This is
+embedding's "The standalone app becomes a host", one level up.
 
 ### One list over every machine
 
 The mount takes either `backend`, one handle (the monitor's page), or `machines`, a list of
-`{machine, label, handle}` (the native app). With `machines`:
+`{machine, label, handle}` (the native app), never empty. With `machines`:
 
-- the list reads #s541's merged source over them, so each row and project head names its machine,
-  a machine that stops answering keeps its rows greyed under a head saying since when, and hiding a
-  row hides it on its own machine only;
-- opening a row mounts the view again on that row's machine, with that machine's handle (#s541's
-  `locate` and `forView`, guide section 6), so the view's every call goes to the machine the
-  session runs on (D8);
-- ⌘K's rows name their machine;
-- write mode asks the row's machine whether it is paired, never the page;
-- the address names the merged id (`<machine>/<id>`);
-- a Machines control calls `onMachines()`, the app's own screen for pairing, forgetting and each
-  machine's state. It is drawn only where `onMachines` is given. In the sidebar's head it takes the
-  theme toggle's slot, which the app leaves free (`show.theme`, below), so the head keeps the count
-  of controls #223 and #210 measured at its 232px minimum. On the rail it is a glyph after search;
-  in the drawer and a wide phone's column it is where the head's controls are there. Each place is
-  hit-tested at the list's minimum width, as `the_app_shell_resizes_the_session_list` does for the
-  head today.
+- **The list** reads #s541's merged source over them, so each row and project head names its
+  machine, a machine that stops answering keeps its rows greyed under a head saying since when, and
+  hiding a row hides it on its own machine only.
+- **The view** is mounted on the first machine's handle until a row opens, showing nothing until
+  then. Opening a row whose machine differs from the view's mounts the view again on that
+  machine's handle (#s541's `locate` and `forView`, the guide's section 6), so every call the view
+  makes goes to the machine the session runs on (D8). A row on the same machine is selected as
+  today, with no remount.
+- **What a remount loses**, as the view's unmount does: the compose draft and its attached images,
+  the pane's tabs, the search, and a send still in flight (whose result is fenced). The pane's open
+  state comes back by itself. This is accepted for a first stage; keeping the draft per session in
+  the mount comes after, if the app's walk shows it matters.
+- **The ids that cross** between the list and the view are mapped each way: the view gets the
+  machine's own id (`forView`), and every id it gives back is mapped to the list's merged one
+  (`<machine>/<id>`, `forView`'s `listId`, or `splitMachineId` the other way). That covers
+  `selectSession` (with `push`), `parentShown`, `session()` against the list's selection, and
+  `selectedId`. The address holds the merged id; the view's own storage keys stay on the machine's
+  id (`am-view:<id>`), as `design/monitor-hub.md` D3 already has them.
+- **The keymap** looks up each of the view's keys on the view mounted now, at the moment of the key,
+  never a copy taken at the first mount. The wide phone's column gives back the pane list it
+  borrowed from the view, and shows the Sessions tab, before the view is unmounted.
+- **Write mode** reads `paired` from the open row's machine (`locate`), and repaints on each remount;
+  with no row open, the switch is off and says to open a session. The help that names
+  `agent-monitor --pair` shows only for an unpaired machine, of which iOS has none.
+- **⌘K's rows** name their machine.
+- **mdrev** loads once, from `assets` (below), which `machines` requires: the mount refuses
+  `machines` without `assets`, since otherwise the first machine's bundle would serve every machine.
+  `mdrevVersion` is then the bundled release, and #s352's fallback, which fetches `/markdown` from a
+  machine to load the release it serves, is off.
+- **Machines paired or forgotten later.** The app reloads its web view with the new list. The page's
+  address keeps the open session, so the reader comes back where they were. No member changes the
+  machines of a mounted app.
+- **A first launch with no machine** never mounts: the app shows its pairing screen first.
 
 The "By device" arrangement (D7) comes with phase 2, in the list.
 
-### What only the native app is given
+### Kept for the native app, as `frame` is
 
-Each option below is declared in the kit, held by its declaration test and a contract case, and
-offered to the native app only, as `frame` is today (#s436: the owner controls both sides). Which of
-them the plan Hong agreed to already named, and which need his ruling, is in "What needs a ruling".
-Each is an option of the mount, which hands it to the list or the view inside; none is a handle's,
-so no other host is offered it.
+The kit offers a host only what Hong has ruled it may change, and the declaration test refuses a
+withheld name in `index.d.ts` and the guide (`VIEW_WITHHELD`, `LIST_WITHHELD`, `kit.rs`). The kit
+has no category "declared for the native app only": anything declared is offered to every host.
+
+So `mountApp` and every option below are **withheld**: exported from a second entry of the kit's
+bundle, `native-app.js`, which the kit's walk takes in beside `index.js`, absent from `index.d.ts`
+and the guide, held by contract cases, and described here and in the app's own `docs/kit-page.md`.
+`index.js` and its declarations stay exactly what hosts are offered. This is how `frame` is kept today (#s436: an arrangement between
+the components and the native app, which are built together, not offered to hosts). It also keeps
+the page's keymap (`keyboard: "page"`, withheld today) unoffered: only `mountApp` binds it, and no
+host is offered `mountApp`. A new kit category is not needed; whether `mountApp` should one day be
+offered to other hosts is a later question.
 
 - **`frame`**: an agent's HTML page in a frame on the app's own scheme, passed to the view as now.
-  With it, `onFrameGone(id)`: the view says when no frame shows a page any longer, so the app can
-  drop that page (agent-monitor-app #s9's note).
+  The app keeps the pages it frames in a store it bounds itself, so no "frame gone" event is added.
 - **`assets`**: where mdrev's bundle and the Mermaid runtime load from, apart from each machine's
-  routes. The app bundles the releases the kit pins (D3: no code from a machine runs in the page).
-  Today the view takes both from its handle: mdrev's bundle and its routes through one base
-  (`mdrevUrl`, in `mdrev-pane.js`), and the Mermaid runtime through `url` from the page's
-  `mermaid-runtime` meta (`session-view.js`). So the app wraps each handle to send those few paths
-  to its bundle. With `assets` the mount passes the view where the code loads from, and every
-  route, mdrev's included, still goes through the row's handle. The wrapped `url` and `mdrevUrl`
-  members go.
-- **The theme**: the app gives it, `theme: "system"` to follow the device's appearance, or
-  `"light"` or `"dark"` from a setting of its own and `setTheme` as that changes. It switches the
-  mount's own toggle off (`show.theme`, below).
+  routes. The app bundles the releases the kit's release pins (the app's `pins.js`; D3: no code from
+  a machine runs in the page). Today the view takes both from its handle: mdrev's bundle and its
+  routes through one base (`mdrevUrl`, in `mdrev-pane.js`), and the Mermaid runtime through `url`
+  from the page's `mermaid-runtime` meta (`session-view.js`), so the app wraps each handle to send
+  those few paths to its bundle. With `assets` the mount tells the view where the code loads from,
+  every route, mdrev's included, still goes through the row's handle, and the wrapped `url` and
+  `mdrevUrl` members go.
+- **The theme**: the web app's own toggle is the app's theme setting, kept in the page's storage on
+  the app's scheme. `theme` names the theme to start in when nothing is stored, which the app sets
+  from the device's appearance. No other theme control is added.
 - **Scripts**: the mount imports only the modules beside it in the kit and loads nothing from a
   machine. A contract case mounts it under a policy that allows scripts from the kit's directory
   alone.
@@ -124,109 +171,105 @@ so no other host is offered it.
   relay into the share sheet (agent-monitor-app #s3), and the sheet that asks before a link leaves
   the app (#s12). The app's walk holds both. An option is added only if a measurement shows the
   page's own path does not reach those rules.
-- **Machines and pairing**: `machines` and `onMachines`, above.
-- **Locality**: `backendHandle` takes `local` already but the kit does not declare it, so the app
-  passes it from outside the guide (`local: false`: nothing on a phone is local, D8). Declaring it
-  would offer it to every host, which is why it is listed for a ruling.
-- **Native mode**: the mount's handle carries no installer for Codex native mode in the kit. The
-  monitor's page installs it as now, and the app goes without it (D9).
+- **`show`**: passed on to the view's and the list's optional controls as each declares them. The
+  app passes `detach: false` until detached windows come (phase 4).
 
 So each of the app's four reaches past the guide goes:
-- `frame` becomes the mount's declared option.
+- `frame` stays what it is, a withheld option, now the mount's.
 - `paneLayout` is no longer needed: the mount lays out its parts itself, as `app.js` does.
-- The wrapped `url` and `mdrevUrl` members give way to `assets`, and `local` is declared.
-- Of the two CSS rules, the back control's room goes with the app's own layout, and Review hidden
-  becomes `show.review`.
-
-### Controls a host may switch off
-
-The mount takes `show`, as the view does: the view's optional controls (`reading`, `history`,
-`detach`), and two more:
-- `review`: shared review's full-screen sheet on a phone, which writes to colleagues' threads. The
-  writes Hong chose for the app (agent-monitor-app #s14) are the compose box, dialog answers and pane
-  grants; shared review reaches other people, so the app passes `review: false` until he asks for it.
-- `theme`: the theme toggle, off where the app gives the theme.
-
-It passes `detach: false` too, until detached windows come (phase 4). Switching an optional control
-off is a choice #s436 already gives every host.
+- The wrapped `url` and `mdrevUrl` members give way to `assets`. `local` is not needed on iOS: an
+  `app://monitor/…` base already reads as not local (`backend.js`); only This Mac, in phase 4, needs
+  a local handle, and is settled then.
+- Of the two CSS rules, the back control's room goes with the app's own layout. Review hidden is
+  the ruling below.
 
 ### Writes
 
-The mount takes `write` as the view does. Hong chose on agent-monitor-app #s14 (2026-11-17) that the
-app writes from the moment it mounts the web app: the compose box, dialog answers and pane grants, as
-on the web app, each under that machine's own gate and grant. Write mode's switch asks the row's
-machine whether it is paired (above). The relay passes the page's write routes and still refuses
-every frame's (D3). A host that passes no `write` gets no write switch and no compose box.
+Hong chose on agent-monitor-app #s14 (2026-11-17) that the app writes from the moment it mounts the
+web app: the compose box, dialog answers and pane grants, as on the web app, each under that
+machine's own gate and grant. The mount draws its own write switch, help and confirm dialog, as
+`app.js` does, so it takes no `write` option. The relay passes the write routes of the compose box,
+dialogs and pane grants, and still refuses every frame's request, shared review's writes
+(`api/mdrev-review/`) and Codex native mode's (`/api/codex/*`), whatever the page shows (D3).
 
 ### What stays the native app's
 
 Pairing and the Keychain, on its own screens; the relay and its key; the share sheet; the sheet
-before a link leaves the app; running only bundled code; and building each kit release into the app
-and onto TestFlight (agent-monitor-app #s13). The layout, the top bar and where the list goes are
-the mount's, as in a browser.
+before a link leaves the app; running only bundled code; reloading its web view when the machines
+change; and building each kit release into the app and onto TestFlight (agent-monitor-app #s13).
+The layout, the top bar, where the list goes and the theme toggle are the mount's, as in a browser.
 
 ## What needs a ruling
 
-hd-replay pointed out that the kit offers a host only what Hong has ruled it may change
-(`VIEW_WITHHELD` and `LIST_WITHHELD` in `claude-monitor/src/kit.rs`). The plan Hong agreed to on
-2026-11-17 named the web app as one mount, from the same code the monitor serves, and these
-native-app options: the app's frame for agent pages, saving a file to the share sheet, links out
-through a sheet, the scripts loading from the bundle, the machines (pairing, the one list, By
-device), and the theme. Anything more comes to him as one decision before it is built (his "sounds
-good" to that, logged on #s551).
+The plan Hong agreed to on 2026-11-17 named the web app as one mount, from the same code the monitor
+serves, and these native-app options: the app's frame for agent pages, saving a file to the share
+sheet, links out through a sheet, the scripts loading from the bundle, the machines (pairing, the one
+list, By device), and the theme. Anything more comes to him as one decision before it is built (his
+"sounds good", logged on #s551). Writes are decided (agent-monitor-app #s14, D9).
 
-Writes are decided: they come with the mount (agent-monitor-app #s14, D9).
+**Named in that plan, no ruling needed:** `mountApp` with the monitor's page its first host;
+`machines` and the merged list; `frame`; `assets`; the theme (the toggle as the app's setting,
+`theme` as the start); saves and links out with no option. Each is withheld, as above, so no host is
+offered more than today.
 
-**Named in the plan he agreed to:**
+**For his ruling.** Each with its goal and the alternatives, a way with no kit change among them:
 
-| Item | Where in the plan |
-|---|---|
-| `mountApp`, with the monitor's page its first host | the web app as one mount, from the same code |
-| `machines` and the merged list | the machines: the one list (and #s539 A) |
-| `frame` | the app's frame for agent pages (and #s436) |
-| `assets` | the scripts loading from the bundle |
-| The theme from the app (`theme: "system"`, `setTheme`) | the theme |
-| Saves and links out, with no option | the share sheet; links out through a sheet |
+1. **A way into the app's own screens.** Goal: pair, forget and see each machine from inside a page
+   the mount fills. Alternatives:
+   - (a) a "Machines" row in the sidebar's nav, beside Search, and a glyph on the rail after the
+     filter, drawn only where the app passes `onMachines` (a withheld option). A nav row fits at
+     every width the nav shows, the drawer and a wide phone's column included, so it takes no
+     slot in the head and needs no other control to give way;
+   - (b) a native control over the web view (no kit change), which covers part of the page the
+     mount lays out and has to dodge its top bar and dock at every width;
+   - (c) none (no kit change): the app's screens only at a first launch and from iOS's Settings.
 
-**For his ruling, each with a recommendation:**
+   Recommended: (a).
+2. **Shared review in the app.** Goal: the web app's Review on a phone (the full-screen sheet over
+   `api/mdrev-review/`) writes to colleagues' threads and pushes to a review store, beyond the
+   writes Hong chose. Alternatives:
+   - (a) out, with the relay refusing `api/mdrev-review/` (the boundary) and Review not drawn in the
+     app, through `show.review`, an optional control of the view withheld from hosts;
+   - (b) out with no kit change: the relay refuses, Review is still drawn, and its sheet fails to
+     reach the review routes;
+   - (c) in: shared review as on the web app, the relay passing its routes to the machine, each
+     push and share going out as the reader.
 
-| Item | What it adds | Recommended |
-|---|---|---|
-| `onMachines` and the Machines control | a control in the list's chrome that only the app draws | yes: pairing is in the plan, and the app has no other way into its own screens over a full-page mount |
-| `onFrameGone` | an event out, for the frame only | yes: without it the app keeps every agent page a session ever framed |
-| `show.review` | Review made an optional control | yes: shared review writes to colleagues' threads, beyond the writes Hong chose for the app |
-| `show.theme` | the theme toggle made an optional control | yes, with the theme from the app; else two controls set one theme |
-| `local` declared on `backendHandle` | a handle option every host is offered | yes: it only says what the handle already reads, and a host that frames the parts on another origin needs it too |
+   Recommended: (a) for the first release; (c) is a later step if he wants it.
 
-These go to him as one decision once this design has been reviewed, filed in this queue.
+Nothing else is offered. If a later review finds an item none of these covers, it goes to him the
+same way.
 
 ## Details for the stages
 
 - **The address on the app's scheme.** The mount writes `?session=` and pushes history, as the web
-  app does. Whether a `WKWebView` page on a custom scheme keeps both is measured now, in the app's current
-  page, before stage 2 starts: if it does not, the mount takes the address as an option there.
-  The app today also remembers the last session in storage and opens it at launch, since its page
-  always loads with no address. Where the address names no session, the mount opens the first, as
-  the web app does; whether it should open the remembered one instead is settled with that
-  measurement.
+  app does. Whether a `WKWebView` page on a custom scheme keeps both, across a reload too, is
+  measured now, in the app's current page, before stage 2 starts. If it does not, the mount takes
+  the address as an option there. The app today remembers the last session in storage and opens it
+  at launch; where the address names no session, the mount opens the first, as the web app does, and
+  the measurement settles whether the app's memory stays.
+- **Copy link.** The view's Copy link copies the page's address, which in the app is an `app://`
+  address, useless outside it. What it copies there (the machine's own address for the session, or
+  nothing) is settled in stage 4.
 - **Storage keys.** The mount keeps the web app's keys. On the app's scheme they are the app's
-  alone. A key that holds a session id holds the merged id there.
-- **mdrev's pin.** The app bundles the mdrev release the kit names (`pins.js` today), so the pin
-  moves with the kit's.
+  alone. The list's keys that hold a session id hold the merged id; the view's hold the machine's own.
+- **Renaming.** `app-mount.js` joins `ui::asset`, and the class checks in
+  `scripts/session-view-css.mjs` read it as they read `app.js` today.
 
 ## The order
 
 1. **#s540 and #s541 land** (in flight).
-2. **The mount.** `app.js` becomes `app-mount.js` with `mountApp`, its teardown and element-rooted
-   lookups; the monitor's page is its host. The whole browser suite and a Simulator walk show
-   nothing changed. Released.
-3. **Machines in the mount**, on #s541: `machines`, `onMachines`, ⌘K, write mode per machine, the
-   view remounted per row. A browser case with two hermetic monitors. Released.
-4. **The native options**: `frame` with `onFrameGone`, `assets`, the theme from the app,
-   `show.review` and `show.theme`, `local` declared, the Machines control, each once Hong has
-   ruled on it.
-   The kit's declarations, a guide section, and kit.rs's list of what only the native app is given.
-   A kit page case mounts it under the app's policy. Released.
+2. **The mount, for one server.** `app-mount.js` with `mountApp` (and the kit's `native-app.js`
+   entry), the shell as a generated module,
+   the wrapper with the three layers, `version` as an option; `app.js` its host on the monitor's
+   page. The whole browser suite and a Simulator walk show nothing changed. Released.
+3. **Machines in the mount**, on #s541: `machines`, the view remounted per machine with the ids
+   mapped, the keymap read at the key, write mode per machine, ⌘K's machines, `assets` and the
+   fallback off. A browser case with two hermetic monitors. No control into the app's screens yet.
+   Released.
+4. **The rest for the native app**: the start theme, `show` passed on, and, once Hong has ruled,
+   the way into the app's screens and Review's place. Contract cases for every withheld option, and a
+   kit page case under the app's policy. Released.
 5. **agent-monitor-app #s13** mounts it and drops its own chrome.
 
 Each stage lands on its own, with the monitor's page working at every step.
@@ -237,8 +280,10 @@ Each stage lands on its own, with the monitor's page working at every step.
   mount is the web app.
 - **The kit page:** `mountApp` from the kit alone, over two hermetic monitors: one merged list,
   each machine's rows opening on their own machine, ⌘K naming machines, a stopped machine's rows
-  greyed, scripts allowed from the kit only.
-- **The Machines control:** hit-tested in the head at the list's 232px minimum, on the rail, in the
-  drawer and in a wide phone's column, as the head's other controls are.
+  greyed, the view's keys working after a switch of machine, and scripts allowed from the kit only.
+- **Writes on each machine:** on that page, the compose box sending to a session of each machine, a
+  dialog answered and a pane grant asked on each, each under that machine's own gate.
+- **The way into the app's screens**, once ruled: hit-tested in the nav and on the rail at the
+  list's minimum width, in the drawer and in a wide phone's column.
 - **The width study** (#s517) run on the kit page as on the monitor's.
 - **The app's walk** on the Simulator: an iPhone upright and sideways, and an iPad, light and dark.
