@@ -3469,9 +3469,11 @@ panesMenu.onclick = event => {
   // (#s548): desktop Chrome focuses a button on a mouse press, so after a second click unpinned the
   // card, the focus that click left behind kept it open as a peek until focus moved elsewhere.
   const keyboardOn = node => triggers.includes(node) && node.matches(":focus-visible");
-  // A touch sends pointerleave as the finger lifts, BEFORE its click (#s545). So a tap's
-  // pointerleave starts this close, and its click pins the card inside the 140 ms: the close must
-  // not outlive a pin.
+  // Only a mouse peeks (#s545). A finger's pointerenter comes as it lands, and WebKit spends a tap
+  // whose hover shows content as that hover, with no click: on the iPad every tap on Info peeked,
+  // sent no click to pin, and its pointerleave as the finger lifted closed what it had shown.
+  const hover = event => { if (event.pointerType === "mouse") peek(event); };
+  const unhover = event => { if (event.pointerType === "mouse") leave(); };
   const leave = () => {
     if (pinned) return;
     clearTimeout(closeTimer);
@@ -3479,9 +3481,10 @@ panesMenu.onclick = event => {
       if (!pinned && !popover.contains(viewRoot.active()) && !keyboardOn(viewRoot.active())) show(false);
     }, 140);
   };
-  for (const type of ["pointerenter", "focus"]) trigger.addEventListener(type, peek);
+  trigger.addEventListener("pointerenter", hover);
+  trigger.addEventListener("focus", peek);
   for (const node of [trigger, popover]) {
-    node.addEventListener("pointerleave", leave);
+    node.addEventListener("pointerleave", unhover);
     node.addEventListener("focusout", leave);
   }
   popover.addEventListener("pointerenter", () => clearTimeout(closeTimer));
@@ -3530,10 +3533,13 @@ panesMenu.onclick = event => {
     railInfo.setAttribute("aria-haspopup", "dialog");
     railInfo.setAttribute("aria-expanded", String(popover.classList.contains("open")));
     triggers.push(railInfo);
-    for (const type of ["pointerenter", "focus"]) railInfo.addEventListener(type, peek);
-    // Leaving it by keyboard closes a peek, as leaving the footer's does (#s548: a Tab onto the rail's
-    // Info and away left the card open, and nothing but a pin and a press outside could close it).
-    for (const type of ["pointerleave", "focusout"]) railInfo.addEventListener(type, leave);
+    railInfo.addEventListener("pointerenter", hover);
+    railInfo.addEventListener("focus", peek);
+    // Leaving it closes a peek, as leaving the footer's does: by keyboard (#s548: a Tab onto the rail's
+    // Info and away left the card open, and nothing but a pin and a press outside could close it), and
+    // by a mouse alone (#s545).
+    railInfo.addEventListener("pointerleave", unhover);
+    railInfo.addEventListener("focusout", leave);
     railInfo.addEventListener("click", pin);
   }
 }

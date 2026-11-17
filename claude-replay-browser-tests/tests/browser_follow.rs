@@ -14262,8 +14262,8 @@ fn the_app_shell_keeps_cost_visible_with_info_behind_a_glyph() {
         "the reference material moved wholesale, so its folding groups keep working: {seen}"
     );
     assert_eq!(seen["open"], false, "…and it starts shut: {seen}");
-    // Peek on hover.
-    harness::eval(&tab, "document.querySelector('.outline-footer-info').dispatchEvent(new PointerEvent('pointerenter', { bubbles: false })); 'ok'");
+    // Peek on a mouse's hover (a finger's peeks nothing, #s545).
+    harness::eval(&tab, "document.querySelector('.outline-footer-info').dispatchEvent(new PointerEvent('pointerenter', { bubbles: false, pointerType: 'mouse' })); 'ok'");
     harness::until(
         &tab,
         "document.getElementById('infoPopover').classList.contains('open')",
@@ -14272,7 +14272,7 @@ fn the_app_shell_keeps_cost_visible_with_info_behind_a_glyph() {
         "document.getElementById('infoPopover').className",
     );
     // Leaving closes a peek…
-    harness::eval(&tab, "document.querySelector('.outline-footer-info').dispatchEvent(new PointerEvent('pointerleave', { bubbles: false })); 'ok'");
+    harness::eval(&tab, "document.querySelector('.outline-footer-info').dispatchEvent(new PointerEvent('pointerleave', { bubbles: false, pointerType: 'mouse' })); 'ok'");
     harness::until(
         &tab,
         "!document.getElementById('infoPopover').classList.contains('open')",
@@ -14285,7 +14285,7 @@ fn the_app_shell_keeps_cost_visible_with_info_behind_a_glyph() {
         &tab,
         "document.querySelector('.outline-footer-info').click(); 'ok'",
     );
-    harness::eval(&tab, "document.querySelector('.outline-footer-info').dispatchEvent(new PointerEvent('pointerleave', { bubbles: false })); 'ok'");
+    harness::eval(&tab, "document.querySelector('.outline-footer-info').dispatchEvent(new PointerEvent('pointerleave', { bubbles: false, pointerType: 'mouse' })); 'ok'");
     std::thread::sleep(std::time::Duration::from_millis(400));
     let pinned = harness::probe(&tab, state);
     assert_eq!(
@@ -14301,7 +14301,11 @@ fn the_app_shell_keeps_cost_visible_with_info_behind_a_glyph() {
 /// page-wide press that closes a pinned card counted it as a press outside, so a second press's
 /// `pointerdown` closed the card and its click pinned it again. Each Info control is pressed here
 /// as a finger does (enter, down, up, out, leave, then the click) and as a mouse does (enter, down,
-/// up, click), twice: the first press pins the card past the close, the second closes it.
+/// up, click), twice: the first press pins the card past the close, the second closes it. And a
+/// finger's landing shows nothing: on the iPad Simulator the fix for the close alone changed
+/// nothing, because WebKit spends a tap whose hover shows content as that hover and sends no click,
+/// and the finger's `pointerenter` peeked. Chrome sends the click anyway, so the case reads the
+/// card as the finger lands.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_tap_on_info_pins_the_card_and_a_second_press_closes_it() {
@@ -14314,7 +14318,7 @@ fn a_tap_on_info_pins_the_card_and_a_second_press_closes_it() {
         } else {
             ""
         };
-        format!("(function(){{ var b = document.getElementById('{id}'); if (!b || !b.getBoundingClientRect().width) return 'no ' + '{id}'; var p = function (type, bubbles) {{ b.dispatchEvent(new PointerEvent(type, {{ bubbles: bubbles, cancelable: true, composed: true, pointerType: '{kind}', pointerId: 7, isPrimary: true }})); }}; p('pointerover', true); p('pointerenter', false); p('pointerdown', true); p('pointerup', true); {leave} b.click(); return 'ok'; }})()")
+        format!("(function(){{ var b = document.getElementById('{id}'); if (!b || !b.getBoundingClientRect().width) return 'no ' + '{id}'; var card = document.getElementById('infoPopover'), was = card.classList.contains('open'); var p = function (type, bubbles) {{ b.dispatchEvent(new PointerEvent(type, {{ bubbles: bubbles, cancelable: true, composed: true, pointerType: '{kind}', pointerId: 7, isPrimary: true }})); }}; p('pointerover', true); p('pointerenter', false); p('pointerdown', true); var landed = '{kind}' === 'touch' && !was && card.classList.contains('open'); p('pointerup', true); {leave} b.click(); return landed ? 'the card showed as the finger landed' : 'ok'; }})()")
     };
     let mut wrong = Vec::new();
     for (id, width) in [("outlineFooterInfo", 1400.0), ("outlineRailInfo", 1000.0)] {
