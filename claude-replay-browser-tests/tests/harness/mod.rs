@@ -2558,39 +2558,46 @@ pub fn until_downloaded(
     }
 }
 
+/// How long [`HomeDownloads`] waits for its read of `~/Downloads` (#s525).
+pub const DOWNLOADS_READ_WAIT: Duration = Duration::from_secs(5);
+
 /// The developer's `~/Downloads` by name, to show a case saved nothing there (#s254).
-pub struct HomeDownloads(Option<std::collections::BTreeSet<String>>);
+///
+/// The read is a GUARD, not what a case tests, so it never holds a case up (#s525): on
+/// aries-black a suite run under a tmux server started over Tailscale SSH had its
+/// `read_dir` attributed to `tailscaled`, macOS put up a Downloads-folder prompt nobody was
+/// there to answer, and the read sat in the kernel for two hours. So it runs on a thread of
+/// its own, and one that has not answered within [`DOWNLOADS_READ_WAIT`] skips the check with
+/// one stderr line, as an unreadable folder always did. The thread is left behind: a read
+/// stuck in the kernel cannot be stopped. So the case goes on, but whether the test binary can
+/// then EXIT while that read waits on the prompt was not measured: `cargo test` may still wait
+/// for it at the end of the run.
+pub struct HomeDownloads {
+    dir: Option<PathBuf>,
+    before: Option<std::collections::BTreeSet<String>>,
+    wait: Duration,
+}
 
 impl HomeDownloads {
-    fn list() -> Option<std::collections::BTreeSet<String>> {
-        let dir = PathBuf::from(std::env::var_os("HOME")?).join("Downloads");
-        match std::fs::read_dir(&dir) {
-            Ok(entries) => Some(
-                entries
-                    .flatten()
-                    .map(|e| e.file_name().to_string_lossy().into_owned())
-                    .collect(),
-            ),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Some(Default::default()),
-            Err(e) => {
-                eprintln!(
-                    "harness: cannot read {} ({e}); not checking that it gains nothing",
-                    dir.display()
-                );
-                None
-            }
-        }
+    pub fn now() -> Self {
+        let dir = std::env::var_os("HOME").map(|home| PathBuf::from(home).join("Downloads"));
+        Self::of(dir, DOWNLOADS_READ_WAIT)
     }
 
-    pub fn now() -> Self {
-        Self(Self::list())
+    /// The guard over any folder, read with any wait: the harness's own cases use it.
+    pub fn of(dir: Option<PathBuf>, wait: Duration) -> Self {
+        let before = dir.as_deref().and_then(|d| list_names(d, wait));
+        Self { dir, before, wait }
     }
 
     /// Fail if, since [`HomeDownloads::now`], `~/Downloads` gained a file named like `stem` or
     /// an in-flight download (`.crdownload`). Only those, so a file the developer downloads
-    /// meanwhile is not taken for the case's.
+    /// meanwhile is not taken for the case's. A first read that did not answer skips the second.
     pub fn assert_gained_nothing_like(&self, stem: &str) {
-        let (Some(before), Some(after)) = (&self.0, Self::list()) else {
+        let Some(before) = &self.before else {
+            return;
+        };
+        let Some(after) = self.dir.as_deref().and_then(|d| list_names(d, self.wait)) else {
             return;
         };
         let gained: Vec<&String> = after
@@ -2601,6 +2608,62 @@ impl HomeDownloads {
             gained.is_empty(),
             "a test browser saved into ~/Downloads: {gained:?}"
         );
+    }
+}
+
+fn list_names(dir: &Path, wait: Duration) -> Option<std::collections::BTreeSet<String>> {
+    list_names_with(dir, wait, |dir| {
+        std::fs::read_dir(dir).map(|entries| {
+            entries
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+    })
+}
+
+/// [`HomeDownloads`]'s read, with the reading itself passed in so a case can make one that
+/// never answers. `None` means "do not check": the folder could not be read, or the read did
+/// not answer within `wait`; each says so in one stderr line.
+pub fn list_names_with(
+    dir: &Path,
+    wait: Duration,
+    read: impl FnOnce(&Path) -> std::io::Result<std::collections::BTreeSet<String>> + Send + 'static,
+) -> Option<std::collections::BTreeSet<String>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let owned = dir.to_path_buf();
+    std::thread::Builder::new()
+        .name("home-downloads-read".into())
+        .spawn(move || {
+            let _ = tx.send(read(&owned));
+        })
+        .expect("spawn the ~/Downloads read");
+    match rx.recv_timeout(wait) {
+        Ok(Ok(names)) => Some(names),
+        Ok(Err(e)) if e.kind() == std::io::ErrorKind::NotFound => Some(Default::default()),
+        Ok(Err(e)) => {
+            eprintln!(
+                "harness: cannot read {} ({e}); not checking that it gains nothing",
+                dir.display()
+            );
+            None
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            eprintln!(
+                "harness: reading {} has not answered in {:.1}s (macOS may be asking for access to \
+                 it, with nobody there to answer); not checking that it gains nothing",
+                dir.display(),
+                wait.as_secs_f64()
+            );
+            None
+        }
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            eprintln!(
+                "harness: the read of {} failed without an answer; not checking that it gains nothing",
+                dir.display()
+            );
+            None
+        }
     }
 }
 
