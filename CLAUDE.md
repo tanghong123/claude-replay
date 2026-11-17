@@ -45,7 +45,7 @@ and any other is refused, and the contract's mount interface cases hold them): `
 optional controls by name (`reading`, `history`, `detach`, each shown unless `false`, booleans only;
 a control off is not drawn and takes no key; the app passes none); and `keyboard`, `"engaged"` by
 default (the view binds its keymap in the capture phase and answers, as the pane's image viewer
-does, only while the reader's last press or focus is inside it, as mdrev does) or `"page"`, the
+does, only while the reader's last press or focus is inside it, as mdrev does, and so does the Escape that closes its layers, #s535) or `"page"`, the
 app's: the view binds none and the app's one keymap at the document routes keys to the handle's
 `keys`; and `room`, a function answering how much wider the host could make the view by narrowing
 what it lays beside it (the app: its list's width less 232; 0 without it, #s476). What the view

@@ -576,6 +576,11 @@ if (keyboardMode === "engaged") {
   const engage = event => { engaged = inView(event.target) && !inGuest(event.target); };
   for (const type of ["pointerdown", "mousedown", "focusin"]) document.addEventListener(type, engage, { capture: true, signal });
 }
+// The Escape the view hears on the whole page, which closes its layers (Info's card, the copy menu,
+// the search's popovers, the task card, a phone's pane sheet), is its own only while the reader works
+// in it (#s535), like its keymap: a host whose own dialog Escape closes must not close ours with it.
+// With the page's keyboard the view is always engaged, as before.
+const viewEscape = event => event.key === "Escape" && engaged;
 
 // #s25: the pane changes the TRANSCRIPT's layout only where it is a grid column (a wide desktop).
 // Elsewhere — a phone, or below 1180px — it lies over the transcript, whose width and so every
@@ -3480,7 +3485,7 @@ panesMenu.onclick = event => {
   // to the Info that opened it (or one drawn) rather than staying on a control the close hides; it
   // moves FIRST, since that Info's focus listener peeks, and the close then shuts what it opened.
   addEventListener("keydown", event => {
-    if (event.key !== "Escape" || !popover.classList.contains("open")) return;
+    if (!viewEscape(event) || !popover.classList.contains("open")) return;
     pinned = false;
     if (popover.contains(viewRoot.active())) {
       const drawn = node => node.getClientRects().length > 0;
@@ -3615,7 +3620,7 @@ taskPopover.addEventListener("click", event => {
   const find = event.target.closest("[data-task-find]");
   if (find) { const index = Number(find.dataset.taskFind), task = (recordState.meta?.tasks || [])[index]; closeTaskPopover(false); if (task) findTaskRecord(task, String(task.id ?? index)); }
 });
-document.addEventListener("keydown", event => { if (event.key === "Escape" && !taskPopover.hidden) { event.stopPropagation(); closeTaskPopover(); } }, { capture: true, signal });
+document.addEventListener("keydown", event => { if (viewEscape(event) && !taskPopover.hidden) { event.stopPropagation(); closeTaskPopover(); } }, { capture: true, signal });
 document.addEventListener("pointerdown", event => { if (!taskPopover.hidden && !taskPopover.contains(event.target) && !event.target.closest("[data-task-open]")) closeTaskPopover(false, event.target === taskScrim ? event : null); }, { signal });
 const scrimLifted = event => {
   if (scrimPointer == null || event.pointerId !== scrimPointer) return;
@@ -3975,7 +3980,7 @@ byId("findPrev").title = `Previous match (${hintFor("hit-prev")})`; byId("findNe
 byId("turnPrev").title = `Previous turn (${hintFor("turn-prev")})`; byId("turnNext").title = `Next turn (${hintFor("turn-next")})`;
 // The header's own turn steppers were in the design but never bound; they step the same way the keys do.
 byId("turnPrev").onclick = () => stepTurn(-1); byId("turnNext").onclick = () => stepTurn(1);
-addEventListener("keydown", event => { if (event.key === "Escape") { setSessionCopyMenu(false); setPopover(null); } }, { signal });
+addEventListener("keydown", event => { if (viewEscape(event)) { setSessionCopyMenu(false); setPopover(null); } }, { signal });
 
 // #313 — while a session loads, a veil over the session area says so. It dims what is below the top
 // bars, which already name the new session, and speaks in three phases: loading; after
@@ -4329,7 +4334,7 @@ var phoneDock;
     clearTimeout(catchTimer);
     paneScrim.classList.remove("catching");
   });
-  addEventListener("keydown", event => { if (event.key === "Escape") closePane(); }, { signal });
+  addEventListener("keydown", event => { if (viewEscape(event)) closePane(); }, { signal });
   // #s431 stage 3 (design/pane-layout.md, "The glyphs in the top bar"): off the phone reader, where the
   // owner's order leaves the outline's glyphs no column of their own, the same three glyphs join the
   // session's top bar, after the title and its tools and before Info and the pane's control; each
