@@ -583,6 +583,13 @@ function looksLikeDate(spec) {
 }
 var GitError = class extends Error {
 };
+function notAnOption(rev) {
+  if (rev.startsWith("-"))
+    throw new GitError(`not a revision: ${JSON.stringify(rev)} (no revision starts with "-")`);
+  if (/[\x00-\x1f\x7f]/.test(rev))
+    throw new GitError(`not a revision: ${JSON.stringify(rev)} (no revision holds a control character)`);
+  return rev;
+}
 var CatFile = class {
   cwd;
   child = null;
@@ -669,6 +676,8 @@ var CatFile = class {
   }
   /** The blob at `rev:path`, or null to say "ask git the ordinary way". */
   async read(rev, path2) {
+    if (/[\r\n]/.test(rev + path2))
+      return null;
     const child = this.start();
     if (!child)
       return null;
@@ -739,8 +748,14 @@ var GitBlobSource = class {
   get copyBranch() {
     return this.copyRef;
   }
-  /** In a copy, its branch for WORKTREE and for a revision spelled from HEAD; anything else as given. */
+  /**
+   * In a copy, its branch for WORKTREE and for a revision spelled from HEAD; anything else as given.
+   *
+   * A REVISION IS NEVER AN OPTION (#s1385): a revision is refused here, before git sees it, when git would not read it
+   * as one (notAnOption). A revision that starts with '-' could only ever have been read as an option.
+   */
   standing(rev) {
+    notAnOption(rev);
     if (!this.copyRef)
       return rev;
     if (rev === WORKTREE2)
@@ -827,10 +842,11 @@ var GitBlobSource = class {
     if (rev === WORKTREE2)
       return readFile(join(this.repoRoot, path2), "utf8");
     const name = await this.nameAt(rev, path2) ?? path2;
-    const batched = await this.batch.read(rev, name);
+    const commit = `${rev}^{commit}`;
+    const batched = await this.batch.read(commit, name);
     if (batched !== null)
       return batched;
-    return this.git("show", `${rev}:${name}`);
+    return this.git("show", `${commit}:${name}`);
   }
   /**
    * The path the file had at `rev`, or null when it did not exist then.
@@ -1103,7 +1119,7 @@ ${staged}`;
    * moved on to since it was resolved.
    */
   async documentsAt(rev) {
-    const tree = await this.git("ls-tree", "-r", "--name-only", rev);
+    const tree = await this.git("ls-tree", "-r", "--name-only", notAnOption(rev));
     return [...new Set(tree.split("\n").filter((p2) => p2.endsWith(".md")))].sort();
   }
   async documents() {
@@ -1384,12 +1400,14 @@ ${staged}`;
    * so a rebase that drops the commit does not take the snapshot with it.
    */
   async snapshotBlob(path2, rev) {
+    if (rev !== void 0)
+      notAnOption(rev);
     if (this.copyRef) {
-      const sha = (await this.git("rev-parse", "--verify", "--quiet", `${this.standing(rev ?? WORKTREE2)}:${path2}`).catch(() => "")).trim();
+      const sha = (await this.git("rev-parse", "--verify", "--quiet", `${this.standing(rev ?? WORKTREE2)}^{commit}:${path2}`).catch(() => "")).trim();
       return sha || void 0;
     }
     try {
-      const sha = (rev && rev !== WORKTREE2 ? await this.git("rev-parse", "--verify", "--quiet", `${rev}:${path2}`) : await this.git("hash-object", "-w", "--", path2)).trim();
+      const sha = (rev && rev !== WORKTREE2 ? await this.git("rev-parse", "--verify", "--quiet", `${rev}^{commit}:${path2}`) : await this.git("hash-object", "-w", "--", path2)).trim();
       if (!sha)
         return void 0;
       await this.git("update-ref", `refs/mdrev/snapshots/${sha}`, sha);
@@ -12742,7 +12760,7 @@ function resolveToPotentialGfmFootnoteCall(events, context) {
     start: Object.assign({}, string3.start),
     end: Object.assign({}, string3.end)
   };
-  const replacement = [
+  const replacement2 = [
     // Take the `labelImageMarker` (now `data`, the `!`)
     events[index2 + 1],
     events[index2 + 2],
@@ -12763,7 +12781,7 @@ function resolveToPotentialGfmFootnoteCall(events, context) {
     events[events.length - 1],
     ["exit", call, context]
   ];
-  events.splice(index2, events.length - index2 + 1, ...replacement);
+  events.splice(index2, events.length - index2 + 1, ...replacement2);
   return events;
 }
 function tokenizeGfmFootnoteCall(effects, ok3, nok) {
@@ -19222,8 +19240,8 @@ function applyMarks(b, proj, insRanges, delOps) {
   for (const [parent, list4] of byParent) {
     list4.sort((x, y) => y.piece.childIndex - x.piece.childIndex);
     for (const e of list4) {
-      const replacement = rebuildNode(e);
-      parent.children.splice(e.piece.childIndex, 1, ...replacement);
+      const replacement2 = rebuildNode(e);
+      parent.children.splice(e.piece.childIndex, 1, ...replacement2);
     }
   }
 }
@@ -22580,10 +22598,10 @@ function walkWordDiff(before, after) {
   let b = 0;
   let a = 0;
   const moves = /* @__PURE__ */ new Map();
-  const emit = (kind, text9, moved2 = false) => {
+  const emit = (kind, text9, moved2 = false, rewritten = false) => {
     if (text9.length === 0)
       return;
-    const step = { kind, text: text9, before: b, after: a };
+    const step = { kind, text: text9, before: b, after: a, ...rewritten ? { rewritten } : {} };
     steps.push(step);
     if (moved2)
       moves.set(text9, { ...moves.get(text9), [kind]: step });
@@ -22594,13 +22612,30 @@ function walkWordDiff(before, after) {
   };
   let removed = "";
   let added = "";
+  const compare = runComparer();
   const flush2 = () => {
-    if (removed && added) {
-      for (const part of diffWordsWithSpace(removed, added))
+    const words = removed && added ? compare.run(removed, added) : void 0;
+    if (words) {
+      for (const part of words)
         emit(part.added ? "ins" : part.removed ? "del" : "same", part.value);
-    } else {
+    } else if (!removed || !added) {
       emit("del", removed);
       emit("ins", added);
+    } else {
+      for (const piece of manyLines(removed) && manyLines(added) ? byRows(removed, added, compare) : byUnits(removed, added, compare)) {
+        if (piece.kind !== "rewrite") {
+          emit(piece.kind, piece.text);
+          continue;
+        }
+        const at = steps.length;
+        emit("del", piece.removed, false, true);
+        emit("ins", piece.added, false, true);
+        Object.assign(steps[at], { rewrittenTo: steps[at + 1].after, rewrittenLength: piece.added.length });
+        if (piece.blind)
+          unpaired.add(steps[at]);
+        else if (compare.lines(piece.removed, piece.added))
+          alignable.add(steps[at]);
+      }
     }
     removed = "";
     added = "";
@@ -22631,6 +22666,1101 @@ function walkWordDiff(before, after) {
     ins2.movedFrom = del2.before;
   }
   return steps;
+}
+var RUN_WORK = 15e5;
+var WALK_WORK = 12e6;
+var FLOOR_WORK = 4;
+var ALIGN_PAIRS = 4e4;
+var LOOKUPS_PER_WORK = 3;
+var alignable = /* @__PURE__ */ new WeakSet();
+var unpaired = /* @__PURE__ */ new WeakSet();
+function lineCount(text9) {
+  let n = 1;
+  for (let at = text9.indexOf("\n"); at >= 0; at = text9.indexOf("\n", at + 1))
+    n++;
+  return n;
+}
+function wordsShared(removed, added) {
+  const a = wordsWithSpaceDiff.tokenize(removed);
+  const b = wordsWithSpaceDiff.tokenize(added);
+  const counts = /* @__PURE__ */ new Map();
+  for (const t of a)
+    counts.set(t, (counts.get(t) ?? 0) + 1);
+  let shared = 0;
+  for (const t of b) {
+    const n = counts.get(t) ?? 0;
+    if (n > 0) {
+      shared++;
+      counts.set(t, n - 1);
+    }
+  }
+  return { before: a.length, after: b.length, shared };
+}
+function diagonals(d, before, after) {
+  const lo = Math.max(-d, d - 2 * after);
+  const hi = Math.min(d, 2 * before - d);
+  return hi < lo ? 0 : Math.floor((hi - lo) / 2) + 1;
+}
+function comparisonWork(edits, before, after) {
+  let work = 0;
+  for (let d = 0; d <= edits; d++)
+    work += diagonals(d, before, after);
+  return work;
+}
+function rewriteAllowance(work, before, after) {
+  let spent = 0;
+  let d = 0;
+  for (; d < before + after; d++) {
+    spent += diagonals(d + 1, before, after);
+    if (spent > work)
+      break;
+  }
+  return d;
+}
+function trimmed(removed, added) {
+  const a = wordsWithSpaceDiff.tokenize(removed);
+  const b = wordsWithSpaceDiff.tokenize(added);
+  let p2 = 0;
+  while (p2 < a.length && p2 < b.length && a[p2] === b[p2])
+    p2++;
+  let q = 0;
+  while (q < a.length - p2 && q < b.length - p2 && a[a.length - 1 - q] === b[b.length - 1 - q])
+    q++;
+  const head2 = a.slice(0, p2).join("");
+  const tail = a.slice(a.length - q).join("");
+  return [head2, removed.slice(head2.length, removed.length - tail.length), added.slice(head2.length, added.length - tail.length), tail];
+}
+function runComparer() {
+  let left = WALK_WORK;
+  let run5 = RUN_WORK;
+  const compare = (removed, added) => {
+    const { before, after, shared } = wordsShared(removed, added);
+    const whole = 2 * shared >= Math.min(before, after) ? comparisonWork(before + after, before, after) : Infinity;
+    const may = Math.max(Math.min(run5, left), FLOOR_WORK * (before + after), whole <= left - RUN_WORK ? whole : 0);
+    const allowed = rewriteAllowance(may, before, after);
+    if (before + after - 2 * shared > allowed)
+      return { words: void 0, tried: false };
+    const words = diffWordsWithSpace(removed, added, { maxEditLength: allowed });
+    const explored = words ? words.reduce((n, part) => n + (part.added || part.removed ? part.count ?? 0 : 0), 0) : allowed;
+    left -= comparisonWork(explored, before, after);
+    return { words, tried: true };
+  };
+  const halving = (removed, added) => {
+    const { words, tried } = compare(removed, added);
+    if (tried && !words)
+      run5 /= 2;
+    return words;
+  };
+  return {
+    run: halving,
+    window: halving,
+    units: (a, b) => {
+      const may = Math.max(Math.min(run5, left), FLOOR_WORK * (a.length + b.length));
+      const allowed = rewriteAllowance(may, a.length, b.length);
+      const parts = diffArrays(a, b, { maxEditLength: allowed });
+      const explored = parts ? parts.reduce((n, part) => n + (part.added || part.removed ? part.value.length : 0), 0) : allowed;
+      left -= comparisonWork(explored, a.length, b.length);
+      if (!parts)
+        run5 /= 2;
+      return parts;
+    },
+    lines: (removed, added) => {
+      const n = lineCount(removed);
+      const m = lineCount(added);
+      if (n < 2 || n * m > ALIGN_PAIRS)
+        return false;
+      const cost = Math.ceil(n * m * Math.min(removed.length / n, added.length / m) / LOOKUPS_PER_WORK) + removed.length + added.length;
+      if (cost > left)
+        return false;
+      left -= cost;
+      return true;
+    },
+    afford: (work) => {
+      if (work > left)
+        return false;
+      left -= work;
+      return true;
+    },
+    charge: (work) => {
+      left -= work;
+    }
+  };
+}
+var ROW_PAIRS = 4e6;
+var MERGED_CLAUSE = 8;
+function manyLines(text9) {
+  const at = text9.indexOf("\n");
+  return at >= 0 && at < text9.length - 1;
+}
+function byRows(removed, added, compare) {
+  const a = removed.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  const b = added.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  const paired = pairRows2(a, b, compare.afford, compare.charge);
+  if (!paired)
+    return a.length * b.length > ROW_PAIRS ? replacement(removed, added) : anchored(removed, added, compare.window, 0);
+  const flat = [];
+  const doubted = /* @__PURE__ */ new Set();
+  const doubt = new Set(paired.doubt.map(([i, , j]) => i * (b.length + 1) + j));
+  let i0 = 0;
+  let j0 = 0;
+  for (const [i, i1, j, j1] of [...paired.pairs, [a.length, a.length, b.length, b.length]]) {
+    if (i > i0 || j > j0) {
+      flat.push([i0, i, j0, j]);
+      if (doubt.has(i0 * (b.length + 1) + j0))
+        doubted.add(flat[flat.length - 1]);
+    }
+    if (i < a.length)
+      flat.push([i, i1, j, j1]);
+    i0 = i1;
+    j0 = j1;
+  }
+  const blocks = [];
+  const inner = /* @__PURE__ */ new Map();
+  const width = b.length + 1;
+  const starts = new Set(flat.map(([i, , j]) => i * width + j));
+  const ends = new Set(flat.map(([, i, , j]) => i * width + j));
+  const regions = paired.unsure.filter(([ri, rI, rj, rJ]) => starts.has(ri * width + rj) && ends.has(rI * width + rJ));
+  for (const block2 of flat) {
+    const [ia, ib, ja, jb] = block2;
+    const region = doubted.has(block2) ? void 0 : regions.find(([ri, rI, rj, rJ]) => ia >= ri && ib <= rI && ja >= rj && jb <= rJ);
+    const last = blocks[blocks.length - 1];
+    if (!region)
+      blocks.push(block2);
+    else if (last && inner.has(last) && last[0] === region[0] && last[2] === region[2])
+      inner.get(last).push(block2);
+    else {
+      const whole = [region[0], region[1], region[2], region[3]];
+      blocks.push(whole);
+      inner.set(whole, [block2]);
+    }
+  }
+  const single = (k) => k >= 0 && k < blocks.length && blocks[k][1] - blocks[k][0] === 1 && blocks[k][3] - blocks[k][2] === 1;
+  const merged = [];
+  blocks.forEach((block2, k) => {
+    const [ia, ib, ja, jb] = block2;
+    if (ia < ib === ja < jb) {
+      merged.push(block2);
+      return;
+    }
+    const sharedWith = (other) => {
+      if (!single(other))
+        return 0;
+      const [i, , j] = blocks[other];
+      const [there2, partner] = ia < ib ? [b[j], a[i]] : [a[i], b[j]];
+      let n = 0;
+      for (const row of ia < ib ? a.slice(ia, ib) : b.slice(ja, jb)) {
+        for (const unit of row.split(/[|\n。！？；，、.!?;,]/)) {
+          const clause = unit.replace(/^\s*(?:[-*+>]|#+)\s+/, "").trim();
+          if (clause.length >= MERGED_CLAUSE && there2.includes(clause) && !partner.includes(clause))
+            n += clause.length;
+        }
+      }
+      return n;
+    };
+    const before = sharedWith(k - 1);
+    const after = sharedWith(k + 1);
+    const last = merged[merged.length - 1];
+    if (before > 0 && before >= after && last === blocks[k - 1]) {
+      last[1] = ib;
+      last[3] = jb;
+    } else if (after > 0) {
+      blocks[k + 1][0] = ia;
+      blocks[k + 1][2] = ja;
+    } else
+      merged.push(block2);
+  });
+  const pieces = [];
+  const push2 = (piece) => {
+    const last = pieces[pieces.length - 1];
+    if (piece.kind === "rewrite") {
+      if (piece.removed || piece.added)
+        pieces.push(piece);
+    } else if (!piece.text)
+      return;
+    else if (last && last.kind === piece.kind)
+      last.text += piece.text;
+    else
+      pieces.push(piece);
+  };
+  const stretch = (x, y) => {
+    if (x && y) {
+      const words = compare.window(x, y);
+      if (words)
+        for (const part of words)
+          push2({ kind: part.added ? "ins" : part.removed ? "del" : "same", text: part.value });
+      else
+        for (const piece of anchored(x, y, compare.window, 1))
+          push2(piece);
+    } else {
+      push2({ kind: "del", text: x });
+      push2({ kind: "ins", text: y });
+    }
+  };
+  for (const block2 of merged) {
+    const [ia, ib, ja, jb] = block2;
+    if (doubted.has(block2) && ia < ib && ja < jb) {
+      pieces.push({ kind: "rewrite", removed: a.slice(ia, ib).join(""), added: b.slice(ja, jb).join(""), blind: true });
+      continue;
+    }
+    const own12 = inner.get(block2);
+    const words = own12 ? compare.window(a.slice(ia, ib).join(""), b.slice(ja, jb).join("")) : void 0;
+    for (const [pa, pb, qa, qb] of words ? settled(block2, words, paired.weight) : own12 ?? [block2])
+      stretch(a.slice(pa, pb).join(""), b.slice(qa, qb).join(""));
+  }
+  return pieces;
+}
+var ROW_BAND = 64;
+var UNSURE_ROWS = 12;
+var SKIP_A = 1;
+var SKIP_B = 2;
+var PAIR = 4;
+var MERGED = 8;
+var SPLIT = 16;
+function settled([ia, ib, ja, jb], words, weight) {
+  const n = ib - ia;
+  const m = jb - ja;
+  const kept = new Int32Array(n * m);
+  let i = 0;
+  let j = 0;
+  let most = 1;
+  for (const part of words) {
+    for (let k = 0; k < part.value.length; k++) {
+      const c = part.value.charCodeAt(k);
+      if (!part.added && !part.removed && c > 32 && i < n && j < m)
+        kept[i * m + j]++;
+      if (c === 10) {
+        if (!part.added)
+          i++;
+        if (!part.removed)
+          j++;
+      }
+    }
+    if (!part.added)
+      most += part.value.length;
+  }
+  const width = m + 1;
+  const best = new Float64Array((n + 1) * width);
+  for (let r = 0; r <= n; r++) {
+    for (let q = 0; q <= m; q++) {
+      if (r === 0 && q === 0)
+        continue;
+      let v = -Infinity;
+      if (r > 0)
+        v = Math.max(v, best[(r - 1) * width + q]);
+      if (q > 0)
+        v = Math.max(v, best[r * width + q - 1]);
+      const w = r > 0 && q > 0 ? weight(ia + r - 1, ja + q - 1) : -1;
+      if (w >= 0)
+        v = Math.max(v, best[(r - 1) * width + q - 1] + w * most + kept[(r - 1) * m + q - 1]);
+      best[r * width + q] = v;
+    }
+  }
+  const pairs = [];
+  for (let r = n, q = m; r > 0 && q > 0; ) {
+    const v = best[r * width + q];
+    if (best[(r - 1) * width + q] === v)
+      r--;
+    else if (best[r * width + q - 1] === v)
+      q--;
+    else {
+      pairs.push([r - 1, q - 1]);
+      r--;
+      q--;
+    }
+  }
+  pairs.reverse();
+  const out = [];
+  let r0 = 0;
+  let q0 = 0;
+  for (const [r, q] of [...pairs, [n, m]]) {
+    if (r > r0 || q > q0)
+      out.push([ia + r0, ia + r, ja + q0, ja + q]);
+    if (r < n)
+      out.push([ia + r, ia + r + 1, ja + q, ja + q + 1]);
+    r0 = r + 1;
+    q0 = q + 1;
+  }
+  return out;
+}
+function pairRows2(a, b, afford, charge) {
+  const n = a.length;
+  const m = b.length;
+  const ids = /* @__PURE__ */ new Map();
+  const id = (key3) => {
+    let k = ids.get(key3);
+    if (k === void 0) {
+      k = ids.size;
+      ids.set(key3, k);
+    }
+    return k;
+  };
+  const inner = /* @__PURE__ */ new Set();
+  const weigh = (row) => {
+    const table2 = /^\s*\|/.test(row);
+    const keys2 = [];
+    let col = 0;
+    for (const unit of row.match(/[^|\n。！？；，、.!?;,]*[|\n。！？；，、.!?;,]|[^|\n。！？；，、.!?;,]+$/g) ?? []) {
+      for (const text9 of unit.replace(/[|\n。！？；，、.!?;,]$/, "").split(/\s+/)) {
+        if (/^[\p{P}]*$/u.test(text9) || /^\d+$/.test(text9))
+          continue;
+        keys2.push(id(text9));
+        if (table2)
+          keys2.push(id(`${col}\0${text9}`));
+        const words = wordsWithSpaceDiff.tokenize(text9);
+        if (words.length > 1) {
+          for (const t of words) {
+            if (!anchorable(t))
+              continue;
+            const k = id(`${t}`);
+            inner.add(k);
+            keys2.push(k);
+          }
+        }
+      }
+      if (unit.endsWith("|"))
+        col++;
+    }
+    return Int32Array.from(keys2).sort();
+  };
+  const pipes = (rows2) => Int32Array.from(rows2, (row) => /^\s*\|/.test(row) ? row.split("|").length - 1 : 1);
+  const x = a.map(weigh);
+  const y = b.map(weigh);
+  const wordsTo = new Int32Array(m + 1);
+  for (let j = 0; j < m; j++)
+    wordsTo[j + 1] = wordsTo[j] + y[j].length;
+  const lo = new Int32Array(n + 1).fill(-n);
+  const hi = new Int32Array(n + 1).fill(m);
+  const weighed = () => {
+    let pairs2 = 0;
+    let reads = 0;
+    for (let i = 0; i < n; i++) {
+      const first = Math.max(0, i + lo[i]);
+      const last = Math.min(m - 1, i + hi[i]);
+      if (last < first)
+        continue;
+      pairs2 += last - first + 1;
+      reads += (last - first + 1) * x[i].length + wordsTo[last + 1] - wordsTo[first];
+    }
+    return { pairs: pairs2, work: Math.ceil(reads / LOOKUPS_PER_WORK) + pairs2 };
+  };
+  const banded = n * m > ROW_PAIRS || !afford(weighed().work);
+  let chain = [];
+  const whole = (rows2) => rows2.map((keys2) => keys2.filter((k) => !inner.has(k)));
+  const xw = banded ? whole(x) : [];
+  const yw = banded ? whole(y) : [];
+  if (banded) {
+    const guide = (along) => {
+      lo.fill(m + 1);
+      hi.fill(-n - 1);
+      const points = [[0, 0], ...along, [n, m]];
+      for (let k = 1; k < points.length; k++) {
+        const [i02, j02] = points[k - 1];
+        const [i1, j1] = points[k];
+        const low = Math.min(j02 - i02, j1 - i1) - ROW_BAND;
+        const high = Math.max(j02 - i02, j1 - i1) + ROW_BAND;
+        for (let i = i02; i <= i1; i++) {
+          lo[i] = Math.min(lo[i], low);
+          hi[i] = Math.max(hi[i], high);
+        }
+      }
+      return weighed();
+    };
+    const fits = (band) => band.pairs <= ROW_PAIRS && afford(band.work);
+    chain = keyChain(x, y, xw, yw, charge);
+    if (!fits(guide(chain)) && (chain.length === 0 || !fits(guide([]))))
+      return void 0;
+  }
+  const px = pipes(a);
+  const py = pipes(b);
+  const NONE = -1;
+  const jFirst = new Int32Array(n + 1);
+  const jLast = new Int32Array(n + 1);
+  const base3 = new Float64Array(n + 2);
+  for (let i = 0; i <= n; i++) {
+    jFirst[i] = Math.max(0, i + lo[i]);
+    jLast[i] = Math.min(m, i + hi[i]);
+    base3[i + 1] = base3[i] + Math.max(0, jLast[i] - jFirst[i] + 1);
+  }
+  const took = new Uint8Array(base3[n + 1]);
+  const at = (i, j) => base3[i] + j - jFirst[i];
+  const inBand = (i, j) => i >= 0 && i <= n && j >= jFirst[i] && j <= jLast[i];
+  const rows = [new Int32Array(m + 1), new Int32Array(m + 1), new Int32Array(m + 1)];
+  const score = (i, j) => inBand(i, j) ? rows[i % 3][j] : NONE;
+  const kept = [new Int32Array(m + 1), new Int32Array(m + 1)];
+  let extra = 0;
+  let most = NONE;
+  let steps = 0;
+  const way = (value2, step) => {
+    if (value2 === NONE)
+      return;
+    if (value2 > most) {
+      most = value2;
+      steps = step;
+    } else if (value2 === most)
+      steps |= step;
+  };
+  for (let i = 0; i <= n; i++) {
+    const row = rows[i % 3];
+    const here = kept[i % 2];
+    const before = kept[(i + 1) % 2];
+    for (let j = jFirst[i]; j <= jLast[i]; j++) {
+      here[j] = 0;
+      if (i === 0 && j === 0) {
+        row[0] = 0;
+        continue;
+      }
+      most = NONE;
+      steps = 0;
+      way(score(i - 1, j), SKIP_A);
+      if (j > 0)
+        way(score(i, j - 1), SKIP_B);
+      let joined = NONE;
+      let joins = 0;
+      if (i > 0 && j > 0) {
+        const share = keysShared(x[i - 1], y[j - 1]);
+        here[j] = share;
+        const laid = Math.min(px[i - 1], py[j - 1]);
+        const diag = score(i - 1, j - 1);
+        if (diag !== NONE && (share > 0 || laid > 1))
+          way(diag + share + laid, PAIR);
+        const list4 = px[i - 1] === 1 && py[j - 1] === 1;
+        if (list4 && share > 0 && i > 1 && inBand(i - 1, j) && before[j] > 0 && px[i - 2] === 1 && score(i - 2, j - 1) !== NONE) {
+          extra += x[i - 2].length + x[i - 1].length + y[j - 1].length;
+          const value2 = score(i - 2, j - 1) + keysSharedWithTwo(y[j - 1], x[i - 2], x[i - 1]) + 1;
+          if (value2 > joined) {
+            joined = value2;
+            joins = MERGED;
+          } else if (value2 === joined)
+            joins |= MERGED;
+        }
+        if (list4 && share > 0 && j > 1 && inBand(i, j - 1) && here[j - 1] > 0 && py[j - 2] === 1 && score(i - 1, j - 2) !== NONE) {
+          extra += x[i - 1].length + y[j - 2].length + y[j - 1].length;
+          const value2 = score(i - 1, j - 2) + keysSharedWithTwo(x[i - 1], y[j - 2], y[j - 1]) + 1;
+          if (value2 > joined) {
+            joined = value2;
+            joins = SPLIT;
+          } else if (value2 === joined)
+            joins |= SPLIT;
+        }
+      }
+      if (joined > most) {
+        most = joined;
+        steps = joins;
+      }
+      row[j] = most;
+      took[at(i, j)] = steps;
+    }
+  }
+  charge(Math.ceil(extra / LOOKUPS_PER_WORK));
+  let edge = false;
+  const walk = (early) => {
+    const out = [];
+    for (let i = n, j = m; i > 0 || j > 0; ) {
+      if (j - i <= lo[i] || j - i >= hi[i])
+        edge = true;
+      const steps2 = took[at(i, j)];
+      const paired = steps2 & (PAIR | MERGED | SPLIT);
+      const step = early ? steps2 & SKIP_A || steps2 & SKIP_B || paired & PAIR || paired & MERGED || paired : paired & PAIR || paired & MERGED || paired & SPLIT || steps2 & SKIP_A || steps2 & SKIP_B;
+      if (step === SKIP_A)
+        i--;
+      else if (step === SKIP_B)
+        j--;
+      else if (step === PAIR)
+        out.push([--i, i + 1, --j, j + 1]);
+      else if (step === MERGED)
+        out.push([i -= 2, i + 2, --j, j + 1]);
+      else if (step === SPLIT)
+        out.push([--i, i + 1, j -= 2, j + 2]);
+      else
+        break;
+    }
+    return out.reverse();
+  };
+  const pairs = walk(true);
+  const late = walk(false);
+  if (edge && banded)
+    return void 0;
+  const failed = banded ? pastChance(xw, yw, pairs, charge) : new Uint8Array(0);
+  const unsure = [];
+  const key2 = (i, j) => i * (m + 1) + j;
+  const meetLate = new Set(late.map(([, i, , j]) => key2(i, j)));
+  const shared = [0, ...pairs.map(([, i, , j]) => key2(i, j)).filter((k) => meetLate.has(k)), key2(n, m)];
+  let p2 = 0;
+  let q = 0;
+  for (let k = 1; k < shared.length; k++) {
+    const [from, to] = [shared[k - 1], shared[k]];
+    if (to <= from)
+      continue;
+    const mine = [];
+    const theirs = [];
+    for (; p2 < pairs.length && key2(pairs[p2][0], pairs[p2][2]) < to; p2++)
+      mine.push(pairs[p2].join());
+    for (; q < late.length && key2(late[q][0], late[q][2]) < to; q++)
+      theirs.push(late[q].join());
+    if (mine.join(";") === theirs.join(";"))
+      continue;
+    const region = [Math.floor(from / (m + 1)), Math.floor(to / (m + 1)), from % (m + 1), to % (m + 1)];
+    if (region[1] - region[0] <= UNSURE_ROWS && region[3] - region[2] <= UNSURE_ROWS)
+      unsure.push(region);
+  }
+  const weight = (i, j) => {
+    const share = keysShared(x[i], y[j]);
+    const laid = Math.min(px[i], py[j]);
+    return share > 0 || laid > 1 ? share + laid : -1;
+  };
+  if (!banded)
+    return { pairs, unsure, weight, doubt: [] };
+  const trusted = vouched(pairs, chain, failed, n, m);
+  if (trusted.length === pairs.length)
+    return { pairs, unsure, weight, doubt: [] };
+  const doubt = [];
+  let d = 0;
+  let i0 = 0;
+  let j0 = 0;
+  for (const pair of [...trusted, [n, n, m, m]]) {
+    let dropped = false;
+    for (; d < pairs.length && pairs[d] !== pair; d++)
+      dropped = true;
+    d++;
+    if (dropped)
+      doubt.push([i0, pair[0], j0, pair[2]]);
+    i0 = pair[1];
+    j0 = pair[3];
+  }
+  const apart = unsure.filter(([ri, rI, rj, rJ]) => !doubt.some(([di, dI, dj, dJ]) => ri < dI && di < rI && rj < dJ && dj < rJ));
+  return { pairs: trusted, unsure: apart, weight, doubt };
+}
+var TRUST_RUN = 8;
+function vouched(pairs, chain, failed, n, m) {
+  const inA = new Int32Array(n).fill(-1);
+  const inB = new Int32Array(m).fill(-1);
+  pairs.forEach(([i0, i1, j0, j1], k) => {
+    for (let i = i0; i < i1; i++)
+      inA[i] = k;
+    for (let j = j0; j < j1; j++)
+      inB[j] = k;
+  });
+  const against = Uint8Array.from(failed);
+  for (const [i, j] of chain) {
+    if (inA[i] === inB[j])
+      continue;
+    if (inA[i] >= 0)
+      against[inA[i]] = 1;
+    if (inB[j] >= 0)
+      against[inB[j]] = 1;
+  }
+  const runs = [];
+  for (let k = 0; k < pairs.length; ) {
+    if (against[k]) {
+      k++;
+      continue;
+    }
+    let e = k + 1;
+    while (e < pairs.length && !against[e] && pairs[e][0] === pairs[e - 1][1] && pairs[e][2] === pairs[e - 1][3])
+      e++;
+    runs.push([k, e]);
+    k = e;
+  }
+  const gap = (r) => {
+    const [i0, j0] = r > 0 ? [pairs[runs[r - 1][1] - 1][1], pairs[runs[r - 1][1] - 1][3]] : [0, 0];
+    const [i1, j1] = r < runs.length ? [pairs[runs[r][0]][0], pairs[runs[r][0]][2]] : [n, m];
+    return i1 - i0 + (j1 - j0);
+  };
+  const kept = [];
+  const long = (r) => runs[r][1] - runs[r][0] >= TRUST_RUN;
+  for (let s2 = 0; s2 < runs.length; ) {
+    let e = s2;
+    while (e + 1 < runs.length && gap(e + 1) <= 1)
+      e++;
+    let lo = s2 === 0 && gap(0) <= 1 ? s2 : -1;
+    let hi = e === runs.length - 1 && gap(runs.length) <= 1 ? e : -1;
+    for (let r = s2; r <= e && lo < 0; r++)
+      if (long(r))
+        lo = r;
+    for (let r = e; r >= s2 && hi < 0; r--)
+      if (long(r))
+        hi = r;
+    if (lo >= 0 && hi >= lo)
+      for (let r = lo; r <= hi; r++)
+        kept.push(...pairs.slice(runs[r][0], runs[r][1]));
+    s2 = e + 1;
+  }
+  return kept;
+}
+function keyChain(x, y, xw, yw, charge) {
+  let size = 0;
+  let words = 0;
+  for (const rows of [x, y]) {
+    for (const keys2 of rows) {
+      words += keys2.length;
+      for (const k of keys2)
+        size = Math.max(size, k + 1);
+    }
+  }
+  charge(Math.ceil(2 * words / LOOKUPS_PER_WORK));
+  const rowOf = (rows) => {
+    const at = new Int32Array(size).fill(-1);
+    rows.forEach((keys2, i) => {
+      for (const k of keys2)
+        at[k] = at[k] === -1 || at[k] === i ? i : -2;
+    });
+    return at;
+  };
+  const inA = rowOf(x);
+  const inB = rowOf(y);
+  const pick3 = new Int32Array(x.length).fill(-1);
+  x.forEach((keys2, i) => {
+    let j = -1;
+    for (const k of keys2) {
+      if (inA[k] !== i || inB[k] < 0)
+        continue;
+      if (j === -1)
+        j = inB[k];
+      else if (j !== inB[k])
+        j = -2;
+    }
+    pick3[i] = Math.max(-1, j);
+  });
+  const every = Math.max(1, Math.ceil(x.length * y.length / VOTE_PAIRS));
+  const wordsB = yw.reduce((k, keys2) => k + keys2.length, 0);
+  let reads = 0;
+  for (let i = 0; i < x.length; i += every) {
+    if (pick3[i] >= 0)
+      continue;
+    let best = 0;
+    let second = 0;
+    let at = -1;
+    for (let j = 0; j < y.length; j++) {
+      const shared = keysShared(xw[i], yw[j]);
+      if (shared > best) {
+        second = best;
+        best = shared;
+        at = j;
+      } else if (shared > second)
+        second = shared;
+    }
+    reads += y.length * xw[i].length + wordsB;
+    if (best > second)
+      pick3[i] = at;
+  }
+  charge(Math.ceil(reads / LOOKUPS_PER_WORK));
+  const found = [];
+  pick3.forEach((j, i) => {
+    if (j >= 0)
+      found.push([i, j]);
+  });
+  const rising = inOrder(found);
+  const chain = rising.filter(([i, j], k) => {
+    const d = j - i;
+    const before = k > 0 && rising[k - 1][1] - rising[k - 1][0] === d;
+    const after = k + 1 < rising.length && rising[k + 1][1] - rising[k + 1][0] === d;
+    return before || after;
+  });
+  const rowsB = new Int32Array(size);
+  for (const keys2 of yw) {
+    keys2.forEach((k, at) => {
+      if (at === 0 || keys2[at - 1] !== k)
+        rowsB[k]++;
+    });
+  }
+  let other = 0;
+  let chance = 0;
+  for (const [i, j] of chain) {
+    const rest = xw[i].filter((k) => inA[k] !== i || inB[k] !== j);
+    other += keysShared(rest, yw[j]);
+    for (const k of rest)
+      chance += rowsB[k] / y.length;
+  }
+  return other >= GATE_LIFT * chance ? chain : [];
+}
+var VOTE_PAIRS = 5e5;
+var GATE_ROWS = 32;
+var GATE_LIFT = 2;
+var GATE_STEP = 8;
+function pastChance(x, y, pairs, charge) {
+  let size = 0;
+  let words = 0;
+  for (const rows of [x, y]) {
+    for (const keys2 of rows) {
+      words += keys2.length;
+      for (const k of keys2)
+        size = Math.max(size, k + 1);
+    }
+  }
+  const inB = new Int32Array(size);
+  for (const keys2 of y) {
+    keys2.forEach((k, at) => {
+      if (at === 0 || keys2[at - 1] !== k)
+        inB[k]++;
+    });
+  }
+  charge(Math.ceil(2 * words / LOOKUPS_PER_WORK));
+  const single = [];
+  pairs.forEach(([i0, i1, j0, j1], k) => {
+    if (i1 - i0 === 1 && j1 - j0 === 1)
+      single.push(k);
+  });
+  const failed = new Uint8Array(pairs.length);
+  if (single.length === 0)
+    return failed;
+  const sharedTo = new Float64Array(single.length + 1);
+  const chanceTo = new Float64Array(single.length + 1);
+  single.forEach((k, at) => {
+    const [i, , j] = pairs[k];
+    let chance = 0;
+    for (const key2 of x[i])
+      chance += inB[key2] / y.length;
+    sharedTo[at + 1] = sharedTo[at] + keysShared(x[i], y[j]);
+    chanceTo[at + 1] = chanceTo[at] + chance;
+  });
+  const span2 = Math.min(GATE_ROWS, single.length);
+  for (let from = 0; ; from += GATE_STEP) {
+    const start = Math.min(from, single.length - span2);
+    const end = start + span2;
+    if (sharedTo[end] - sharedTo[start] < GATE_LIFT * (chanceTo[end] - chanceTo[start])) {
+      for (let k = single[start]; k <= single[end - 1]; k++)
+        failed[k] = 1;
+    }
+    if (end >= single.length)
+      break;
+  }
+  for (let changed = true; changed; ) {
+    changed = false;
+    const spans = [];
+    for (let at = 0; at < single.length; ) {
+      const bad = failed[single[at]] === 1;
+      let to = at;
+      while (to < single.length && failed[single[to]] === 1 === bad)
+        to++;
+      spans.push([at, to, bad]);
+      at = to;
+    }
+    if (spans.length === 1)
+      break;
+    spans.forEach(([from, to, bad], k) => {
+      if (bad)
+        return;
+      const inside = k > 0 && k < spans.length - 1;
+      const fence4 = inside ? Math.max(spans[k - 1][1] - spans[k - 1][0], spans[k + 1][1] - spans[k + 1][0]) : 0;
+      if (to - from >= 2 * GATE_ROWS && to - from >= fence4)
+        return;
+      for (let q = single[from]; q <= single[to - 1]; q++)
+        failed[q] = 1;
+      changed = true;
+    });
+  }
+  const score = (at) => sharedTo[at + 1] - sharedTo[at] - GATE_LIFT * (chanceTo[at + 1] - chanceTo[at]);
+  const edges = [];
+  for (let at = 0; at < single.length; ) {
+    if (failed[single[at]]) {
+      at++;
+      continue;
+    }
+    let to = at;
+    while (to < single.length && !failed[single[to]])
+      to++;
+    edges.push([at, to]);
+    at = to;
+  }
+  for (const [from, to] of edges) {
+    if (from === 0 && to === single.length)
+      break;
+    const bar = (sharedTo[to] - sharedTo[from] - GATE_LIFT * (chanceTo[to] - chanceTo[from])) / (2 * (to - from));
+    let cut = from;
+    if (from > 0) {
+      let sum = 0;
+      let least = 0;
+      for (let at = from; at < to; at++) {
+        sum += score(at) - bar;
+        if (sum < least)
+          [least, cut] = [sum, at + 1];
+      }
+    }
+    let back = to;
+    if (to < single.length) {
+      let sum = 0;
+      let least = 0;
+      for (let at = to - 1; at >= cut; at--) {
+        sum += score(at) - bar;
+        if (sum < least)
+          [least, back] = [sum, at];
+      }
+    }
+    if (cut > from)
+      for (let k = single[from]; k <= single[cut - 1]; k++)
+        failed[k] = 1;
+    if (back < to)
+      for (let k = single[back]; k <= single[to - 1]; k++)
+        failed[k] = 1;
+  }
+  return failed;
+}
+function keysSharedWithTwo(p2, q, r) {
+  const both = new Int32Array(q.length + r.length);
+  both.set(q);
+  both.set(r, q.length);
+  return keysShared(p2, both.sort());
+}
+function keysShared(p2, q) {
+  let k = 0;
+  let i = 0;
+  let j = 0;
+  while (i < p2.length && j < q.length) {
+    if (p2[i] < q[j])
+      i++;
+    else if (p2[i] > q[j])
+      j++;
+    else {
+      k++;
+      i++;
+      j++;
+    }
+  }
+  return k;
+}
+var SHORT_UNIT = 16;
+function units(text9) {
+  const all4 = text9.match(/[^|\n。！？；，、.!?;,]*[|\n。！？；，、.!?;,]|[^|\n。！？；，、.!?;,]+$/g) ?? [];
+  return all4.flatMap((unit) => {
+    const words = wordsWithSpaceDiff.tokenize(unit);
+    return words.length <= SHORT_UNIT ? words : [unit];
+  });
+}
+function byUnits(removed, added, compare) {
+  const parts = compare.units(units(removed), units(added));
+  if (!parts)
+    return anchored(removed, added, compare.window, 0);
+  const pieces = [];
+  const push2 = (piece) => {
+    const last = pieces[pieces.length - 1];
+    if (piece.kind === "rewrite") {
+      if (piece.removed || piece.added)
+        pieces.push(piece);
+    } else if (!piece.text)
+      return;
+    else if (last && last.kind === piece.kind)
+      last.text += piece.text;
+    else
+      pieces.push(piece);
+  };
+  let x = "";
+  let y = "";
+  const between = () => {
+    if (x && y) {
+      const words = compare.window(x, y);
+      if (words)
+        for (const part of words)
+          push2({ kind: part.added ? "ins" : part.removed ? "del" : "same", text: part.value });
+      else
+        for (const piece of anchored(x, y, compare.window, 1))
+          push2(piece);
+    } else {
+      push2({ kind: "del", text: x });
+      push2({ kind: "ins", text: y });
+    }
+    x = "";
+    y = "";
+  };
+  for (const part of parts) {
+    if (part.removed)
+      x += part.value.join("");
+    else if (part.added)
+      y += part.value.join("");
+    else {
+      between();
+      push2({ kind: "same", text: part.value.join("") });
+    }
+  }
+  between();
+  return pieces;
+}
+var ANCHOR_DEPTH = 2;
+function anchored(removed, added, compare, depth) {
+  const a = wordsWithSpaceDiff.tokenize(removed);
+  const b = wordsWithSpaceDiff.tokenize(added);
+  const cuts = depth < ANCHOR_DEPTH ? agreed(a, b, onceBoth(a, b)) : [];
+  if (cuts.length === 0)
+    return replacement(removed, added);
+  const pieces = [];
+  const push2 = (piece) => {
+    const last = pieces[pieces.length - 1];
+    if (piece.kind === "rewrite") {
+      if (piece.removed || piece.added)
+        pieces.push(piece);
+    } else if (!piece.text)
+      return;
+    else if (last && last.kind === piece.kind)
+      last.text += piece.text;
+    else
+      pieces.push(piece);
+  };
+  let i0 = 0;
+  let j0 = 0;
+  for (const [i, j] of [...cuts, [a.length, b.length]]) {
+    const x = a.slice(i0, i).join("");
+    const y = b.slice(j0, j).join("");
+    if (x && y) {
+      const words = compare(x, y);
+      if (words)
+        for (const part of words)
+          push2({ kind: part.added ? "ins" : part.removed ? "del" : "same", text: part.value });
+      else
+        for (const piece of anchored(x, y, compare, depth + 1))
+          push2(piece);
+    } else {
+      push2({ kind: "del", text: x });
+      push2({ kind: "ins", text: y });
+    }
+    if (i < a.length)
+      push2({ kind: "same", text: a[i] });
+    i0 = i + 1;
+    j0 = j + 1;
+  }
+  return pieces;
+}
+var NEIGHBOURS = 3;
+var SHIFT_MARGIN = 4;
+function agreed(a, b, pairs) {
+  const chain = inOrder(pairs);
+  if (chain.length === 0)
+    return chain;
+  const lineA = lineNumbers(a);
+  const lineB = lineNumbers(b);
+  const once = new Set(pairs.map(([i]) => a[i]));
+  const wordsA = lineWords(a, lineA, once);
+  const wordsB = lineWords(b, lineB, once);
+  if (wordsA.content.length <= 1 && wordsB.content.length <= 1)
+    return chain;
+  const paired = /* @__PURE__ */ new Map();
+  for (const [i, j] of pairs) {
+    const at = paired.get(lineA[i]) ?? /* @__PURE__ */ new Set();
+    at.add(lineB[j] - lineA[i]);
+    paired.set(lineA[i], at);
+  }
+  const shared = (row, offset) => {
+    const x = wordsA.words[row];
+    const y = wordsB.words[row + offset];
+    if (!x || !y)
+      return 0;
+    let n = 0;
+    for (const [word, count] of x)
+      n += Math.min(count, y.get(word) ?? 0);
+    return n;
+  };
+  return chain.filter(([i, j]) => {
+    const row = lineA[i];
+    const offset = lineB[j] - row;
+    const near = nearRows(wordsA.content, row);
+    if (near.length === 0)
+      return false;
+    const agreeing = near.filter((r) => paired.get(r)?.has(offset)).length;
+    if (2 * agreeing < near.length)
+      return false;
+    const rows = [row, ...near];
+    const score = (o) => rows.reduce((n, r) => n + shared(r, o), 0);
+    const here = score(offset);
+    return score(offset - 1) < here + SHIFT_MARGIN && score(offset + 1) < here + SHIFT_MARGIN;
+  });
+}
+function lineNumbers(tokens) {
+  const lines = new Array(tokens.length);
+  let line = 0;
+  tokens.forEach((t, k) => {
+    lines[k] = line;
+    for (let at = t.indexOf("\n"); at >= 0; at = t.indexOf("\n", at + 1))
+      line++;
+  });
+  return lines;
+}
+function lineWords(tokens, lines, once) {
+  const words = [];
+  const content3 = [];
+  tokens.forEach((t, k) => {
+    if (!/[\p{L}\p{N}]/u.test(t))
+      return;
+    const line = lines[k];
+    if (content3[content3.length - 1] !== line)
+      content3.push(line);
+    if (once.has(t))
+      return;
+    const m = words[line] ??= /* @__PURE__ */ new Map();
+    m.set(t, (m.get(t) ?? 0) + 1);
+  });
+  return { words, content: content3 };
+}
+function nearRows(content3, row) {
+  let lo = 0;
+  let hi = content3.length;
+  while (lo < hi) {
+    const mid = lo + hi >> 1;
+    if (content3[mid] < row)
+      lo = mid + 1;
+    else
+      hi = mid;
+  }
+  const after = content3[lo] === row ? lo + 1 : lo;
+  return [...content3.slice(Math.max(0, lo - NEIGHBOURS), lo), ...content3.slice(after, after + NEIGHBOURS)];
+}
+function onceBoth(a, b) {
+  const seen = (tokens) => {
+    const at = /* @__PURE__ */ new Map();
+    tokens.forEach((t, i) => {
+      if (!anchorable(t))
+        return;
+      at.set(t, at.has(t) ? -1 : i);
+    });
+    return at;
+  };
+  const inB = seen(b);
+  const pairs = [];
+  for (const [t, i] of seen(a)) {
+    const j = inB.get(t);
+    if (i >= 0 && j !== void 0 && j >= 0)
+      pairs.push([i, j]);
+  }
+  return pairs.sort((p2, q) => p2[0] - q[0]);
+}
+function inOrder(pairs) {
+  const tails = [];
+  const back = new Array(pairs.length).fill(-1);
+  pairs.forEach(([, j], k) => {
+    let lo = 0;
+    let hi = tails.length;
+    while (lo < hi) {
+      const mid = lo + hi >> 1;
+      if (pairs[tails[mid]][1] < j)
+        lo = mid + 1;
+      else
+        hi = mid;
+    }
+    if (lo > 0)
+      back[k] = tails[lo - 1];
+    tails[lo] = k;
+  });
+  const chain = [];
+  for (let k = tails.length ? tails[tails.length - 1] : -1; k >= 0; k = back[k])
+    chain.push(pairs[k]);
+  return chain.reverse();
+}
+function anchorable(token) {
+  return token.length > 1 ? /[\p{L}\p{N}]/u.test(token) : /[A-Za-z0-9]/.test(token);
+}
+function replacement(removed, added) {
+  const [head2, oldMiddle, newMiddle, tail] = trimmed(removed, added);
+  const pieces = [];
+  if (head2)
+    pieces.push({ kind: "same", text: head2 });
+  if (oldMiddle && newMiddle)
+    pieces.push({ kind: "rewrite", removed: oldMiddle, added: newMiddle });
+  else {
+    if (oldMiddle)
+      pieces.push({ kind: "del", text: oldMiddle });
+    if (newMiddle)
+      pieces.push({ kind: "ins", text: newMiddle });
+  }
+  if (tail)
+    pieces.push({ kind: "same", text: tail });
+  return pieces;
 }
 var MOVE_MIN = 16;
 function paragraphs(text9) {
@@ -32353,10 +33483,10 @@ var asLetters = (drawn) => drawn.replaceAll(MARK, "x").replaceAll(CUT, "xxx");
 function keptIn(drawn) {
   let kept = { chars: 0, cuts: 0 };
   for (const w of wordsIn(drawn)) {
-    const letters = columnsOf(w.replaceAll(MARK, "").replaceAll(CUT, ""));
+    const letters2 = columnsOf(w.replaceAll(MARK, "").replaceAll(CUT, ""));
     const marks = w.split(MARK).length - 1;
     const cuts = w.split(CUT).length - 1;
-    const k = letters > 10 ? { chars: 10, cuts: 0 } : { chars: Math.min(10, letters + Math.ceil(marks / 2)), cuts: Math.min(3, cuts) };
+    const k = letters2 > 10 ? { chars: 10, cuts: 0 } : { chars: Math.min(10, letters2 + Math.ceil(marks / 2)), cuts: Math.min(3, cuts) };
     if (k.chars + 2.5 * k.cuts > kept.chars + 2.5 * kept.cuts)
       kept = k;
   }
@@ -32371,7 +33501,7 @@ function keepWhereThereIsRoom(table2, rows, cellsOf) {
   const headerWord = [];
   const shown = [];
   const folded = [];
-  const letters = [];
+  const letters2 = [];
   const amount = [];
   const text9 = [];
   const worded = [];
@@ -32392,7 +33522,7 @@ function keepWhereThereIsRoom(table2, rows, cellsOf) {
       shown[j] = Math.max(shown[j] ?? 0, s2.chars);
       if (!folded[j] || f.chars + 2.5 * f.cuts > folded[j].chars + 2.5 * folded[j].cuts)
         folded[j] = f;
-      letters[j] = Math.max(letters[j] ?? 0, longestIn(plain));
+      letters2[j] = Math.max(letters2[j] ?? 0, longestIn(plain));
       amount[j] = (amount[j] ?? 0) + columnsOf(wordsIn(plain).join(""));
       for (const side of ["ins", "del"]) {
         const words = wordsIn(textOf2(cell, side));
@@ -32403,7 +33533,7 @@ function keepWhereThereIsRoom(table2, rows, cellsOf) {
       }
     });
   }
-  const ids = (j) => !!worded[j] && !text9[j] && (letters[j] ?? 0) > 0;
+  const ids = (j) => !!worded[j] && !text9[j] && (letters2[j] ?? 0) > 0;
   const wide = (k) => k.chars + 2.5 * k.cuts;
   let widest = 0;
   let widestFolded = { chars: 0, cuts: 0 };
@@ -32815,7 +33945,7 @@ function sanitizeUrls(node2) {
     sanitizeUrls(child);
 }
 function htmlUnits(root5) {
-  const units = [];
+  const units2 = [];
   const walk = (node2) => {
     let run5 = null;
     for (const raw2 of node2.children ?? []) {
@@ -32824,7 +33954,7 @@ function htmlUnits(root5) {
         if (run5)
           run5.push(child);
         else
-          units.push(run5 = [child]);
+          units2.push(run5 = [child]);
         continue;
       }
       run5 = null;
@@ -32832,17 +33962,49 @@ function htmlUnits(root5) {
     }
   };
   walk(root5);
-  return units;
+  return units2;
+}
+var DISCUSS = /^(to[ \u00a0]discuss|待讨论)[:：]?$/i;
+function addClass(el, name) {
+  el.properties ??= {};
+  const had = el.properties.className;
+  el.properties.className = [...Array.isArray(had) ? had.map(String) : had == null ? [] : String(had).split(" "), name];
+}
+function markDiscussion(root5) {
+  const kids = root5.children.filter((c) => c.type === "element");
+  const headings = kids.filter((el) => /^h[1-6]$/.test(el.tagName) && !isDeleted(el));
+  const head2 = headings.at(-1);
+  if (!head2 || !DISCUSS.test(textOf2(head2).trim()))
+    return;
+  if (headings.length < 2)
+    return;
+  const lists = kids.slice(kids.indexOf(head2) + 1).filter((el) => el.tagName === "ul" && !isDeleted(el));
+  if (!lists.length)
+    return;
+  addClass(head2, "mdv-discuss-head");
+  for (const list4 of lists) {
+    addClass(list4, "mdv-discuss");
+    for (const li2 of list4.children) {
+      if (li2.type !== "element" || li2.tagName !== "li" || isDeleted(li2))
+        continue;
+      addClass(li2, "mdv-discuss-item");
+      const skip = (c) => c.type === "text" && !c.value.trim() || c.type === "element" && c.tagName === "input";
+      const first = li2.children.find((c) => !skip(c));
+      const lead = first?.type === "element" && first.tagName === "p" ? first.children.find((c) => !skip(c)) : first;
+      if (lead?.type === "element" && lead.tagName === "strong")
+        addClass(lead, "mdv-discuss-tag");
+    }
+  }
 }
 function treeToHtml(root5, opts = {}) {
   let policy2 = opts.html ?? "filter";
   const cleaned = /* @__PURE__ */ new Map();
   if (policy2 === "filter") {
-    const units = htmlUnits(root5);
-    if (units.length > 0) {
-      const out = cleanHtml(units.map((u) => u.map((n) => n.value).join("")));
+    const units2 = htmlUnits(root5);
+    if (units2.length > 0) {
+      const out = cleanHtml(units2.map((u) => u.map((n) => n.value).join("")));
       if (out)
-        units.forEach((u, i) => u.forEach((n, j) => cleaned.set(n, j === 0 ? out[i] : "")));
+        units2.forEach((u, i) => u.forEach((n, j) => cleaned.set(n, j === 0 ? out[i] : "")));
       else
         policy2 = "escape";
     }
@@ -32852,6 +34014,7 @@ function treeToHtml(root5, opts = {}) {
     stampSource(hast);
     stampBlocks(hast);
   }
+  markDiscussion(hast);
   if (policy2 !== "trust")
     sanitizeUrls(hast);
   return toHtml(hast, { allowDangerousHtml: true });
@@ -33038,6 +34201,10 @@ function resolveAnchor(docText, given) {
   const verbatim = locateAnchor(docText, anchor);
   if (verbatim)
     return { state: "moved", ...verbatim };
+  return readsLikeNear(docText, anchor);
+}
+function readsLikeNear(docText, anchor) {
+  const { exact } = anchor;
   const len = exact.length;
   const step = Math.max(1, Math.floor(len / 8));
   const reach = Math.max(len * 4, 400);
@@ -33100,6 +34267,217 @@ function walkBetween(fromText, toText) {
   walks.set(key2, steps);
   return steps;
 }
+function sameLine(del2, offset, toText) {
+  const at = del2.rewrittenTo;
+  const replacement2 = toText.slice(at, at + del2.rewrittenLength);
+  const before = del2.text.slice(0, offset - del2.before);
+  const line = before.split("\n").length - 1;
+  const column = before.length - (before.lastIndexOf("\n") + 1);
+  const target = lineMap(del2, replacement2)?.[line] ?? line;
+  let start = 0;
+  for (let l = 0; l < target; l++) {
+    const next2 = replacement2.indexOf("\n", start);
+    if (next2 < 0)
+      break;
+    start = next2 + 1;
+  }
+  const eol = replacement2.indexOf("\n", start);
+  return at + Math.min(start + column, eol < 0 ? replacement2.length : eol);
+}
+var SKIP2 = 1;
+var ALIGN_GAIN = 0.04;
+var lineMaps = /* @__PURE__ */ new WeakMap();
+function lineMap(del2, replacement2) {
+  const known = lineMaps.get(del2);
+  if (known !== void 0)
+    return known;
+  const a = del2.text.split("\n");
+  const b = replacement2.split("\n");
+  const n = a.length;
+  const m = b.length;
+  let map3 = null;
+  if (n > 1 && n * m <= ALIGN_PAIRS && alignable.has(del2)) {
+    const ga = a.map(bigrams);
+    const gb = b.map(bigrams);
+    const width = m + 1;
+    const best = new Float64Array((n + 1) * width);
+    let byNumber = -SKIP2 * Math.abs(n - m);
+    for (let i = 0; i <= n; i++)
+      best[i * width] = -SKIP2 * i;
+    for (let j = 0; j <= m; j++)
+      best[j] = -SKIP2 * j;
+    for (let i = 1; i <= n; i++) {
+      for (let j = 1; j <= m; j++) {
+        const k = i * width + j;
+        const alike = dice(ga[i - 1], Math.max(0, a[i - 1].length - 1), gb[j - 1], Math.max(0, b[j - 1].length - 1));
+        best[k] = Math.max(best[k - width] - SKIP2, best[k - 1] - SKIP2, best[k - width - 1] + alike);
+        if (i === j)
+          byNumber += alike;
+      }
+    }
+    if (best[n * width + m] - byNumber < ALIGN_GAIN * Math.min(n, m)) {
+      lineMaps.set(del2, null);
+      return null;
+    }
+    map3 = new Array(n).fill(-1);
+    for (let i = n, j = m; i > 0 && j > 0; ) {
+      const k = i * width + j;
+      if (best[k] === best[k - width] - SKIP2)
+        i--;
+      else if (best[k] === best[k - 1] - SKIP2)
+        j--;
+      else
+        map3[--i] = --j;
+    }
+    for (let i = 0, last = -1; i < n; i++) {
+      if (map3[i] < 0)
+        map3[i] = Math.min(m - 1, last + 1);
+      else
+        last = map3[i];
+    }
+  }
+  lineMaps.set(del2, map3);
+  return map3;
+}
+function pairedLines(del2) {
+  const newline = del2.text.indexOf("\n");
+  if (unpaired.has(del2))
+    return false;
+  return newline < 0 || newline >= del2.text.length - 1 || alignable.has(del2);
+}
+function intoRewrite(toText, anchor, del2, start, end) {
+  const at = del2.rewrittenTo;
+  const runEnd = at + del2.rewrittenLength;
+  if (!pairedLines(del2)) {
+    const first = letters(anchor.exact) >= QUOTE_MIN ? toText.indexOf(anchor.exact) : -1;
+    const once = first >= at && first + anchor.exact.length <= runEnd && toText.indexOf(anchor.exact, first + 1) < 0;
+    if (once)
+      return { state: first === anchor.start ? "exact" : "moved", start: first, end: first + anchor.exact.length, rewritten: true };
+    return { state: "orphaned", at, rewritten: true };
+  }
+  const line = linesOf3(toText, at, runEnd, start, end);
+  const away = elsewhere(toText, anchor, del2, line);
+  const own12 = (s2, e) => s2 >= line.start && e <= line.end || away;
+  const verbatim = verbatimNear(toText, anchor, start, line, away);
+  if (verbatim)
+    return { state: verbatim.start === anchor.start ? "exact" : "moved", ...verbatim, rewritten: true };
+  const around = anchor.exact.length < 2 ? { state: "orphaned" } : readsLikeNear(toText, { ...anchor, start, end: Math.max(end, start + 1) });
+  if (around.start !== void 0 && around.end !== void 0 && around.end > around.start && (around.similarity ?? 0) >= HEIR_FLOOR && own12(around.start, around.end)) {
+    return { ...around, state: "changed", rewritten: true };
+  }
+  const heir = readsMostLike(toText, anchor, Math.max(at, start - HEIR_REACH), Math.min(runEnd, start + HEIR_REACH));
+  if (heir && heir.similarity >= HEIR_FLOOR && own12(heir.start, heir.end))
+    return { state: "changed", start: heir.start, end: heir.end, similarity: heir.similarity, rewritten: true };
+  const same2 = onSameLine(toText, anchor, at, runEnd, start, end);
+  if ((same2.similarity ?? 0) < WALK_FLOOR)
+    return { state: "orphaned", at: same2.start, rewritten: true };
+  return same2;
+}
+function linesOf3(toText, at, runEnd, start, end) {
+  const from = Math.max(at, toText.lastIndexOf("\n", start - 1) + 1);
+  const newline = toText.indexOf("\n", Math.max(start, end - 1));
+  return { start: from, end: newline < 0 || newline > runEnd ? runEnd : newline };
+}
+var QUOTE_MIN = 16;
+function elsewhere(toText, anchor, del2, line) {
+  if (letters(anchor.exact) < QUOTE_MIN)
+    return false;
+  const first = toText.indexOf(anchor.exact);
+  if (first >= 0 && toText.indexOf(anchor.exact, first + 1) >= 0)
+    return false;
+  const from = Math.max(0, anchor.start - del2.before);
+  const to = Math.min(del2.text.length, anchor.end - del2.before);
+  const lineStart = del2.text.lastIndexOf("\n", from - 1) + 1;
+  const newline = del2.text.indexOf("\n", Math.max(from, to - 1));
+  const rest = del2.text.slice(lineStart, from) + del2.text.slice(to, newline < 0 ? del2.text.length : newline);
+  if (letters(rest) < 2)
+    return true;
+  return textSimilarity(rest, toText.slice(line.start, line.end)) < WALK_FLOOR;
+}
+function letters(text9) {
+  return text9.replace(/[^\p{L}]/gu, "").length;
+}
+function verbatimNear(toText, anchor, near, line, away) {
+  const { exact } = anchor;
+  let best = null;
+  let bestKey = null;
+  for (let i = toText.indexOf(exact); i !== -1; i = toText.indexOf(exact, i + 1)) {
+    const onLine = i >= line.start && i + exact.length <= line.end;
+    if (!onLine && !away)
+      continue;
+    const context = sharedSuffixLen(toText.slice(Math.max(0, i - CONTEXT), i), anchor.prefix) + sharedPrefixLen2(toText.slice(i + exact.length, i + exact.length + CONTEXT), anchor.suffix);
+    const key2 = [onLine ? 0 : 1, Math.abs(i - near), -context];
+    if (!bestKey || key2[0] < bestKey[0] || key2[0] === bestKey[0] && (key2[1] < bestKey[1] || key2[1] === bestKey[1] && key2[2] < bestKey[2])) {
+      bestKey = key2;
+      best = { start: i, end: i + exact.length };
+    }
+  }
+  return best;
+}
+var HEIR_REACH = 3e3;
+function readsMostLike(toText, anchor, lo, hi) {
+  const quote = anchor.exact;
+  const len = quote.length;
+  if (len < 2 || hi - lo < len)
+    return null;
+  const want = /* @__PURE__ */ new Map();
+  for (let i = 0; i + 1 < len; i++)
+    want.set(quote.slice(i, i + 2), (want.get(quote.slice(i, i + 2)) ?? 0) + 1);
+  const have = /* @__PURE__ */ new Map();
+  let common = 0;
+  const add = (pair) => {
+    const n = have.get(pair) ?? 0;
+    if (n < (want.get(pair) ?? 0))
+      common++;
+    have.set(pair, n + 1);
+  };
+  const drop = (pair) => {
+    const n = have.get(pair) - 1;
+    have.set(pair, n);
+    if (n < (want.get(pair) ?? 0))
+      common--;
+  };
+  for (let i = lo; i + 1 < lo + len; i++)
+    add(toText.slice(i, i + 2));
+  let best = 2 * common / (2 * (len - 1));
+  let bestAt = lo;
+  for (let i = lo + 1; i + len <= hi; i++) {
+    drop(toText.slice(i - 1, i + 1));
+    add(toText.slice(i + len - 2, i + len));
+    const score = common / (len - 1);
+    if (score > best) {
+      best = score;
+      bestAt = i;
+    }
+  }
+  if (best < WALK_FLOOR)
+    return null;
+  const refined = readsLikeNear(toText, { ...anchor, start: bestAt, end: bestAt + len });
+  if (refined.start === void 0 || refined.end === void 0 || refined.end <= refined.start)
+    return null;
+  return { start: refined.start, end: refined.end, similarity: refined.similarity ?? textSimilarity(toText.slice(refined.start, refined.end), quote) };
+}
+function onSameLine(toText, anchor, at, runEnd, start, end) {
+  const length = Math.max(anchor.exact.length, 1);
+  let s2 = Math.min(start, runEnd);
+  let e = Math.min(runEnd, Math.max(end, s2));
+  if (e - s2 > length * 2 && e - s2 > WEDGE)
+    e = s2 + length;
+  if (e <= s2 || !toText.slice(s2, e).trim()) {
+    const lineStart = Math.max(at, toText.lastIndexOf("\n", s2 - 1) + 1);
+    const newline = toText.indexOf("\n", lineStart);
+    const lineEnd = newline < 0 || newline > runEnd ? runEnd : newline;
+    s2 = Math.max(lineStart, lineEnd - length);
+    e = lineEnd;
+    if (e <= s2)
+      e = Math.min(runEnd, s2 + length);
+    if (e <= s2)
+      s2 = Math.max(at, e - 1);
+  }
+  const now = toText.slice(s2, e);
+  const similarity2 = now.length < 2 || anchor.exact.length < 2 ? now === anchor.exact ? 1 : 0 : textSimilarity(now, anchor.exact);
+  return { state: "changed", start: s2, end: e, similarity: similarity2, rewritten: true };
+}
 function mapAnchor(fromText, toText, given) {
   const anchor = sane(given);
   if (anchor.exact.length === 0)
@@ -33115,6 +34493,8 @@ function mapAnchor(fromText, toText, given) {
   let afterEnd = 0;
   let startMove = null;
   let endMove = null;
+  let startRewrite = null;
+  let endRewrite = null;
   for (const step of steps) {
     if (step.kind === "ins") {
       afterEnd = step.after + step.text.length;
@@ -33122,17 +34502,22 @@ function mapAnchor(fromText, toText, given) {
     }
     const runEnd = step.before + step.text.length;
     const moved = step.kind === "del" && step.movedTo !== void 0;
+    const rewritten = step.kind === "del" && step.rewrittenTo !== void 0;
     if (mappedStart === null && anchor.start < runEnd) {
-      mappedStart = moved ? step.movedTo + (anchor.start - step.before) : step.kind === "del" ? step.after : step.after + (anchor.start - step.before);
-      startDropped = step.kind === "del" && !moved;
+      mappedStart = moved ? step.movedTo + (anchor.start - step.before) : rewritten ? sameLine(step, anchor.start, toText) : step.kind === "del" ? step.after : step.after + (anchor.start - step.before);
+      startDropped = step.kind === "del" && !moved && !rewritten;
       if (moved)
         startMove = step;
+      if (rewritten)
+        startRewrite = step;
     }
     if (mappedEnd === null && anchor.end <= runEnd) {
-      mappedEnd = moved ? step.movedTo + (anchor.end - step.before) : step.kind === "del" ? step.after : step.after + (anchor.end - step.before);
-      endDropped = step.kind === "del" && !moved;
+      mappedEnd = moved ? step.movedTo + (anchor.end - step.before) : rewritten ? sameLine(step, anchor.end, toText) : step.kind === "del" ? step.after : step.after + (anchor.end - step.before);
+      endDropped = step.kind === "del" && !moved && !rewritten;
       if (moved)
         endMove = step;
+      if (rewritten)
+        endRewrite = step;
     }
     afterEnd = step.kind === "del" ? step.after : step.after + step.text.length;
     if (mappedStart !== null && mappedEnd !== null)
@@ -33147,6 +34532,18 @@ function mapAnchor(fromText, toText, given) {
       mappedEnd = endMove.after;
       endDropped = true;
     }
+  }
+  if (startRewrite !== endRewrite) {
+    if (startRewrite) {
+      mappedStart = startRewrite.after;
+      startDropped = true;
+    }
+    if (endRewrite) {
+      mappedEnd = endRewrite.after;
+      endDropped = true;
+    }
+  } else if (startRewrite && mappedStart !== null && mappedEnd !== null) {
+    return intoRewrite(toText, anchor, startRewrite, mappedStart, mappedEnd);
   }
   if (mappedStart === null)
     mappedStart = afterEnd;
@@ -33217,10 +34614,13 @@ function renderDiff(aSrc, bSrc, opts = {}) {
   const changes = assignChangeIds(merged);
   return { html: treeToHtml(merged, opts), changes, stats: statsOf(changes) };
 }
+var lastPlain = null;
 function renderPlain(src, opts = {}) {
   const root5 = parseMd(src);
   root5.children = root5.children.filter((c) => c.type !== "yaml");
-  return { html: treeToHtml(root5, opts) };
+  const html7 = treeToHtml(root5, opts);
+  lastPlain = { src, root: root5 };
+  return { html: html7 };
 }
 
 // packages/core/dist/notes.js
@@ -33230,7 +34630,11 @@ import { hostname as hostname3, userInfo as userInfo2 } from "node:os";
 
 // packages/core/dist/agents.js
 import { hostname } from "node:os";
-var HARNESSES = [{ name: "claude", vars: ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"] }];
+var HARNESSES = [
+  { name: "codex", vars: ["CODEX_THREAD_ID"] },
+  { name: "qoder", vars: ["QODER_CLI"] },
+  { name: "claude", vars: ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT"] }
+];
 function harnessHere(env2 = process.env) {
   const named = env2.MDREV_AGENT?.trim();
   if (named)
@@ -33474,7 +34878,7 @@ host=${where.host}
       return { unknown: `git has no stored credential for ${where.host} to say which account it uses` };
   } else {
     const target = `${where.user ?? "git"}@${where.host}`;
-    const r = await runQuiet("ssh", ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", ...where.port ? ["-p", where.port] : [], target]);
+    const r = await runQuiet("ssh", ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", ...where.port ? ["-p", where.port] : [], "--", target]);
     user = r ? parseSshGreeting(`${r.out}
 ${r.err}`) : null;
     via = "ssh greeting";
@@ -33975,15 +35379,15 @@ async function flush(mode, timeoutMs = ASK_MS) {
   let cursor;
   let waiting = queued(mode.repo.id);
   while (waiting.length > 0) {
-    const batch = waiting.slice(0, BATCH);
+    const batch2 = waiting.slice(0, BATCH);
     let answer;
     try {
-      answer = await ask(mode.joined, "POST", `/api/device/notes/${mode.repo.id}`, { ops: batch.map((w) => w.op) }, Math.max(1, until - Date.now()));
+      answer = await ask(mode.joined, "POST", `/api/device/notes/${mode.repo.id}`, { ops: batch2.map((w) => w.op) }, Math.max(1, until - Date.now()));
     } catch (e) {
       if (e instanceof ServiceError && e.status >= 400 && e.status !== 401 && e.status !== 404) {
         const aside = join7(queueDir(mode.repo.id), "refused");
         mkdirSync3(aside, { recursive: true });
-        for (const w of batch) {
+        for (const w of batch2) {
           renameSync3(w.file, join7(aside, w.file.split("/").pop()));
           dropped.push({ op: w.op, why: `the service refused it (${e.message}); kept in ${aside}` });
         }
@@ -33993,7 +35397,7 @@ async function flush(mode, timeoutMs = ASK_MS) {
       throw e;
     }
     const byOp = new Map(answer.results.map((r) => [r.op, r]));
-    for (const w of batch) {
+    for (const w of batch2) {
       const r = byOp.get(w.op.op);
       if (!r)
         continue;
@@ -34225,7 +35629,22 @@ function readPointer(root5) {
   if (!remote || !branch) {
     throw new StoreError(`${projectFileName(root5, ".mdrev.json")}: "review" must name both "remote", the review store's git URL, and "branch", its ref (such as ${DEFAULT_BRANCH}) \u2014 mdrev --review-pointer writes both`, "other");
   }
+  const refused = storeAddressRefused(remote, branch);
+  if (refused)
+    throw new StoreError(`${projectFileName(root5, ".mdrev.json")}: ${refused}`, "other");
   return { remote, branch };
+}
+function storeAddressRefused(remote, branch) {
+  if (/[\x00-\x1f\x7f]/.test(remote + branch))
+    return "the review store's address and ref may not hold a control character";
+  if (remote.startsWith("-"))
+    return `the review store's address may not start with "-"`;
+  if (branch.startsWith("-"))
+    return `the review store's ref may not start with "-"`;
+  const where = remoteHost(remote);
+  if (where && (where.host.startsWith("-") || where.user?.startsWith("-")))
+    return `the review store's address may not name a user or host that starts with "-"`;
+  return null;
 }
 function readPointerOrNull(root5) {
   try {
@@ -34499,7 +35918,7 @@ function writeAtomic(file, text9) {
 }
 var canonical = (r) => `${JSON.stringify(r, null, 2)}
 `;
-function inOrder(a, b) {
+function inOrder2(a, b) {
   const at = (a.at ?? "").localeCompare(b.at ?? "");
   return at !== 0 ? at : a.id.localeCompare(b.id);
 }
@@ -34658,7 +36077,7 @@ var SharedStore = class {
       } catch {
       }
     }
-    return out.sort((a, b) => inOrder(a.record, b.record));
+    return out.sort((a, b) => inOrder2(a.record, b.record));
   }
   /** Subscriptions and read marks written here and not sent yet (H7). */
   quietOutbox() {
@@ -34677,7 +36096,7 @@ var SharedStore = class {
       } catch {
       }
     }
-    return out.sort((a, b) => inOrder(a.record, b.record));
+    return out.sort((a, b) => inOrder2(a.record, b.record));
   }
   /** Save a subscription or a read mark: it counts here at once, and goes with the next send (H7). */
   writeQuiet(record, local2) {
@@ -35024,11 +36443,11 @@ var SharedStore = class {
     if (statSync4(join8(this.gitDir, "HEAD"), { throwIfNoEntry: false })) {
       const now = await git(["remote", "get-url", "origin"], { gitDir: this.gitDir });
       if (now.code === 0 && now.out.trim() !== this.pointer.remote)
-        await gitOk(["remote", "set-url", "origin", this.pointer.remote], { gitDir: this.gitDir });
+        await gitOk(["remote", "set-url", "--", "origin", this.pointer.remote], { gitDir: this.gitDir });
       return;
     }
     await gitOk(["init", "--bare", "--quiet", this.gitDir]);
-    await gitOk(["remote", "add", "origin", this.pointer.remote], { gitDir: this.gitDir });
+    await gitOk(["remote", "add", "--", "origin", this.pointer.remote], { gitDir: this.gitDir });
   }
   /** The URL git will really use, after any `insteadOf` in the person's config (E3). */
   async destination() {
@@ -35056,7 +36475,7 @@ var SharedStore = class {
       rmSync3(this.gitDir, { recursive: true, force: true });
     }
     await gitOk(["init", "--bare", "--quiet", this.gitDir]);
-    await gitOk(["remote", "add", "origin", this.pointer.remote], { gitDir: this.gitDir });
+    await gitOk(["remote", "add", "--", "origin", this.pointer.remote], { gitDir: this.gitDir });
     logEvent("review.copy-repaired", { store: this.pointer.remote, why, aside });
   }
   async fetchLocked(deadline, repaired = false) {
@@ -35159,7 +36578,7 @@ var SharedStore = class {
     const edits = { changed: [...changed].filter((id) => present.has(id)), removed: [...removed].filter((id) => !present.has(id)) };
     if (files.length === 0)
       return { records: [], quiet: [], ...edits };
-    const batch = await new Promise((done, fail) => {
+    const batch2 = await new Promise((done, fail) => {
       const env2 = { ...process.env };
       for (const k of SCRUB)
         delete env2[k];
@@ -35174,14 +36593,14 @@ var SharedStore = class {
     const out = [];
     let at = 0;
     for (const f of files) {
-      const nl = batch.indexOf(10, at);
-      const header = batch.subarray(at, nl).toString("utf8").split(" ");
+      const nl = batch2.indexOf(10, at);
+      const header = batch2.subarray(at, nl).toString("utf8").split(" ");
       const size = Number(header[2]);
-      const body3 = batch.subarray(nl + 1, nl + 1 + size).toString("utf8");
+      const body3 = batch2.subarray(nl + 1, nl + 1 + size).toString("utf8");
       at = nl + 1 + size + 1;
       out.push({ ...parseRecord(f.id, body3), landed: landed.get(f.id) ?? Number.MAX_SAFE_INTEGER });
     }
-    out.sort((a, b) => a.landed - b.landed || inOrder(a, b));
+    out.sort((a, b) => a.landed - b.landed || inOrder2(a, b));
     const records = [];
     const quiet = [];
     for (const { landed: _landed, ...r } of out) {
@@ -35494,6 +36913,9 @@ async function writePointer(root5, storeUrl, change, who) {
     throw new StoreError("a bare copy has no working tree to commit .mdrev.json in: name the store from a checkout of the project, and push it", "other");
   const file = join8(root5, ".mdrev.json");
   const named = readPointer(root5);
+  const asked = storeUrl?.trim() ? storeAddressRefused(storeUrl.trim(), DEFAULT_BRANCH) : null;
+  if (asked)
+    throw new StoreError(`--store: ${asked}`, "other");
   const p2 = storeUrl?.trim() ? { remote: storeUrl.trim(), branch: DEFAULT_BRANCH } : named ?? await suggestedPointer(root5);
   if (!p2)
     throw new StoreError("this checkout has no remote to suggest a review store from: name one with mdrev --review-pointer --store <URL>", "other");
@@ -35720,7 +37142,7 @@ async function rootOf(gitDir, ref) {
 }
 async function probeStore(p2) {
   const ref = refOf(p2.branch);
-  const ls = await git(["ls-remote", p2.remote, ref], { timeoutMs: 15e3 }).catch(() => null);
+  const ls = await git(["ls-remote", "--", p2.remote, ref], { timeoutMs: 15e3 }).catch(() => null);
   if (!ls || ls.code !== 0)
     return { kind: "unreachable" };
   if (!ls.out.trim())
@@ -35728,7 +37150,7 @@ async function probeStore(p2) {
   const dir = join8(stateHome(), "review", `.probe-${randomBytes2(4).toString("hex")}`);
   try {
     await gitOk(["init", "--bare", "--quiet", dir]);
-    const r = await git(["fetch", "--no-tags", "--quiet", p2.remote, `+${ref}:refs/probe`], { gitDir: dir, timeoutMs: 15e3 });
+    const r = await git(["fetch", "--no-tags", "--quiet", "--", p2.remote, `+${ref}:refs/probe`], { gitDir: dir, timeoutMs: 15e3 });
     const root5 = r.code === 0 ? await rootOf(dir, "refs/probe") : null;
     return root5 ? { kind: "root", root: root5 } : { kind: "unreachable" };
   } catch {
@@ -36710,9 +38132,9 @@ async function reviewStatus(source, opts = {}) {
   } catch (e) {
     error = e.message;
   }
-  const elsewhere = source.isGit ? await otherOutboxes(source.repoRoot, store?.dir) : [];
+  const elsewhere2 = source.isGit ? await otherOutboxes(source.repoRoot, store?.dir) : [];
   if (!store)
-    return { configured: false, ...error ? { error } : {}, pending: [], elsewhere };
+    return { configured: false, ...error ? { error } : {}, pending: [], elsewhere: elsewhere2 };
   const followed = await follow(source.repoRoot, store, { fresh: opts.fetch === true });
   const pairing = followed.pairing;
   const moved = pairing || followed.leftBehind ? null : await pairedElsewhere(source.repoRoot, store);
@@ -36756,7 +38178,7 @@ async function reviewStatus(source, opts = {}) {
       agent: Boolean(e.record.agent),
       ...e.local.for || e.local.revisedFor?.length ? { asked: e.local.for ?? e.local.revisedFor.at(-1) } : {}
     })),
-    elsewhere,
+    elsewhere: elsewhere2,
     ...await codeToPush(source.repoRoot, store.outbox()).then((c) => c ? { code: c } : {}, () => ({})),
     ...arrived.length ? { arrivedAfterTakeBack: arrived } : {},
     ...cache.changed?.length || cache.removed?.length ? { storeEdited: { changed: cache.changed ?? [], removed: cache.removed ?? [] } } : {},
@@ -36914,7 +38336,7 @@ async function tellThroughService(mode, store, add, branch) {
   const now = Date.now();
   let dropped = 0;
   const mark3 = randomBytes2(6).toString("hex");
-  const batch = await store.changeServiceKept((k) => {
+  const batch2 = await store.changeServiceKept((k) => {
     for (const id of add)
       if (!k.ids[id] && !store.wasNotified(id))
         k.ids[id] = { since: new Date(now).toISOString() };
@@ -36933,7 +38355,7 @@ async function tellThroughService(mode, store, add, branch) {
     return { ids, prior };
   });
   const counts = (kept2) => ({ url, telling: 0, told: 0, pending: 0, refused: [], kept: kept2, dropped });
-  if (batch.ids.length === 0) {
+  if (batch2.ids.length === 0) {
     markKept(mode.repo.id, false);
     return { service: counts(0), fallback: [] };
   }
@@ -36951,13 +38373,13 @@ async function tellThroughService(mode, store, add, branch) {
   };
   let a;
   try {
-    a = await ask(mode.joined, "POST", "/api/device/notify", { repo: mode.repo.id, branch, store: { remote: store.pointer.remote, branch: store.pointer.branch }, ids: batch.ids }, TELL_WAIT_MS);
+    a = await ask(mode.joined, "POST", "/api/device/notify", { repo: mode.repo.id, branch, store: { remote: store.pointer.remote, branch: store.pointer.branch }, ids: batch2.ids }, TELL_WAIT_MS);
   } catch (e) {
     const err = e instanceof ServiceError ? e : new ServiceError(0, e.message, false);
     if (err.status === 0 || err.status === 429) {
       const kept2 = await store.changeServiceKept((k) => {
         if (err.answered)
-          for (const id of batch.ids)
+          for (const id of batch2.ids)
             unmark(k, id);
         return Object.keys(k.ids).length;
       });
@@ -36984,16 +38406,16 @@ async function tellThroughService(mode, store, add, branch) {
   const fallback = [];
   const kept = await store.changeServiceKept((k) => {
     for (const id of [...telling, ...told]) {
-      if (!batch.ids.includes(id))
+      if (!batch2.ids.includes(id))
         continue;
       store.markNotified(id);
       delete k.ids[id];
     }
     for (const id of pending)
-      if (batch.ids.includes(id))
-        unmark(k, id, batch.prior.get(id));
+      if (batch2.ids.includes(id))
+        unmark(k, id, batch2.prior.get(id));
     for (const r of refused) {
-      if (!batch.ids.includes(r.id) || !k.ids[r.id])
+      if (!batch2.ids.includes(r.id) || !k.ids[r.id])
         continue;
       if (unmark(k, r.id).length)
         dropped++;
@@ -37002,14 +38424,14 @@ async function tellThroughService(mode, store, add, branch) {
       delete k.ids[r.id];
     }
     const named = /* @__PURE__ */ new Set([...telling, ...told, ...pending, ...refused.map((r) => r.id)]);
-    for (const id of batch.ids)
+    for (const id of batch2.ids)
       if (!named.has(id))
         delete k.ids[id];
     return Object.keys(k.ids).length;
   });
   markKept(mode.repo.id, kept > 0);
-  const mine = (ids) => ids.filter((id) => batch.ids.includes(id)).length;
-  return { service: { url, telling: mine(telling), told: mine(told), pending: mine(pending), refused: refused.filter((r) => batch.ids.includes(r.id)), kept, dropped }, fallback };
+  const mine = (ids) => ids.filter((id) => batch2.ids.includes(id)).length;
+  return { service: { url, telling: mine(telling), told: mine(told), pending: mine(pending), refused: refused.filter((r) => batch2.ids.includes(r.id)), kept, dropped }, fallback };
 }
 function marksOf(e) {
   return e.asked === void 0 ? [] : e.asked === true ? ["earlier"] : typeof e.asked === "string" ? [e.asked] : e.asked;
@@ -37323,14 +38745,14 @@ async function notifyPush(source, store, me, landed) {
       result.failed.push({ channel, error: `no tool for ${channel} on this machine \u2014 install your organisation's plugin` });
       return;
     }
-    const vouched = await lookupWith(channel, tool, messages2.map((m) => m.to), Math.max(1e3, deadline - Date.now()));
-    if (vouched.error) {
-      result.failed.push({ channel, error: vouched.error });
+    const vouched2 = await lookupWith(channel, tool, messages2.map((m) => m.to), Math.max(1e3, deadline - Date.now()));
+    if (vouched2.error) {
+      result.failed.push({ channel, error: vouched2.error });
       return;
     }
-    for (const to of vouched.unknown)
+    for (const to of vouched2.unknown)
       result.failed.push({ to, channel, error: `${channel} does not know ${to}` });
-    const go = messages2.filter((m) => vouched.people.has(m.to));
+    const go = messages2.filter((m) => vouched2.people.has(m.to));
     const failed = await sendWith(channel, tool, from, go, Math.max(1e3, deadline - Date.now()));
     const bad = new Set(failed.map((f) => f.to));
     for (const f of failed)
@@ -38256,6 +39678,9 @@ var Review = class {
     const asked = args.annotation.rev;
     const given = args.annotation.anchor;
     const fromRev = given?.side === "from" ? args.annotation.fromRev : void 0;
+    for (const rev of [asked, args.annotation.fromRev])
+      if (typeof rev === "string")
+        notAnOption(rev);
     const base3 = await baseRevFor(source, args.path, asked);
     if (given?.side === "from") {
       const struck = fromRev ? await source.snapshotBlob(args.path, fromRev) : void 0;
@@ -39275,6 +40700,8 @@ var USAGE = `mdrev-cli \u2014 mdrev's store, from the command line, for a host a
 
   mdrev-cli notes list   [--path P] [--all]            open notes (--all: closed too), as JSON
                          [--from REV [--to REV]]       only notes filed against that range
+                         [--ids A,B]                   only these notes: an agent's listing then marks only
+                                                       them as read (its close check, #s189)
                          [--records]                   the records alone, not judged against the file:
                                                        what a viewer's route returns (it places notes itself)
                          [--follow]                    keep running: the open notes printed once, then each
@@ -39328,6 +40755,15 @@ var USAGE = `mdrev-cli \u2014 mdrev's store, from the command line, for a host a
                       [--from OLD --to NEW]     ...or say that OLD and NEW are one document, when git could not pair them
   mdrev-cli text      --path P [--rev R]               the document's Markdown at R (default: as it stands)
   mdrev-cli revisions --path P                         the revisions that touched P, newest first
+  mdrev-cli batch < items.json                         a host's: reads asked together, in one process. stdin is a JSON
+                                                       list of command lines without the repository, which the batch's
+                                                       own line names once (--root, or --copy --ref --notes-dir), e.g.
+                                                       [["revisions","--path","P"],["review","status","--quick"]].
+                                                       Each runs as it would alone, in order, and answers one JSON line
+                                                       as soon as it is done: {"i":N,"code":C,"out":"\u2026","err":"\u2026"}, its
+                                                       stdout and stderr. Only revisions, text, notes list (not --follow)
+                                                       and review status (not --fetch). Exits 0 when the items ran, 1,
+                                                       running none, when the batch itself is wrong
   mdrev-cli conform   --url U --path P [--root DIR]    check a host's contract at prefix U, with the sidecar round trip
                       [--review] [--annotate]          ...and each part the host declares, failing by NAME when its routes do not answer
                       [--toolbar none|collapsible]     ...and say when a declared part overrides that setting
@@ -39388,7 +40824,7 @@ function parse5(argv) {
     else if (a === "--notes-dir")
       o.notesDir = next2();
     else if (a === "--state-dir")
-      process.env.MDREV_STATE_DIR = resolvePath2(next2());
+      o.stateDir = resolvePath2(next2());
     else if (a === "--path")
       o.path = next2();
     else if (a === "--rev")
@@ -39521,15 +40957,19 @@ function need(value2, what) {
     throw new UsageError(`${what} is required`);
   return value2;
 }
-async function run4(argv, out = (s2) => process.stdout.write(s2), input = readStdin, as = {}) {
+async function run4(argv, out = (s2) => process.stdout.write(s2), input = readStdin, as = {}, err = (s2) => void process.stderr.write(s2)) {
   let o;
   try {
     o = parse5(argv);
   } catch (e) {
-    process.stderr.write(e instanceof UsageError && e.message ? `mdrev-cli: ${e.message}
+    err(e instanceof UsageError && e.message ? `mdrev-cli: ${e.message}
 ` : USAGE);
     return e instanceof UsageError && !e.message ? 0 : 1;
   }
+  if (o.stateDir)
+    process.env.MDREV_STATE_DIR = o.stateDir;
+  if (o.positional[0] === "batch")
+    return batch(o, argv, out, input, as, err);
   if (o.version) {
     out(`${versionLine("mdrev-cli")}
 `);
@@ -39537,18 +40977,22 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
   }
   const [command, sub, id] = o.positional;
   if (!command) {
-    process.stderr.write(USAGE);
+    err(USAGE);
     return 1;
   }
   const author = o.author ?? `${userInfo4().username}@${hostname5()}`;
   setSharedStamp({ version: mdrevVersion(), from: "cli" });
   const listing = command === "notes" && sub === "list";
   if (o.follow && !listing) {
-    process.stderr.write("mdrev-cli: --follow belongs to notes list\n");
+    err("mdrev-cli: --follow belongs to notes list\n");
+    return 1;
+  }
+  if (listing && o.ids && (o.follow || o.records)) {
+    process.stderr.write("mdrev-cli: notes list --ids names the notes of a plain listing; --follow and --records do not combine with it\n");
     return 1;
   }
   if (o.follow && (o.viewer || o.all || o.records)) {
-    process.stderr.write("mdrev-cli: --follow streams the open notes as they change; --all, --records and --viewer do not combine with it\n");
+    err("mdrev-cli: --follow streams the open notes as they change; --all, --records and --viewer do not combine with it\n");
     return 1;
   }
   let notesOnly = false;
@@ -39556,14 +41000,14 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
     if (notesKeyOk())
       notesOnly = true;
     else {
-      process.stderr.write("mdrev-cli: --viewer is for a viewer's host, and needs its key (MDREV_VIEWER_KEY), or the notes key (MDREV_NOTES_KEY) for the person's own notes alone; from the command line, an agent answers a thread with --for\n");
+      err("mdrev-cli: --viewer is for a viewer's host, and needs its key (MDREV_VIEWER_KEY), or the notes key (MDREV_NOTES_KEY) for the person's own notes alone; from the command line, an agent answers a thread with --for\n");
       if (!listing)
         return 1;
       o.viewer = false;
     }
   }
   if (notesOnly && (command === "review" || command === "notes" && (["share", "hide", "unhide", "thread"].includes(sub ?? "") || id !== void 0 && isSharedId(id)))) {
-    process.stderr.write(`mdrev-cli: ${NOTES_KEY_ONLY}
+    err(`mdrev-cli: ${NOTES_KEY_ONLY}
 `);
     return 1;
   }
@@ -39625,7 +41069,7 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
     }
     if (command === "notes") {
       const { answer: modeAnswer, side } = sub === "apply" ? { answer: null, side: null } : await InService.of(source, o);
-      const say = (line) => process.stderr.write(`mdrev: ${line}
+      const say = (line) => err(`mdrev: ${line}
 `);
       const agentHere = !o.viewer && !atTerminal;
       if (side && agentHere && id && isSharedId(id) && ["edit", "delete", "delete-reply"].includes(sub ?? "")) {
@@ -39705,7 +41149,8 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
               emit([...local2, ...side ? await side.placeThreads(threads) : threads]);
               return 0;
             }
-            const views = await collectNotes(source, { path: o.path, all: o.all, revs, upgrade: o.path !== void 0 });
+            const listed = await collectNotes(source, { path: o.path, all: o.all, revs, upgrade: o.path !== void 0 });
+            const views = o.ids ? listed.filter((v) => o.ids.includes(v.annotation.id)) : listed;
             if (agentHere)
               agentRead(source.notesHome, views.map((v) => v.annotation));
             if (o.text)
@@ -40239,19 +41684,85 @@ ${formatCodeOffer(before.code).join("\n")}
     throw new UsageError(`${command}: not a command`);
   } catch (e) {
     if (e instanceof UsageError) {
-      process.stderr.write(`mdrev-cli: ${e.message}
+      err(`mdrev-cli: ${e.message}
 `);
       return 1;
     }
     if (e instanceof NotFound) {
-      process.stderr.write(`mdrev-cli: ${e.message}
+      err(`mdrev-cli: ${e.message}
 `);
       return 2;
     }
-    process.stderr.write(`mdrev-cli: ${e instanceof Error ? e.message : String(e)}
+    err(`mdrev-cli: ${e instanceof Error ? e.message : String(e)}
 `);
     return 1;
   }
+}
+var BATCH_LINE = /* @__PURE__ */ new Set(["--root", "--copy", "--ref", "--notes-dir", "--state-dir"]);
+async function batch(o, argv, out, input, as, err) {
+  const refuse = (why) => {
+    err(`mdrev-cli: batch: ${why}
+`);
+    return 1;
+  };
+  if (o.positional.length > 1)
+    return refuse(`it takes its commands on stdin, not ${JSON.stringify(o.positional[1])}`);
+  const repo = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (BATCH_LINE.has(a)) {
+      if (a !== "--state-dir")
+        repo.push(a, argv[i + 1]);
+      i++;
+    } else if (a !== "batch") {
+      return refuse(`${a} is not for the batch's line, which names the repository (--root DIR, or --copy DIR --ref BRANCH --notes-dir DIR) and --state-dir alone; the rest goes on each item`);
+    }
+  }
+  let items;
+  try {
+    items = JSON.parse((await input()).trim() || "null");
+  } catch {
+    return refuse("stdin is not JSON: it is a list of command lines, each a list of strings");
+  }
+  if (!Array.isArray(items) || !items.every((item) => Array.isArray(item) && item.every((w) => typeof w === "string"))) {
+    return refuse('stdin is a list of command lines, each a list of strings, such as [["revisions","--path","doc.md"]]');
+  }
+  for (const [i, item] of items.entries()) {
+    let io;
+    try {
+      io = parse5(item);
+    } catch (e) {
+      return refuse(`item ${i}: ${e instanceof UsageError && e.message ? e.message : "not a command a batch runs"}`);
+    }
+    if (io.root || io.copy || io.ref || io.notesDir || io.stateDir) {
+      return refuse(`item ${i} names a repository or a state directory: the batch's line names them, once, for every item`);
+    }
+    const [command, sub, ...rest] = io.positional;
+    const verb = command === "notes" || command === "review" ? `${command} ${sub ?? ""}`.trim() : command ?? "";
+    const takesSub = command === "notes" || command === "review";
+    if (!["revisions", "text", "notes list", "review status"].includes(verb) || io.version || rest.length > 0 || !takesSub && sub !== void 0) {
+      return refuse(`item ${i}: ${JSON.stringify(item)} is not one a batch runs: revisions, text, notes list or review status, each a read`);
+    }
+    if (io.follow)
+      return refuse(`item ${i}: --follow keeps running, and a batch answers each item once`);
+    if (io.fetch)
+      return refuse(`item ${i}: review status --fetch goes to the network; run it alone`);
+  }
+  for (const [i, item] of items.entries()) {
+    let said = "";
+    let errs = "";
+    let code4;
+    try {
+      code4 = await run4([...item, ...repo], (s2) => said += s2, async () => "", as, (s2) => errs += s2);
+    } catch (e) {
+      code4 = 1;
+      errs += `mdrev-cli: ${e instanceof Error ? e.message : String(e)}
+`;
+    }
+    out(`${JSON.stringify({ i, code: code4, out: said, err: errs })}
+`);
+  }
+  return 0;
 }
 function viewerKeyOk() {
   return keyOk(process.env.MDREV_VIEWER_KEY, "token");

@@ -132,7 +132,7 @@ here — but a list of files the viewer can only refuse is not much of a list.
 
 ## The routes
 
-All under one prefix, say `/docs/api/mdrev`. Every request carries the host's own session (`credentials: 'same-origin'`), and the host decides what a session may read and write; mdrev never sees a filesystem. Errors are JSON `{"error": "…"}` with the status that fits: 400 for a bad request, 403 for a session that may not, 404 for a document or note that is not there.
+All under one prefix, say `/docs/api/mdrev`. Every request carries the host's own session (`credentials: 'same-origin'`), and the host decides what a session may read and write; mdrev never sees a filesystem. Errors are JSON `{"error": "…"}` with the status that fits: 400 for a bad request, 403 for a session that may not, 404 for a document or note that is not there, and 500 for one the host cannot read now. A host whose storage stops answering should say so rather than hold the request. `mdrev-v2` answers 500 `"<folder> is not answering: …"` on these routes while a collection's reads have not returned within 2 s, until they do (#s1231): the page and `pages/open` for a document, `text` of the file as it stands, `stat`, `asset`, a plain folder's `tree` and `documents`, `reveal`, and opening an editing session. Nothing else is promised. A plain folder's `recent-changes`, asked with no document or one at its top, says `skipped`. `events` and the list of collections answer without it, and `resolve` gives null for a target it cannot look at. What it asks Git or `mdrev-cli` for is not covered, and for a document in a subfolder may answer 500 first. An editing session already open takes a push and holds its write, its state saying why, and a save or a page leaving answers with that state. A picture pasted into it is answered 500 "is not answering" too, and is not saved. A paste whose own write was under way when the collection stopped answering may still leave its `.assets/` folder, or the picture in it, on the disk; the editing commit does not add it.
 
 A **401** is a page the host no longer knows. `mdrev-v2` marks its own pages with `<meta name="mdrev-sign-in" content="key">` (this machine's pages) or `content="phone"` (a paired phone's), and on a page so marked the viewer then says it is signed out and what signs it in again (#s789). The mark is internal to `mdrev-v2` and not part of this contract: an embedding host should not set it, since its 401 means whatever its own sign-in means, and without the mark the viewer adds no notice of its own.
 
@@ -201,6 +201,8 @@ A file the document refers to — an image, mostly — with its media type. The 
 
 The document's notes, as a JSON array of records in mdrev's shape (below). The host answers by running `mdrev-cli notes list --path P --all --records --root <checkout>` and returning its output as it is — or by reading the sidecar, `.mdrev/annotations/<path>.jsonl`, one record per line. Without `--records` the CLI judges every note against the file first — where its text is now, for an agent reading `--notes` — which the viewer does not use and which costs a word diff per snapshot: seconds, on a document with a few dozen notes, after every note and reply and on every poll. An older host that runs it that way and returns each item's `annotation` still works, slowly.
 
+The viewer asks for a document's notes when it opens the document, in the same moment as its revisions (`GET revisions`) and the review state (`GET review`), and once its notes are drawn, every few seconds while the page is in view. A host that answers the three through mdrev-cli can run those that arrive together as one process, `mdrev-cli batch` ([the developer guide, §6](embedding-guide.md#6-notes-through-mdrev-cli)); nothing in the answers changes. A host that declares `annotate: false` is asked for neither the notes nor the review state.
+
 ### `POST {prefix}/annotations?path=`
 
 File a note. The body is the record the viewer built: `{body, type, anchor}`, with `anchor` in source space, and the `rev` on screen — plus `fromRev` for a note on struck text, `shared: true` for a note to the other reviewers (below), and `saveId`, the page's name for this Save: a Save whose answer was lost is sent again with the same one, and the CLI answers it with the note the first try filed rather than filing a second (#s209); pass the body through as it is. The host adds what it knows and stores it, and returns the record as stored, with 201: run `mdrev-cli notes add --path P --root <checkout> --viewer` with the body on stdin, and return its output. The CLI resolves the revision, writes the snapshot `blob`, places an anchor whose offsets were only a guess, and appends the line.
@@ -211,7 +213,7 @@ Close, reopen, answer, remove — and take one reply back out of a thread. `PATC
 
 ### `GET {prefix}/snapshot?blob=` — optional
 
-The text a note was taken on, by the `blob` in its record, as `text/plain`. With it the viewer places a note by walking the diff from that text to the one on screen — exact, and the same answer `mdrev-cli notes list` gives an agent — instead of searching for the quote. `git cat-file -p <blob>` in the checkout answers it; a host without the object store answers 404 and the viewer searches.
+The text a note was taken on, by the `blob` in its record, as `text/plain`. With it the viewer places a note by walking the diff from that text to the one on screen — exact, and the same answer `mdrev-cli notes list` gives an agent — instead of searching for the quote. The viewer asks with the document the note is on (`path` and its `cap`). Answer only a blob that a note on that document names, the one its listing carries, and read it as a blob, `git cat-file blob <blob>` in the checkout; any other id is 404, as from a host without the object store, and the viewer searches.
 
 ### `GET {prefix}/documents` — optional
 
@@ -291,7 +293,7 @@ This is the richer sibling of `/documents`, which is one flat list. Answer
 whichever suits your store; a host that answers neither leaves the viewer with
 the changed-files list alone.
 
-### `GET {prefix}/changed?from=&to=&since=` — optional
+### `GET {prefix}/changed?from=&to=&since=&path=` — optional
 
 The documents a range touched, as `{files: [{path, status, cap?}]}`, so the
 viewer can offer the changed-files rail. `from` and `to` are revisions as
@@ -332,6 +334,18 @@ answers with an empty list the reader will take for "nothing changed". Refuse
 it instead. A host that does not implement `since` ignores it and answers
 exactly as it does without it — the viewer sends it either way.
 
+**The document it is about.** `path` is optional and names the document on
+screen, with the `cap` that opens it where the host gates its reads (the
+viewer leaves it out for a document it holds no capability for). A collection
+can hold a repository of its own below it — a folder of clones, a checkout
+with a clone inside — and a document there has its revisions from that
+repository, so its range is that repository's and so is the list: its `from`
+and `to` are that repository's commits. Each row is still named, and carries
+the `cap` that opens it, as the collection names it. A host with one history
+per collection ignores `path` and answers as it does without it, the same
+bargain as `since`. It names the repository, not a filter: the list is every
+document the range touched in it, not the one named.
+
 **Newest first.** The list is ordered by when each document last changed inside
 the range — a rail in path order buries the one that just changed under twenty
 that did not. A document changed only in the working copy is newer than
@@ -339,7 +353,7 @@ anything committed and comes first; ties fall back to the path, so two
 identical questions get one answer. `git log --name-only` over the range says
 it in a checkout, in one pass rather than one per file.
 
-### `GET {prefix}/recent-changes?at=` — optional
+### `GET {prefix}/recent-changes?at=&path=` — optional
 
 What changed **lately**, as `{files: [{path, status, at, side, cap?}], skipped?}`
 — the same pane as `/changed`, answering the question that is left when there
@@ -357,7 +371,9 @@ side — and `side` is `before` or `after`, which the viewer marks, because news
 from ahead of the reader is a different kind of fact from news behind them. The
 revision named by `at` is not itself listed: that is what the reader is
 reading. `status` is `/changed`'s own vocabulary, and rows carry a `cap` each
-for the same reason.
+for the same reason. `path` is `/changed`'s too: the document on screen, whose
+repository the revision `at` belongs to and the lately is asked of; a host
+with one history per collection ignores it.
 
 **Newest first**, across both sides — every `after` row is newer than every
 `before` one, so one order says both things.
@@ -555,6 +571,13 @@ Subscriptions (draft 8): `GET review/subscribers` runs `review subscribers --pat
 ### `{prefix}/edit/*`, `data-mdrev-dev-editing` and `data-not-shown-why` — not part of the contract
 
 `mdrev-v2` answers editing routes (`edit/stream`, `edit/push`, `edit/save`, `edit/conflict`, `edit/picture`) for its own page, and marks the mount element of the person's own pages with `data-mdrev-dev-editing="1"`, which tells the page bundle it may offer the Read | Edit switch (docs/local-editing.md). Both are internal for now (#s536 item 5): their JSON may change in any release, and an embedding host should neither answer these routes nor set the attribute. A host that does neither gets a page that reads, as before. `data-not-shown-why="refused"`, beside the `notShown` mount option, tells mdrev's own page that a document was refused outright rather than closed; it is internal too (#s772 item 5), and without it the reader is told the document's collection was closed.
+
+### `{prefix}/pages/agent/*` and `ReviewClient.agent` — agent pairing (docs/agent-pairing.md)
+
+The pairing routes are internal, as `edit/*` is: an embedding host need not offer them, and their shapes may
+change (the mdviewer maintainer's decision, #s993). What an embedder may rely on is `ReviewClient.agent`, an
+optional `AgentApi` (`packages/web/src/agent.tsx`): a client without it shows no pairing. Its `keep` and `move`
+are optional too, so a client written before them still works; one without `move` shows no move question.
 
 ## The note record
 
