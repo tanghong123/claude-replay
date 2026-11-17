@@ -3433,11 +3433,14 @@ panesMenu.onclick = event => {
   const triggers = [trigger];
   let pinned = false;
   let closeTimer = 0;
+  // The Info that last opened the card, where Escape gives a focus inside it back (#s557).
+  let opener = trigger;
+  const from = event => { if (triggers.includes(event?.currentTarget)) opener = event.currentTarget; };
   const show = open => {
     popover.classList.toggle("open", open);
     for (const node of triggers) node.setAttribute("aria-expanded", String(open));
   };
-  const peek = () => { clearTimeout(closeTimer); show(true); };
+  const peek = event => { from(event); clearTimeout(closeTimer); show(true); };
   // A trigger holding focus keeps an unpinned card open only for a reader who reached it by keyboard
   // (#s548): desktop Chrome focuses a button on a mouse press, so after a second click unpinned the
   // card, the focus that click left behind kept it open as a peek until focus moved elsewhere.
@@ -3463,7 +3466,7 @@ panesMenu.onclick = event => {
   // peek is not. A second press UNPINS it and closes it at once (#s556): handed to the peek's close,
   // a card whose Info held a keyboard focus stayed open, so a keyboard reader's second Enter left it
   // open with aria-expanded true, and Escape closes only a pinned card. The 140 ms close is a peek's.
-  const pin = () => { clearTimeout(closeTimer); pinned = !pinned; show(pinned); if (pinned) sayInfo(); };
+  const pin = event => { from(event); clearTimeout(closeTimer); pinned = !pinned; show(pinned); if (pinned) sayInfo(); };
   trigger.addEventListener("click", pin);
   // The phone's "i" in the top bar (#313) is this same control: a tap pins or unpins.
   infoPopoverToggle = pin;
@@ -3472,9 +3475,19 @@ panesMenu.onclick = event => {
   }, { capture: true, signal });
   // Escape closes the card, a peek as well as a pinned one (#s557, WCAG 1.4.13: content shown on
   // hover or focus can be dismissed without moving either). A peek opens only on a hover or focus
-  // arriving, so the card stays shut while the pointer or the focus stays on Info.
+  // arriving, and the card never covers its Info (it opens above the footer's, beside the rail's),
+  // so it stays shut while the pointer or the focus stays there. A focus inside the card goes back
+  // to the Info that opened it (or one drawn) rather than staying on a control the close hides; it
+  // moves FIRST, since that Info's focus listener peeks, and the close then shuts what it opened.
   addEventListener("keydown", event => {
-    if (event.key === "Escape" && popover.classList.contains("open")) { pinned = false; clearTimeout(closeTimer); show(false); }
+    if (event.key !== "Escape" || !popover.classList.contains("open")) return;
+    pinned = false;
+    if (popover.contains(viewRoot.active())) {
+      const drawn = node => node.getClientRects().length > 0;
+      (drawn(opener) ? opener : triggers.find(drawn))?.focus();
+    }
+    clearTimeout(closeTimer);
+    show(false);
   }, { signal });
   // The collapsed rail's Info button is the SAME control now — one gesture in both states,
   // rather than click-in-rail and hover-when-open.
