@@ -199,14 +199,18 @@ it:
   whole life (across session switches too), and never says one is released, so the app keeps every
   page it was handed for the life of the page that asked (the view's `frame` option, #s429 stage 7).
   The frame never sees the key. The navigation delegate refuses any frame's navigation to `app://`.
-  A script in an agent's page must not open Safari or another app's URL with no tap, and WebKit
-  cannot tell a tap from a script's `click()`: both reach the delegate as `.linkActivated`, by the
-  user (#s418, measured). So no navigation out of a frame goes ahead by itself: the app asks first,
-  in a sheet naming the address, and opens it in the browser only on the reader's yes; a move a
-  script makes by setting the frame's address is refused, as the main frame's is, and a frame asks
-  again only after the reader has touched the page since its last sheet closed, so a page clicking
-  its own link in a loop cannot keep the sheet up. The session view lets its host supply that
-  frame ("Customizing", frames, step 4).
+  A script in an agent's page must not open Safari or another app's URL with no tap, and the
+  navigation delegate cannot tell a tap from a script's `click()`: both reach it as
+  `.linkActivated`, by the user (#s418, measured). So no navigation out of a frame goes ahead by
+  itself. A move a script makes by setting the frame's address is refused, as the main frame's is.
+  A link out is asked about, in a sheet naming the address, only when the reader clicked it, and
+  opened in the browser only on their yes. The app hears the reader's clicks with a script in a
+  content world of its own, which the agent's page cannot reach: it reports each click the engine
+  marks trusted (a finger, a key, an assistive device; never a script's `click()` or
+  `dispatchEvent`) with the address of the link, and a frame's navigation is asked about only when
+  such a click on that address came within a second of it (agent-monitor-app #s12, walked with a
+  finger). A page clicking its own link, once or in a loop, raises no sheet. The session view lets
+  its host supply that frame ("Customizing", frames, step 4).
 - **The main frame never loads a page under `/k/`**: the navigation delegate refuses it. A file the
   page saves is never a WebKit download of an `app://` address: WebKit's download path does not use
   the scheme handler, and such a download fails at once with an unsupported URL (#s418, measured,
