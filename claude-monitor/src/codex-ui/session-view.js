@@ -577,16 +577,17 @@ if (keyboardMode === "engaged") {
   for (const type of ["pointerdown", "mousedown", "focusin"]) document.addEventListener(type, engage, { capture: true, signal });
 }
 // The Escape the view hears on the whole page, which closes its layers (Info's card, the copy menu,
-// the search's popovers, the task card, a phone's pane sheet), is its own only while the reader works
-// in it (#s535), like its keymap: a host whose own dialog Escape closes must not close ours with it.
-// With the page's keyboard the view is always engaged, as before. A pointer resting over the view is
-// not working in it (a keyboard reader leaves it on the transcript), but a layer a hover holds open
-// (Info's peek, the copy menu) is the reader's while the pointer is on it or its trigger, so those
-// two also close on Escape then, whatever the last press was (#s557, WCAG 1.4.13: content a hover
-// shows is dismissible without moving the pointer). An Escape the browser hands to the view itself
-// (the focus inside it, outside a guest) is the view's too, whatever the last press was (#s560's
-// review): a press outside that kept the focus here (a host's toolbar control that cancels its
-// mousedown, a scrollbar) left a menu open by the control holding the focus, deaf to its Escape.
+// the search's popovers, the task card, a phone's pane sheet), is its own only while the reader
+// works in it (#s535), like its keymap: a host whose own dialog Escape closes must not close ours
+// with it. With the page's keyboard the view is always engaged, as before. A pointer resting over
+// the view is not working in it (a keyboard reader leaves it on the transcript), but a layer a
+// hover holds open (Info's peek, the copy menu) is the reader's while the pointer is on it or its
+// trigger, so those two also close on Escape then, whatever the last press was (#s557, WCAG 1.4.13:
+// content a hover shows is dismissible without moving the pointer). An Escape the browser hands to
+// the view itself (the focus inside it, outside a guest) is the view's too, whatever the last press
+// was (#s560's review): a press outside that kept the focus here (a host's toolbar control that
+// cancels its mousedown, a scrollbar) left a menu open by the control holding the focus, deaf to
+// its Escape.
 const viewEscape = event => event.key === "Escape" && (engaged || inView(event.target));
 const hovered = (...nodes) => nodes.some(node => !!node && node.matches(":hover"));
 
@@ -3433,9 +3434,9 @@ panesMenu.onclick = event => {
   // Escape closes the menu wherever the reader is (#s560), as it does Info's peek (#s557, WCAG
   // 1.4.13: what a hover shows is dismissible without moving the pointer): when the Escape is the
   // view's (#s535; the focus on the caption or in the menu makes it so), or while the pointer is on
-  // the menu or its caption. A focus inside the menu goes
-  // back to the caption FIRST, since the caption's focus listener opens the menu, and the close then
-  // shuts it; nothing new arrives while the pointer and the focus stay, so it stays shut.
+  // the menu or its caption. A focus inside the menu goes back to the caption FIRST, since the
+  // caption's focus listener opens the menu, and the close then shuts it; nothing new arrives while
+  // the pointer and the focus stay, so it stays shut.
   addEventListener("keydown", event => {
     if (event.key !== "Escape" || !panesMenu.classList.contains("open")) return;
     if (!viewEscape(event) && !hovered(panesTrigger, panesMenu)) return;
@@ -3463,7 +3464,8 @@ panesMenu.onclick = event => {
   nav.after(outlineFooter);
 
   const trigger = footerInfo;
-  // Both Info buttons open this one card, so each says whether it is open (#s548: the rail's never did).
+  // Both Info buttons open this one card, so each says whether it is open (#s548: the rail's never
+  // did).
   const triggers = [trigger];
   let pinned = false;
   let closeTimer = 0;
@@ -3475,9 +3477,10 @@ panesMenu.onclick = event => {
     for (const node of triggers) node.setAttribute("aria-expanded", String(open));
   };
   const peek = event => { from(event); clearTimeout(closeTimer); show(true); };
-  // A trigger holding focus keeps an unpinned card open only for a reader who reached it by keyboard
-  // (#s548): desktop Chrome focuses a button on a mouse press, so after a second click unpinned the
-  // card, the focus that click left behind kept it open as a peek until focus moved elsewhere.
+  // A trigger holding focus keeps an unpinned card open only for a reader who reached it by
+  // keyboard (#s548): desktop Chrome focuses a button on a mouse press, so after a second click
+  // unpinned the card, the focus that click left behind kept it open as a peek until focus moved
+  // elsewhere.
   const keyboardOn = node => triggers.includes(node) && node.matches(":focus-visible");
   // Only a mouse peeks (#s545). A finger's pointerenter comes as it lands, and WebKit spends a tap
   // whose hover shows content as that hover, with no click: on the iPad every tap on Info peeked,
@@ -3498,11 +3501,12 @@ panesMenu.onclick = event => {
     node.addEventListener("focusout", leave);
   }
   popover.addEventListener("pointerenter", () => clearTimeout(closeTimer));
-  // Click PINS it, so the reader can read inside it, fold a group, or select a value to copy. A press
-  // that pins is the reader asking for the session's Info, which the host hears (`onInfo`); a hover's
-  // peek is not. A second press UNPINS it and closes it at once (#s556): handed to the peek's close,
-  // a card whose Info held a keyboard focus stayed open, so a keyboard reader's second Enter left it
-  // open with aria-expanded true, and Escape closes only a pinned card. The 140 ms close is a peek's.
+  // Click PINS it, so the reader can read inside it, fold a group, or select a value to copy. A
+  // press that pins is the reader asking for the session's Info, which the host hears (`onInfo`); a
+  // hover's peek is not. A second press UNPINS it and closes it at once (#s556): handed to the
+  // peek's close, a card whose Info held a keyboard focus stayed open, so a keyboard reader's
+  // second Enter left it open with aria-expanded true, and Escape closes only a pinned card. The
+  // 140 ms close is a peek's.
   const pin = event => { from(event); clearTimeout(closeTimer); pinned = !pinned; show(pinned); if (pinned) sayInfo(); };
   trigger.addEventListener("click", pin);
   // The phone's "i" in the top bar (#313) is this same control: a tap pins or unpins.
@@ -3517,8 +3521,8 @@ panesMenu.onclick = event => {
   // to the Info that opened it (or one drawn) rather than staying on a control the close hides; it
   // moves FIRST, since that Info's focus listener peeks, and the close then shuts what it opened.
   // In a host (#s535) the Escape is the view's only while the reader works in it or the focus is
-  // inside it (#s560), so a pinned card closes only then; a peek also closes while the pointer is on
-  // it or on an Info that opens it.
+  // inside it (#s560), so a pinned card closes only then; a peek also closes while the pointer is
+  // on it or on an Info that opens it.
   addEventListener("keydown", event => {
     if (event.key !== "Escape" || !popover.classList.contains("open")) return;
     if (!viewEscape(event) && (pinned || !hovered(popover, ...triggers))) return;
@@ -3545,9 +3549,9 @@ panesMenu.onclick = event => {
     triggers.push(railInfo);
     railInfo.addEventListener("pointerenter", hover);
     railInfo.addEventListener("focus", peek);
-    // Leaving it closes a peek, as leaving the footer's does: by keyboard (#s548: a Tab onto the rail's
-    // Info and away left the card open, and nothing but a pin and a press outside could close it), and
-    // by a mouse alone (#s545).
+    // Leaving it closes a peek, as leaving the footer's does: by keyboard (#s548: a Tab onto the
+    // rail's Info and away left the card open, and nothing but a pin and a press outside could
+    // close it), and by a mouse alone (#s545).
     railInfo.addEventListener("pointerleave", unhover);
     railInfo.addEventListener("focusout", leave);
     railInfo.addEventListener("click", pin);

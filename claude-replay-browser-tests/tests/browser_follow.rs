@@ -2191,17 +2191,17 @@ fn the_session_view_in_a_host_takes_its_keys_only_while_the_reader_works_in_it()
 /// #s535: a host's Escape is the host's. Mounted alone in the test host page with its default,
 /// `keyboard: "engaged"`, the session view closes its layers on Escape only while the reader works
 /// in it, as it answers its keymap: with Info's card pinned and the Reading menu open, a focus that
-/// goes to the host's own button leaves both open, an Escape pressed there leaves both open, and once
-/// the focus is back in the view an Escape closes each. A pointer resting on the transcript is not
-/// working in the view: with it there the host's Escape still closes neither. A hover engages
+/// goes to the host's own button leaves both open, an Escape pressed there leaves both open, and
+/// once the focus is back in the view an Escape closes each. A pointer resting on the transcript is
+/// not working in the view: with it there the host's Escape still closes neither. A hover engages
 /// nothing, yet a peek it opened on Info closes on Escape with the focus still on the host's button
 /// and the pointer still on Info (#s557's rule, WCAG 1.4.13). An Escape the browser hands to the
-/// view itself is the view's: with a peek opened by a focus on Info and a press on the host that kept
-/// the focus there, Escape closes it (#s560's review). The host's own listener hears every Escape,
-/// none prevented. With `keyboard: "page"` (the app's) the view is always engaged, so the same Escape from the
-/// host's button closes them as before. The view's other page-wide Escapes (the task card, a phone's
-/// pane sheet) read the same test. Keys are dispatched by script where the focus is (`PRESS`), so no
-/// CDP key is left repeating (#270).
+/// view itself is the view's: with a peek opened by a focus on Info and a press on the host that
+/// kept the focus there, Escape closes it (#s560's review). The host's own listener hears every
+/// Escape, none prevented. With `keyboard: "page"` (the app's) the view is always engaged, so the
+/// same Escape from the host's button closes them as before. The view's other page-wide Escapes
+/// (the task card, a phone's pane sheet) read the same test. Keys are dispatched by script where
+/// the focus is (`PRESS`), so no CDP key is left repeating (#270).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_session_view_in_a_host_closes_its_layers_on_escape_only_while_the_reader_works_in_it() {
@@ -2219,8 +2219,8 @@ fn the_session_view_in_a_host_closes_its_layers_on_escape_only_while_the_reader_
     // The Info the view draws at this width, and the two layers' states.
     let info = "(document.getElementById('outlineFooterInfo') && document.getElementById('outlineFooterInfo').getBoundingClientRect().width > 0 ? document.getElementById('outlineFooterInfo') : document.getElementById('outlineRailInfo'))";
     let layers = "({ info: document.getElementById('infoPopover').classList.contains('open'), reading: document.getElementById('readingOptions').classList.contains('open') })";
-    // Info pinned by a press and a click on it, the Reading menu opened by a click on its button: each
-    // a press inside the view, so the view is engaged after it.
+    // Info pinned by a press and a click on it, the Reading menu opened by a click on its button:
+    // each a press inside the view, so the view is engaged after it.
     let open_both = format!(
         "(function(){{ var i = {info}; i.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }})); i.click(); var r = document.getElementById('readingBtn'); r.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }})); r.click(); return 'ok'; }})()"
     );
@@ -14294,18 +14294,19 @@ fn the_app_shell_keeps_cost_visible_with_info_behind_a_glyph() {
     );
 }
 
-/// #s545, found on the iPad Simulator: a TAP on Info opened nothing. A touch sends `pointerleave`
-/// as the finger lifts, BEFORE its click, so the peek's 140 ms close started then and shut the
-/// card the click had just pinned. A mouse sends no `pointerleave` before its click, which is why
-/// the case above (#170) never saw it. And the rail's Info could not be closed by pressing it: the
-/// page-wide press that closes a pinned card counted it as a press outside, so a second press's
-/// `pointerdown` closed the card and its click pinned it again. Each Info control is pressed here
-/// as a finger does (enter, down, up, out, leave, then the click) and as a mouse does (enter, down,
-/// up, click), twice: the first press pins the card past the close, the second closes it. And a
-/// finger's landing shows nothing: on the iPad Simulator the fix for the close alone changed
-/// nothing, because WebKit spends a tap whose hover shows content as that hover and sends no click,
-/// and the finger's `pointerenter` peeked. Chrome sends the click anyway, so the case reads the
-/// card as the finger lands.
+/// #s545, found on the iPad Simulator: a TAP on Info opened nothing. The finger's `pointerenter`
+/// peeked the card, and WebKit spends a tap whose hover shows content as that hover and sends no
+/// click, so nothing pinned it and the lift's `pointerleave` closed the peek. So only a mouse
+/// peeks, and a finger's landing shows nothing; Chrome sends the click anyway, so the case reads
+/// the card as the finger lands. A first fix, which kept the peek's 140 ms close (started by the
+/// touch's `pointerleave` BEFORE its click) from shutting a card the click had pinned, changed
+/// nothing on the iPad, and stays held here. And the rail's Info could not be closed by pressing
+/// it: the page-wide press that closes a pinned card counted it as a press outside, so a second
+/// press's `pointerdown` closed the card and its click pinned it again. Each Info control is
+/// pressed here as a finger does (enter, down, up, out, leave, then the click) and as a mouse does
+/// (enter, down, up, click), twice: the first press pins the card, the second closes it. A mouse
+/// sends no `pointerleave` before its click, which is why the case above (#170) never saw any of
+/// it.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_tap_on_info_pins_the_card_and_a_second_press_closes_it() {
@@ -14364,18 +14365,17 @@ fn a_tap_on_info_pins_the_card_and_a_second_press_closes_it() {
     );
 }
 
-/// #s548, read from the Info block by #s545's review and measured here in Chrome:
-/// 1. the rail's Info had no `focusout`, so a keyboard peek there (focus onto it, then away) never
-///    closed: a press outside closes only a pinned card, and so does Escape;
-/// 2. `aria-expanded` was set on the footer's Info alone, never on the rail's;
-/// 3. desktop Chrome focuses a button on a mouse press, and the close kept an unpinned card open
-///    while the footer's Info held focus, so after a second REAL click unpinned it the card stayed
-///    open, the pointer gone or not, until focus moved. #s545's case clicks by script, which focuses
-///    nothing, so it could not see this.
-/// Keyboard focus comes from a key the case handles and prevents (a key the page leaves unhandled
-/// repeats in this Chrome, #270), whose handler moves focus as Tab would: Chrome then reads it as a
-/// keyboard focus (`:focus-visible`), which the case checks before it relies on it. The mouse is
-/// CDP's, so Chrome focuses the button it presses, which the case checks too.
+/// #s548, read from the Info block by #s545's review and measured here in Chrome: 1. the rail's
+/// Info had no `focusout`, so a keyboard peek there (focus onto it, then away) never closed: a
+/// press outside closes only a pinned card, and so does Escape; 2. `aria-expanded` was set on the
+/// footer's Info alone, never on the rail's; 3. desktop Chrome focuses a button on a mouse press,
+/// and the close kept an unpinned card open while the footer's Info held focus, so after a second
+/// REAL click unpinned it the card stayed open, the pointer gone or not, until focus moved. #s545's
+/// case clicks by script, which focuses nothing, so it could not see this. Keyboard focus comes
+/// from a key the case handles and prevents (a key the page leaves unhandled repeats in this
+/// Chrome, #270), whose handler moves focus as Tab would: Chrome then reads it as a keyboard focus
+/// (`:focus-visible`), which the case checks before it relies on it. The mouse is CDP's, so Chrome
+/// focuses the button it presses, which the case checks too.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn info_s_card_closes_after_a_keyboard_peek_and_a_second_real_click() {
@@ -14453,8 +14453,8 @@ fn info_s_card_closes_after_a_keyboard_peek_and_a_second_real_click() {
     }
 
     // 2 and 3: two real clicks on each Info. The first pins the card and leaves the button focused
-    // (Chrome's own), and its aria-expanded reads true; the second closes the card, which stays shut
-    // once the pointer leaves, and aria-expanded reads false.
+    // (Chrome's own), and its aria-expanded reads true; the second closes the card, which stays
+    // shut once the pointer leaves, and aria-expanded reads false.
     for (id, width) in [("outlineFooterInfo", 1400.0), ("outlineRailInfo", 1000.0)] {
         at(id, width);
         click(id);
@@ -14509,13 +14509,14 @@ fn info_s_card_closes_after_a_keyboard_peek_and_a_second_real_click() {
 
 /// #s556, from #s548's review: a keyboard reader could not close Info's card from Info. Enter on a
 /// focused Info pinned the card; a second Enter unpinned it, and the close then kept it open as a
-/// peek because Info held a keyboard focus (#s548), with aria-expanded still true. Escape closes only
-/// a pinned card, so only moving focus closed it. Here each Info gets a keyboard focus (as in #s548's
-/// case), then Enter four times: pinned, closed, pinned, closed, with aria-expanded following.
-/// An Enter the page leaves alone repeats in this Chrome (#270), so a window listener that runs after
-/// every page listener prevents it and clicks the focused button once, as Enter's own activation
-/// would. It counts the presses it saw, and those a page listener had already prevented, so a page
-/// that took the Enter for itself fails the case instead of hiding behind the stand-in.
+/// peek because Info held a keyboard focus (#s548), with aria-expanded still true. Escape closes
+/// only a pinned card, so only moving focus closed it. Here each Info gets a keyboard focus (as in
+/// #s548's case), then Enter four times: pinned, closed, pinned, closed, with aria-expanded
+/// following. An Enter the page leaves alone repeats in this Chrome (#270), so a window listener
+/// that runs after every page listener prevents it and clicks the focused button once, as Enter's
+/// own activation would. It counts the presses it saw, and those a page listener had already
+/// prevented, so a page that took the Enter for itself fails the case instead of hiding behind the
+/// stand-in.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn info_s_card_closes_on_a_second_enter_from_a_keyboard_focus() {
@@ -14528,7 +14529,8 @@ fn info_s_card_closes_on_a_second_enter_from_a_keyboard_focus() {
         tab.press_key("F8").expect("F8");
         harness::probe(&tab, &format!("(function(){{ var a = document.activeElement; return {{ on: a && a.id === '{id}', visible: !!a && a.matches(':focus-visible'), active: a ? a.id || a.tagName : null }}; }})()"))
     };
-    // As in #s548's case: an open card past the peek's 140 ms close, a shut one within three seconds.
+    // As in #s548's case: an open card past the peek's 140 ms close, a shut one within three
+    // seconds.
     let settles = |want: bool| -> bool {
         let end = Instant::now() + Duration::from_millis(if want { 500 } else { 3000 });
         loop {
@@ -14613,15 +14615,16 @@ fn key_focus_held(tab: &headless_chrome::Tab, id: &str) -> bool {
 }
 
 /// #s557, from #s556's review: Escape closed Info's card only while it was pinned, so a peek (the
-/// card a hover or a keyboard focus on Info opens) could not be dismissed without moving the pointer
-/// or the focus (WCAG 1.4.13). On each Info: a keyboard focus opens a peek, Escape closes it, and it
-/// stays shut with the focus still there; Enter pins it and Escape still closes it; a focus inside
-/// the card (on a fold of its groups) keeps a peek open, and Escape shuts it and gives the keyboard
-/// focus back to that Info rather than leaving it on a control the close hides; a hover opens a
-/// peek, Escape closes it, and it stays shut with the pointer still there. aria-expanded follows.
-/// An Escape or Enter the page leaves unprevented repeats in this Chrome (#270), so a window listener
-/// after every page listener prevents each one and, for Enter, clicks the focused button once, as
-/// #s556's case does. It counts every key it sees, so a page listener that stopped one fails the case.
+/// card a hover or a keyboard focus on Info opens) could not be dismissed without moving the
+/// pointer or the focus (WCAG 1.4.13). On each Info: a keyboard focus opens a peek, Escape closes
+/// it, and it stays shut with the focus still there; Enter pins it and Escape still closes it; a
+/// focus inside the card (on a fold of its groups) keeps a peek open, and Escape shuts it and gives
+/// the keyboard focus back to that Info rather than leaving it on a control the close hides; a
+/// hover opens a peek, Escape closes it, and it stays shut with the pointer still there.
+/// aria-expanded follows. An Escape or Enter the page leaves unprevented repeats in this Chrome
+/// (#270), so a window listener after every page listener prevents each one and, for Enter, clicks
+/// the focused button once, as #s556's case does. It counts every key it sees, so a page listener
+/// that stopped one fails the case.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn info_s_peek_closes_on_escape_from_a_keyboard_focus_or_a_hover() {
@@ -14642,7 +14645,8 @@ fn info_s_peek_closes_on_escape_from_a_keyboard_focus_or_a_hover() {
             y: v[1].as_f64().unwrap(),
         }
     };
-    // As in #s548's case: an open card past the peek's 140 ms close, a shut one within three seconds.
+    // As in #s548's case: an open card past the peek's 140 ms close, a shut one within three
+    // seconds.
     let settles = |want: bool| -> bool {
         let end = Instant::now() + Duration::from_millis(if want { 500 } else { 3000 });
         loop {
@@ -14808,17 +14812,17 @@ fn info_s_peek_closes_on_escape_from_a_keyboard_focus_or_a_hover() {
     );
 }
 
-/// #s560, from #s535's third review: the Outline caption's panes menu opens on a hover or a focus of
-/// its caption, but Escape closed it only from the caption's own focus, so a menu a hover opened
+/// #s560, from #s535's third review: the Outline caption's panes menu opens on a hover or a focus
+/// of its caption, but Escape closed it only from the caption's own focus, so a menu a hover opened
 /// could not be dismissed without moving the pointer (WCAG 1.4.13, as #s557 made Info's peek), and
 /// one holding the focus on a row could not be dismissed at all. In the app shell: the real pointer
-/// on the caption opens it, and with the focus on the page Escape closes it, and it stays shut
-/// with the pointer still there; a focus on a row inside keeps it open, and Escape closes it and gives
+/// on the caption opens it, and with the focus on the page Escape closes it, and it stays shut with
+/// the pointer still there; a focus on a row inside keeps it open, and Escape closes it and gives
 /// the focus back to the caption. In a host page (keyboard "engaged") with the focus on the host's
 /// button, a menu the pointer is on still closes on Escape; and a menu its caption's focus opened
 /// closes on an Escape at the caption after a press on the host that kept the focus there (the
-/// review: the caption's own Escape listener had gone with the fix). Keys are dispatched where the focus is
-/// (`PRESS`), so no CDP key is left repeating (#270).
+/// review: the caption's own Escape listener had gone with the fix). Keys are dispatched where the
+/// focus is (`PRESS`), so no CDP key is left repeating (#270).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_outline_panes_menu_closes_on_escape_from_a_hover_or_a_focus_inside_it() {
@@ -14883,8 +14887,9 @@ fn the_outline_panes_menu_closes_on_escape_from_a_hover_or_a_focus_inside_it() {
     seen.push(state("host: hovered, the focus on the host's button"));
     harness::probe(&tab, &format!("{PRESS}('Escape')"));
     seen.push(state("host: Escape, the pointer still on the caption"));
-    // A focus on the caption opens the menu and engages the view; a press on the host that keeps the
-    // focus there ends the engagement. The Escape goes to the caption itself, so it is the view's.
+    // A focus on the caption opens the menu and engages the view; a press on the host that keeps
+    // the focus there ends the engagement. The Escape goes to the caption itself, so it is the
+    // view's.
     hover("document.getElementById('hostButton')");
     harness::eval(&tab, &format!("{trigger}.focus(); 'ok'"));
     harness::eval(
