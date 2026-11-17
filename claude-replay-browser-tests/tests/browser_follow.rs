@@ -12151,7 +12151,7 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
         Duration::from_secs(20),
         "document.body.innerText.slice(0, 200)",
     );
-    let probe = "(function(){ var v = document.getElementById('sessionView'), r = v.getBoundingClientRect(); var box = function (e) { if (!e) return null; var b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 ? { left: Math.round(b.left), right: Math.round(b.right), top: Math.round(b.top), width: Math.round(b.width) } : null; }; var shown = function (e) { return !!e && e.getBoundingClientRect().width > 0; }; var bar = v.querySelector('.workspace>.topbar'); var expand = document.getElementById('navigatorRailExpand'); return { width: Math.round(r.width), classes: ['pl-pane-column', 'pl-pane-over', 'pl-outline-open', 'pl-outline-glyphs', 'pl-outline-bar', 'pl-outline-dock', 'pl-phone'].filter(function (c) { return v.classList.contains(c); }), workspace: box(v.querySelector('.workspace')), preview: v.classList.contains('preview-off') ? null : box(v.querySelector('.preview')), transcript: box(v.querySelector('.sv-session-main>.transcript')), inBar: [...bar.querySelectorAll('.phone-pane')].filter(shown).length, barInfo: shown(bar.querySelector('#phoneInfo')), barExpand: !!expand && expand.parentElement === bar && shown(expand), pressed: expand ? expand.getAttribute('aria-pressed') : null, disabled: expand ? expand.getAttribute('aria-disabled') : null }; })()";
+    let probe = "(function(){ var v = document.getElementById('sessionView'), r = v.getBoundingClientRect(); var box = function (e) { if (!e) return null; var b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 ? { left: Math.round(b.left), right: Math.round(b.right), top: Math.round(b.top), width: Math.round(b.width) } : null; }; var shown = function (e) { return !!e && e.getBoundingClientRect().width > 0; }; var bar = v.querySelector('.workspace>.topbar'); var expand = document.getElementById('navigatorRailExpand'); return { width: Math.round(r.width), classes: ['pl-pane-column', 'pl-pane-over', 'pl-outline-open', 'pl-outline-glyphs', 'pl-outline-bar', 'pl-outline-dock', 'pl-phone'].filter(function (c) { return v.classList.contains(c); }), workspace: box(v.querySelector('.workspace')), preview: v.classList.contains('preview-off') ? null : box(v.querySelector('.preview')), transcript: box(v.querySelector('.sv-session-main>.transcript')), inBar: [...bar.querySelectorAll('.phone-pane')].filter(shown).length, barInfo: shown(bar.querySelector('#phoneInfo')), barExpand: !!expand && expand.parentElement === bar && shown(expand), footer: box(document.getElementById('outlineFooter')), rail: box(v.querySelector('.session-navigator>.outline-rail')), pressed: expand ? expand.getAttribute('aria-pressed') : null, disabled: expand ? expand.getAttribute('aria-disabled') : null }; })()";
     let outline_said = "window.__host.events.filter(function (e) { return e.name === 'onOutline'; }).map(function (e) { return e.args[0].wanted; })";
     let at = |width: f64, open: bool| -> serde_json::Value {
         if width < 500.0 {
@@ -12183,6 +12183,27 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
             .as_array()
             .is_some_and(|c| c.iter().any(|x| x == class))
     };
+    // #s521: the outline's footer (its cost and Info) is drawn where its column is, under the glyphs
+    // where they have their column, and not at all where they are in the bar, whose Info opens the card.
+    let footer_under_glyphs = |seen: &serde_json::Value| {
+        let (footer, rail) = (&seen["footer"], &seen["rail"]);
+        assert!(
+            !footer.is_null() && !rail.is_null(),
+            "the footer and the glyphs are both drawn: {seen}"
+        );
+        let gap =
+            footer["left"].as_f64().unwrap_or(f64::NAN) - rail["left"].as_f64().unwrap_or(f64::NAN);
+        assert!(
+            gap.abs() <= 1.0,
+            "the footer stands under the glyphs, its left edge on theirs (off by {gap}px): {seen}"
+        );
+    };
+    let no_footer = |seen: &serde_json::Value| {
+        assert!(
+            seen["footer"].is_null(),
+            "nothing of the outline's footer is drawn while its glyphs are in the bar: {seen}"
+        );
+    };
     let mounted = harness::probe(&tab, outline_said);
 
     // 1400px, the pane open: the outline open (1261px holds the session, the pane and it), the 139px
@@ -12193,6 +12214,10 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
         "{wide}"
     );
     near(&wide, "transcript", "width", 549.0);
+    assert!(
+        !wide["footer"].is_null(),
+        "the open outline keeps its footer: {wide}"
+    );
     near(&wide, "preview", "width", 550.0);
     assert!(
         wide["preview"]["right"].as_f64().unwrap_or(f64::NAN) <= 1400.0,
@@ -12205,6 +12230,7 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
         "{glyphs}"
     );
     near(&glyphs, "transcript", "width", 510.0);
+    footer_under_glyphs(&glyphs);
     near(&glyphs, "preview", "width", 511.0);
     // 1000px: the glyphs leave their column for the top bar (971px), with the outline's control and Info.
     let bar = at(1000.0, true);
@@ -12226,6 +12252,7 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
         "{bar}"
     );
     near(&bar, "transcript", "width", 494.0);
+    no_footer(&bar);
     near(&bar, "preview", "width", 495.0);
     // 900px: too narrow for the pane beside the session; it covers the view, and the session beneath
     // keeps its own layout, the outline open (780px).
@@ -12243,6 +12270,7 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
     // since the outline cannot open here. A press on it then does nothing.
     let held = at(700.0, false);
     assert!(has(&held, "pl-outline-glyphs"), "{held}");
+    footer_under_glyphs(&held);
     assert_eq!(
         (held["pressed"].clone(), held["disabled"].clone()),
         (serde_json::json!("true"), serde_json::json!("false")),
@@ -12290,6 +12318,7 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
         has(&narrow, "pl-outline-bar") && !has(&narrow, "pl-phone"),
         "{narrow}"
     );
+    no_footer(&narrow);
     harness::eval(
         &tab,
         "document.getElementById('phonePane-turns').click(); 'ok'",
@@ -21761,6 +21790,120 @@ fn a_phone_s_filter_and_keyboard_never_share_the_screen() {
         Duration::from_secs(5),
         state,
     );
+}
+
+/// #s546, found on the iPad Simulator and true of a mouse too: off the phone only the funnel and
+/// Escape closed the filter menu, so a press into the transcript left it open over what it filters.
+/// It now closes on a press outside the search cluster, as Aa's menu does, and the query, its count
+/// and its marks stay; a press inside the menu keeps it open. Pressed with a real mouse (CDP) and
+/// a real finger (Chrome's synthesized tap), each at a point the page says holds nothing to press.
+/// The phone keeps its own rule, the top layer first
+/// (`a_phone_s_filter_and_keyboard_never_share_the_screen`).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn off_the_phone_a_press_outside_closes_the_filter_menu_and_keeps_the_query() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-filter-outside", 3144);
+    harness::resize(&tab, 1400.0, 900.0);
+    let open = "document.getElementById('navigatorOptions').classList.contains('open')";
+    let state = "(function(){ var i = document.getElementById('transcriptSearchInput'); return { open: document.getElementById('navigatorOptions').classList.contains('open'), value: i.value, count: document.getElementById('transcriptSearchCount').textContent.trim(), marks: document.querySelectorAll('#transcript mark.search-mark').length, phone: document.getElementById('sessionView').classList.contains('pl-phone') }; })()";
+    harness::until(
+        &tab,
+        &format!("innerWidth === 1400 && {VIEW_CAUGHT_UP}"),
+        "a 1400px window at rest",
+        Duration::from_secs(15),
+        state,
+    );
+    harness::eval(
+        &tab,
+        "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'noted'; b.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()",
+    );
+    harness::until(
+        &tab,
+        "(parseInt(document.getElementById('transcriptSearchCount').textContent, 10) || 0) > 0 && document.querySelectorAll('#transcript mark.search-mark').length > 0",
+        "the query to count and mark its matches",
+        Duration::from_secs(10),
+        state,
+    );
+    let before = harness::probe(&tab, state);
+    assert_eq!(
+        before["phone"], false,
+        "the view is not the phone reader: {before}"
+    );
+    // A point inside `selector` whose element has nothing to press between it and `selector` (no
+    // control, link, fold or field), so a real press there presses nothing but the place.
+    let plain_point = |selector: &str| -> (f64, f64) {
+        // `probe`, not `eval`: an array comes back from CDP by reference, which `eval` reads as null.
+        let found = harness::probe(
+            &tab,
+            &format!("(function(){{ var box = document.querySelector('{selector}'); if (!box) return null; var r = box.getBoundingClientRect(), seen = []; for (var fy = 0.15; fy < 0.95; fy += 0.07) for (var fx = 0.05; fx < 0.95; fx += 0.06) {{ var x = r.left + r.width * fx, y = r.top + r.height * fy, e = document.elementFromPoint(x, y); if (!e || !box.contains(e)) continue; var c = e.closest('button, a, input, label, select, textarea, summary, mark, [role=button], [data-scope], [data-tool], [data-fold], [data-reference-path], [tabindex]'); if (c && c !== box && box.contains(c)) {{ seen.push((c.id || c.className || c.tagName) + ''); continue; }} return [x, y]; }} return {{ none: seen.slice(0, 8) }}; }})()"),
+        );
+        let x = found[0]
+            .as_f64()
+            .unwrap_or_else(|| panic!("no plain point inside {selector}: {found}"));
+        (x, found[1].as_f64().unwrap())
+    };
+    // Each press's pointer type, as the window's capture phase hears it, ahead of the page's own.
+    harness::eval(
+        &tab,
+        "(function(){ window.__pressTypes = []; addEventListener('pointerdown', function (e) { window.__pressTypes.push(e.pointerType); }, true); return 1; })()",
+    );
+    let press = |(x, y): (f64, f64), finger: bool| {
+        harness::eval(&tab, "window.__pressTypes.length = 0; 1");
+        if finger {
+            harness::finger_tap(&tab, x, y);
+        } else {
+            tab.click_point(headless_chrome::browser::tab::point::Point { x, y })
+                .expect("a mouse press");
+        }
+    };
+    // The press that pressed first was of its kind: a finger tap whose click never came gets a
+    // CDP mouse press from `finger_tap`, and that one would close the menu without a touch.
+    let pressed_as = |kind: &str, want: &str| {
+        let first = harness::eval(&tab, "window.__pressTypes[0] || null");
+        assert_eq!(
+            first, want,
+            "the {kind} press reached the page as {want}: {first}"
+        );
+    };
+    for (kind, finger) in [("mouse", false), ("finger", true)] {
+        harness::eval(
+            &tab,
+            "document.getElementById('filterTranscriptBtn').click(); 'ok'",
+        );
+        let why = format!("the funnel to open the filter menu ({kind})");
+        harness::until(&tab, open, &why, Duration::from_secs(5), state);
+        // A press inside the menu is not a press outside: on its Scope heading, the one place in it
+        // that is not a row or a control.
+        let want = if finger { "touch" } else { "mouse" };
+        press(
+            plain_point("#navigatorOptions .scope-menu-head strong"),
+            finger,
+        );
+        pressed_as(kind, want);
+        std::thread::sleep(Duration::from_millis(300));
+        let inside = harness::probe(&tab, state);
+        assert_eq!(
+            inside["open"], true,
+            "a press inside the menu keeps it open ({kind}): {inside}"
+        );
+        // A press in the transcript closes it, and the query, its count and its marks stay.
+        press(plain_point("#transcript"), finger);
+        pressed_as(kind, want);
+        harness::until(
+            &tab,
+            &format!("!{open}"),
+            &format!("a press in the transcript to close the filter menu ({kind})"),
+            Duration::from_secs(3),
+            state,
+        );
+        let after = harness::probe(&tab, state);
+        assert_eq!(
+            (&after["value"], &after["count"], &after["marks"]),
+            (&before["value"], &before["count"], &before["marks"]),
+            "the query, its count and its marks outlive the menu closing ({kind}): {after}"
+        );
+    }
 }
 
 /// #s39 (design/phone-landscape.md §3.5c, approved by the owner on 2026-10-08): on a phone the compose
