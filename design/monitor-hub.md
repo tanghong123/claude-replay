@@ -212,11 +212,19 @@ it:
   whole life (across session switches too), and never says one is released, so the app keeps every
   page it was handed for the life of the page that asked (the view's `frame` option, #s429 stage 7).
   The frame never sees the key. The navigation delegate refuses any frame's navigation to `app://`.
-  A script in an agent's page must not open Safari or another app's URL with no tap, and WebKit
-  cannot tell a tap from a script's `click()`: both reach the delegate as `.linkActivated`, by the
-  user (#s418, measured). So no navigation out of a frame goes ahead by itself: the app asks first,
-  in a sheet naming the address, and opens it in the browser only on the reader's yes. The session
-  view lets its host supply that frame ("Customizing", frames, step 4).
+  A script in an agent's page must not open Safari or another app's URL with no tap, and the
+  navigation delegate cannot tell a tap from a script's `click()`: both reach it as
+  `.linkActivated`, by the user (#s418, measured). So no navigation out of a frame goes ahead by
+  itself. A move a script makes by setting the frame's address is refused, as the main frame's is.
+  A link out is asked about, in a sheet naming the address, only when the reader clicked it, and
+  opened in the browser only on their yes. The app hears the reader's clicks with a script in a
+  content world of its own, which the agent's page cannot reach: it reports each click the engine
+  marks trusted, never a script's `click()` or `dispatchEvent`, with the address of the link, and
+  a frame's navigation is asked about only when such a click on that address came within a second
+  of it (agent-monitor-app #s12). A finger's tap was walked and is trusted; a key's click (Enter on
+  a focused link) and an assistive device's should be marked trusted too, and were not walked. A
+  page clicking its own link, once or in a loop, raises no sheet. The session view lets its host
+  supply that frame ("Customizing", frames, step 4).
 - **The main frame never loads a page under `/k/`**: the navigation delegate refuses it. A file the
   page saves is never a WebKit download of an `app://` address: WebKit's download path does not use
   the scheme handler, and such a download fails at once with an unsupported URL (#s418, measured,
@@ -226,9 +234,10 @@ it:
   read-only's rules), to a file on disk rather than memory, then hands it to the share sheet (a save
   panel on a Mac).
   A `blob:` download, which the page makes of a smaller file, is WebKit's own and works. A
-  main-frame navigation out of the app's schemes is asked first, as for a frame: a machine's answer
+  main-frame navigation out of the app's schemes that a link starts is asked first, as for a frame;
+  one a script makes by setting the address is refused, and said above the page. A machine's answer
   can ask the page to navigate (the record store follows a `/pull` reply of `{"t":"redirect"}` with
-  `location.assign`), so the request layer refuses such an answer from a relayed machine.
+  `location.assign`), so the request layer also refuses such an answer from a relayed machine.
 - **The key stays out of what is kept**: the web view keeps no history across launches, and the
   page loads nothing from outside the app, which its policy enforces (below).
 
@@ -249,10 +258,19 @@ page at `app://monitor/kit/` runs under a strict content security policy: `scrip
 `default-src 'none'`; `style-src app://monitor/kit/ 'unsafe-inline'` (the components set inline
 styles, and the diagram runtime writes a `<style>` into its drawings); `font-src app://monitor/kit/
 data:`; `connect-src` and `img-src` the app's own origin plus `data:` and `blob:` (an embedded
-image is downloaded by fetching its `data:` address); `frame-src app-frame:`; `form-action 'none'`;
-`base-uri 'none'`. An agent's page is not under it, being on its own scheme. The scripts the page
-loads from a monitor today come from the app's bundle instead, under `/kit/`: mdrev's guest (D8) and
-the diagram runtime (`/mermaid/<version>.js`, found today through the page head's
+image is downloaded by fetching its `data:` address); `frame-src app-frame: http: https: mailto:
+tel: sms:` (an agent's page is framed from `app-frame:`, and the other sources are where a link out
+of it may go, so that its navigation reaches the navigation delegate, which cancels it and asks in
+the sheet; with `app-frame:` alone WebKit stopped it first and the link went nowhere, and the
+delegate still lets a frame load nothing but its own page); `form-action 'none'`; `base-uri
+'none'`. Of the schemes a link out may take, only `http:` and `https:` reach the delegate from the
+frame today: the app's WebKit stops a sandboxed frame's move to `mailto:`, `tel:` or `sms:` before
+any delegate is asked, so such a link goes nowhere and nothing opens (walked, agent-monitor-app
+#s12). The three stay in `frame-src` because the policy is built from the one list of schemes the
+sheet asks for, and a WebKit that let such a move through would meet the sheet rather than open it
+unasked. An agent's page is not under the policy, being on its own scheme. The scripts the page
+loads from a monitor today come from the app's bundle instead, under `/kit/`: mdrev's guest (D8)
+and the diagram runtime (`/mermaid/<version>.js`, found today through the page head's
 `mermaid-runtime` meta), which each host vendors until a second host needs them in the kit
 ("Delivery").
 
@@ -514,10 +532,10 @@ its formula could retire too. Removing a feature is the owner's (section 5).
 - **Only the app's own page uses the relay**: the key is in its requests' path and nowhere else, and
   reaches the page by a main-frame script, never a handler (D3). A navigation out of the app's
   schemes, from the main frame or a frame, opens in the browser only after the reader says yes in a
-  sheet naming the address, since WebKit cannot tell a tap from a script's click (#s418). A
-  download from the main frame of a `blob:` address passes; one of the relay's `/file` is fetched by
-  the app itself and handed to the share sheet; every other download, and every download from a
-  frame, is refused.
+  sheet naming the address, since the navigation delegate cannot tell a tap from a script's click
+  (#s418); a frame's is asked about only on the reader's own click (D3). A download from the main
+  frame of a `blob:` address passes; one of the relay's `/file` is fetched by the app itself and
+  handed to the share sheet; every other download, and every download from a frame, is refused.
 - **No token on disk but the Keychain's**: pairing and the relay use a session with no cookie store
   (D3, D4).
 - **Reveal is relayed only to this Mac's own monitor** (D8).
