@@ -2188,6 +2188,130 @@ fn the_session_view_in_a_host_takes_its_keys_only_while_the_reader_works_in_it()
     );
 }
 
+/// #s535: a host's Escape is the host's. Mounted alone in the test host page with its default,
+/// `keyboard: "engaged"`, the session view closes its layers on Escape only while the reader works
+/// in it, as it answers its keymap: with Info's card pinned and the Reading menu open, a focus that
+/// goes to the host's own button leaves both open, an Escape pressed there leaves both open, and once
+/// the focus is back in the view an Escape closes each; the host's own listener hears both. With `keyboard: "page"` (the app's) the view is always engaged, so the same Escape from the
+/// host's button closes them as before. The view's other page-wide Escapes (the task card, a phone's
+/// pane sheet) read the same test. Keys are dispatched by script where the focus is (`PRESS`), so no
+/// CDP key is left repeating (#270).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_closes_its_layers_on_escape_only_while_the_reader_works_in_it() {
+    let _serial = serial();
+    let base = base("host-escape-engaged");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000005e5".to_string();
+    let mut jsonl = harness::user_at("look at the plan", &harness::at("00:01"));
+    jsonl += &harness::assistant_at("here it is", &harness::at("00:02"));
+    stores.claude_session(&sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3150, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1400.0, 900.0);
+    // The Info the view draws at this width, and the two layers' states.
+    let info = "(document.getElementById('outlineFooterInfo') && document.getElementById('outlineFooterInfo').getBoundingClientRect().width > 0 ? document.getElementById('outlineFooterInfo') : document.getElementById('outlineRailInfo'))";
+    let layers = "({ info: document.getElementById('infoPopover').classList.contains('open'), reading: document.getElementById('readingOptions').classList.contains('open') })";
+    // Info pinned by a press and a click on it, the Reading menu opened by a click on its button: each
+    // a press inside the view, so the view is engaged after it.
+    let open_both = format!(
+        "(function(){{ var i = {info}; i.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }})); i.click(); var r = document.getElementById('readingBtn'); r.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }})); r.click(); return 'ok'; }})()"
+    );
+    let state = |what: &str| -> serde_json::Value {
+        std::thread::sleep(Duration::from_millis(400));
+        harness::probe(
+            &tab,
+            &format!("(function(){{ var l = {layers}; l.active = (document.activeElement || {{}}).id || document.activeElement.tagName; l.what = {what:?}; return l; }})()"),
+        )
+    };
+    let host_keys = "window.__host.keys.filter(function (k) { return k.key === 'Escape'; }).map(function (k) { return k.prevented; })";
+    let mut seen = Vec::new();
+    for mode in ["engaged", "page"] {
+        let query = if mode == "page" {
+            format!("session={sid}&keyboard=page")
+        } else {
+            format!("session={sid}")
+        };
+        harness::open_host_page(&tab, &monitor, &query);
+        harness::until(
+            &tab,
+            &format!("!!document.getElementById('readingBtn') && !!{info} && {info}.getBoundingClientRect().width > 0 && !!document.querySelector('.transcript') && document.querySelector('.transcript').innerText.indexOf('here it is') >= 0"),
+            "the session and its Info in the host's view",
+            Duration::from_secs(20),
+            "document.getElementById('sessionView') ? document.getElementById('sessionView').className : 'no view'",
+        );
+        harness::eval(&tab, &open_both);
+        seen.push(state(&format!("{mode}: both opened")));
+        harness::eval(&tab, "document.getElementById('hostButton').focus(); 'ok'");
+        seen.push(state(&format!("{mode}: the focus on the host's button")));
+        let taken = harness::probe(&tab, &format!("{PRESS}('Escape')"));
+        let mut after = state(&format!("{mode}: Escape on the host's button"));
+        after["taken"] = taken;
+        seen.push(after);
+        if mode == "engaged" {
+            harness::eval(&tab, &format!("{info}.focus(); 'ok'"));
+            let taken = harness::probe(&tab, &format!("{PRESS}('Escape')"));
+            let mut back = state("engaged: Escape with the focus back on Info");
+            back["taken"] = taken;
+            seen.push(back);
+            seen.push(harness::probe(&tab, host_keys));
+        }
+    }
+    drop(monitor);
+    let both = |v: &serde_json::Value| (v["info"].clone(), v["reading"].clone());
+    let t = serde_json::json!(true);
+    let f = serde_json::json!(false);
+    assert_eq!(
+        both(&seen[0]),
+        (t.clone(), t.clone()),
+        "engaged: Info pinned and Reading open: {}",
+        seen[0]
+    );
+    assert_eq!(
+        (both(&seen[1]), seen[1]["active"].clone()),
+        ((t.clone(), t.clone()), serde_json::json!("hostButton")),
+        "engaged: a focus on the host's button leaves both open: {}",
+        seen[1]
+    );
+    assert_eq!(
+        both(&seen[2]),
+        (t.clone(), t.clone()),
+        "engaged: an Escape on the host's button is the host's and closes neither: {}",
+        seen[2]
+    );
+    assert_eq!(
+        both(&seen[3]),
+        (f.clone(), f.clone()),
+        "engaged: with the focus back in the view, Escape closes both: {}",
+        seen[3]
+    );
+    assert_eq!(
+        seen[4],
+        serde_json::json!([false, false]),
+        "engaged: the host's own listener heard both Escapes, the view preventing neither: {}",
+        seen[4]
+    );
+    assert_eq!(
+        both(&seen[5]),
+        (t.clone(), t.clone()),
+        "page: both opened: {}",
+        seen[5]
+    );
+    assert_eq!(
+        both(&seen[6]),
+        (t.clone(), t.clone()),
+        "page: a focus on the host's button leaves both open: {}",
+        seen[6]
+    );
+    assert_eq!(
+        both(&seen[7]),
+        (f.clone(), f.clone()),
+        "page: the view is always engaged, so the same Escape closes both as before: {}",
+        seen[7]
+    );
+}
+
 /// The session list mounted alone (#s430, design/session-list-component.md, stage 2): in a page of
 /// the case's own (`fixtures/host/session-list-host.html`, answered by the browser itself on the
 /// monitor's origin), with no app shell and no session view, `mountSessionList` fills itself from
