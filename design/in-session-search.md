@@ -108,11 +108,12 @@ as a level above the tools, is left for the owner; nothing here forecloses it.
 - **The letter hints** in the scope rows stay (they teach the typed form) but read as the typed
   token, e.g. `u:`, not as keyboard shortcuts.
 - **The popover closes on a press outside the search cluster** (#s546, 2026-11-17), as Aa's menu
-  does; the query, its count and its marks stay. Before, only the funnel closed it off the phone, so
-  a click into the transcript left it open over what it filters. A wheel is not a press, so a
-  reader with a mouse can still scroll the filtered transcript with the menu open; a finger's
-  scroll starts with one, so on a touch screen it closes the menu, as it closes Aa's. On a phone a
-  tap outside closes the top layer only, the filter first and the box on the next tap (#s49).
+  does; the query, its count and its marks stay. Before, only the funnel and Escape closed it off the
+  phone, so a click into the transcript left it open over what it filters. A wheel is not a press,
+  so a reader with a mouse can still scroll the filtered transcript with the menu open; a drag on a
+  scrollbar and a finger's scroll each start with one, so they close it, as they close Aa's. On a
+  phone with the box open a tap outside closes the top layer only, the filter first and the box on
+  the next tap (#s49).
 - The dead demo markup (`findTranscriptBtn`, `findTranscriptPanel`, `filterTranscriptPanel`)
   goes. `reference-shell.html` is generated: remove it in `design/agent-monitor-codex-demo.html`
   and re-run `scripts/extract-agent-monitor-demo.mjs`.
