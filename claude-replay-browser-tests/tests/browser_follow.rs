@@ -14128,6 +14128,149 @@ fn a_tap_on_info_pins_the_card_and_a_second_press_closes_it() {
     );
 }
 
+/// #s548, read from the Info block by #s545's review and measured here in Chrome:
+/// 1. the rail's Info had no `focusout`, so a keyboard peek there (focus onto it, then away) never
+///    closed: a press outside closes only a pinned card, and so does Escape;
+/// 2. `aria-expanded` was set on the footer's Info alone, never on the rail's;
+/// 3. desktop Chrome focuses a button on a mouse press, and the close kept an unpinned card open
+///    while the footer's Info held focus, so after a second REAL click unpinned it the card stayed
+///    open, the pointer gone or not, until focus moved. #s545's case clicks by script, which focuses
+///    nothing, so it could not see this.
+/// Keyboard focus comes from a key the case handles and prevents (a key the page leaves unhandled
+/// repeats in this Chrome, #270), whose handler moves focus as Tab would: Chrome then reads it as a
+/// keyboard focus (`:focus-visible`), which the case checks before it relies on it. The mouse is
+/// CDP's, so Chrome focuses the button it presses, which the case checks too.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn info_s_card_closes_after_a_keyboard_peek_and_a_second_real_click() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-info-focus", 3145);
+    let open = "document.getElementById('infoPopover').classList.contains('open')";
+    // A button outside the view to move focus to, and F8, which moves focus to `__focusNext`.
+    harness::eval(&tab, "(function(){ var b = document.createElement('button'); b.id = 'caseAway'; b.type = 'button'; b.textContent = 'away'; b.style.cssText = 'position:fixed;left:0;bottom:0;z-index:9999'; document.body.appendChild(b); window.__focusNext = null; document.addEventListener('keydown', function (e) { if (e.key !== 'F8') return; e.preventDefault(); e.stopImmediatePropagation(); var n = document.getElementById(window.__focusNext); if (n) n.focus(); }, true); return 'ok'; })()");
+    let key_focus = |id: &str| {
+        harness::eval(&tab, &format!("window.__focusNext = '{id}'; 'ok'"));
+        tab.press_key("F8").expect("F8");
+        harness::probe(&tab, &format!("(function(){{ var a = document.activeElement; return {{ on: a && a.id === '{id}', visible: !!a && a.matches(':focus-visible'), active: a ? a.id || a.tagName : null }}; }})()"))
+    };
+    let center = |id: &str| -> (f64, f64) {
+        let v = harness::probe(&tab, &format!("(function(){{ var r = document.getElementById('{id}').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"));
+        (v[0].as_f64().unwrap(), v[1].as_f64().unwrap())
+    };
+    let click = |id: &str| {
+        let (x, y) = center(id);
+        tab.click_point(headless_chrome::browser::tab::point::Point { x, y })
+            .expect("a real click");
+    };
+    // Whether the card is in the state wanted: an open one past the peek's 140 ms close, a shut one
+    // within three seconds.
+    let settles = |want: bool| -> bool {
+        let end = Instant::now() + Duration::from_millis(if want { 500 } else { 3000 });
+        loop {
+            let seen = harness::eval(&tab, open) == true;
+            if !want && !seen {
+                return true;
+            }
+            if Instant::now() >= end {
+                return seen == want;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    let expanded = |id: &str| {
+        harness::eval(
+            &tab,
+            &format!("document.getElementById('{id}').getAttribute('aria-expanded')"),
+        )
+    };
+    let at = |id: &str, width: f64| {
+        harness::resize(&tab, width, 900.0);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && !!document.getElementById('{id}') && document.getElementById('{id}').getBoundingClientRect().width > 0 && {VIEW_CAUGHT_UP}"),
+            &format!("{id} drawn in a {width}px window"),
+            Duration::from_secs(15),
+            "document.getElementById('sessionView').className",
+        );
+    };
+    let mut wrong = Vec::new();
+
+    // 1 and the footer's own keyboard peek: focus onto Info opens the card and keeps it open while
+    // Info holds the keyboard's focus; focus moving away closes it.
+    for (id, width) in [("outlineFooterInfo", 1400.0), ("outlineRailInfo", 1000.0)] {
+        at(id, width);
+        let on = key_focus(id);
+        assert!(
+            on["on"] == true && on["visible"] == true,
+            "{id}: the case's key gives a keyboard focus (:focus-visible): {on}"
+        );
+        if !settles(true) {
+            wrong.push(format!("{id}: a keyboard focus did not keep the card open"));
+        }
+        let away = key_focus("caseAway");
+        assert_eq!(away["on"], true, "focus moved away: {away}");
+        if !settles(false) {
+            wrong.push(format!(
+                "{id}: focus moved away by keyboard and the card stayed open"
+            ));
+        }
+    }
+
+    // 2 and 3: two real clicks on each Info. The first pins the card and leaves the button focused
+    // (Chrome's own), and its aria-expanded reads true; the second closes the card, which stays shut
+    // once the pointer leaves, and aria-expanded reads false.
+    for (id, width) in [("outlineFooterInfo", 1400.0), ("outlineRailInfo", 1000.0)] {
+        at(id, width);
+        click(id);
+        let focused = harness::eval(
+            &tab,
+            "document.activeElement ? document.activeElement.id : null",
+        );
+        assert_eq!(
+            focused, id,
+            "{id}: Chrome focuses the button a real click presses (3's premise)"
+        );
+        if !settles(true) {
+            wrong.push(format!("{id}: a real click did not pin the card"));
+        }
+        if expanded(id) != "true" {
+            wrong.push(format!(
+                "{id}: aria-expanded reads {} with the card open",
+                expanded(id)
+            ));
+        }
+        click(id);
+        if !settles(false) {
+            wrong.push(format!(
+                "{id}: a second real click left the card open (focus {})",
+                harness::eval(
+                    &tab,
+                    "document.activeElement ? document.activeElement.id : null"
+                )
+            ));
+        }
+        let (x, y) = center("caseAway");
+        tab.move_mouse_to_point(headless_chrome::browser::tab::point::Point { x, y })
+            .expect("the pointer leaves");
+        std::thread::sleep(Duration::from_millis(400));
+        if harness::eval(&tab, open) == true {
+            wrong.push(format!("{id}: the card was open after the pointer left"));
+        }
+        if expanded(id) != "false" {
+            wrong.push(format!(
+                "{id}: aria-expanded reads {} with the card shut",
+                expanded(id)
+            ));
+        }
+        // Focus goes back outside, as a reader's next press would take it.
+        key_focus("caseAway");
+    }
+    assert!(
+        wrong.is_empty(),
+        "Info's card follows keyboard focus and real clicks on both Info buttons: {wrong:#?}"
+    );
+}
+
 /// #159 layout, reported with a screenshot: the Outline title had drifted to the centre and the
 /// selector's rows were 24px squares with their labels spilling outside the menu.
 ///
