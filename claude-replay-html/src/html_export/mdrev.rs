@@ -1056,8 +1056,9 @@ fn resolve_body(req: &Request) -> Option<(Referrer, Vec<Value>)> {
 /// #s558). Any other id answers what a missing object does, and the viewer then places the note by
 /// its quote. It used to `cat-file -p` whatever id of four or more hex digits it was given, so a
 /// reader allowed one document could read any object of its repository: other files, deleted ones,
-/// trees and commits, and a short prefix walked the store. A note cannot name a blob of its own
-/// choosing: mdrev-cli makes the blob from the document's own text at the note's revision.
+/// trees and commits, and a short prefix walked the store. A note the page files names the
+/// document's own text at a revision: mdrev-cli makes the blob, and `notes_add` drops any `blob` a
+/// request sends. The pane lists no shared thread, so it never reads a blob only a thread names.
 fn snapshot(rel: &Release, d: &Doc, req: &Request, viewer: Option<&Viewer>) -> HttpResponse {
     let blob = param(req, "blob").unwrap_or_default();
     if !is_hex(&blob, 4) {
@@ -1073,8 +1074,8 @@ fn snapshot(rel: &Release, d: &Doc, req: &Request, viewer: Option<&Viewer>) -> H
 }
 
 /// The blobs each document's notes name, as its last listing gave them (#s558), keyed by the
-/// collection, the path, and whether it was the viewer's listing (which carries shared threads).
-/// The viewer lists a document's notes before it asks for their snapshots, so the listing it
+/// collection, the path, and whether it was the detached tab's listing, which carries shared threads
+/// the pane's does not (`shares`). The viewer lists a document's notes before it asks for their snapshots, so the listing it
 /// already made answers them, with no `mdrev-cli` run per snapshot.
 fn note_blobs() -> &'static Mutex<HashMap<(String, String, bool), HashSet<String>>> {
     static BLOBS: OnceLock<Mutex<HashMap<(String, String, bool), HashSet<String>>>> =
@@ -1086,6 +1087,7 @@ fn remember_blobs(d: &Doc, viewer: Option<&Viewer>, records: &[Value]) {
     let named = records
         .iter()
         .filter_map(|r| r.get("blob").and_then(Value::as_str))
+        // A whole id: 40 hex digits, or 64 in a SHA-256 repository.
         .filter(|b| is_hex(b, 40))
         .map(str::to_string)
         .collect();
@@ -1093,13 +1095,17 @@ fn remember_blobs(d: &Doc, viewer: Option<&Viewer>, records: &[Value]) {
     if g.len() > 256 {
         g.clear();
     }
-    g.insert((d.root.clone(), d.rel.clone(), viewer.is_some()), named);
+    g.insert(blob_key(d, viewer), named);
+}
+
+fn blob_key(d: &Doc, viewer: Option<&Viewer>) -> (String, String, bool) {
+    (d.root.clone(), d.rel.clone(), shares(viewer))
 }
 
 /// Whether a note on `d` names `blob`: by the last listing, else by a fresh one, since a note filed
 /// after it (from the page, or by an agent) names a blob that listing could not.
 fn a_note_names(rel: &Release, d: &Doc, viewer: Option<&Viewer>, blob: &str) -> bool {
-    let key = (d.root.clone(), d.rel.clone(), viewer.is_some());
+    let key = blob_key(d, viewer);
     let known = |g: &HashMap<_, HashSet<String>>| g.get(&key).is_some_and(|s| s.contains(blob));
     if known(&note_blobs().lock().unwrap_or_else(|e| e.into_inner())) {
         return true;
@@ -1179,16 +1185,31 @@ fn notes_add(rel: &Release, d: &Doc, req: &Request, viewer: Option<&Viewer>) -> 
     {
         return HttpResponse::forbidden("shared review is not offered here");
     }
+    // The viewer never sends a `blob`: mdrev-cli makes it from the document's text. One a request
+    // sends is dropped (#s558), since `snapshot` reads the blob a note names.
+    let body = without_blob(req.body);
     let _one_at_a_time = document_lock(d);
     let mut args = vec!["notes", "add", "--path", &d.rel];
     if viewer.is_some() {
         args.push("--viewer");
     }
-    let out = cli_as(rel, &d.root, &args, Some(req.body), viewer);
+    let out = cli_as(rel, &d.root, &args, Some(&body), viewer);
     if out.code != 0 {
         return cli_error(&out);
     }
     status("201 Created", out.out)
+}
+
+/// A note's record as the viewer built it, with any `blob` taken out; a body that is not a JSON
+/// object goes as it came, for mdrev-cli to refuse.
+fn without_blob(body: &[u8]) -> Vec<u8> {
+    match serde_json::from_slice::<Value>(body) {
+        Ok(Value::Object(mut record)) if record.contains_key("blob") => {
+            record.remove("blob");
+            Value::Object(record).to_string().into_bytes()
+        }
+        _ => body.to_vec(),
+    }
 }
 
 /// `PATCH annotations/{id}` (close / reopen), `POST …/{id}/replies`, `DELETE …/{id}`,
@@ -3071,6 +3092,54 @@ esac
             "400 Bad Request",
             "an id that is not hex never reaches git"
         );
+
+        // A note can only name a blob: a listing naming a tree still reads nothing.
+        let tree = rev_parse("HEAD^{tree}");
+        std::fs::write(f.kit.join("blob"), &tree).unwrap();
+        assert_eq!(
+            snap(&tree).code,
+            "404 Not Found",
+            "read as a blob, a tree is no blob"
+        );
+
+        // A `blob` a request sends with a note never reaches mdrev-cli: snapshot reads the blob a
+        // note names, which is the document's own text only when mdrev-cli made it.
+        let planted =
+            format!("{{\"body\":\"x\",\"anchor\":{{\"exact\":\"One\"}},\"blob\":\"{unnamed}\"}}");
+        let added = call(
+            &f,
+            &held,
+            "annotations",
+            &req("POST", &q, planted.as_bytes(), true),
+        );
+        assert_eq!(added.code, "201 Created");
+        let sent: Value =
+            serde_json::from_slice(&std::fs::read(f.kit.join("stdin.json")).unwrap()).unwrap();
+        assert_eq!(
+            sent,
+            json!({"body":"x","anchor":{"exact":"One"}}),
+            "the record on stdin, without the blob"
+        );
+    }
+
+    /// #s558: the blobs the detached tab's listing names (its shared threads among them) never
+    /// answer the pane's snapshot, whose listing carries no shared thread: the two keep apart, and
+    /// the pane's notes key reads as no key at all.
+    #[test]
+    fn the_pane_and_the_detached_tab_keep_their_note_blobs_apart() {
+        let d = Doc {
+            root: "/repo".to_string(),
+            rel: "docs/doc.md".to_string(),
+            real: PathBuf::from("/repo/docs/doc.md"),
+        };
+        let key = |kind| Viewer {
+            state_dir: PathBuf::new(),
+            key: "k".to_string(),
+            kind,
+        };
+        let (notes, viewer) = (key(KeyKind::Notes), key(KeyKind::Viewer));
+        assert_ne!(blob_key(&d, Some(&notes)), blob_key(&d, Some(&viewer)));
+        assert_eq!(blob_key(&d, Some(&notes)), blob_key(&d, None));
     }
 
     #[test]
