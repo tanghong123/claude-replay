@@ -560,7 +560,7 @@ recommendation:
   A larger alternative is a session list that takes N backends itself; one with no addition at all
   folds the machine into the project's label, which says where a row runs but makes "By device"
   impossible (R2). Recommended: the merged source, the field and the layouts per machine, triaged
-  with embedding's step 5.
+  with embedding's step 5. Decided by the owner on #s539 (section 8): the merged source in the kit.
 - **What the app comes to rely on that a monitor does today**: the pairing QR's address form,
   `/api/pair` answering with the token in `Set-Cookie`, the gate reading its own cookie by the name
   it derives from its token, a request with no `Origin` passing the write check, the trusted-host
@@ -645,16 +645,22 @@ settings for now, the optional controls, the events and keys kept to the compone
 an agent's page is this app's alone, not offered to other hosts, since the owner controls both
 sides and they are kept consistent.
 
+**Decided by the owner on the session list beyond one backend** (#s539, 2026-11-16, triaged on
+#s538): "build the merge into the kit (each part its own server, a machine label and stale heads on
+rows)". The merged source of D6 is kit code, each part reads a server of its own, and rows carry
+their machine and show a machine gone stale. Building it found the kit still kept one handle for
+the whole page: the list had no `backend` of its own and read whichever handle the view's
+`backend` option had last set, against D5's "never page-wide". #s540 gives the list its own; #s541
+builds the merged source on it.
+
 **Still open,** each asked when the phase it holds up comes near, not before:
 
-1. **The session list beyond one backend** (section 5, phase 1): the merged source in the kit and an
-   optional `machine` field on a row (recommended), or a session list that takes N backends itself.
-2. **How the app learns a monitor's contract version** (section 5, embedding's step 2).
-3. ~~**Writes** (D9, phase 3)~~: decided 2026-11-17, writes come with the web-app mount
+1. **How the app learns a monitor's contract version** (section 5, embedding's step 2).
+2. ~~**Writes** (D9, phase 3)~~: decided 2026-11-17, writes come with the web-app mount
    (agent-monitor-app #s14, D9).
-4. **Machines reachable only by ssh** (D10, phase 4): decided 2026-11-17, the fleet's binary as the
+3. **Machines reachable only by ssh** (D10, phase 4): decided 2026-11-17, the fleet's binary as the
    Mac app's tunnel helper (agent-monitor-app #s15). Still open for phase 4: with the helper, the
    monitor's port in `/api/fleet` (recommended) or no `Host`; then whether the fleet's page retires
    (D12).
-5. **Notifications** (D11, phase 5): none in the first release (recommended), or pushes sent by each
+4. **Notifications** (D11, phase 5): none in the first release (recommended), or pushes sent by each
    monitor.

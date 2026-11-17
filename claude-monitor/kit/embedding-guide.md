@@ -177,11 +177,13 @@ list.start();
 ```
 
 The list reads `GET /api/sessions` every 5 seconds between `start()` and `stop()`. It reads
-through the backend the view was given, or the one `useBackend(handle)` names: call it before you
-mount the list on its own. Its options, each optional, are in `index.d.ts`: `theme`, `show`
-(`filter`, `hiding`, `arrangements`, each shown unless `false`), `persist`, `onOpen`, `onIndex`
-and `onToast`. Its keys, like the view's, answer only while the reader works in it. Pass the
-kit's `persist` so the list remembers the reader's folds, filter and read marks.
+through its own `backend` when you pass one; otherwise through the backend the view was given, or
+the one `useBackend(handle)` names (call it before you mount the list on its own). A list given its
+own keeps to it, so it can list one server's sessions beside a view you point at another. Its
+options, each optional, are in `index.d.ts`: `theme`, `show` (`filter`, `hiding`, `arrangements`,
+each shown unless `false`), `backend`, `persist`, `onOpen`, `onIndex` and `onToast`. Its keys, like
+the view's, answer only while the reader works in it. Pass the kit's `persist` so the list
+remembers the reader's folds, filter and read marks.
 
 The list hands you the reader's choice (`onOpen`) and moves its selection only when you call
 `select(id)`, so you can keep the reader where they are.

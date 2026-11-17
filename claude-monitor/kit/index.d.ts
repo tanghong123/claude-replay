@@ -43,7 +43,8 @@ export function backendHandle(options?: BackendHandleOptions): BackendHandle;
 
 /** Point both components at a server; call it before mounting them. The view's `backend` option
  *  does the same. Until either is called they read the server at the directory of the page's
- *  address, as unpaired unless the page's body says `data-paired="true"`: pass a handle. */
+ *  address, as unpaired unless the page's body says `data-paired="true"`: pass a handle. A list
+ *  given a `backend` of its own reads that one, whatever this or the view says. */
 export function useBackend(handle: BackendHandle): void;
 
 /** A row of `GET /api/sessions` (docs/backend-contract.md, "The session list"). */
@@ -144,6 +145,10 @@ export interface SessionListControls {
 export interface SessionListOptions {
   theme?: Theme;
   show?: SessionListControls;
+  /** The server the list reads (its sessions, another app's arrangement, its hides). Left out, the
+   *  list reads the page's (`useBackend`'s, which the view's `backend` option also sets); given, the
+   *  list keeps to it, so it may list one server's sessions beside a view on another. */
+  backend?: BackendHandle;
   /** Remember the list's choices, at each moment the list changes one: pass the kit's `persist`. */
   persist?(): void;
   /** The reader chose a session; the host opens it and calls the handle's `select(id)`. */
