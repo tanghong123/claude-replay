@@ -240,16 +240,19 @@ page at `app://monitor/kit/` runs under a strict content security policy: `scrip
 `default-src 'none'`; `style-src app://monitor/kit/ 'unsafe-inline'` (the components set inline
 styles, and the diagram runtime writes a `<style>` into its drawings); `font-src app://monitor/kit/
 data:`; `connect-src` and `img-src` the app's own origin plus `data:` and `blob:` (an embedded
-image is downloaded by fetching its `data:` address); `frame-src app-frame: http: https: mailto: tel:
-sms:` (an agent's page is framed from `app-frame:`, and the other sources are where a link out of
-it may go, so that its navigation reaches the navigation delegate, which cancels it and asks in the
-sheet; with `app-frame:` alone WebKit stopped it first and the link went nowhere, and the delegate
-still lets a frame load nothing but its own page; a `mailto:`, `tel:` or `sms:` link in the frame
-still goes nowhere, since WebKit stops a sandboxed frame's move to such a scheme before the
-delegate, as a browser does: walked, agent-monitor-app #s12); `form-action 'none'`; `base-uri 'none'`. An
-agent's page is not under it, being on its own scheme. The scripts the page loads from a monitor
-today come from the app's bundle instead, under `/kit/`: mdrev's guest (D8) and
-the diagram runtime (`/mermaid/<version>.js`, found today through the page head's
+image is downloaded by fetching its `data:` address); `frame-src app-frame: http: https: mailto:
+tel: sms:` (an agent's page is framed from `app-frame:`, and the other sources are where a link out
+of it may go, so that its navigation reaches the navigation delegate, which cancels it and asks in
+the sheet; with `app-frame:` alone WebKit stopped it first and the link went nowhere, and the
+delegate still lets a frame load nothing but its own page); `form-action 'none'`; `base-uri
+'none'`. Of the schemes a link out may take, only `http:` and `https:` reach the delegate from the
+frame today: the app's WebKit stops a sandboxed frame's move to `mailto:`, `tel:` or `sms:` before
+any delegate is asked, so such a link goes nowhere and nothing opens (walked, agent-monitor-app
+#s12). The three stay in `frame-src` because the policy is built from the one list of schemes the
+sheet asks for, and a WebKit that let such a move through would meet the sheet rather than open it
+unasked. An agent's page is not under the policy, being on its own scheme. The scripts the page
+loads from a monitor today come from the app's bundle instead, under `/kit/`: mdrev's guest (D8)
+and the diagram runtime (`/mermaid/<version>.js`, found today through the page head's
 `mermaid-runtime` meta), which each host vendors until a second host needs them in the kit
 ("Delivery").
 
