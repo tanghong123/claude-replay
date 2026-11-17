@@ -1543,7 +1543,12 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // count and client version, never decided here; (2) the key on an assistant record NOT
             // flagged `isApiErrorMessage`, which the page would draw as prose; (3) a record whose
             // text no longer names the cause the key names, where the Failure note should read the
-            // key.
+            // key. REVISIT (1) met (#s530, measured 2026-11-16 on aries-black):
+            // "network_edge_blocked" on ONE record, client 2.1.325, a headless one-shot, with no
+            // `resendCannotCure`. The client classes it as blocked on a person (the network or
+            // region, a VPN or proxy; no sign-in changes it), and its text says so. The owner chose
+            // to leave it unmarked, since the client's words already name the network or region
+            // (#s534).
             "apiError",
             // #s360 (client 2.1.318): the boolean `true` on the same synthetic API-error record
             // (`isApiErrorMessage`, model "<synthetic>", zero usage, `apiError` and `error` beside
@@ -1609,6 +1614,28 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // `isApiErrorMessage`, which the page would draw as prose and the mark never reaches;
             // (2) a value other than `true`, which reads as no mark.
             "resendCannotCure",
+            // #s530 (client 2.1.325): a string on the synthetic API-error record
+            // (`isApiErrorMessage`, model "<synthetic>", zero usage, `error`, `apiError`,
+            // `apiErrorStatus`, `failedResponseHadNoToolCall` and `madeBy` beside it), the
+            // `error.type` of the API response's body, which the client copies when it is an
+            // identifier (a lowercase letter, then up to 63 lowercase letters, digits or
+            // underscores) and drops otherwise. Met on ONE record on aries-black, measured
+            // 2026-11-16, in a headless one-shot: "forbidden", with `error` "invalid_request",
+            // `apiError` "network_edge_blocked", `apiErrorStatus` 403 and no `apiErrorCode` or
+            // `resendCannotCure`; the 2.1.322 and 2.1.323 clients do not write it. The client's
+            // SDK schema gives rate_limit_error, overloaded_error and invalid_request_error as
+            // examples, and says the value is what the body says, unchecked, that a gateway or
+            // another provider may use other values, and that it alone does not say whether a
+            // retry can help; this body came from the network edge in front of the API. Unread:
+            // the record is already read by its flag and folds to ONE Failure note whose text
+            // names the cause, as for `apiErrorCode` above. Expected beside it and NOT yet met in
+            // any transcript, so not in this census, to be judged each as its own row when one
+            // first carries it: `apiErrorParams` (an object naming effort and provider),
+            // `sessionFailureNotice`, `cutInUnfinishedBlock` and `toolCallCutAtOutputLimit`,
+            // written by the same 2.1.325 code. REVISIT: (1) the key on an assistant record NOT
+            // flagged `isApiErrorMessage`, which the page would draw as prose; (2) a record whose
+            // text no longer names the cause, where the Failure note should read the typed keys.
+            "apiErrorType",
             "supersedesUuids",
             "errorDetails",
             // #s60 (client 2.1.295): a string beside `message` naming the model the client asked
@@ -1677,8 +1704,11 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // and sub-agents; "model" on every real answer, "other" on 4 records in 3 sessions,
             // each the client's placeholder (model `<synthetic>`, not `isApiErrorMessage`, zero
             // usage, `stop_reason` "stop_sequence", one text "No response requested."), and no
-            // "model" on a `<synthetic>` record. The client's code names three values: "model" (the
-            // model wrote it), "other" (the client did: this placeholder, an imported conversation
+            // "model" then on a `<synthetic>` record. One since (#s530, aries-black, 2026-11-16):
+            // a 2.1.325 API-error record, model `<synthetic>`, carries "model"; `client_reply`
+            // passes it over, since it skips an `isApiErrorMessage` record first, so it is still
+            // its Failure note. The client's code names three values: "model" (the model wrote
+            // it), "other" (the client did: this placeholder, an imported conversation
             // whose records carry model "claude-export-import", a record with no version or
             // session), "input" (a record a caller handed in, beside `handedOff`). READ, with the
             // model, by `client_reply`: the placeholder folds to a client note
@@ -10943,6 +10973,57 @@ mod tests {
             failures(&out),
             vec!["A retry cannot fix this \u{b7} The request failed.".to_string()],
             "the family's billing error, which carries no flag"
+        );
+    }
+
+    /// #s530: 2.1.325's body type on an API error record the network edge refused is known, not
+    /// reported while the sweep asks, and the record folds to its ONE Failure note, the client's
+    /// words alone (no `resendCannotCure`, so no mark, as the owner chose on #s534),
+    /// never the assistant's prose even with `madeBy` "model", and the direct parse draws the
+    /// same. The record is invented (its text is made up). Removing the key from the assistant arm
+    /// of the census turns this red.
+    #[test]
+    fn an_api_error_the_network_edge_refused_is_one_failure_note() {
+        unknown_watch_keys(true);
+        let jsonl = r##"
+{"type":"user","version":"2.1.325","sessionId":"s-s530","uuid":"u1","message":{"role":"user","content":"go"}}
+{"type":"assistant","version":"2.1.325","sessionId":"s-s530","uuid":"a1","isApiErrorMessage":true,"error":"invalid_request","apiError":"network_edge_blocked","apiErrorStatus":403,"apiErrorType":"forbidden","failedResponseHadNoToolCall":true,"madeBy":"model","message":{"role":"assistant","model":"<synthetic>","stop_reason":"stop_sequence","usage":{"input_tokens":0,"output_tokens":0},"content":[{"type":"text","text":"API Error: The request was refused before it reached the API. Check the network, region or VPN, then try again."}]}}
+"##;
+        let messages = tokenize(jsonl.lines());
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s530"))
+            .collect();
+        assert!(seen.is_empty(), "nothing reported: {seen:?}");
+        let failures: Vec<&str> = messages
+            .iter()
+            .filter_map(|m| match m {
+                Message::SystemNote {
+                    text,
+                    kind: NoteKind::Failure,
+                } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            failures,
+            vec![
+                "API Error: The request was refused before it reached the API. Check the network, \
+                 region or VPN, then try again."
+            ],
+            "one Failure note, the client's words alone: {messages:?}"
+        );
+        let blocks = replay(&messages, &mut Vec::new(), &CLAUDE_SHAPING);
+        assert!(
+            !blocks
+                .iter()
+                .any(|b| matches!(b, Block::AssistantText(_) | Block::AssistantMessage { .. })),
+            "the error is not the assistant speaking: {blocks:?}"
+        );
+        assert_eq!(
+            blocks,
+            parse_main(jsonl.lines(), &mut Vec::new()),
+            "the direct parse draws the same"
         );
     }
 

@@ -1518,7 +1518,7 @@
 :where(#sessionView) .info-popover:before{content: ""; position: absolute; left: 0; right: 0; bottom: -9px; height: 9px;}
 :where(#sessionView) .info-popover.open{opacity: 1; visibility: visible; transform: none; pointer-events: auto;}
 :where(#sessionView) .workspace.navigator-off .outline-footer{flex-direction: column; gap: 3px; width: 40px; min-height: 0;
-  padding: 6px 2px; border-top: 0; align-items: center;}
+  padding: 6px 2px; margin-left: 18px; border-top: 0; align-items: center;}
 :where(#sessionView) .workspace.navigator-off .outline-footer-context{display: none;}
 :where(#sessionView) .workspace.navigator-off .outline-footer-cost{font-size: 0;}
 :where(#sessionView) .workspace.navigator-off .outline-footer-cost:after{content: attr(data-short); font-size: 9px;}
@@ -1986,6 +1986,7 @@
 #sessionView.outline-in-bar .workspace>.topbar>#navigatorRailExpand{order:0}
 #sessionView.outline-in-bar .workspace>.info-popover{position:absolute;z-index:30;top:65px;right:8px;left:auto;bottom:auto;width:290px;max-height:calc(100% - 73px);overflow:auto}
 #sessionView.outline-in-bar .workspace>.info-popover:before{display:none}
+#sessionView.outline-in-bar .outline-footer{display:none}
 #sessionView #navigatorRailExpand[aria-disabled="true"]{opacity:.38;cursor:default;background:transparent}
 #sessionView #navigatorRailExpand[aria-pressed="true"]{background:var(--selected);color:var(--blue)}
 #sessionView.outline-in-bar .workspace>.topbar>.phone-pane .phone-pane-count{position:absolute;right:0;top:1px;min-width:15px;height:15px;padding:0 4px;border-radius:8px;background:var(--hover);color:var(--sub);font:600 9px/15px var(--mono);text-align:center}
@@ -2054,6 +2055,7 @@
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-jump .task-state{flex:none}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-jump-count{font:500 11.5px/1 var(--mono);color:var(--faint)}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .task-scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:59;background:rgba(14,19,31,.42)}
+:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .task-scrim.catching:not([hidden]){background:transparent}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .sv-session-main,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .workspace.navigator-off .sv-session-main{grid-template-columns:0 minmax(0,1fr)}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .session-navigator{display:none!important}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .outline-footer{position:fixed;left:0;top:0;z-index:30;width:0;height:0;min-height:0;padding:0;margin:0;overflow:visible}

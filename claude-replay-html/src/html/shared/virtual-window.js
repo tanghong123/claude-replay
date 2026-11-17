@@ -312,6 +312,32 @@ function itemHeight(element) {
 /** `P` when the reader follows: the end, whatever the end is (framework §1.7). */
 const TAIL = Object.freeze({ source: "tail" });
 
+/** An element's children as a unit is first drawn (#s504): without the `<mark>`s a page adds once it
+ *  is drawn (the app shell marks the search's hits in `afterRender`), so a place counted in the old
+ *  markup names the same element in the new one. */
+function unmarked(parent) {
+  return Array.prototype.filter.call(parent.children, child => child.tagName !== "MARK");
+}
+
+/** The record an element sits in (#s504): the row it sits in, or the unit where it sits in none (the
+ *  classic page's units are records; the app shell's group heads sit outside its rows), as
+ *  `anchorOn` holds an element. */
+function recordOf(element, unit) {
+  const row = element.closest("[data-block-index]");
+  return row && unit.contains(row) ? row : unit;
+}
+
+/** What tells one record from another a rewrite put in its place (#s504): all its text, whitespace
+ *  collapsed, and every link and image it holds by its address. A queued prompt picked up moves
+ *  every marker behind it up a slot (#165), so the same place in a unit can hold another record, and
+ *  two queued prompts may differ anywhere, or only in a link's or an image's address. Read only when a focus is to be given
+ *  back, and from both markups painted (`refocus` runs after the page's `afterRender`, which fills
+ *  a code box's bar, say). */
+function recordIdentity(record) {
+  const links = [...record.querySelectorAll("[href], [src]")].map(node => `${node.getAttribute("href") || ""} ${node.getAttribute("src") || ""}`);
+  return `${(record.textContent || "").replace(/\s+/g, " ").trim()}\n${links.join("\n")}`;
+}
+
 class VirtualWindow {
   constructor(options) {
     const { frame, mount, overscan, slacks, userIntentMs, rememberMs, clampIndex, skipAt, renderAll, floors, defaultKind, historyMs, page, version } = options;
@@ -1389,6 +1415,43 @@ class VirtualWindow {
     return { source: "anchor", key: next.dataset.unitKey, index: from + 1 + shift, top, block: null, blockTop: 0, at: this.frame.scrollTop(), fallback: null };
   }
 
+  /** The focus, when it is inside a mounted unit: that unit's key, the child positions from the
+   *  unit down to the focused element (counting no `<mark>`), what kind of element it is, and the
+   *  record it sits in (#s504), whose text is read only if the focus is to be given back. */
+  focusInside() {
+    const active = this.mount.ownerDocument?.activeElement;
+    if (!active || active === this.mount || !this.mount.contains(active)) return null;
+    const path = [];
+    let node = active;
+    while (node.parentElement && node.parentElement !== this.mount) {
+      if (node.tagName === "MARK") return null;
+      path.unshift(unmarked(node.parentElement).indexOf(node));
+      node = node.parentElement;
+    }
+    if (!node.dataset.unitKey) return null;
+    return { element: active, key: node.dataset.unitKey, path, tag: active.tagName, role: active.classList[0] || "", record: recordOf(active, node) };
+  }
+
+  /** Gives the focus back to a unit drawn again (#s504): to the element at the same place in its
+   *  new markup, when it is the same kind of element (its tag and its first class) in a record that
+   *  reads as the old one did (`recordIdentity`), and nothing else has taken the focus meanwhile. A
+   *  unit that left the window, changed its shape or holds another record there gets none, as
+   *  before; so does a record whose text changed, a running call's output grown say: a focus left on
+   *  the body is the old behaviour, and a focus given to another element would be wrong. Any redraw
+   *  of a unit holding the focus gives it back, a fold's own re-render too. */
+  refocus(focused) {
+    if (!focused || focused.element.isConnected) return;
+    const doc = this.mount.ownerDocument, now = doc.activeElement;
+    if (now && now !== doc.body && now !== doc.documentElement) return;
+    const unit = [...this.mount.children].find(child => child.dataset.unitKey === focused.key);
+    let node = unit;
+    for (const at of focused.path) node = node ? unmarked(node)[at] : null;
+    if (!node || node.tagName !== focused.tag || (node.classList[0] || "") !== focused.role) return;
+    if (recordIdentity(recordOf(node, unit)) !== recordIdentity(focused.record)) return;
+    node.focus({ preventScroll: true });
+    if (doc.activeElement === node) this.trace("refocused", { key: focused.key, depth: focused.path.length });
+  }
+
   /** Mount exactly `[lo, hi)`, reusing what is already right. `dirtyFrom` is the first index
    *  whose content changed (0 rebuilds everything mounted), or a bounded run `{from, to}` whose
    *  content changed and nothing after it. The mutation step of a mount transaction: it never
@@ -1405,6 +1468,11 @@ class VirtualWindow {
     const dirty = ranged ? dirtyFrom : { from: dirtyFrom, to: Infinity };
     if ((dirty.from === Infinity || (ranged && (dirty.from >= hi || dirty.to <= lo))) && lo === this.lo && hi === this.hi) return null;
 
+    // A unit drawn again takes its old markup with it, and the browser hands the focus of anything
+    // inside it to the body: a fold head the reader stepped to with j/k lost it when the session grew,
+    // and the next j/k started over from the last head (#s504). Where the focus is goes in as a path
+    // in its unit, and comes back once the pads are written (`refocus`).
+    const focused = this.focusInside();
     this.observer.disconnect();
     for (const child of [...this.mount.children]) {
       const index = Number(child.dataset.unitIndex);
@@ -1479,6 +1547,9 @@ class VirtualWindow {
     this.updatePads();
     for (const child of this.mount.children) this.observer.observe(child, { box: "border-box" });
     this.afterRender();
+    // After the page's own pass, so the new markup is painted as the old one was (a code box's bar,
+    // the search's marks) when the two records are compared.
+    this.refocus(focused);
     this.trace("reconciled", { dirtyFrom: dirtyFrom === Infinity ? null : dirtyFrom, anchor: p0 && p0.key ? p0.key : null, fresh: fresh.length, estimate: this.count ? Math.round(this.estimateAt(0)) : null });
     return { lo, hi, fresh: fresh.length };
   }

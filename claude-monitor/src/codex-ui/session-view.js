@@ -3514,10 +3514,24 @@ taskScrim.hidden = true;
 // while the view contains its layout (a host's pane, beside the app's list), its box holds them.
 element.append(taskScrim, taskPopover);
 let taskPopoverOpener = null;
-function closeTaskPopover(restoreFocus = true) {
+// A tap on the scrim is spent closing the card (#s510), as a tap on the pane's dim is (#s55): the
+// scrim stays, clear, catching until that tap's click has passed, or the click lands on whatever lay
+// beneath once it had gone — a wide phone's sidebar handle, which hid the column as the card closed.
+// The click follows the LIFT, so the wait is counted from there; a gesture the browser took over
+// gets no click and lets go at once; and a lift that never comes still lets go.
+let scrimPointer = null, scrimTimer = 0;
+const scrimLetGo = after => {
+  clearTimeout(scrimTimer);
+  scrimTimer = setTimeout(() => { taskScrim.classList.remove("catching"); if (taskPopover.hidden) taskScrim.hidden = true; }, after);
+};
+function closeTaskPopover(restoreFocus = true, catching = null) {
   if (taskPopover.hidden) return;
   taskPopover.hidden = true;
-  taskScrim.hidden = true;
+  if (catching) {
+    taskScrim.classList.add("catching");
+    scrimPointer = catching.pointerId;
+    scrimLetGo(4000);
+  } else taskScrim.hidden = true;
   taskPopover.innerHTML = "";
   if (restoreFocus && taskPopoverOpener?.isConnected) taskPopoverOpener.focus();
   taskPopoverOpener = null;
@@ -3550,6 +3564,8 @@ function openTaskPopover(index, opener) {
     <div class="task-popover-actions">${jump}</div>`;
   taskPopoverOpener = opener;
   taskPopover.hidden = false;
+  clearTimeout(scrimTimer); scrimPointer = null;
+  taskScrim.classList.remove("catching");
   taskScrim.hidden = false;
   // Placed in the box its layers are drawn in (#s431 stage 4): the view's own while it contains its
   // layout, else the window.
@@ -3567,7 +3583,21 @@ taskPopover.addEventListener("click", event => {
   if (find) { const index = Number(find.dataset.taskFind), task = (recordState.meta?.tasks || [])[index]; closeTaskPopover(false); if (task) findTaskRecord(task, String(task.id ?? index)); }
 });
 document.addEventListener("keydown", event => { if (event.key === "Escape" && !taskPopover.hidden) { event.stopPropagation(); closeTaskPopover(); } }, { capture: true, signal });
-document.addEventListener("pointerdown", event => { if (!taskPopover.hidden && !taskPopover.contains(event.target) && !event.target.closest("[data-task-open]")) closeTaskPopover(false); }, { signal });
+document.addEventListener("pointerdown", event => { if (!taskPopover.hidden && !taskPopover.contains(event.target) && !event.target.closest("[data-task-open]")) closeTaskPopover(false, event.target === taskScrim ? event : null); }, { signal });
+const scrimLifted = event => {
+  if (scrimPointer == null || event.pointerId !== scrimPointer) return;
+  scrimPointer = null;
+  scrimLetGo(event.type === "pointercancel" ? 0 : 1000);
+};
+document.addEventListener("pointerup", scrimLifted, { capture: true, signal });
+document.addEventListener("pointercancel", scrimLifted, { capture: true, signal });
+taskScrim.addEventListener("click", event => {
+  event.preventDefault();
+  if (!taskScrim.classList.contains("catching")) return;
+  clearTimeout(scrimTimer);
+  taskScrim.classList.remove("catching");
+  if (taskPopover.hidden) taskScrim.hidden = true;
+}, { signal });
 // The tasks pane centered on the running tasks (#57), or on the done/pending boundary: the
 // target row is the pure function's, the scroll is the PANE's own scroller — never the
 // transcript's. Runtime chrome on the card's head, so the generated shell stays exact.
@@ -4045,6 +4075,7 @@ var phoneDock;
 {
   const PHONE = layout.query("phone");
   const WIDE = layout.query("wide");
+  const TOUCH = layout.query("touch");
   const topbar = viewRoot.$(".topbar");
 
   const info = document.createElement("button");
@@ -4414,6 +4445,10 @@ var phoneDock;
   // since iOS raises a keyboard (or a select's picker) only for a focused field. An iframe counts, as
   // its inside cannot be seen. The page-scroll compensation below is left as it was: it answers
   // iOS's scroll, not the keyboard.
+  // #s497: that scroll is a touch screen's alone, so only there is the page's offset read as it. A
+  // desktop host whose pane makes the view a phone reader (under 490px of its own width) scrolls its
+  // page with the reader's wheel, and the offset read as iOS's sent that page back to its top on every
+  // scroll and gave the host's box a transform for a frame.
   const NO_KEYBOARD_INPUTS = new Set(["button", "checkbox", "radio", "range", "color", "file", "image", "reset", "submit", "hidden"]);
   const typesInto = () => {
     let at = viewRoot.active();
@@ -4434,8 +4469,9 @@ var phoneDock;
       // stale (a host's bar hidden while the reader typed), and on iOS, where the page's scroll and the
       // grid's transform cancel, the box may not move, so no watch of its place hears it.
       const rode = keyboardRides;
+      const pageTop = TOUCH.matches ? viewport2.pageTop : 0;
       if (controls.nativeActive && PHONE.matches) {
-        const frame = sharedKeyboardFrame(grid.getBoundingClientRect().height, viewport2);
+        const frame = sharedKeyboardFrame(grid.getBoundingClientRect().height, { height: viewport2.height, scale: viewport2.scale, pageTop });
         // Keep one containing block even at zero offset; Safari pans during keyboard animation.
         keyboardRides = Math.abs(viewport2.scale - 1) < 0.01 && frame.shift > 0;
         writeStyle(grid, "transform", Math.abs(viewport2.scale - 1) < 0.01 ? `translateY(${frame.shift}px)` : "");
@@ -4450,7 +4486,7 @@ var phoneDock;
       const steady = PHONE.matches && Math.abs(viewport2.scale - 1) < 0.01;
       const shortfall = steady ? Math.max(0, Math.round(root.clientHeight - viewport2.height)) : 0;
       const covered = typing ? shortfall : 0;
-      const shift = steady ? Math.max(0, Math.round(viewport2.pageTop)) : 0;
+      const shift = steady ? Math.max(0, Math.round(pageTop)) : 0;
       // Once the keyboard is down there is nothing to fight: the page goes back to the top. This reads
       // the viewport as it is, unguarded, so it acts only as it did before #s451.
       if (steady && !shortfall && shift) scrollTo(0, 0);
@@ -4464,7 +4500,8 @@ var phoneDock;
     rideAgain = ride;
     viewport2.addEventListener("resize", ride, { signal });
     viewport2.addEventListener("scroll", ride, { signal });
-    // The page itself scrolls only under iOS's keyboard; off a phone this listener has nothing to do.
+    // The page's scroll is the ride's only under iOS's keyboard (a touch screen's, which `ride` reads
+    // for itself, #s497); off a phone this listener has nothing to do.
     addEventListener("scroll", () => { if (PHONE.matches || grid.style.transform) ride(); }, { passive: true, signal });
     // Focus moving may come with no resize of the visual viewport (a stale shortfall stays short, and
     // a keyboard rising into it leaves the height as it was), so the ride is asked again once focus
