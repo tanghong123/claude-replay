@@ -34,7 +34,7 @@ use super::serve::{
 };
 use super::sig::{self, Cap};
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -780,7 +780,7 @@ fn local_route(
         ("GET", "text") => text(rel, &d, req),
         ("GET", "revisions") => revisions(rel, &d),
         ("GET", "asset") => asset(&d),
-        ("GET", "snapshot") => snapshot(&d, req),
+        ("GET", "snapshot") => snapshot(rel, &d, req, viewer),
         ("GET", "stat") => stat(&d),
         ("GET", "annotations") => notes_list(rel, &d, viewer),
         ("POST", "annotations") => notes_add(rel, &d, req, viewer),
@@ -1051,15 +1051,89 @@ fn resolve_body(req: &Request) -> Option<(Referrer, Vec<Value>)> {
     Some(((path, cap), targets))
 }
 
-/// The text a note was taken on, for placing it exactly. `blob` must be hex.
-fn snapshot(d: &Doc, req: &Request) -> HttpResponse {
+/// The text a note was taken on, for placing it exactly: only a blob a note on THIS document names,
+/// the `blob` its listing carries, compared whole and read as a blob (mdrev's contract since 1.1.84;
+/// #s558). Any other id answers what a missing object does, and the viewer then places the note by
+/// its quote. It used to `cat-file -p` whatever id of four or more hex digits it was given, so a
+/// reader allowed one document could read any object of its repository: other files, deleted ones,
+/// trees and commits, and a short prefix walked the store. A note cannot name a blob of its own
+/// choosing: mdrev-cli makes the blob from the document's own text at the note's revision.
+fn snapshot(rel: &Release, d: &Doc, req: &Request, viewer: Option<&Viewer>) -> HttpResponse {
     let blob = param(req, "blob").unwrap_or_default();
     if !is_hex(&blob, 4) {
         return status("400 Bad Request", error("blob must be an object id"));
     }
-    match git(&d.root, &["cat-file", "-p", &blob]) {
+    if !a_note_names(rel, d, viewer, &blob) {
+        return HttpResponse::not_found("no such blob");
+    }
+    match git(&d.root, &["cat-file", "blob", &blob]) {
         Some(bytes) => text_reply(bytes),
         None => HttpResponse::not_found("no such blob"),
+    }
+}
+
+/// The blobs each document's notes name, as its last listing gave them (#s558), keyed by the
+/// collection, the path, and whether it was the viewer's listing (which carries shared threads).
+/// The viewer lists a document's notes before it asks for their snapshots, so the listing it
+/// already made answers them, with no `mdrev-cli` run per snapshot.
+fn note_blobs() -> &'static Mutex<HashMap<(String, String, bool), HashSet<String>>> {
+    static BLOBS: OnceLock<Mutex<HashMap<(String, String, bool), HashSet<String>>>> =
+        OnceLock::new();
+    BLOBS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn remember_blobs(d: &Doc, viewer: Option<&Viewer>, records: &[Value]) {
+    let named = records
+        .iter()
+        .filter_map(|r| r.get("blob").and_then(Value::as_str))
+        .filter(|b| is_hex(b, 40))
+        .map(str::to_string)
+        .collect();
+    let mut g = note_blobs().lock().unwrap_or_else(|e| e.into_inner());
+    if g.len() > 256 {
+        g.clear();
+    }
+    g.insert((d.root.clone(), d.rel.clone(), viewer.is_some()), named);
+}
+
+/// Whether a note on `d` names `blob`: by the last listing, else by a fresh one, since a note filed
+/// after it (from the page, or by an agent) names a blob that listing could not.
+fn a_note_names(rel: &Release, d: &Doc, viewer: Option<&Viewer>, blob: &str) -> bool {
+    let key = (d.root.clone(), d.rel.clone(), viewer.is_some());
+    let known = |g: &HashMap<_, HashSet<String>>| g.get(&key).is_some_and(|s| s.contains(blob));
+    if known(&note_blobs().lock().unwrap_or_else(|e| e.into_inner())) {
+        return true;
+    }
+    let Ok((records, _)) = list_records(rel, d, viewer) else {
+        return false;
+    };
+    remember_blobs(d, viewer, &records);
+    known(&note_blobs().lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// The document's notes, closed ones included, as mdrev's records and the bytes they came in; or
+/// the reply that says why not.
+fn list_records(
+    rel: &Release,
+    d: &Doc,
+    viewer: Option<&Viewer>,
+) -> Result<(Vec<Value>, Vec<u8>), HttpResponse> {
+    let mut args = vec!["notes", "list", "--path", &d.rel, "--all", "--records"];
+    // #s10: with the viewer key, the listing carries the shared threads too (`shr-` ids); with the
+    // pane's notes key (#s231) it comes without them.
+    if viewer.is_some() {
+        args.push("--viewer");
+    }
+    let out = cli_as(rel, &d.root, &args, None, viewer);
+    if out.code != 0 {
+        return Err(cli_error(&out));
+    }
+    match serde_json::from_slice::<Vec<Value>>(&out.out) {
+        Ok(records) => Ok((records, out.out)),
+        Err(_) => Err(status(
+            "502 Bad Gateway",
+            error("mdrev-cli answered something other than a list"),
+        )),
     }
 }
 
@@ -1080,23 +1154,14 @@ fn stat(d: &Doc) -> HttpResponse {
 /// which the viewer never reads and which costs a word diff per snapshot: seconds on a document
 /// with a few dozen notes, after every note, every reply and every poll.
 fn notes_list(rel: &Release, d: &Doc, viewer: Option<&Viewer>) -> HttpResponse {
-    let mut args = vec!["notes", "list", "--path", &d.rel, "--all", "--records"];
-    // #s10: with the viewer key, the listing carries the shared threads too (`shr-` ids); with the
-    // pane's notes key (#s231) it comes without them.
-    if viewer.is_some() {
-        args.push("--viewer");
+    match list_records(rel, d, viewer) {
+        Ok((records, raw)) => {
+            remember_blobs(d, viewer, &records);
+            // The CLI's own bytes, as before: parsed only to read the blobs.
+            HttpResponse::json(String::from_utf8_lossy(&raw).into_owned())
+        }
+        Err(r) => r,
     }
-    let out = cli_as(rel, &d.root, &args, None, viewer);
-    if out.code != 0 {
-        return cli_error(&out);
-    }
-    if serde_json::from_slice::<Vec<Value>>(&out.out).is_err() {
-        return status(
-            "502 Bad Gateway",
-            error("mdrev-cli answered something other than a list"),
-        );
-    }
-    HttpResponse::json(String::from_utf8_lossy(&out.out).into_owned())
 }
 
 /// `POST annotations`: file a note — the viewer's record on stdin, the stored note back, 201.
@@ -1822,7 +1887,7 @@ case "$1" in
   notes)
     case "$2" in
       list) case "$*" in
-          *--records*) echo '[{"id":"ann-1","body":"hi"}]' ;;
+          *--records*) if [ -f "$here/blob" ]; then echo '[{"id":"ann-1","body":"hi","blob":"'"$(cat "$here/blob")"'"}]'; else echo '[{"id":"ann-1","body":"hi"}]'; fi ;;
           *) echo '[{"path":"docs/doc.md","annotation":{"id":"ann-1","body":"hi"},"state":"exact"}]' ;;
         esac ;;
       add) cat > "$here/stdin.json"; echo '{"id":"ann-2","body":"filed"}' ;;
@@ -2907,6 +2972,105 @@ esac
             );
             assert_eq!(r.code, "400 Bad Request", "rev {bad:?} never reaches git");
         }
+    }
+
+    /// #s558: `snapshot` reads a blob only when a note on the asked document names it, compared
+    /// whole and read as a blob (mdrev's contract since 1.1.84). It used to `cat-file -p` any id of
+    /// four or more hex digits in the checkout, so one document's stamp read the whole repository.
+    /// The viewer lists the notes before it asks for their snapshots, and that listing answers them;
+    /// a blob it did not carry is listed for once more, which is how a note filed since is found.
+    #[test]
+    fn snapshot_reads_only_a_blob_a_note_on_the_document_names() {
+        let f = fx("snapshot");
+        let held = Mutex::new(Held::default());
+        let q = doc_query(&f, "docs/doc.md");
+        let rev_parse = |what: &str| -> String {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&f.repo)
+                .args(["rev-parse", what])
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git rev-parse {what}");
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        // A note was taken on the first revision ("# One"); a file committed beside the document is
+        // in the same object store, and no note names it.
+        let noted = rev_parse(&format!("{}:docs/doc.md", f.first));
+        std::fs::write(f.repo.join("docs/secret.txt"), "not offered\n").unwrap();
+        git_in(&f.repo, &["add", "docs/secret.txt"]);
+        git_in(&f.repo, &["commit", "-qm", "beside"]);
+        let unnamed = rev_parse("HEAD:docs/secret.txt");
+        let later = rev_parse("HEAD:docs/doc.md");
+        std::fs::write(f.kit.join("blob"), &noted).unwrap();
+        let snap = |blob: &str| {
+            call(
+                &f,
+                &held,
+                "snapshot",
+                &req("GET", &format!("{q}&blob={blob}"), b"", true),
+            )
+        };
+        let listings = || calls(&f).matches("notes list").count();
+
+        let listed = call(&f, &held, "annotations", &req("GET", &q, b"", true));
+        assert_eq!(listed.code, "200 OK");
+        assert_eq!(
+            String::from_utf8_lossy(&listed.body),
+            format!("[{{\"id\":\"ann-1\",\"body\":\"hi\",\"blob\":\"{noted}\"}}]\n"),
+            "the listing is the CLI's own bytes"
+        );
+        let after_list = listings();
+        let named = snap(&noted);
+        assert_eq!(
+            (named.code, named.body.as_slice()),
+            ("200 OK", b"# One\n".as_slice()),
+            "the blob a note on the document names"
+        );
+        assert_eq!(
+            listings(),
+            after_list,
+            "answered from the listing the viewer made, with no mdrev-cli run"
+        );
+
+        for (what, id) in [
+            ("another file's blob", unnamed.clone()),
+            ("a commit", rev_parse("HEAD")),
+            ("a tree", rev_parse("HEAD^{tree}")),
+            ("a prefix of the named blob", noted[..8].to_string()),
+            ("the document's text no note names", later.clone()),
+        ] {
+            let r = snap(&id);
+            assert_eq!(
+                r.code,
+                "404 Not Found",
+                "{what} is not offered: {}",
+                String::from_utf8_lossy(&r.body)
+            );
+        }
+        assert!(
+            listings() > after_list,
+            "a blob the last listing did not carry is listed for again"
+        );
+
+        // A note filed since the listing names a blob the route finds by listing again.
+        std::fs::write(f.kit.join("blob"), &later).unwrap();
+        let found = snap(&later);
+        assert_eq!(
+            (found.code, found.body.as_slice()),
+            ("200 OK", b"# Two\n".as_slice()),
+            "a note filed after the listing"
+        );
+        assert_eq!(
+            snap(&noted).code,
+            "404 Not Found",
+            "the listing now names only the later blob"
+        );
+        assert_eq!(
+            snap("not-hex").code,
+            "400 Bad Request",
+            "an id that is not hex never reaches git"
+        );
     }
 
     #[test]
