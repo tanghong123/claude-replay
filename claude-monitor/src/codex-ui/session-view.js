@@ -3503,8 +3503,9 @@ panesMenu.onclick = event => {
   // so it stays shut while the pointer or the focus stays there. A focus inside the card goes back
   // to the Info that opened it (or one drawn) rather than staying on a control the close hides; it
   // moves FIRST, since that Info's focus listener peeks, and the close then shuts what it opened.
-  // In a host (#s535) the Escape is the view's only while the reader works in it, so a pinned card
-  // closes only then; a peek also closes while the pointer is on it or on an Info that opens it.
+  // In a host (#s535) the Escape is the view's only while the reader works in it or the focus is
+  // inside it (#s560), so a pinned card closes only then; a peek also closes while the pointer is on
+  // it or on an Info that opens it.
   addEventListener("keydown", event => {
     if (event.key !== "Escape" || !popover.classList.contains("open")) return;
     if (!viewEscape(event) && (pinned || !hovered(popover, ...triggers))) return;
