@@ -27,7 +27,7 @@ export const KEYBOARD_MODES = Object.freeze(["engaged", "page"]);
 /** Every option `mountSessionList` takes; any other name is refused, so a misspelt or retired one
  *  (the old `toast` or `compact`) fails loudly rather than being dropped. */
 export const MOUNT_OPTIONS = Object.freeze([
-  "theme", "show", "keyboard", "persist", "onOpen", "onIndex", "onToast",
+  "theme", "show", "keyboard", "backend", "persist", "onOpen", "onIndex", "onToast",
   "projectTree", "projectActions", "newSession", "layer", "place",
 ]);
 
@@ -66,6 +66,11 @@ export const MOUNT_OPTIONS = Object.freeze([
  *      arranged list's section menus. Off, the list is grouped by agent and project, and reads no
  *      other app's list.
  *    With all three off the filter has nothing to offer, and neither its glyph nor its sheet is drawn.
+ *  - `backend`: the server the list reads (`backend.js`'s handle): its sessions (`/api/sessions`),
+ *    another app's arrangement (`/api/layout`) and its hides and restores (`/api/ignore`). Left out,
+ *    the list reads the page's handle, which `useBackend` and the view's own `backend` option set,
+ *    as it always has. Given, neither moves it: a list over one server beside a view on another
+ *    (#s540, Hong's choice on #s539: each part keeps its own server).
  *  - `keyboard`: "engaged" (the default) or "page", as `KEYBOARD_MODES` says. Engaged, the list
  *    answers its keys (the next and the previous session, ↓ and ↑) only while a row of its own has the
  *    focus, and leaves every other key to the page. "page" is the app's mode: the list binds no list
@@ -132,6 +137,9 @@ for (const [name, shown] of Object.entries(options.show || {})) {
 }
 const keyboardMode = options.keyboard ?? "engaged";
 if (!KEYBOARD_MODES.includes(keyboardMode)) throw new Error(`mountSessionList takes its keyboard "engaged" or "page", not ${said(keyboardMode)}`);
+if (options.backend != null && typeof options.backend.fetch !== "function") throw new Error(`mountSessionList takes its backend as a backend handle (backendHandle()), not ${said(options.backend)}`);
+/** The server the list reads now: its own, or the page's (#s540). */
+const listBackend = () => options.backend || backend();
 if (element.id && element.id !== "sessionList") throw new Error(`mountSessionList draws into an element whose id is sessionList, or that has none; this one is #${element.id}`);
 if ([...element.childNodes].some(node => !(node.nodeType === 3 && !node.data.trim()))) throw new Error("mountSessionList draws into an empty element; this one holds the host's nodes");
 /** Whether an optional control is drawn: each is, unless the host switched it off. */
@@ -255,7 +263,7 @@ const sessionIndex = new SessionIndexStore({
     }
   },
   error: error => { console.warn("Session index refresh failed", error); onToast("Session scan failed — retrying"); }
-});
+}, { backend: listBackend });
 
 // The state words come from the shared table (shared/state-labels.js, #44) — the rail's
 // tooltip and this shell's chips read the same label for the same verdict. `stateDenote`
@@ -935,7 +943,7 @@ function refreshLayout() {
   if (unmounted) return Promise.resolve();
   const source = arrangeSource();
   if (!source || layoutState.loading) return layoutState.loading || Promise.resolve();
-  const loading = backend().fetch(`/api/layout?source=${encodeURIComponent(source)}`, { cache: "no-store" })
+  const loading = listBackend().fetch(`/api/layout?source=${encodeURIComponent(source)}`, { cache: "no-store" })
     .then(response => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.text(); })
     .then(text => {
       if (unmounted || arrangeSource() !== source) return;
@@ -962,7 +970,7 @@ function refreshLayout() {
   return loading;
 }
 function refreshSources() {
-  return backend().fetch("/api/layout", { cache: "no-store" })
+  return listBackend().fetch("/api/layout", { cache: "no-store" })
     .then(response => response.ok ? response.json() : null)
     .then(data => {
       if (!data || unmounted) return;
@@ -1033,7 +1041,7 @@ function renderFilterControl(counts, shown, total) {
 }
 async function applyIgnore(op, key) {
   try {
-    const response = await backend().fetch(ignoreQuery({ op, key }), { cache: "no-store" });
+    const response = await listBackend().fetch(ignoreQuery({ op, key }), { cache: "no-store" });
     if (unmounted) return;
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     onToast(op === "add" ? "Hidden — find it under Hidden" : "Restored");
