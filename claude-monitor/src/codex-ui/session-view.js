@@ -3460,12 +3460,13 @@ panesMenu.onclick = event => {
   popover.addEventListener("pointerenter", () => clearTimeout(closeTimer));
   // Click PINS it, so the reader can read inside it, fold a group, or select a value to copy. A press
   // that pins is the reader asking for the session's Info, which the host hears (`onInfo`); a hover's
-  // peek is not.
-  const pin = () => { clearTimeout(closeTimer); pinned = !pinned; show(pinned || true); if (pinned) sayInfo(); else leave(); };
+  // peek is not. A second press UNPINS it and closes it at once (#s556): handed to the peek's close,
+  // a card whose Info held a keyboard focus stayed open, so a keyboard reader's second Enter left it
+  // open with aria-expanded true, and Escape closes only a pinned card. The 140 ms close is a peek's.
+  const pin = () => { clearTimeout(closeTimer); pinned = !pinned; show(pinned); if (pinned) sayInfo(); };
   trigger.addEventListener("click", pin);
-  // The phone's "i" in the top bar (#313) is this same control: a tap pins or unpins, and there is
-  // no hover to peek with, so an unpin closes at once.
-  infoPopoverToggle = () => { pinned = !pinned; show(pinned); if (pinned) sayInfo(); };
+  // The phone's "i" in the top bar (#313) is this same control: a tap pins or unpins.
+  infoPopoverToggle = pin;
   addEventListener("pointerdown", event => {
     if (pinned && !popover.contains(event.target) && !trigger.contains(event.target) && !event.target.closest?.("[data-info-trigger]")) { pinned = false; show(false); }
   }, { capture: true, signal });
