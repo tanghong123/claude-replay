@@ -5,7 +5,9 @@
 > across the globe, and having a remote aggregation point will add more constraints." He then set
 > Agent Monitor's direction as an embeddable module and a standalone app built from two components
 > (`design/embedding.md`, #s408), and said yes to this app being one more host of those components
-> with its own chrome (#s415). Its code lives in a private repository,
+> with its own chrome (#s415). On 2026-11-17 he revised that (#s551): the app is the web app itself,
+> mounted whole from the kit, with its native integration as options the kit names for it
+> (`design/app-mount.md`, D2). Its code lives in a private repository,
 > `tanghong123/agent-monitor-app`, installed through TestFlight on his own account (#s413, #s414).
 > This draft designs that app. The monitor stays a single-machine service
 > (`design/claude-monitor.md`, "What this is not"); what spans machines is an app on the reader's
@@ -25,8 +27,8 @@ keeps his word.)
 
 **The design, in short.** A native app, for iPhone, iPad and Mac from one codebase. It pairs with
 each machine directly, by the QR code `--pair-phone` already shows, and keeps each token in the
-Keychain. In a web view it mounts the two components `design/embedding.md` builds, the session list
-and the session view, from the kit it bundles. Their requests go to a custom URL scheme whose handler
+Keychain. In a web view it mounts the web app itself, the session list and the session view in the
+monitor page's own chrome, from the kit it bundles (`design/app-mount.md`). Their requests go to a custom URL scheme whose handler
 is a relay on the device itself: it sends each request to the machine it is for, over the tailnet,
 with that machine's token. A merged source lets the session list read every machine at once, and a
 chosen session opens on its own machine. The app needs no change to any monitor.
@@ -98,7 +100,16 @@ latency and a dependency on one machine, and holds every token in one place. (c)
 monitor's gate and keeps N full credentials where any injected script can read them. (d) is not one
 list and does not work from a phone.
 
-### D2 — The app hosts the two components (decided, #s415)
+### D2 — The app hosts the web app (decided, #s415; revised by #s551)
+
+**Revised on 2026-11-17** (#s551, Hong: *"I want the same experience as the current web app on
+desktop and mobile, but need the native integration on ios devices"*). The app mounts the web app
+whole, the list and the view in the chrome the monitor's page draws around them, from one kit mount
+(`mountApp`, `design/app-mount.md`). The layout, the top bar and where the list goes are the
+mount's, as in a browser. The app keeps pairing and the Keychain, the relay (D3), the share sheet,
+the sheet before a link leaves the app, and running only bundled code. Its native integration goes
+through options the kit names for it alone. The text below is the decision as #s415 made it, kept
+for its reasoning, which still holds: one list and one view, never a second renderer.
 
 The app is one more host of the components `design/embedding.md` builds ("The pieces", 2 and 3):
 the **session list**, with its filter and arrangements, and the **session view**, with its turn bar,
@@ -161,13 +172,15 @@ The handler, for a relayed request:
   names, with the path normalized first, so the page cannot reach anything that was not added. It
   follows no redirect: a redirect is handed back to the page as an answer. An entry usually holds a
   token; one for an unpaired monitor holds none (D8, D10);
-- in a read-only release (D9), passes only what read-only allows: the contract's reads (mdrev's
-  `resolve` among them, a POST that only reads, which the guest asks for every link and image in a
-  document), a session's hiding (`/api/ignore`), mdrev's held text (`hold`) and the reader's own
-  notes. Everything else is refused by the relay itself, among it `/api/send`, `/api/answer`,
-  `/api/dialog` (which reads only to answer), `/api/consent`, Codex native mode's `/api/codex/*`
-  (start, stop, send and the rest) and shared review's writes under `api/mdrev-review/`, so
-  read-only does not rest on the page hiding its controls;
+- until the app mounts the web app (agent-monitor-app #s13), passes only what read-only allows: the
+  contract's reads (mdrev's `resolve` among them, a POST that only reads, which the guest asks for
+  every link and image in a document), a session's hiding (`/api/ignore`), mdrev's held text
+  (`hold`) and the reader's own notes. Everything else is refused by the relay itself, among it
+  `/api/send`, `/api/answer`, `/api/dialog` (which reads only to answer), `/api/consent`, Codex
+  native mode's `/api/codex/*` (start, stop, send and the rest) and shared review's writes under
+  `api/mdrev-review/`. From that mount on it also passes the writes Hong chose (D9: the compose box,
+  dialog answers, pane grants and shared review's prefix), and still refuses Codex native mode's,
+  so neither stage rests on the page hiding its controls;
 - answers only the contract's data routes, never the monitor's own page, scripts or stylesheets
   (`/`, its UI modules, its mdrev bundle), so the app's main frame never runs code a machine sent;
 - never relays `/__reveal`, which opens the file manager on the machine that serves it, a side effect
@@ -394,7 +407,16 @@ components need nothing new for it: a handle whose backend serves the write rout
 box and the answer buttons, and one that serves none gets neither ("1. The backend contract"). Codex
 native mode is the exception: its page code comes from the monitor (its entry imports
 `/codex-workspace/api.js` and the monitor's stylesheet), which the relay does not pass (D3). So the
-app leaves native mode out until its modules join the kit, an addition for section 5. **Choice for
+app leaves native mode out until its modules join the kit, an addition for section 5.
+
+**Decided on 2026-11-17** (agent-monitor-app #s14, Hong on the dashboard: "Writes come with the
+web-app mount (#s13)"): the app writes to sessions from the moment it mounts the web app
+(`design/app-mount.md`), with no read-only stage first. The compose box, dialog answers and pane
+grants work as on the web app, each under that monitor's own gate. The relay passes the write routes
+of the compose box, dialogs and pane grants, and, since Hong's #s554 ("In, as on the web app"),
+every route of shared review's prefix (`api/mdrev-review/`, listed in `design/app-mount.md`), each
+under that machine's own mdrev key and review store. It still refuses every frame's request and
+Codex native mode's (`/api/codex/*`), whatever the page shows. What follows is the choice as it stood. **Choice for
 the owner**: writes in the first release with the rest (parity, R3), or a read-only first release
 with writes a stage later. Read-only here means no send, no answer to a dialog, no pane grant, none
 of Codex native mode's writes (`/api/codex/*`) and none of shared review's writes (a Push, a Share,
@@ -413,7 +435,8 @@ Sandbox, and a sandboxed app cannot run `ssh` with the reader's keys (#s418, mea
 with only `network.client`): `/usr/bin/ssh` starts but inherits the sandbox, cannot load
 `~/.ssh/id_rsa` ("Operation not permitted") and cannot write `known_hosts`, and the app itself
 cannot list `~/.ssh`. A
-sandboxed app does reach a monitor on the loopback. So the plan: the fleet's binary stays on the Mac
+sandboxed app does reach a monitor on the loopback. So the plan, which Hong chose on 2026-11-17
+(agent-monitor-app #s15: "Fleet binary as the tunnel helper"): the fleet's binary stays on the Mac
 as the tunnel helper, outside the sandbox, opening and re-opening the tunnels as today, and the Mac
 app reaches each tunnelled monitor at the loopback port the helper opened:
 
@@ -513,6 +536,10 @@ agent sets up the repository and the build; distribution through TestFlight is t
 his Apple account (#s413). Each item below is the owner's to approve when it comes up, with a
 recommendation:
 
+- **The web app as one kit mount** (#s551, `design/app-mount.md`): Hong agreed to it on 2026-11-17,
+  with the native options his plan named, and ruled the same day on each item it raised beyond them:
+  writes (agent-monitor-app #s14), a Machines row (#s553), shared review (#s554) and Review on an
+  iPad (#s555). Anything more goes to him the same way.
 - **The kit's components and the backend contract** are `design/embedding.md`'s, decided there. The
   app relies on the contract across monitor versions (D2), which is what versioning it is for.
   Settled there since draft 3 (`design/embedding.md` at 52bfd821, by its author within the owner's
@@ -582,13 +609,19 @@ is built in its own repository, and starts with what it can learn before the kit
 | 4 | both | The Mac app: the two components side by side, This Mac on the loopback, detached windows (embedding's step 8, in a later kit); the fleet's answer and its tunnels as the helper; the fleet's page retired | A machine reached only by ssh appears in the Mac app's list; a session opens in a window of its own; reveal works on This Mac only |
 | 5 | both | Notifications, if the owner chooses them (D11) | — |
 
+**Revised on 2026-11-17** (#s551, agent-monitor-app #s14): the app mounts the web app whole
+(`design/app-mount.md`), so phase 1's list and view, and phase 4's on a Mac, are the web app's own
+chrome rather than the two components placed by the app; and writes come with that mount, so
+phase 3 joins it. The mount's own order is in `design/app-mount.md`.
+
 ## 7. What this is not
 
 - **Not a change to the monitor.** No route, field or gate, beyond the optional items in section 5,
   which are the owner's.
 - **Not a server.** Nothing runs anywhere but the monitors, the app on the reader's device, and on a
   Mac the fleet's tunnel helper.
-- **Not a second renderer.** The app hosts the same two components the monitor's page does (D2).
+- **Not a second renderer.** The app hosts the web app itself, the same two components in the same
+  chrome as the monitor's page (D2, revised by #s551).
 - **Not a sync service.** The app stores no session content beyond each machine's last list answer
   and what the components already cache.
 
@@ -598,7 +631,8 @@ is built in its own repository, and starts with what it can learn before the kit
 
 - A native app on the reader's device, not a hub (#s411, D1).
 - The app is one more host of the session list and session view components, with its own native
-  chrome (#s408, #s415, D2).
+  chrome (#s408, #s415, D2). Revised on 2026-11-17: the app hosts the web app whole, its native
+  integration as options the kit names for it (#s551, D2, `design/app-mount.md`).
 - Its code in a new private repository, `tanghong123/agent-monitor-app`, installed through
   TestFlight on his account (#s413, #s414).
 
@@ -622,11 +656,11 @@ builds the merged source on it.
 **Still open,** each asked when the phase it holds up comes near, not before:
 
 1. **How the app learns a monitor's contract version** (section 5, embedding's step 2).
-2. **Writes** (D9, phase 3): in the first release with the rest, or read-only first (recommended).
-3. **Machines reachable only by ssh** (D10, phase 4): the fleet's binary as the Mac app's tunnel
-   helper (recommended: phase 0a found a sandboxed app's `ssh` cannot use the reader's keys), a Mac
-   build signed outside TestFlight, `~/.ssh` granted through an open panel, or a key of the app's
-   own; and with the helper, the monitor's port in `/api/fleet` (recommended) or no `Host`. Then
-   whether the fleet's page retires (D12).
+2. ~~**Writes** (D9, phase 3)~~: decided 2026-11-17, writes come with the web-app mount
+   (agent-monitor-app #s14, D9).
+3. **Machines reachable only by ssh** (D10, phase 4): decided 2026-11-17, the fleet's binary as the
+   Mac app's tunnel helper (agent-monitor-app #s15). Still open for phase 4: with the helper, the
+   monitor's port in `/api/fleet` (recommended) or no `Host`; then whether the fleet's page retires
+   (D12).
 4. **Notifications** (D11, phase 5): none in the first release (recommended), or pushes sent by each
    monitor.
