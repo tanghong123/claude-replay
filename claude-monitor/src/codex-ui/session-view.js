@@ -3470,7 +3470,12 @@ panesMenu.onclick = event => {
   addEventListener("pointerdown", event => {
     if (pinned && !popover.contains(event.target) && !trigger.contains(event.target) && !event.target.closest?.("[data-info-trigger]")) { pinned = false; show(false); }
   }, { capture: true, signal });
-  addEventListener("keydown", event => { if (event.key === "Escape" && pinned) { pinned = false; show(false); } }, { signal });
+  // Escape closes the card, a peek as well as a pinned one (#s557, WCAG 1.4.13: content shown on
+  // hover or focus can be dismissed without moving either). A peek opens only on a hover or focus
+  // arriving, so the card stays shut while the pointer or the focus stays on Info.
+  addEventListener("keydown", event => {
+    if (event.key === "Escape" && popover.classList.contains("open")) { pinned = false; clearTimeout(closeTimer); show(false); }
+  }, { signal });
   // The collapsed rail's Info button is the SAME control now — one gesture in both states,
   // rather than click-in-rail and hover-when-open.
   const railInfo = nav.parentElement?.querySelector('[data-nav-card-open="session"]');
