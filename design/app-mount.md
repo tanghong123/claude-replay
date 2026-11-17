@@ -256,11 +256,13 @@ offered more than today.
 - **Shared review** (#s554: "In, as on the web app"): as above, under Writes. The alternatives were
   out, with Review hidden through a withheld control, or out with Review drawn and failing.
 
-- **Review on an iPad** (#s555: "The phone's Review sheet on an iPad too (native app only)"): a
-  withheld option of the view, `reviewSheet` (in `VIEW_WITHHELD`), which the mount passes in the
-  native app: the phone's Review and its sheet offered at every width, until the detached page
-  comes. No other host is offered it, and what `detach: false` does for every other host is
-  unchanged.
+- **Review on an iPad** (#s555: "The phone's Review sheet on an iPad too (native app only)"):
+  `reviewSheet`, a withheld option of `mountApp` beside `onMachines`, which the app passes and the
+  mount passes on to the view, as it does `assets` (the view's side in `VIEW_WITHHELD`). With it
+  the view offers the phone's Review and its sheet at every width. The app passes it while it
+  opens no window of its own, and stops passing it once it does, on each device by its own
+  release, with no kit release needed. No other host is offered it, and what `detach: false` does
+  for every other host is unchanged.
   - Why: on the web app, shared review lives in two places. A phone (the view's phone query) gets
     the Review sheet, and the view draws Review there only. A desktop gets the detached tab, the
     pane's ↗, which opens the document on a page of its own. In the app an iPad takes the desktop's
@@ -268,7 +270,9 @@ offered more than today.
     detached page is not in the kit until embedding's step 8. Without the option, an iPad at full
     width had no shared review, while an iPhone and an iPad in a narrow Split View did.
   - The Mac app has the same gap until it opens windows of its own (agent-monitor-app
-    `docs/mac-app.md`, slice 3), and passes the same option.
+    `docs/mac-app.md`, slice 3), and passes the same option. Hong's words name the iPad, and the
+    Mac app is the same native app: a note on #s555 before his answer said the answer would apply
+    to a full-width Mac window too.
   - The alternatives were no kit change, leaving a full-width iPad without shared review until the
     detached page comes, and (not offered) the view drawing Review wherever `detach` is off, for
     every host, which would change what a host that turns ↗ off gets.
@@ -328,12 +332,12 @@ The second entry is recommended: one artifact, one pin, the kit's tests holding 
    fallback off. A browser case with two hermetic monitors. No control into the app's screens yet.
    Released.
 4. **The rest for the native app**: the start theme, `show` passed on, the Machines row and its
-   rail glyph (`onMachines`, #s553), and Review at every width (`reviewSheet`, #s555).
+   rail glyph (`onMachines`, #s553), and `reviewSheet` passed on to the view (#s555).
    `mountApp` refuses any option it does not name, as the view does (`MOUNT_OPTIONS`), and the
    contract cases hold each withheld option by name: a second mount throws, `machines` without
    `assets` throws, a name not in the list is refused, `assets` reaches mdrev's bundle and the
    Mermaid runtime while every route goes through the row's handle, the start theme yields to a
-   stored one, and Review is drawn at a desktop width only where `reviewSheet` is passed. A kit
+   stored one, and Review is drawn at a desktop width only where the app passes `reviewSheet`. A kit
    page case under the app's policy. Released.
 5. **agent-monitor-app #s13** mounts it and drops its own chrome.
 
@@ -355,7 +359,7 @@ Each stage lands on its own, with the monitor's page working at every step.
   a subscription from the sheet reaching each machine's own store; mdrev's `conform` on each
   machine's review prefix with the bundled guest.
 - **Review at every width**: on the kit page at a desktop width, Review drawn and its sheet opened,
-  a note shared and the sheet closed where the mount passes `reviewSheet`; no Review there where it
+  a note shared and the sheet closed where the app passes `reviewSheet`; no Review there where it
   does not; the monitor's page unchanged
   (`the_detached_tab_offers_shared_review_and_the_pane_does_not` still passes).
 - **The width study** (#s517) run on the kit page as on the monitor's.
