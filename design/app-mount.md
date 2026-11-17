@@ -3,12 +3,14 @@
 > **DRAFT 4** (#s551, 2026-11-17). Not built. hd-replay reviewed draft 1 (3e0674bf,
 > `review-3e0674bf.md` on #s551), draft 2 (2b2f1531, `review-2b2f1531.md`) and draft 3 (643662fd,
 > clean). Draft 4 writes in Hong's two rulings of the same day, #s553 (a Machines row) and #s554
-> (shared review in the app), and the one question #s554 opens, Review on an iPad. Hong's choice of 2026-11-17, closing
-> agent-monitor-app #s9: *"I want the same experience as the current web app on desktop and
-> mobile, but need the native integration on ios devices"*, then "Yes" to doing it this way, then
-> *"I'd like to have a single session list that combines sessions from multiple devices"*. It revises
-> #s415 (`design/monitor-hub.md`, D2) and adds a step 9 to `design/embedding.md`. It builds on #s540
-> (the list reads a server of its own) and #s541 (the merged source over several machines).
+> (shared review in the app), and the one question #s554 opens, Review on an iPad.
+>
+> Hong's choice of 2026-11-17, closing agent-monitor-app #s9: *"I want the same experience as the
+> current web app on desktop and mobile, but need the native integration on ios devices"*, then
+> "Yes" to doing it this way, then *"I'd like to have a single session list that combines sessions
+> from multiple devices"*. It revises #s415 (`design/monitor-hub.md`, D2) and adds a step 9 to
+> `design/embedding.md`. It builds on #s540 (the list reads a server of its own) and #s541 (the
+> merged source over several machines).
 
 ## What it is for
 
@@ -56,9 +58,9 @@ through options the kit's contract cases hold, kept for the native app as `frame
 ### One entry point, once per page
 
 `mountApp(element, options)` draws the web app into `element` and returns nothing: no member
-changes a mounted app. It is called once per document and never unmounted: a second call throws. That is not a choice of style: the
-web app is built on things a page has one of, and the design names them so the refusal is
-deliberate:
+changes a mounted app. It is called once per document and never unmounted: a second call throws.
+That is not a choice of style: the web app is built on things a page has one of, and the design
+names them so the refusal is deliberate:
 
 - the stores in `state.js` (`indexState`, `searchState`, `controlState`), module singletons;
 - the page-wide backend handle (`backend()`), which each view mount sets;
@@ -149,8 +151,9 @@ has no category "declared for the native app only": anything declared is offered
 So `mountApp` and every option below are **withheld**: exported from a second entry of the kit's
 bundle, `native-app.js`, which the kit's walk takes in beside `index.js`, absent from `index.d.ts`
 and the guide, held by contract cases, and described here and in the app's own `docs/kit-page.md`.
-`index.js` and its declarations stay exactly what hosts are offered. This is how `frame` is kept today (#s436: an arrangement between
-the components and the native app, which are built together, not offered to hosts). It also keeps
+`index.js` and its declarations stay exactly what hosts are offered. This is how `frame` is kept
+today (#s436: an arrangement between the components and the native app, which are built together,
+not offered to hosts). It also keeps
 the page's keymap (`keyboard: "page"`, withheld today) unoffered: only `mountApp` binds it, and no
 host is offered `mountApp`. A new kit category is not needed; whether `mountApp` should one day be
 offered to other hosts is a later question.
@@ -325,12 +328,12 @@ The second entry is recommended: one artifact, one pin, the kit's tests holding 
    fallback off. A browser case with two hermetic monitors. No control into the app's screens yet.
    Released.
 4. **The rest for the native app**: the start theme, `show` passed on, the Machines row and its
-   rail glyph (`onMachines`, #s553), and, once Hong has ruled, Review on an iPad. `mountApp` refuses any option it does not
-   name, as the view does (`MOUNT_OPTIONS`), and the contract cases hold each withheld option by
-   name: a second mount throws, `machines` without `assets` throws, a name not in the list is
-   refused, `assets` reaches mdrev's bundle and the Mermaid runtime while every route goes through
-   the row's handle, and the start theme yields to a stored one. A kit page case under the app's
-   policy. Released.
+   rail glyph (`onMachines`, #s553), and, once Hong has ruled, Review on an iPad (#s555).
+   `mountApp` refuses any option it does not name, as the view does (`MOUNT_OPTIONS`), and the
+   contract cases hold each withheld option by name: a second mount throws, `machines` without
+   `assets` throws, a name not in the list is refused, `assets` reaches mdrev's bundle and the
+   Mermaid runtime while every route goes through the row's handle, and the start theme yields to a
+   stored one. A kit page case under the app's policy. Released.
 5. **agent-monitor-app #s13** mounts it and drops its own chrome.
 
 Each stage lands on its own, with the monitor's page working at every step.
