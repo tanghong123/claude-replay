@@ -719,8 +719,8 @@ fn nearly_all_measured(m: &serde_json::Value) -> bool {
     total - folded > 0 && measured * 10 >= (total - folded) * 9
 }
 
-/// Walk `scroller` from its top to its end, a step of 70% of its height, so the engine mounts, and so
-/// measures, every record. Each step is a reader's, as `harness::scroll_by` makes one: a wheel on
+/// Walk `scroller` from its top to its end, a step of 70% of its height, so the engine mounts every
+/// record and measures nearly every one a measure can store (`nearly_all_measured`). Each step is a reader's, as `harness::scroll_by` makes one: a wheel on
 /// `target` around the move, or a page that follows its tail heals the scroll back. Each waits for
 /// two frames (at most a second) and then 160 ms: under load the scroll events of steps sent faster
 /// than frames come together, and the engine never mounts what lay between them (s513c, at a load of
@@ -761,8 +761,8 @@ fn walk_the_whole_session(
 
 /// **A resize that changes only the width keeps every remembered height, and scales it however
 /// small the change** (#s513), on the page `page` whose scroller, wheel target and engine mount are
-/// the expressions given. The session is walked whole so nearly every record has a measured height. Then
-/// the window narrows by 4px, its height alone changes, and its edge is dragged 60px in 2px steps.
+/// the expressions given. The session is walked whole so nearly every record has a measured
+/// height. Then the window narrows by 4px, its height alone changes, and its edge is dragged 60px in 2px steps.
 /// A remeasure reads a ratio within 1% of 1 as no width change, and before #s513 it cleared every
 /// height at each of those steps, as for a font: the next walk laid out from per-kind floors again.
 /// Now the caller says only the width changed: every step under 1% scales, so the drag's steps add
