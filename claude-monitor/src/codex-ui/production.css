@@ -300,10 +300,12 @@ body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){displa
 .info-popover:before { content: ""; position: absolute; left: 0; right: 0; bottom: -9px; height: 9px; }
 .info-popover.open { opacity: 1; visibility: visible; transform: none; pointer-events: auto; }
 /* Folded to the rail, the strip keeps the one number worth 40px: an abbreviated cost above the
-   glyph. Folding the column must not silently change what the reader can watch. */
+   glyph. Folding the column must not silently change what the reader can watch. It stands under the
+   glyphs (#s521): the column is 68px off a phone and the rail's card sits 18px in from its left, where
+   the strip at the column's edge hung half out of line with the glyphs above it. */
 .workspace.navigator-off .outline-footer {
   flex-direction: column; gap: 3px; width: 40px; min-height: 0;
-  padding: 6px 2px; border-top: 0; align-items: center;
+  padding: 6px 2px; margin-left: 18px; border-top: 0; align-items: center;
 }
 .workspace.navigator-off .outline-footer-context { display: none; }
 .workspace.navigator-off .outline-footer-cost { font-size: 0; }
@@ -1477,6 +1479,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 #sessionView.outline-in-bar .workspace>.topbar>#navigatorRailExpand{order:0}
 #sessionView.outline-in-bar .workspace>.info-popover{position:absolute;z-index:30;top:65px;right:8px;left:auto;bottom:auto;width:290px;max-height:calc(100% - 73px);overflow:auto}
 #sessionView.outline-in-bar .workspace>.info-popover:before{display:none}
+/* #s521: the footer's strip belongs to the outline's column, which the bar leaves 0px wide; drawn there
+   it spilled the start of its cost and its Info glyph over the transcript's top left. Its Info card
+   hangs from the bar's own Info here, so the strip goes, as it does on a phone. */
+#sessionView.outline-in-bar .outline-footer{display:none}
 /* The glyphs' expand control (design/pane-layout.md, "The reader's choices"): disabled where the outline
    cannot open (its title says why), and pressed, in the selected tint, while the reader wants the
    outline and the width holds it to its glyphs. */
