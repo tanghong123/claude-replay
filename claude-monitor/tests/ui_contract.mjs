@@ -4839,11 +4839,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.ok(doc, "mountSessionList carries its doc comment");
   const heads = [...doc[0].matchAll(/^ \*  - ((?:`[^`]*`(?:, | and )?)+):/gm)].map(m => m[1]);
   const documented = new Set(heads.flatMap(head => [...head.matchAll(/`([A-Za-z]+)(?:\([^`]*\))?`/g)].map(m => m[1])));
-  const OPTIONS = ["theme", "show", "keyboard", "persist", "onOpen", "onIndex", "onToast", "projectTree", "projectActions", "newSession", "layer", "place"];
+  const OPTIONS = ["theme", "show", "keyboard", "backend", "persist", "onOpen", "onIndex", "onToast", "projectTree", "projectActions", "newSession", "layer", "place"];
   assert.deepEqual([...read].sort(), [...OPTIONS].sort(), "the list reads exactly the options the design gives it");
   assert.deepEqual([...documented].sort(), [...OPTIONS].sort(), "and its doc comment documents each");
-  // Stage 4: the app keeps every optional control, as it does the view's, so it passes no `show`.
-  assert.deepEqual([...passed].sort(), OPTIONS.filter(name => name !== "show").sort(), "and the app passes every one but show");
+  // Stage 4: the app keeps every optional control, as it does the view's, so it passes no `show`;
+  // and it reads one server for both parts, the page's (#s540), so it passes no `backend` either.
+  assert.deepEqual([...passed].sort(), OPTIONS.filter(name => name !== "show" && name !== "backend").sort(), "and the app passes every one but show and backend");
   // The handle, and what the app calls of it.
   const at = listSource.lastIndexOf("\nreturn fenced({\n");
   assert.ok(at > 0, "the list returns its handle as an object literal at the end of mountSessionList, fenced (stage 4)");
@@ -4907,7 +4908,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     return [...m[1].matchAll(/"([^"]+)"/g)].map(x => x[1]);
   };
   const MOUNT = literal("MOUNT_OPTIONS"), CONTROLS = literal("OPTIONAL_CONTROLS"), MODES = literal("KEYBOARD_MODES");
-  assert.deepEqual(MOUNT.slice().sort(), ["keyboard", "layer", "newSession", "onIndex", "onOpen", "onToast", "persist", "place", "projectActions", "projectTree", "show", "theme"], "MOUNT_OPTIONS names every option the list reads, and no other");
+  assert.deepEqual(MOUNT.slice().sort(), ["backend", "keyboard", "layer", "newSession", "onIndex", "onOpen", "onToast", "persist", "place", "projectActions", "projectTree", "show", "theme"], "MOUNT_OPTIONS names every option the list reads, and no other");
   assert.deepEqual(CONTROLS, ["filter", "hiding", "arrangements"], "the controls a host may switch off");
   assert.deepEqual(MODES, ["engaged", "page"], "and the two keyboards");
   // The guards, run over fakes: the prologue from the first name check to the empty element's.
@@ -4922,6 +4923,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     assert.match(String(mount(options)), new RegExp(`^refused: .*${why}`), `a retired option, an unknown control, a value that is not a boolean, a show that is not an object, an unknown keyboard is refused: ${why}`);
   }
   assert.equal(mount({ show: null }), "engaged", "a show left empty is no show");
+  // #s540: a server of the list's own, a handle; anything else is refused before the list draws.
+  assert.equal(mount({ backend: { base: "/b", paired: true, fetch: () => {} } }), "engaged", "a backend handle of its own is taken");
+  assert.equal(mount({ backend: null }), "engaged", "and a backend left empty is the page's");
+  assert.match(String(mount({ backend: "/b" })), /^refused: .*backend handle/, "a backend that is not a handle is refused");
+  assert.match(listSource, /^const listBackend = \(\) => options\.backend \|\| backend\(\);$/m, "the list reads its own server, else the page's");
+  assert.equal((listSource.match(/\bbackend\(\)\.fetch/g) || []).length, 0, "and never the page's handle directly");
+  assert.match(listSource, /^\}, \{ backend: listBackend \}\);$/m, "its index reads the same server");
   assert.match(String(mount({}, { id: "tree", childNodes: [] })), /^refused: .*#tree/, "an element with another id is refused");
   assert.match(String(mount({}, { id: "", childNodes: [{ nodeType: 1 }] })), /^refused: .*host's nodes/, "and one holding the host's nodes");
   assert.match(listSource, /^const shows = name => options\.show\?\.\[name\] !== false;$/m, "each control is shown unless switched off");

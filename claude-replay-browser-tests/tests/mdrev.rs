@@ -1099,6 +1099,124 @@ fn the_reader_closes_a_note_the_person_has_answered() {
     );
 }
 
+/// #s558: `snapshot` answers the text a note was taken on, and nothing else of the repository. The
+/// pane files a note through the pinned mdrev-cli, which makes the note's blob from the document's
+/// text; the listing names that blob and `snapshot` reads it, and still does once the document has
+/// moved on (the source the viewer places an older note from). The document's other revision,
+/// another file's blob and a commit, none named by a note, answer 404. The route used to read any
+/// object of the checkout by any id of four or more hex digits.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
+fn the_pane_reads_the_snapshot_a_note_names_and_nothing_else() {
+    let _serial = serial();
+    let (base, stores, repo) = fixture("mdrev-snapshot");
+    let m = Monitor::spawn_with(Kind::V1, 3139, &base, Some(&stores), true, &[]);
+    let (_browser, tab) = chrome_tab();
+    open_shell(&m, &tab);
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1')",
+        "the guide in the pane",
+        Duration::from_secs(30),
+        PANE,
+    );
+    // The pane's own routes, with its own document stamp: what its guest calls.
+    let route = |method: &str, tail: &str, extra: &str, body: &str| {
+        let js = format!(
+            "(async function(){{ var d = document.querySelector('.mdrev-pane').dataset; var q = 'root=' + encodeURIComponent(d.root) + '&path=' + encodeURIComponent(d.path) + '&cap=' + encodeURIComponent(d.cap) + {extra:?}; var o = {{method: {method:?}, headers: {{'Content-Type': 'application/json'}}}}; if ({body:?}) o.body = {body:?}; var r = await fetch(d.contract + {tail:?} + '?' + q, o); return JSON.stringify([r.status, await r.text()]); }})()"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(eval(&tab, &js).as_str().unwrap_or("[0,\"\"]")).unwrap();
+        (
+            v[0].as_u64().unwrap_or(0),
+            v[1].as_str().unwrap_or("").to_string(),
+        )
+    };
+    let git = |args: &[&str]| -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    let (code, filed) = route(
+        "POST",
+        "/annotations",
+        "",
+        r#"{"body":"tighten this","anchor":{"exact":"bold"}}"#,
+    );
+    assert_eq!(code, 201, "the pane files a note: {filed}");
+    let id = serde_json::from_str::<serde_json::Value>(&filed).unwrap()["id"]
+        .as_str()
+        .expect("the note's id")
+        .to_string();
+    let (code, listed) = route("GET", "/annotations", "", "");
+    assert_eq!(code, 200, "the pane lists its notes: {listed}");
+    let records: Vec<serde_json::Value> = serde_json::from_str(&listed).unwrap();
+    let blob = records
+        .iter()
+        .find(|r| r["id"] == id.as_str())
+        .and_then(|r| r["blob"].as_str())
+        .unwrap_or_else(|| panic!("the note names a blob: {listed}"))
+        .to_string();
+    assert_eq!(
+        blob,
+        git(&["rev-parse", "HEAD:docs/guide.md"]),
+        "the blob is the guide's own text"
+    );
+    let unnamed = [
+        (
+            "the guide's other revision",
+            git(&["rev-parse", "HEAD~1:docs/guide.md"]),
+        ),
+        (
+            "another file's blob",
+            git(&["rev-parse", "HEAD:docs/other.md"]),
+        ),
+        ("a commit", git(&["rev-parse", "HEAD"])),
+    ];
+    let snapshot = |id: &str| route("GET", "/snapshot", &format!("&blob={id}"), "");
+
+    let (code, text) = snapshot(&blob);
+    assert!(
+        code == 200 && text.contains("Some **bold** prose"),
+        "the text the note was taken on: {code} {text}"
+    );
+    // The document moves on; the note's text is still there to place it from, and a listing taken
+    // after the move still names it.
+    std::fs::write(repo.join("docs/guide.md"), "# The guide, rewritten\n").unwrap();
+    git(&["commit", "-qam", "third"]);
+    let (code, listed) = route("GET", "/annotations", "", "");
+    assert!(
+        code == 200 && listed.contains(&blob),
+        "the note still names its blob: {code} {listed}"
+    );
+    let (code, text) = snapshot(&blob);
+    assert!(
+        code == 200 && text.contains("Some **bold** prose"),
+        "after the document moved on: {code} {text}"
+    );
+    for (what, id) in &unnamed {
+        let (code, text) = snapshot(id);
+        assert!(
+            code == 404 && text.contains("no such blob"),
+            "{what} is not offered: {code} {text}"
+        );
+    }
+}
+
 /// #s231 (mdrev 1.1.61, Hong's choice on mdviewer #s235): on a machine joined to a team's mdrev
 /// service, in a repository registered there, the pane's reader files, edits and deletes their own
 /// note, because the pane carries mdrev's NOTES key, which the monitor makes in mdrev's state

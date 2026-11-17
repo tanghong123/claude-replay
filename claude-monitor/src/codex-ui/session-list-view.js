@@ -27,7 +27,7 @@ export const KEYBOARD_MODES = Object.freeze(["engaged", "page"]);
 /** Every option `mountSessionList` takes; any other name is refused, so a misspelt or retired one
  *  (the old `toast` or `compact`) fails loudly rather than being dropped. */
 export const MOUNT_OPTIONS = Object.freeze([
-  "theme", "show", "keyboard", "persist", "onOpen", "onIndex", "onToast",
+  "theme", "show", "keyboard", "backend", "persist", "onOpen", "onIndex", "onToast",
   "projectTree", "projectActions", "newSession", "layer", "place",
 ]);
 
@@ -66,6 +66,11 @@ export const MOUNT_OPTIONS = Object.freeze([
  *      arranged list's section menus. Off, the list is grouped by agent and project, and reads no
  *      other app's list.
  *    With all three off the filter has nothing to offer, and neither its glyph nor its sheet is drawn.
+ *  - `backend`: the server the list reads (`backend.js`'s handle): its sessions (`/api/sessions`),
+ *    another app's arrangement (`/api/layout`) and its hides and restores (`/api/ignore`). Left out,
+ *    the list reads the page's handle, which `useBackend` and the view's own `backend` option set,
+ *    as it always has. Given, neither moves it: a list over one server beside a view on another
+ *    (#s540, Hong's choice on #s539: each part keeps its own server).
  *  - `keyboard`: "engaged" (the default) or "page", as `KEYBOARD_MODES` says. Engaged, the list
  *    answers its keys (the next and the previous session, ↓ and ↑) only while a row of its own has the
  *    focus, and leaves every other key to the page. "page" is the app's mode: the list binds no list
@@ -132,6 +137,9 @@ for (const [name, shown] of Object.entries(options.show || {})) {
 }
 const keyboardMode = options.keyboard ?? "engaged";
 if (!KEYBOARD_MODES.includes(keyboardMode)) throw new Error(`mountSessionList takes its keyboard "engaged" or "page", not ${said(keyboardMode)}`);
+if (options.backend != null && typeof options.backend.fetch !== "function") throw new Error(`mountSessionList takes its backend as a backend handle (backendHandle()), not ${said(options.backend)}`);
+/** The server the list reads now: its own, or the page's (#s540). */
+const listBackend = () => options.backend || backend();
 if (element.id && element.id !== "sessionList") throw new Error(`mountSessionList draws into an element whose id is sessionList, or that has none; this one is #${element.id}`);
 if ([...element.childNodes].some(node => !(node.nodeType === 3 && !node.data.trim()))) throw new Error("mountSessionList draws into an empty element; this one holds the host's nodes");
 /** Whether an optional control is drawn: each is, unless the host switched it off. */
@@ -228,8 +236,8 @@ expandBtn.innerHTML = svg("expandStack");
 expandBtn.title = "Expand every group";
 expandBtn.setAttribute("aria-label", "Expand every group");
 // What `renderTree` last wrote into the list, so an unchanged refresh leaves the rows in place (#s72),
-// and into the rail's marks (#s482).
-let treeWritten = null, railWritten = null;
+// into the rail's marks (#s482) and into an agent's flyout from them (#s493).
+let treeWritten = null, railWritten = null, flyoutWritten = null;
 // Where the focus in the tree came from (stage 4): the input just before it, a press in the tree (the
 // mouse's, which focuses a row as it goes down, or a finger's, whose focus comes as it lifts) or a key
 // anywhere (Tab, a step). A modifier alone does not count: it starts a chord (Cmd-Tab's Meta reaches
@@ -255,7 +263,7 @@ const sessionIndex = new SessionIndexStore({
     }
   },
   error: error => { console.warn("Session index refresh failed", error); onToast("Session scan failed — retrying"); }
-});
+}, { backend: listBackend });
 
 // The state words come from the shared table (shared/state-labels.js, #44) — the rail's
 // tooltip and this shell's chips read the same label for the same verdict. `stateDenote`
@@ -646,7 +654,6 @@ function renderTree() {
     if (carry) { tree.querySelector(`.tree-row.session[data-session="${CSS.escape(carry)}"]`)?.focus({ preventScroll: true }); focusPressed = false; }
   }
   renderFilterControl(counts, shown, total);
-  refreshRailFlyout();
 
   // The rail's marks are written only when they read differently too (#s482). Rewritten on every
   // refresh, they were new buttons on the screen every 5 s, and WebKit spends a tap as a hover when
@@ -659,6 +666,9 @@ function renderTree() {
     const focusedMark = page.active()?.closest?.("#sidebarMiniAgents [data-mini-agent]")?.dataset.miniAgent;
     railMarks.innerHTML = railHtml; railWritten = railHtml;
     if (focusedMark) railMarks.querySelector(`[data-mini-agent="${CSS.escape(focusedMark)}"]`)?.focus();
+    // An open flyout is placed beside its mark, and the one it was placed beside is gone now: a
+    // refresh or a resize that measured it read zeros and put the flyout at the window's corner.
+    if (railFlyoutFor && railFlyoutFor !== "filter") railFlyoutAnchor = railMark(railFlyoutFor) || railFlyoutAnchor;
   }
   // Whether a mark's flyout is open stays out of what is compared: the flyout's open and close set
   // it on the mark themselves, so in the HTML it made the next refresh after each rewrite the marks.
@@ -666,6 +676,8 @@ function renderTree() {
     const open = String(railFlyoutFor === mark.dataset.miniAgent);
     if (mark.getAttribute("aria-expanded") !== open) mark.setAttribute("aria-expanded", open);
   }
+  // After the marks, so a flyout is placed beside the mark that is on the screen.
+  refreshRailFlyout();
 }
 
 // The session filter (#202, the owner's shape): a glyph in the head-actions row — between
@@ -819,8 +831,11 @@ function railFlyoutBody() {
   const rows = !agent ? "" : arrangement() !== "tree" ? flatSessionsHtml([agent], `flat:${agent.id}`) : agentProjectsHtml(agent);
   return `<div class="rail-flyout-head">${escapeText(name)}</div><div class="rail-flyout-tree" role="tree" aria-label="${escapeText(name)} sessions">${rows || `<div class="no-results">${bucketFilterActive() ? "No sessions in this filter" : "No sessions"}</div>`}</div>`;
 }
+/** The rail's mark for an agent as it is drawn now. */
+function railMark(kind) { return railMarks.querySelector(`[data-mini-agent="${CSS.escape(kind || "")}"]`); }
 function placeRailFlyout() {
-  if (!railFlyoutAnchor) return;
+  // A mark the rail no longer draws (its agent gone from the list) leaves the flyout where it was.
+  if (!railFlyoutAnchor?.isConnected) return;
   const r = railFlyoutAnchor.getBoundingClientRect(), corner = fixedCorner(railFlyout.parentNode);
   railFlyout.style.left = `${Math.round(r.right + 8 - corner.left)}px`;
   const h = railFlyout.offsetHeight;
@@ -828,22 +843,37 @@ function placeRailFlyout() {
 }
 function refreshRailFlyout() {
   if (!railFlyout || railFlyout.hidden || railFlyoutFor === "filter") return;
-  const keep = railFlyout.querySelector(".rail-flyout-tree")?.scrollTop || 0;
-  railFlyout.innerHTML = railFlyoutBody();
-  const list = railFlyout.querySelector(".rail-flyout-tree"); if (list) list.scrollTop = keep;
+  // Its rows are written only when they read differently (#s493), as the marks are (#s482): rewritten
+  // on every refresh, a pinned flyout's rows were new buttons on the screen every 5 s, and an iPad
+  // spends a tap that meets new buttons as a hover, so choosing a session there could take two taps.
+  // A rewrite keeps the list's scroll and a focused row.
+  const body = railFlyoutBody();
+  if (body !== flyoutWritten) {
+    const keep = railFlyout.querySelector(".rail-flyout-tree")?.scrollTop || 0;
+    const active = page.active();
+    const row = active && railFlyout.contains(active) ? active.closest("[data-session], [data-toggle]") : null;
+    const again = row && (row.dataset.session ? `[data-session="${CSS.escape(row.dataset.session)}"]` : `[data-toggle="${CSS.escape(row.dataset.toggle)}"]`);
+    railFlyout.innerHTML = body; flyoutWritten = body;
+    const list = railFlyout.querySelector(".rail-flyout-tree"); if (list) list.scrollTop = keep;
+    if (again) railFlyout.querySelector(again)?.focus({ preventScroll: true });
+  }
   placeRailFlyout();
 }
 function openRailFlyout(kind, anchor, pinned) {
   clearTimeout(railOpenTimer); clearTimeout(railCloseTimer);
   if (!compactOn) return;
   if (railFlyoutFor !== kind) closeRailFlyout(false);
+  // A hover's timer may fire after the marks were drawn again: open beside the mark drawn now.
+  if (kind !== "filter") anchor = railMark(kind) || anchor;
   railFlyoutFor = kind; railFlyoutAnchor = anchor; railFlyoutPinned = railFlyoutPinned || !!pinned;
   railFlyout.setAttribute("aria-label", kind === "filter" ? "Show sessions" : `${agentName(kind)} sessions`);
   if (kind === "filter") {
-    if (filterSheet.parentElement !== railFlyout) { railFlyout.innerHTML = ""; sheetHome = { parent: filterSheet.parentNode, next: filterSheet.nextSibling }; railFlyout.appendChild(filterSheet); }
+    if (filterSheet.parentElement !== railFlyout) { railFlyout.innerHTML = ""; flyoutWritten = null; sheetHome = { parent: filterSheet.parentNode, next: filterSheet.nextSibling }; railFlyout.appendChild(filterSheet); }
     filterSheet.hidden = false; filterMini.setAttribute("aria-expanded", "true");
   } else {
-    railFlyout.innerHTML = railFlyoutBody();
+    // A click that pins the flyout a hover opened leaves its rows as they are.
+    const body = railFlyoutBody();
+    if (body !== flyoutWritten) { railFlyout.innerHTML = body; flyoutWritten = body; }
   }
   railFlyout.classList.toggle("rail-flyout-filter", kind === "filter");
   railFlyout.hidden = false; anchor.setAttribute("aria-expanded", "true");
@@ -855,12 +885,13 @@ function closeRailFlyout(refocus) {
     filterSheet.hidden = true; returnFilterSheet();
     filterMini.setAttribute("aria-expanded", "false");
   }
-  // The marks are redrawn whenever the index refreshes, so the element that opened the flyout may
-  // be gone: hand the focus to the CURRENT mark for what it showed.
+  // The marks are drawn again when they read differently (an agent comes or goes, the selection
+  // moves), so the element that opened the flyout may be gone: hand the focus to the CURRENT mark
+  // for what it showed.
   const kind = railFlyoutFor;
-  const anchor = kind === "filter" ? filterMini : (railMarks.querySelector(`[data-mini-agent="${CSS.escape(kind || "")}"]`) || railFlyoutAnchor);
+  const anchor = kind === "filter" ? filterMini : (railMark(kind) || railFlyoutAnchor);
   if (anchor) anchor.setAttribute("aria-expanded", "false");
-  railFlyout.hidden = true; railFlyout.innerHTML = ""; railFlyoutFor = null; railFlyoutAnchor = null; railFlyoutPinned = false;
+  railFlyout.hidden = true; railFlyout.innerHTML = ""; flyoutWritten = null; railFlyoutFor = null; railFlyoutAnchor = null; railFlyoutPinned = false;
   if (refocus && anchor && anchor.isConnected) anchor.focus();
 }
 function railFlyoutHover(kind, anchor) {
@@ -912,7 +943,7 @@ function refreshLayout() {
   if (unmounted) return Promise.resolve();
   const source = arrangeSource();
   if (!source || layoutState.loading) return layoutState.loading || Promise.resolve();
-  const loading = backend().fetch(`/api/layout?source=${encodeURIComponent(source)}`, { cache: "no-store" })
+  const loading = listBackend().fetch(`/api/layout?source=${encodeURIComponent(source)}`, { cache: "no-store" })
     .then(response => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.text(); })
     .then(text => {
       if (unmounted || arrangeSource() !== source) return;
@@ -939,7 +970,7 @@ function refreshLayout() {
   return loading;
 }
 function refreshSources() {
-  return backend().fetch("/api/layout", { cache: "no-store" })
+  return listBackend().fetch("/api/layout", { cache: "no-store" })
     .then(response => response.ok ? response.json() : null)
     .then(data => {
       if (!data || unmounted) return;
@@ -1010,7 +1041,7 @@ function renderFilterControl(counts, shown, total) {
 }
 async function applyIgnore(op, key) {
   try {
-    const response = await backend().fetch(ignoreQuery({ op, key }), { cache: "no-store" });
+    const response = await listBackend().fetch(ignoreQuery({ op, key }), { cache: "no-store" });
     if (unmounted) return;
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     onToast(op === "add" ? "Hidden — find it under Hidden" : "Restored");
