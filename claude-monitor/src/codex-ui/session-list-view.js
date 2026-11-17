@@ -78,10 +78,8 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    In either mode Enter and Space on a focused row activate it, as a click does, and the list hears
  *    the document's keys, taking none, to tell the keyboard's focus on a row from a press's: only the
  *    keyboard's is given back when the tree is rewritten. Engaged, the Escape that closes the list's
- *    layers (a section's menu, the filter's sheet, the rail's flyout) is the list's only while the
- *    reader works in it (their last press or focus inside it or a part it drew elsewhere) or the focus
- *    is inside it, and a flyout a hover opened also closes while the pointer is on it or its mark
- *    (#s559); a host's own Escape is left to the host. "page" keeps every such Escape the list's.
+ *    layers is the list's only while the reader works in it or the focus is inside it, and a flyout a
+ *    hover opened also closes while the pointer is on it (#s559); "page" keeps every such Escape.
  *  - `persist()`: remember the list's choices, at each moment the list changes one.
  *  - `onOpen({ id, push })`: the reader chose a session in the list (a row, the rail's flyout, the
  *    list keys), `push` whether it is a new place in the history. The list has not moved its
@@ -411,7 +409,7 @@ function openSectionMenu(key, label, anchor) {
       placeSectionMenu();
     });
     document.addEventListener("pointerdown", event => { if (sectionMenu && !sectionMenu.hidden && !sectionMenu.contains(event.target) && event.target !== sectionScrim && !event.target.closest?.("[data-section-view]")) closeSectionMenu(false); }, { capture: true, signal });
-    document.addEventListener("keydown", event => { if (listEscape(event) && sectionMenu && !sectionMenu.hidden) { event.stopPropagation(); closeSectionMenu(true); } }, { capture: true, signal });
+    document.addEventListener("keydown", event => { if (sectionMenu && !sectionMenu.hidden && listEscape(event)) { event.stopPropagation(); closeSectionMenu(true); } }, { capture: true, signal });
     addEventListener("resize", () => { if (sectionMenu.hidden) return; placeSheet(); placeSectionMenu(); }, { signal });
   }
   if (sectionMenuKey === key && !sectionMenu.hidden) { closeSectionMenu(false); return; }
@@ -795,7 +793,7 @@ filterSheet.addEventListener("click", event => {
   setBuckets(next);
 });
 document.addEventListener("click", event => { if (!filterSheet.hidden && !filterSheet.contains(event.target) && !filterBtn.contains(event.target) && !filterMini.contains(event.target)) toggleFilterSheet(false); }, { signal });
-document.addEventListener("keydown", event => { if (listEscape(event) && !filterSheet.hidden) toggleFilterSheet(false); }, { signal });
+document.addEventListener("keydown", event => { if (!filterSheet.hidden && listEscape(event)) toggleFilterSheet(false); }, { signal });
 
 // The collapsed rail's flyouts (#300, the owner: "only showing the agent icon is point-less, please
 // show the projects and sessions for the agent in a float window", and the same for the filter).
@@ -1147,17 +1145,12 @@ if (options.place) {
   element.prepend(head);
 }
 
-// Engagement (#s559), the session view's rule (#s535): whether the reader is working in the list, from
-// where their last press or focus landed, in the capture phase: inside the list's element or one of
-// the parts it drew elsewhere (the controls, the filter's sheet and rail button, the agent marks, the
-// rail's flyout, a section's menu and its scrim, wherever a host placed them). The list's keymap
-// answers only on its own rows already; the Escape it hears on the whole page, which closes its
-// section menu, its filter's sheet and the rail's flyout (and, for the first and the last, keeps the
-// key from going on and gives the focus back to their control), is its own only while the reader works
-// in it, or when the browser hands it to the list itself (the focus inside it): a host whose own
-// dialog Escape closes must not close ours with it, nor lose its focus to us. With the page's keyboard
-// (`"page"`, the app's) the list is always engaged, as before. The three listeners above read these at
-// a key, after the mount.
+// Engagement (#s559, the session view's rule, #s535): the reader works in the list while their last
+// press or focus landed in its element or a part it drew elsewhere, wherever a host placed it. The
+// Escape that closes its section menu, filter sheet and rail flyout (two of them stopping the key and
+// refocusing their control) is the list's only then, or when the focus is inside the list: a host's
+// own Escape stays the host's. The app's keyboard ("page") keeps the list engaged. The listeners
+// above read these at a key, after the mount.
 const inList = target => !!target && typeof target.closest === "function"
   && [element, controls, filterSheet, filterMini, railMarks, railFlyout, sectionMenu, sectionScrim].some(node => !!node && node.contains(target));
 let engaged = keyboardMode === "page";

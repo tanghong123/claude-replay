@@ -3355,11 +3355,13 @@ fn the_session_list_in_a_host_closes_its_layers_on_escape_only_while_the_reader_
             &format!("(function(){{ var e = {js}; e.dispatchEvent(new PointerEvent('pointerdown', {{ bubbles: true }})); e.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }})); e.click(); return 'ok'; }})()"),
         );
     };
-    // The real pointer moved onto what `js` gives: a hover, which presses nothing.
+    // The real pointer moved onto what `js` gives: a hover, which presses nothing. It aims at the
+    // middle of the part inside the window: the host's rail is 48px at the window's edge, and no list
+    // stylesheet reaches a mark placed there.
     let hover = |js: &str| {
         let v = harness::probe(
             &tab,
-            &format!("(function(){{ var r = ({js}).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"),
+            &format!("(function(){{ var r = ({js}).getBoundingClientRect(); var l = Math.max(r.left, 0), t = Math.max(r.top, 0), w = Math.min(r.right, innerWidth - 1), b = Math.min(r.bottom, innerHeight - 1); return [(l + w) / 2, (t + b) / 2]; }})()"),
         );
         tab.move_mouse_to_point(headless_chrome::browser::tab::point::Point {
             x: v[0].as_f64().unwrap(),
