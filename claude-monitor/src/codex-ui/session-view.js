@@ -3436,11 +3436,13 @@ panesMenu.onclick = event => {
     trigger.setAttribute("aria-expanded", String(open));
   };
   const peek = () => { clearTimeout(closeTimer); show(true); };
+  // A touch sends pointerleave as the finger lifts, BEFORE its click (#s545), so a tap's peek starts
+  // this close and the click pins the card inside its 140 ms: the close must not outlive a pin.
   const leave = () => {
     if (pinned) return;
     clearTimeout(closeTimer);
     closeTimer = setTimeout(() => {
-      if (!popover.contains(viewRoot.active()) && viewRoot.active() !== trigger) show(false);
+      if (!pinned && !popover.contains(viewRoot.active()) && viewRoot.active() !== trigger) show(false);
     }, 140);
   };
   for (const type of ["pointerenter", "focus"]) trigger.addEventListener(type, peek);
@@ -3452,7 +3454,7 @@ panesMenu.onclick = event => {
   // Click PINS it, so the reader can read inside it, fold a group, or select a value to copy. A press
   // that pins is the reader asking for the session's Info, which the host hears (`onInfo`); a hover's
   // peek is not.
-  const pin = () => { pinned = !pinned; show(pinned || true); if (pinned) sayInfo(); else leave(); };
+  const pin = () => { clearTimeout(closeTimer); pinned = !pinned; show(pinned || true); if (pinned) sayInfo(); else leave(); };
   trigger.addEventListener("click", pin);
   // The phone's "i" in the top bar (#313) is this same control: a tap pins or unpins, and there is
   // no hover to peek with, so an unpin closes at once.
@@ -3468,6 +3470,9 @@ panesMenu.onclick = event => {
     railInfo.removeAttribute("data-nav-card-open");
     railInfo.id = "outlineRailInfo";
     railInfo.title = "Session details";
+    // A press on it is not a press outside (#s545): unmarked, a second press's pointerdown closed the
+    // pinned card and its click pinned it again, so it never closed.
+    railInfo.dataset.infoTrigger = "";
     for (const type of ["pointerenter", "focus"]) railInfo.addEventListener(type, peek);
     railInfo.addEventListener("pointerleave", leave);
     railInfo.addEventListener("click", pin);
