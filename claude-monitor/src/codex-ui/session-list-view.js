@@ -79,7 +79,7 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    the document's keys, taking none, to tell the keyboard's focus on a row from a press's: only the
  *    keyboard's is given back when the tree is rewritten. Engaged, the Escape that closes the list's
  *    layers is the list's only while the reader works in it or the focus is inside it, and a flyout a
- *    hover opened also closes while the pointer is on it (#s559); "page" keeps every such Escape.
+ *    hover opened also closes while the pointer is on it or its mark (#s559); "page" keeps every such Escape.
  *  - `persist()`: remember the list's choices, at each moment the list changes one.
  *  - `onOpen({ id, push })`: the reader chose a session in the list (a row, the rail's flyout, the
  *    list keys), `push` whether it is a new place in the history. The list has not moved its

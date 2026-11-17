@@ -3356,8 +3356,8 @@ fn the_session_list_in_a_host_closes_its_layers_on_escape_only_while_the_reader_
         );
     };
     // The real pointer moved onto what `js` gives: a hover, which presses nothing. It aims at the
-    // middle of the part inside the window: the host's rail is 48px at the window's edge, and no list
-    // stylesheet reaches a mark placed there.
+    // middle of the part inside the window: no list stylesheet reaches a mark placed in the host's
+    // rail, so its icon draws at the default size, wider than the 48px rail, past the window's edge.
     let hover = |js: &str| {
         let v = harness::probe(
             &tab,
