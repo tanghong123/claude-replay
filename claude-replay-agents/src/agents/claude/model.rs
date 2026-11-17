@@ -2975,18 +2975,19 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     ("errorType", QWENWORK_TOOL_ERROR_SHAPE),
     // #s549 (Qwenwork 1.1.71, 1 result measured 2026-11-17 on aries-black): a cancelled call's
     // `kind` ("tool-status"), the type tag of `{kind, status, summary, isHardFailure}`, whose other
-    // three are flat-known. The one met was an AskUserQuestion the reader cancelled: its tool_result
-    // is marked `is_error` and its text is the refusal sentence, so the card already reads "No
-    // answer", declined in the agent client (`refused`, #281), which is what `status` "cancelled"
-    // says. The client's source names two statuses, "cancelled" and "denied"; its summary is "User
-    // cancelled.", "Operation cancelled." or the cancel message itself. A generic word, so known in
-    // this shape only. REVISIT: (1) a tool-status result whose text does NOT carry the refusal
-    // sentence (a cancel path whose text is the cancel message, or empty): the card would say the
-    // question failed where the client says the reader cancelled, and `refused` should take status
-    // cancelled or denied on a tool-status result as the refusal; (2) a status other than cancelled
-    // or denied; (3) `isHardFailure` true; (4) the shape on a tool other than AskUserQuestion, where
-    // `is_error` makes the call Failed although ToolStatus has Cancelled and Declined: judge then
-    // whether a cancelled Bash or Read should read Cancelled.
+    // three are flat-known. The one met was an AskUserQuestion the reader cancelled: its
+    // tool_result is marked `is_error` and its text is the refusal sentence, so the card already
+    // reads "No answer", declined in the agent client (`refused`, #281), which is what `status`
+    // "cancelled" says. The client's source names two statuses, "cancelled" and "denied"; its
+    // summary is "User cancelled.", "Operation cancelled." or the cancel message itself. A generic
+    // word, so known in this shape only. REVISIT: (1) a tool-status result whose text does NOT
+    // carry the refusal sentence (a cancel path whose text is the cancel message, or empty): the
+    // card would say the question failed where the client says the reader cancelled, and `refused`
+    // should take status cancelled or denied on a tool-status result as the refusal; (2) a status
+    // other than cancelled or denied; (3) `isHardFailure` true; (4) the shape on a tool other than
+    // AskUserQuestion or an edit tool (whose refusal text already reads Declined), where `is_error`
+    // makes the call Failed although ToolStatus has Cancelled and Declined: judge then whether a
+    // cancelled Bash or Read should read Cancelled.
     ("kind", QWENWORK_TOOL_STATUS_SHAPE),
     // #s65 (Qwenwork 1.1.59): a sub-agent result's five keys nothing renders, each generic enough
     // to mean something else on another tool, so each is known only in this shape. `kind` is a type
