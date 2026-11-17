@@ -1073,13 +1073,16 @@ fn snapshot(rel: &Release, d: &Doc, req: &Request, viewer: Option<&Viewer>) -> H
     }
 }
 
-/// The blobs each document's notes name, as its last listing gave them (#s558), keyed by the
-/// collection, the path, and whether it was the detached tab's listing, which carries shared threads
-/// the pane's does not (`shares`). The viewer lists a document's notes before it asks for their snapshots, so the listing it
-/// already made answers them, with no `mdrev-cli` run per snapshot.
-fn note_blobs() -> &'static Mutex<HashMap<(String, String, bool), HashSet<String>>> {
-    static BLOBS: OnceLock<Mutex<HashMap<(String, String, bool), HashSet<String>>>> =
-        OnceLock::new();
+/// A document's notes as the blob cache keys them: the collection, the path, and whether it was the
+/// detached tab's listing, which carries shared threads the pane's does not (`shares`).
+type BlobKey = (String, String, bool);
+type NoteBlobs = Mutex<HashMap<BlobKey, HashSet<String>>>;
+
+/// The blobs each document's notes name, as its last listing gave them (#s558), by `BlobKey`. The
+/// viewer lists a document's notes before it asks for their snapshots, so the listing it already
+/// made answers them, with no `mdrev-cli` run per snapshot.
+fn note_blobs() -> &'static NoteBlobs {
+    static BLOBS: OnceLock<NoteBlobs> = OnceLock::new();
     BLOBS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -1098,7 +1101,7 @@ fn remember_blobs(d: &Doc, viewer: Option<&Viewer>, records: &[Value]) {
     g.insert(blob_key(d, viewer), named);
 }
 
-fn blob_key(d: &Doc, viewer: Option<&Viewer>) -> (String, String, bool) {
+fn blob_key(d: &Doc, viewer: Option<&Viewer>) -> BlobKey {
     (d.root.clone(), d.rel.clone(), shares(viewer))
 }
 
