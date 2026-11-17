@@ -2173,6 +2173,7 @@
     paintBadge();
   }
   badge.addEventListener("click", function () {
+    stepLanded = null; // the latest ends a turn step's hold on the current turn (#s487)
     vw.follow();
     clearNew();
   });
@@ -2239,6 +2240,7 @@
   function landOn(id, dy) {
     var ti = idIndex[id];
     if (ti == null) return false;
+    stepLanded = null; // as in goTo (#s487)
     vw.jumpTo({ index: ti, top: dy }, { intent: true });
     updateView();
     return true;
@@ -2779,8 +2781,7 @@
     if (bs) bs.style.display = window.innerWidth < 820 ? "none" : "";
   }
 
-  // Where goTo lands a target's top (px from the viewport top). `[`/`]` reference
-  // this so a just-navigated turn isn't re-selected.
+  // Where goTo lands a target's top (px from the viewport top).
   var GOTO_Y = 120;
   // `instant` skips the smooth animation — a long-distance jump in the virtual list
   // would otherwise re-window on every animation frame (and lose the landing
@@ -2795,8 +2796,11 @@
     return r.top >= top && r.bottom <= window.innerHeight - 8;
   }
   /// `keepIfVisible`: leave the viewport alone when the target is already on screen.
-  function goTo(target, instant, keepIfVisible) {
+  /// `pin`: "acquire" for a turn step, which keeps following only at the true end (#s487).
+  function goTo(target, instant, keepIfVisible, pin) {
     if (!target) return;
+    // Any move but a turn step's own ends the step's hold on the current turn (#s487, at stepTurn).
+    if (pin !== "acquire") stepLanded = null;
     for (var p = target; p; p = p.parentElement) {
       if (p.classList && p.classList.contains("fold")) setFold(p, true);
     }
@@ -2805,16 +2809,17 @@
     // The engine's `reveal` (framework §4.10): the target at GOTO_Y, held there through what
     // settles under it until the reader moves. Smooth is the engine's own animation, which the
     // reader's wheel interrupts.
-    if (moved) vw.reveal(target, { top: GOTO_Y, smooth: !instant });
+    if (moved) vw.reveal(target, { top: GOTO_Y, smooth: !instant, pin: pin });
     target.classList.add("flash");
     setTimeout(function () { target.classList.remove("flash"); }, 1000);
     return moved;
   }
   // Navigate to a block id through the virtual layer (#50): open its record's fold
   // chain, materialize its region, then land on the element (nested ids included).
-  function goToId(id) {
+  function goToId(id, pin) {
     var ti = idIndex[id];
     if (ti == null) return;
+    if (pin !== "acquire") stepLanded = null; // as in goTo (#s487)
     withChain(records[ti], id, function (n) { if (isFoldRec(n)) n.open = 1; });
     // One transaction (framework §4.10): the record at GOTO_Y with its opened chain re-rendered
     // (`dirtyFrom`), the window around it, the landing held through the measure that replaces
@@ -2823,9 +2828,9 @@
     // that existed while they ran. Stamped: every goToId is the reader's own navigation
     // (sidebar, search, filter), and the pin is decided at the destination (#94, #103) — landing
     // NEAR the tail must not pin.
-    vw.jumpTo({ index: ti, top: GOTO_Y }, { dirtyFrom: ti, intent: true });
+    vw.jumpTo({ index: ti, top: GOTO_Y }, { dirtyFrom: ti, intent: true, pin: pin });
     var target = document.getElementById(id);
-    if (target) goTo(target, true);
+    if (target) goTo(target, true, false, pin);
     // A landing at (nearly) the same y fires no scroll event — refresh the scrollspy explicitly.
     updateView();
     spy();
@@ -3087,9 +3092,9 @@
     if (h) { cycleFold(h.closest(".fold")); return; }
     var trow = e.target.closest(".task-row");
     if (trow) { trow.parentElement.classList.toggle("open"); return; }
-    if (e.target.closest("#stickybar") && curTurn) { goToId(curTurn.id); return; }
+    if (e.target.closest("#stickybar") && curTurn) { goToTurn(curTurn.id); return; }
     var si = e.target.closest(".side-item, .side-epoch");
-    if (si) goToId(si.dataset.t);
+    if (si) goToTurn(si.dataset.t);
   });
 
   var themeBtn = $("btn-theme");
@@ -3667,31 +3672,73 @@
       vw.reveal(h, { top: 160, smooth: true });
     }
   }
+  // A turn step counts from the turn the turn bar names, as the app shell's does (#s487, the
+  // owner's #s503): `[` goes to the turn before it and `]` to the turn after, so from the end `[`
+  // goes to N-1 and then N-2, and from inside a turn `[` goes to the turn before rather than back
+  // to that turn's own header. It used to go by position (the last turn whose header is above the
+  // landing line), and at the end N-1's header can be on screen below that line, so the first `[`
+  // went to N-2. The turn a step landed stays the bar's while the view is where the step left it:
+  // within the end rule's slack the bar named the LAST turn, and a step that moved nothing (N-1
+  // already in view at the end) would have counted from N again. `stepLanded` is that turn's id
+  // and its header's top as it landed; the reader's input on the transcript, the jump to the
+  // latest, the next step and every other commanded move (`goTo`, `goToId`, `landOn`: search, the
+  // filter, a deep link, the restore) end it, and so does any move of the view, read by the
+  // header's place. A commanded move that moves nothing leaves the header where it was, so only
+  // ending it there keeps the bar from naming a turn the reader moved away from. A click on a turn
+  // itself, in the sidebar or on the bar (`goToTurn`), SETS it to that turn instead: where the end
+  // of the session holds the view the click moves nothing, and the end rule would name the last
+  // turn again, so the next `[` landed where the reader already was.
+  var stepLanded = null;
+  function landedTurn() {
+    var at = stepLanded;
+    if (!at) return null;
+    var e = document.getElementById(at.id);
+    if (!e || e.dataset.idx == null || Math.abs(e.getBoundingClientRect().top - at.top) > 1) return null;
+    var rec = records[idIndex[at.id]];
+    return rec && rec.turn != null ? rec : null;
+  }
+  // Input on the transcript only, as the app shell's (`readerMoves`): here the WINDOW is the
+  // transcript's scroller, so input anywhere it scrolls counts (the stream, its margins, the bar
+  // over it), but a wheel over the sidebar, the task panel or an open menu of the top bar scrolls
+  // that panel or menu and leaves the reader where the step put them.
+  var SCROLL_KEYS = { ArrowUp: 1, ArrowDown: 1, PageUp: 1, PageDown: 1, Home: 1, End: 1, " ": 1 };
+  function onTranscript(t) {
+    return !(t instanceof Element && t.closest("#sidebar, #taskpanel, #toolmenu, #agentmenu, #taskmenu, #artifactmenu"));
+  }
+  ["wheel", "touchmove", "keydown"].forEach(function (ev) {
+    window.addEventListener(ev, function (e) {
+      if (!onTranscript(e.target)) return;
+      if (ev !== "keydown" || (SCROLL_KEYS[e.key] && !shared.isEditable(e.target))) stepLanded = null;
+    }, { capture: true, passive: true });
+  });
   function stepTurn(dir) {
-    // Position-based over the RECORDS (#50 — turns outside the DOM window count
-    // too): `]` goes to the first turn below the goTo landing line, `[` to the
-    // last turn above it, with a ±dead-zone so a just-navigated turn doesn't
-    // re-select itself.
-    var dest = null;
-    if (dir > 0) {
-      for (var i = 0; i < records.length; i++) {
-        if (records[i].turn == null) continue;
-        dest = i; // falls back to the last turn if none lies below the line
-        if (turnTop(i) > GOTO_Y + 8) break;
-      }
-    } else {
-      for (var j = 0; j < records.length; j++) {
-        if (records[j].turn == null) continue;
-        if (turnTop(j) < GOTO_Y - 8) dest = j;
-        else break;
-      }
-      if (dest == null) {
-        for (var j0 = 0; j0 < records.length; j0++) {
-          if (records[j0].turn != null) { dest = j0; break; }
-        }
-      }
-    }
-    if (dest != null) goToId(records[dest].id);
+    var turns = [];
+    for (var i = 0; i < records.length; i++) if (records[i].turn != null) turns.push(i);
+    if (!turns.length) return;
+    spy(); // the bar as the view stands now
+    var at = curTurn ? turns.indexOf(idIndex[curTurn.id]) : -1;
+    var id = records[turns[Math.max(0, Math.min(turns.length - 1, at + dir))]].id;
+    stepLanded = null;
+    // Following decided as a jump to the end decides it (#s502): kept only where the step lands at
+    // the end, never within the hold slack short of it.
+    goToId(id, "acquire");
+    holdTurn(id);
+  }
+  // A click on a turn in the sidebar or on the bar: the jump any click makes, and then the turn is
+  // the one the bar names and a step counts from, as a step's own landing is (#s487). A compaction
+  // in the sidebar is no turn, so its click only ends the memory.
+  function goToTurn(id) {
+    goToId(id);
+    holdTurn(id);
+  }
+  // The turn `id` opens, now where the move put its header, becomes the bar's (`landedTurn`). A
+  // landing the bottom clamped moves nothing, so no scroll event repaints the bar.
+  function holdTurn(id) {
+    var rec = records[idIndex[id]];
+    var e = document.getElementById(id);
+    if (!rec || rec.turn == null || !e) return;
+    stepLanded = { id: id, top: e.getBoundingClientRect().top };
+    spy();
   }
   document.addEventListener("keydown", function (e) {
     if (shared.isEditable(e.target)) return;
@@ -3753,8 +3800,9 @@
     return streamTop() + P()[i] - window.scrollY;
   }
   function spy() {
-    var cur = null;
-    if (records.length) {
+    // The turn a step landed, while the view is still where it left it (#s487, at stepTurn).
+    var cur = landedTurn();
+    if (!cur && records.length) {
       for (var i = 0; i < records.length; i++) {
         if (records[i].turn == null) continue;
         if (turnTop(i) <= STICKY_Y) cur = records[i];

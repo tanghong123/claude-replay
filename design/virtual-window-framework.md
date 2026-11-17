@@ -116,7 +116,11 @@ Three things are the reader's, and only the reader's:
 - **Follow** — pinned to the tail (#103 hysteresis: acquiring needs the true end, keeping it only
   the hold slack; a scroll with no input behind it that leaves the tail is healed, not honoured).
   Follow is DROPPED only by the reader: their scroll past the hold slack, or their reshape of the
-  page (#185: growth they asked for is not the tail moving away).
+  page (#185: growth they asked for is not the tail moving away). One commanded move is held to the
+  acquire rule even while following: a TURN STEP (`[`/`]`, `pin: "acquire"`, #s487, the owner's
+  #s502) keeps the pin only where it lands at the true end, as a jump to the end would take it. A
+  step back from the end of a session whose last turns are short lands within the hold slack, and a
+  pin kept there let the tail's converge take the reader straight back to the end.
 
 ### 1.7 The position
 
@@ -626,7 +630,33 @@ computed); mounts around it (`rangeFor(P)`, with the caller's `dirtyFrom`); plac
 `syncPosition`, `scheduleRemember`, and the follow decision the classic page already states
 (`following ? atBottom() : atEnd()`): keep the pin within the hold slack when it was held, acquire
 it only at the true end otherwise — computed ONCE at the end, with `followChanged` called only if it
-differs from where the transaction started, so a jump to the end does not flip the pill twice.
+differs from where the transaction started, so a jump to the end does not flip the pill twice. The
+one exception is a move the page passes `pin: "acquire"`, which only a turn step does (#s487, the
+owner's #s502): it is decided by the acquire rule whether or not the pin was held, so a step that
+lands within the hold slack of the end leaves following (see §1.6).
+
+**Which turn a turn step counts from** (#s487, the owner's #s503) is the page's, not the engine's,
+and both pages now use one rule: `[` goes to the turn before the one the turn bar names and `]` to
+the one after. The classic page used to go by position (the last turn whose header is above its
+landing line), and at the end of a session the turn before the last can be on screen below that
+line, so its first `[` skipped a turn. Near the end, the bar's own rule (#89, #199: at the bottom
+the LAST turn is current) would make a step that the end clamps count from the last turn again, so
+each page keeps a memory of the turn its last step landed (`stepLanded`: the classic page's
+`landedTurn()`, the app shell's `landedTurnIndex()`) and names it while that turn's header is still
+where the step put it. The reader's input on the transcript ends it: a wheel or touch there or a
+scroll key, on both pages; the app shell also listens for a pointer down on its scroller, while on
+the classic page, whose scroller is the window, a scrollbar drag ends it through the position test
+(the header no longer where the step put it). So do the jump to the latest, the next step, another
+session and every commanded move to anything but a turn (a task, an agent, an artifact, a search or
+filter landing, a deep link, a restore), since one that moves nothing leaves the header where it
+was and would keep naming a turn the reader moved away from; a head step, which moves among the
+rows inside the turns, ends it only where it moves the view. A commanded move to a
+turn's own record (a click on a turn in the turn list or on the bar) SETS the memory to that turn
+instead: the reader chose it, and where the end holds the view the click moves nothing, so the end
+rule would otherwise name the last turn and the next `[` would land where the reader already is.
+Input on a panel that scrolls itself (the classic sidebar, task panel and top bar menus, the app
+shell's lists) does not end it.
+
 `follow()` is the one that SETS the pin: `P := tail`, the commanded converge, `followChanged`,
 remember. The classic page's `toBottom(commanded)` and the shell's `toBottom()` become it.
 

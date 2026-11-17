@@ -3239,7 +3239,7 @@ impl Surface {
         }
     }
     /// The element whose children carry the turns.
-    fn turns_root(self) -> &'static str {
+    pub fn turns_root(self) -> &'static str {
         match self {
             Surface::Classic => "document.getElementById('stream')",
             Surface::AppShell => "document.querySelector('.virtual-window')",

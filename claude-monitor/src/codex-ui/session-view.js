@@ -375,6 +375,9 @@ const sayFile = item => say(options.onFile, { name: String(item.fileName || item
 let outlineCurrent = null;
 // Whether the Turns pane follows the session (#s207) — declared here for the same reason.
 let turnsFollow = true;
+// The turn a turn step last landed, while the view stays where it landed (#s487, `stepLanded`) —
+// declared here for the same reason: `currentUserUnitIndex` reads it during the first render.
+let stepLanded = null;
 
 const byId = viewRoot.byId;
 const transcript = byId("transcript");
@@ -507,7 +510,7 @@ turnStickyText.id = "turnStickyText";
 turnStickyBar.append(turnStickyCaret, turnStickyText);
 byId("transcript").prepend(turnStickyBar);
 let turnStickyAt = null;
-turnStickyBar.onclick = () => { if (turnStickyAt != null) { setTurnsFollow(true); viewport.jumpToRecord(turnStickyAt, "turn"); } };
+turnStickyBar.onclick = () => { if (turnStickyAt != null) { setTurnsFollow(true); jumpToRecord(turnStickyAt, "turn"); } };
 // #s37 (design/phone-landscape.md §3.4): on a phone the turn is the top bar's SUBTITLE, under the
 // session's title, where the strip above was a third row of chrome (production.css hides that strip
 // there). It always names the turn the reader is in — the strip waited until its card had scrolled
@@ -920,7 +923,7 @@ function agentTargetsNow(records, meta = recordState.meta) {
 /** A jump held for its records (a turn, a record, a search hit) lands once they are here; a search
  *  hit then lands on its own mark, as a step does (#s278). */
 function landHeldJump() {
-  if (!heldTurnJump || !viewport.jumpToRecord(heldTurnJump.record, heldTurnJump.reveal || "turn")) return;
+  if (!heldTurnJump || !jumpToRecord(heldTurnJump.record, heldTurnJump.reveal || "turn")) return;
   const { record, reveal } = heldTurnJump;
   heldTurnJump = null;
   if (reveal === "search" || reveal === "filter") {
@@ -1068,7 +1071,7 @@ function dropFar() {
  *  moves first. */
 function jumpOrFetch(r, reveal) {
   heldTurnJump = null;
-  const landed = viewport.jumpToRecord(r, reveal);
+  const landed = jumpToRecord(r, reveal);
   // Whether it must wait is the unit's to say — owed records, read or not yet taken — never the
   // store's alone, which knows nothing of a piece waiting to go in.
   const unit = recordState.units[unitAt(r)];
@@ -1155,7 +1158,7 @@ function landOnHash() {
     return false;
   }
   for (const rid of chain) recordState.folds.set(rid, false);
-  if (!viewport.jumpToRecord(index, "hash")) {
+  if (!jumpToRecord(index, "hash")) {
     // Here, but its unit still owes records (#s277): the same wait, which a reader who moves ends.
     if (hashWait?.identity !== identity) hashWait = { identity, at: performance.now(), record: index };
     else if (viewport.lastUserInput > hashWait.at) { landedHash = identity; hashWait = null; return false; }
@@ -1167,7 +1170,7 @@ function landOnHash() {
   landedHash = identity;
   const nested = chain.length > 1 ? viewport.window.querySelector(`[data-record-id="${CSS.escape(id)}"]`) : null;
   if (nested) {
-    viewport.reveal(nested, { top: 18 });
+    revealElement(nested, { top: 18 });
     nested.closest(".renderer-turn")?.classList.add("source-flash");
   }
   return true;
@@ -1884,7 +1887,7 @@ const navigatorClick = event => {
     // (`jumpToRecord` refuses the loading card): the page goes there when they do. Stage 2 (#s277)
     // lands at once on the turn's placeholder and reads that turn first (`jumpOrFetch`).
     if (recordStore.windowed) { jumpOrFetch(record, "turn"); return; }
-    if (!viewport.jumpToRecord(record, "turn") && turn.classList.contains("outline-turn-pending")) {
+    if (!jumpToRecord(record, "turn") && turn.classList.contains("outline-turn-pending")) {
       heldTurnJump = { record, at: performance.now() };
       toast("Still loading — the page goes there when it arrives");
     }
@@ -2154,7 +2157,7 @@ function stepSearch(delta) {
   }
   recordState.landed = matches[recordState.match];
   // A record a tail-first open has not brought yet is not reached (#314): nothing landed there.
-  if (viewport.jumpToRecord(recordState.landed, textual ? "search" : "filter")) recordState.landedAt = performance.now();
+  if (jumpToRecord(recordState.landed, textual ? "search" : "filter")) recordState.landedAt = performance.now();
   else {
     // #s278: a hit whose turn is still on its way reads that turn and lands once its unit is whole
     // (`landHeldJump`), unless the reader moves first.
@@ -2231,7 +2234,7 @@ function landOnCurrentMark() {
   // match crosses the cover (#s267: a third of a short space under a group's 40px head did), and a
   // cover over the whole column leaves none: the match lands just below the bar or the head.
   const space = Math.max(0, floor - ceiling);
-  viewport.reveal(mark, { top: Math.min(120, ceiling - view.top + Math.min(space / 3, Math.max(0, space - box.height))) });
+  revealElement(mark, { top: Math.min(120, ceiling - view.top + Math.min(space / 3, Math.max(0, space - box.height))) });
 }
 /** Where a landing may put `mark` at the transcript's top: below the turn bar while it is drawn
  *  (#123; hidden on a phone, where the turn is the top bar's subtitle), on or off, since a landing can
@@ -2934,7 +2937,7 @@ function applyToolFilter() {
     const start = recordIndexAtTop();
     const target = indices.find(index => index >= start) ?? indices[0];
     recordState.match = target == null ? -1 : indices.indexOf(target);
-    recordState.landed = target != null && viewport.jumpToRecord(target, "filter") ? target : null;
+    recordState.landed = target != null && jumpToRecord(target, "filter") ? target : null;
     recordState.landedAt = performance.now();
   } else if (recordState.filterHits) {
     const snapshot = recordState.filterSnapshot;
@@ -3260,7 +3263,7 @@ function paintJump() {
   const label = n ? `${n} new message${n === 1 ? "" : "s"} — jump to the latest` : "Jump to the latest";
   button.title = label; button.setAttribute("aria-label", label);
 }
-byId("jumpToBottom").onclick = () => { setTurnsFollow(true); viewport.follow(); };
+byId("jumpToBottom").onclick = () => { stepLanded = null; setTurnsFollow(true); viewport.follow(); };
 function updateStickyHeaders() { const top = transcript.getBoundingClientRect().top; viewport.window.querySelectorAll("[data-process-surface]").forEach(surface => { const rect = surface.getBoundingClientRect(); surface.dataset.prodSticky = String(rect.top < top && rect.bottom > top + 40); }); }
 
 // The outline pane has TWO states: open, and collapsed to its icon rail ("off"). #55 shipped a
@@ -3811,6 +3814,10 @@ function unitRow(key) {
 // still being evaluated, and that `const` is declared further down — a temporal dead zone.)
 function currentUserUnitIndex(atKey) {
   const units = recordState.units;
+  // A turn the reader stepped to is the current one while the view stays where the step left it,
+  // the end rule below included (#s487).
+  const landed = landedTurnIndex();
+  if (landed >= 0) return landed;
   if (units.length && (viewport.following || viewport.gapToBottom() <= viewport.slacks.hold)) {
     let last = -1;
     for (const unit of units) if (unit.type === "user") last++;
@@ -3951,7 +3958,7 @@ function readerMoves(event) {
   // The session first, reading no layout: wheels and touchmoves over the transcript arrive at the
   // engine's own rate, and a glide is no place to make the browser lay out the outline (#372).
   if (transcript.contains(target) || (type === "keydown" && target === page.body())) {
-    if (type === "wheel" || type === "touchmove" || (type === "pointerdown" && target === transcript) || (type === "keydown" && SCROLL_KEYS.has(event.key) && !editable(target))) setTurnsFollow(true);
+    if (type === "wheel" || type === "touchmove" || (type === "pointerdown" && target === transcript) || (type === "keydown" && SCROLL_KEYS.has(event.key) && !editable(target))) { stepLanded = null; setTurnsFollow(true); }
     return;
   }
   // Only then the list, and only for input in or around it.
@@ -3968,11 +3975,76 @@ function readerMoves(event) {
 }
 for (const kind of ["wheel", "touchmove", "pointerdown", "keydown"]) document.addEventListener(kind, readerMoves, { capture: true, passive: true, signal });
 
+/** Every commanded move the view makes to a record or an element goes through these two but the
+ *  turn step's own (#s487 review): each ends the step's hold on the current turn. A move that
+ *  moves nothing (a search hit, a task or an agent already in view while the end of the session
+ *  holds the view where a step left it) leaves the landed row where it was, so the hold's own test
+ *  (`landedTurnIndex`) cannot see it end, and the bar went on naming a turn the reader had moved
+ *  away from. A move to a turn's own record (a click on a turn in the Turns pane or on the bar,
+ *  `reveal` "turn", which a compaction's row shares) SETS it to that turn instead, as the step's
+ *  own landing does: where the end of the session holds the view the click moves nothing, and the
+ *  end rule (#199) named the last turn again, so the next `[` landed where the reader already was.
+ *  A head step's reveal (`stepHead`) is not one of them: it moves among the rows inside the turns,
+ *  and where it moves the view the hold ends by its own test. */
+function jumpToRecord(recordIndex, reveal) {
+  stepLanded = null;
+  const landed = viewport.jumpToRecord(recordIndex, reveal);
+  if (landed && reveal === "turn") holdTurn(recordState.units.find(unit => unit.type === "user" && unit.from === recordIndex));
+  return landed;
+}
+function revealElement(element, options) {
+  stepLanded = null;
+  return viewport.reveal(element, options);
+}
+/** #s487: the index among the user turns of the turn the last turn step landed, or -1 while the
+ *  view is not where the step left it (the reader's input, another commanded move or another
+ *  session ends it). From the
+ *  end of a session whose last turns are short, `[` lands turn N-1 within the hold slack of the
+ *  end, where the end rule (#199) named the LAST turn: the next `[` counted from N again and
+ *  landed N-1 again, and the bar named N. (Before #s502 the engine also kept the pin there, so
+ *  the tail took the reader back to the end.) Where
+ *  N-1 was already in view the step moved nothing at all. The step's own landing is what the
+ *  reader chose, so it stays the current turn until the view moves: read by the landed row's
+ *  place in the scroller, which a converge to the tail or a scroll changes and the engine's hold
+ *  of a commanded landing does not. Never the position rule the classic page had until #s503 (the
+ *  last turn above the landing line): at a landing the bottom clamped, that line crosses an
+ *  earlier turn, so counting from it skips one. The classic page keeps the same memory now. */
+function landedTurnIndex() {
+  const at = stepLanded;
+  if (!at) return -1;
+  const row = at.session === recordState.session ? unitRow(at.key) : null;
+  if (row && Math.abs(row.getBoundingClientRect().top - viewport.scroller.getBoundingClientRect().top - at.top) <= 1) {
+    let index = -1;
+    for (const unit of recordState.units) {
+      if (unit.type !== "user") continue;
+      index++;
+      if (unit.key === at.key) return index;
+    }
+  }
+  // Not cleared here: the bar is also painted mid-transaction, before the placement puts the row
+  // back where it landed (`afterRender`). What ends the hold is the reader's input, the jump to
+  // the latest, the next step, every commanded move but one to a turn (`jumpToRecord`,
+  // `revealElement`) or another session.
+  return -1;
+}
 function stepTurn(delta) {
   setTurnsFollow(true);
   const turns = userUnits(); if (!turns.length) return;
   const next = Math.max(0, Math.min(turns.length - 1, currentUserUnitIndex() + delta));
-  viewport.jumpToRecord(turns[next].from, "turn");
+  stepLanded = null;
+  // Following decided as a jump to the end decides it (#s502): kept only where the step lands at
+  // the end, never within the hold slack short of it, where the tail would take the reader back.
+  if (!viewport.jumpToRecord(turns[next].from, "turn", "acquire")) return;
+  holdTurn(turns[next]);
+}
+/** The user turn `unit`, now where a move put its row, becomes the current one (`landedTurnIndex`). */
+function holdTurn(unit) {
+  const row = unit ? unitRow(unit.key) : null;
+  if (!row) return;
+  stepLanded = { session: recordState.session, key: unit.key, top: row.getBoundingClientRect().top - viewport.scroller.getBoundingClientRect().top };
+  // A landing the bottom clamped moves nothing, so no scroll event repaints the bar or the pane.
+  queueTurn(updateTurnBar());
+  updateOutlineFocus();
 }
 function stepHead(delta) {
   const heads = [...transcript.querySelectorAll("button.renderer-head")].filter(head => head.offsetParent !== null);
