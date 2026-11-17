@@ -587,11 +587,11 @@ if (keyboardMode === "engaged") {
 // later in the mount, measures everything, and the mount's end takes the width it left as the one
 // the next change is measured from.
 // It remeasures once, from the width it was last laid out at to the width it settles at, and only when
-// that width changed (#s431 stage 3): a remeasure at the same width throws every measured height away,
-// and one read while a track glides (the pane's, the outline's, or a host's list around the view)
-// scales every height to a column the reader never sees settled, from which the next change scales
-// again. So it is the ONE way the view remeasures for its width: the pane, the outline, the window's
-// resize and a host's `resized()` all come here. It takes the view's own decision first, since the
+// that width changed (#s431 stage 3): at the same width there is nothing to scale by, and one read
+// while a track glides (the pane's, the outline's, or a host's list around the view) scales every
+// height to a column the reader never sees settled, from which the next change scales again. So it
+// is the ONE way the view remeasures for its width: the pane, the outline, the window's resize and a
+// host's `resized()` all come here. It takes the view's own decision first, since the
 // pane's width is the layout's (`--preview-fit`) and a host's change to the view's box reaches the
 // layout only at its observer's next delivery; and it waits out any glide that moves the transcript's
 // edges: a transition of a width or a grid's tracks on a box that holds the transcript, or on one beside
@@ -619,7 +619,8 @@ const paneLayoutChanged = ({ decided = false } = {}) => {
   // comes back at.
   if (!width || Math.abs(width - paneLaidOutWidth) < 0.5) return;
   paneLaidOutWidth = width;
-  viewport.remeasure();
+  // Only the width changed (#s513): the engine scales the heights by it even under its 1% step.
+  viewport.remeasure({ widthOnly: true });
 };
 layoutHeard = () => { if (!settleOutline()) paneLayoutChanged({ decided: true }); };
 // The reader opened or shut the pane: the order arranges the view again, and the pane glides whole
