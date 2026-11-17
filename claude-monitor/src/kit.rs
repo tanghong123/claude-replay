@@ -112,9 +112,21 @@ fn relative_imports(dir: &str, source: &str) -> Result<Vec<String>, String> {
 /// The modules the kit's two entries import and the ones they import, each named as the monitor
 /// serves it under `/monitor-ui/` (`session-view.js`, `shared/time.js`), in path order.
 pub fn modules() -> Result<Vec<String>, String> {
+    walk(&[INDEX, NATIVE_APP])
+}
+
+/// The modules the first entry alone imports, directly or not: what a host's page that mounts the
+/// two components loads, the second entry's own (the app's mount) left out.
+pub fn component_modules() -> Result<Vec<String>, String> {
+    walk(&[INDEX])
+}
+
+fn walk(entries: &[&str]) -> Result<Vec<String>, String> {
     let mut seen = BTreeSet::new();
-    let mut todo = relative_imports("", INDEX)?;
-    todo.extend(relative_imports("", NATIVE_APP)?);
+    let mut todo = Vec::new();
+    for entry in entries {
+        todo.extend(relative_imports("", entry)?);
+    }
     while let Some(name) = todo.pop() {
         if seen.contains(&name) {
             continue;
@@ -371,6 +383,16 @@ mod tests {
             "native-app.js exports mountApp alone"
         );
         assert!(!INDEX.contains("mountApp") && !INDEX.contains("app-mount"));
+        // The first entry's walk leaves the mount's own modules out; the bundle's walk holds both.
+        let components: BTreeSet<String> = component_modules().unwrap().into_iter().collect();
+        let all: BTreeSet<String> = modules().unwrap().into_iter().collect();
+        assert!(components.is_subset(&all));
+        for name in ["app-mount.js", "app-shell-markup.js"] {
+            assert!(
+                all.contains(name) && !components.contains(name),
+                "{name} is the mount's alone"
+            );
+        }
     }
 
     /// The options each component takes that the kit does not offer a host: the ones

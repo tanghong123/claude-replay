@@ -188,7 +188,8 @@ fn a_page_mounts_both_components_from_the_kit_alone_and_reads_a_session() {
         serde_json::json!([]),
         "every script and stylesheet is the kit's: {loaded}"
     );
-    let modules = claude_monitor::kit::modules().unwrap().len();
+    // The modules the first entry imports: the second entry's (the app's mount) are not this page's.
+    let modules = claude_monitor::kit::component_modules().unwrap().len();
     assert!(
         loaded["kit"].as_u64().unwrap_or(0) as usize > modules,
         "the page loaded the kit's entry and its {modules} modules: {loaded}"
