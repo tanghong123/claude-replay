@@ -14258,7 +14258,7 @@ fn info_s_card_closes_after_a_keyboard_peek_and_a_second_real_click() {
         }
         if expanded(id) != "false" {
             wrong.push(format!(
-                "{id}: aria-expanded reads {} with the card shut",
+                "{id}: aria-expanded reads {} after the second click and the pointer leaving",
                 expanded(id)
             ));
         }
