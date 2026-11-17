@@ -21470,11 +21470,12 @@ fn a_phone_s_filter_and_keyboard_never_share_the_screen() {
     );
 }
 
-/// #s546, found on the iPad Simulator and true of a mouse too: off the phone nothing but the funnel
-/// closed the filter menu, so a press into the transcript left it open over what it filters. It now
-/// closes on a press outside the search cluster, as Aa's menu does, and the query and its count stay.
-/// A press inside the menu keeps it open. The phone keeps its own rule, the top layer first
-/// (`a_phone_s_filter_and_keyboard_never_share_the_screen`). Pressed as a mouse and as a finger.
+/// #s546, found on the iPad Simulator and true of a mouse too: off the phone only the funnel and
+/// Escape closed the filter menu, so a press into the transcript left it open over what it filters.
+/// It now closes on a press outside the search cluster, as Aa's menu does, and the query, its count
+/// and its marks stay; a press inside the menu keeps it open. Pressed with a real mouse (CDP) and a
+/// real finger (Chrome's synthesized tap), each at a point the page says holds nothing to press. The
+/// phone keeps its own rule, the top layer first (`a_phone_s_filter_and_keyboard_never_share_the_screen`).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn off_the_phone_a_press_outside_closes_the_filter_menu_and_keeps_the_query() {
@@ -21482,7 +21483,7 @@ fn off_the_phone_a_press_outside_closes_the_filter_menu_and_keeps_the_query() {
     let (_monitor, _browser, tab) = shell_with_a_session("appshell-filter-outside", 3144);
     harness::resize(&tab, 1400.0, 900.0);
     let open = "document.getElementById('navigatorOptions').classList.contains('open')";
-    let state = "(function(){ var i = document.getElementById('transcriptSearchInput'); return { open: document.getElementById('navigatorOptions').classList.contains('open'), value: i.value, count: document.getElementById('transcriptSearchCount').textContent.trim(), phone: document.getElementById('sessionView').classList.contains('pl-phone') }; })()";
+    let state = "(function(){ var i = document.getElementById('transcriptSearchInput'); return { open: document.getElementById('navigatorOptions').classList.contains('open'), value: i.value, count: document.getElementById('transcriptSearchCount').textContent.trim(), marks: document.querySelectorAll('#transcript mark.search-mark').length, phone: document.getElementById('sessionView').classList.contains('pl-phone') }; })()";
     harness::until(
         &tab,
         &format!("innerWidth === 1400 && {VIEW_CAUGHT_UP}"),
@@ -21496,8 +21497,8 @@ fn off_the_phone_a_press_outside_closes_the_filter_menu_and_keeps_the_query() {
     );
     harness::until(
         &tab,
-        "(parseInt(document.getElementById('transcriptSearchCount').textContent, 10) || 0) > 0",
-        "the query to count its matches",
+        "(parseInt(document.getElementById('transcriptSearchCount').textContent, 10) || 0) > 0 && document.querySelectorAll('#transcript mark.search-mark').length > 0",
+        "the query to count and mark its matches",
         Duration::from_secs(10),
         state,
     );
@@ -21506,31 +21507,43 @@ fn off_the_phone_a_press_outside_closes_the_filter_menu_and_keeps_the_query() {
         before["phone"], false,
         "the view is not the phone reader: {before}"
     );
-    let press = |selector: &str, kind: &str| {
-        format!("(function(){{ var e = document.querySelector('{selector}'); if (!e) return 'no ' + '{selector}'; var r = e.getBoundingClientRect(), x = r.left + Math.min(40, r.width / 2), y = r.top + Math.min(60, r.height / 2); var p = function (type) {{ e.dispatchEvent(new PointerEvent(type, {{ bubbles: true, cancelable: true, composed: true, pointerType: '{kind}', pointerId: 9, isPrimary: true, clientX: x, clientY: y }})); }}; p('pointerdown'); p('pointerup'); return 'ok'; }})()")
+    // A point inside `selector` whose element has nothing to press between it and `selector` (no
+    // control, link, fold or field), so a real press there presses nothing but the place.
+    let plain_point = |selector: &str| -> (f64, f64) {
+        let found = harness::eval(
+            &tab,
+            &format!("(function(){{ var box = document.querySelector('{selector}'); if (!box) return null; var r = box.getBoundingClientRect(); for (var fy = 0.15; fy < 0.95; fy += 0.07) for (var fx = 0.05; fx < 0.95; fx += 0.06) {{ var x = r.left + r.width * fx, y = r.top + r.height * fy, e = document.elementFromPoint(x, y); if (!e || !box.contains(e)) continue; var c = e.closest('button, a, input, label, select, textarea, summary, mark, [role=button], [data-scope], [data-tool], [data-fold], [tabindex]'); if (c && c !== box && box.contains(c)) continue; return [x, y]; }} return null; }})()"),
+        );
+        let x = found[0]
+            .as_f64()
+            .unwrap_or_else(|| panic!("no plain point inside {selector}"));
+        (x, found[1].as_f64().unwrap())
     };
-    for kind in ["mouse", "touch"] {
+    let press = |(x, y): (f64, f64), finger: bool| {
+        if finger {
+            harness::finger_tap(&tab, x, y);
+        } else {
+            tab.click_point(headless_chrome::browser::tab::point::Point { x, y })
+                .expect("a mouse press");
+        }
+    };
+    for (kind, finger) in [("mouse", false), ("finger", true)] {
         harness::eval(
             &tab,
             "document.getElementById('filterTranscriptBtn').click(); 'ok'",
         );
-        harness::until(
-            &tab,
-            open,
-            &format!("the funnel to open the filter menu ({kind})"),
-            Duration::from_secs(5),
-            state,
-        );
+        let why = format!("the funnel to open the filter menu ({kind})");
+        harness::until(&tab, open, &why, Duration::from_secs(5), state);
         // A press inside the menu is not a press outside.
-        assert_eq!(harness::eval(&tab, &press("#navigatorOptions", kind)), "ok");
+        press(plain_point("#navigatorOptions"), finger);
         std::thread::sleep(Duration::from_millis(300));
         let inside = harness::probe(&tab, state);
         assert_eq!(
             inside["open"], true,
             "a press inside the menu keeps it open ({kind}): {inside}"
         );
-        // A press in the transcript closes it, and the query and its count stay.
-        assert_eq!(harness::eval(&tab, &press("#transcript", kind)), "ok");
+        // A press in the transcript closes it, and the query, its count and its marks stay.
+        press(plain_point("#transcript"), finger);
         harness::until(
             &tab,
             &format!("!{open}"),
@@ -21540,9 +21553,9 @@ fn off_the_phone_a_press_outside_closes_the_filter_menu_and_keeps_the_query() {
         );
         let after = harness::probe(&tab, state);
         assert_eq!(
-            (&after["value"], &after["count"]),
-            (&before["value"], &before["count"]),
-            "the query and its count outlive the menu closing ({kind}): {after}"
+            (&after["value"], &after["count"], &after["marks"]),
+            (&before["value"], &before["count"], &before["marks"]),
+            "the query, its count and its marks outlive the menu closing ({kind}): {after}"
         );
     }
 }
