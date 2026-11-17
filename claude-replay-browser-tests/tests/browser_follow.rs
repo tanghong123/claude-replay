@@ -2192,9 +2192,11 @@ fn the_session_view_in_a_host_takes_its_keys_only_while_the_reader_works_in_it()
 /// `keyboard: "engaged"`, the session view closes its layers on Escape only while the reader works
 /// in it, as it answers its keymap: with Info's card pinned and the Reading menu open, a focus that
 /// goes to the host's own button leaves both open, an Escape pressed there leaves both open, and once
-/// the focus is back in the view an Escape closes each; the host's own listener hears both. A hover
-/// engages nothing, yet a peek it opened on Info closes on Escape with the focus still on the host's
-/// button and the pointer still on Info (#s557's rule, WCAG 1.4.13). With `keyboard: "page"` (the app's) the view is always engaged, so the same Escape from the
+/// the focus is back in the view an Escape closes each. A pointer resting on the transcript is not
+/// working in the view: with it there the host's Escape still closes neither. A hover engages
+/// nothing, yet a peek it opened on Info closes on Escape with the focus still on the host's button
+/// and the pointer still on Info (#s557's rule, WCAG 1.4.13). The host's own listener hears every
+/// Escape, none prevented. With `keyboard: "page"` (the app's) the view is always engaged, so the same Escape from the
 /// host's button closes them as before. The view's other page-wide Escapes (the task card, a phone's
 /// pane sheet) read the same test. Keys are dispatched by script where the focus is (`PRESS`), so no
 /// CDP key is left repeating (#270).
@@ -2266,12 +2268,18 @@ fn the_session_view_in_a_host_closes_its_layers_on_escape_only_while_the_reader_
         after["taken"] = taken;
         seen.push(after);
         if mode == "engaged" {
+            // A pointer resting on the transcript is not working in the view: a keyboard reader
+            // leaves it there. A pinned card and a menu a click opened stay open.
+            hover("document.querySelector('.transcript')");
+            harness::probe(&tab, &format!("{PRESS}('Escape')"));
+            seen.push(state(
+                "engaged: Escape on the host's button, the pointer on the transcript",
+            ));
             harness::eval(&tab, &format!("{info}.focus(); 'ok'"));
             let taken = harness::probe(&tab, &format!("{PRESS}('Escape')"));
             let mut back = state("engaged: Escape with the focus back on Info");
             back["taken"] = taken;
             seen.push(back);
-            seen.push(harness::probe(&tab, host_keys));
             // A hover opens Info's peek and engages nothing: with the focus on the host's button,
             // Escape still closes it, the pointer resting on Info (#s557, WCAG 1.4.13).
             harness::eval(&tab, "document.getElementById('hostButton').focus(); 'ok'");
@@ -2281,40 +2289,43 @@ fn the_session_view_in_a_host_closes_its_layers_on_escape_only_while_the_reader_
             ));
             harness::probe(&tab, &format!("{PRESS}('Escape')"));
             seen.push(state("engaged: Escape with the pointer on Info"));
+            seen.push(harness::probe(&tab, host_keys));
         }
     }
     drop(monitor);
     let both = |v: &serde_json::Value| (v["info"].clone(), v["reading"].clone());
     let t = serde_json::json!(true);
     let f = serde_json::json!(false);
+    let open = (t.clone(), t.clone());
+    let shut = (f.clone(), f.clone());
     assert_eq!(
         both(&seen[0]),
-        (t.clone(), t.clone()),
+        open,
         "engaged: Info pinned and Reading open: {}",
         seen[0]
     );
     assert_eq!(
         (both(&seen[1]), seen[1]["active"].clone()),
-        ((t.clone(), t.clone()), serde_json::json!("hostButton")),
+        (open.clone(), serde_json::json!("hostButton")),
         "engaged: a focus on the host's button leaves both open: {}",
         seen[1]
     );
     assert_eq!(
         both(&seen[2]),
-        (t.clone(), t.clone()),
+        open,
         "engaged: an Escape on the host's button is the host's and closes neither: {}",
         seen[2]
     );
     assert_eq!(
         both(&seen[3]),
-        (f.clone(), f.clone()),
-        "engaged: with the focus back in the view, Escape closes both: {}",
+        open,
+        "engaged: with the pointer resting on the transcript, the host's Escape still closes neither: {}",
         seen[3]
     );
     assert_eq!(
-        seen[4],
-        serde_json::json!([false, false]),
-        "engaged: the host's own listener heard both Escapes, the view preventing neither: {}",
+        both(&seen[4]),
+        shut,
+        "engaged: with the focus back in the view, Escape closes both: {}",
         seen[4]
     );
     assert_eq!(
@@ -2330,22 +2341,23 @@ fn the_session_view_in_a_host_closes_its_layers_on_escape_only_while_the_reader_
         seen[6]
     );
     assert_eq!(
-        both(&seen[7]),
-        (t.clone(), t.clone()),
-        "page: both opened: {}",
+        seen[7],
+        serde_json::json!([false, false, false, false]),
+        "engaged: the host's own listener heard every Escape, the view preventing and stopping none: {}",
         seen[7]
     );
-    assert_eq!(
-        both(&seen[8]),
-        (t.clone(), t.clone()),
-        "page: a focus on the host's button leaves both open: {}",
-        seen[8]
-    );
+    assert_eq!(both(&seen[8]), open, "page: both opened: {}", seen[8]);
     assert_eq!(
         both(&seen[9]),
-        (f.clone(), f.clone()),
-        "page: the view is always engaged, so the same Escape closes both as before: {}",
+        open,
+        "page: a focus on the host's button leaves both open: {}",
         seen[9]
+    );
+    assert_eq!(
+        both(&seen[10]),
+        shut,
+        "page: the view is always engaged, so the same Escape closes both as before: {}",
+        seen[10]
     );
 }
 

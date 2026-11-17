@@ -579,10 +579,13 @@ if (keyboardMode === "engaged") {
 // The Escape the view hears on the whole page, which closes its layers (Info's card, the copy menu,
 // the search's popovers, the task card, a phone's pane sheet), is its own only while the reader works
 // in it (#s535), like its keymap: a host whose own dialog Escape closes must not close ours with it.
-// A hover is working in it too, though it engages nothing: a card a hover opened (Info's peek, the
-// copy menu) must close on Escape without the pointer moving (#s557, WCAG 1.4.13), whatever the last
-// press was. With the page's keyboard the view is always engaged, as before.
-const viewEscape = event => event.key === "Escape" && (engaged || element.matches(":hover"));
+// With the page's keyboard the view is always engaged, as before. A pointer resting over the view is
+// not working in it (a keyboard reader leaves it on the transcript), but a layer a hover holds open
+// (Info's peek, the copy menu) is the reader's while the pointer is on it or its trigger, so those
+// two also close on Escape then, whatever the last press was (#s557, WCAG 1.4.13: content a hover
+// shows is dismissible without moving the pointer).
+const viewEscape = event => event.key === "Escape" && engaged;
+const hovered = (...nodes) => nodes.some(node => !!node && node.matches(":hover"));
 
 // #s25: the pane changes the TRANSCRIPT's layout only where it is a grid column (a wide desktop).
 // Elsewhere — a phone, or below 1180px — it lies over the transcript, whose width and so every
@@ -3487,7 +3490,8 @@ panesMenu.onclick = event => {
   // to the Info that opened it (or one drawn) rather than staying on a control the close hides; it
   // moves FIRST, since that Info's focus listener peeks, and the close then shuts what it opened.
   addEventListener("keydown", event => {
-    if (!viewEscape(event) || !popover.classList.contains("open")) return;
+    if (event.key !== "Escape" || !popover.classList.contains("open")) return;
+    if (!viewEscape(event) && (pinned || !hovered(popover, ...triggers))) return;
     pinned = false;
     if (popover.contains(viewRoot.active())) {
       const drawn = node => node.getClientRects().length > 0;
@@ -3982,7 +3986,10 @@ byId("findPrev").title = `Previous match (${hintFor("hit-prev")})`; byId("findNe
 byId("turnPrev").title = `Previous turn (${hintFor("turn-prev")})`; byId("turnNext").title = `Next turn (${hintFor("turn-next")})`;
 // The header's own turn steppers were in the design but never bound; they step the same way the keys do.
 byId("turnPrev").onclick = () => stepTurn(-1); byId("turnNext").onclick = () => stepTurn(1);
-addEventListener("keydown", event => { if (viewEscape(event)) { setSessionCopyMenu(false); setPopover(null); } }, { signal });
+addEventListener("keydown", event => {
+  if (viewEscape(event)) { setSessionCopyMenu(false); setPopover(null); }
+  else if (event.key === "Escape" && hovered(sessionTitle, sessionCopyMenu)) setSessionCopyMenu(false);
+}, { signal });
 
 // #313 — while a session loads, a veil over the session area says so. It dims what is below the top
 // bars, which already name the new session, and speaks in three phases: loading; after
