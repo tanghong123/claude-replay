@@ -14379,7 +14379,9 @@ fn key_focus_held(tab: &headless_chrome::Tab, id: &str) -> bool {
 /// #s557, from #s556's review: Escape closed Info's card only while it was pinned, so a peek (the
 /// card a hover or a keyboard focus on Info opens) could not be dismissed without moving the pointer
 /// or the focus (WCAG 1.4.13). On each Info: a keyboard focus opens a peek, Escape closes it, and it
-/// stays shut with the focus still there; Enter pins it and Escape still closes it; a hover opens a
+/// stays shut with the focus still there; Enter pins it and Escape still closes it; a focus inside
+/// the card (on a fold of its groups) keeps a peek open, and Escape shuts it and gives the keyboard
+/// focus back to that Info rather than leaving it on a control the close hides; a hover opens a
 /// peek, Escape closes it, and it stays shut with the pointer still there. aria-expanded follows.
 /// An Escape or Enter the page leaves unprevented repeats in this Chrome (#270), so a window listener
 /// after every page listener prevents each one and, for Enter, clicks the focused button once, as
@@ -14390,11 +14392,12 @@ fn info_s_peek_closes_on_escape_from_a_keyboard_focus_or_a_hover() {
     let _serial = serial();
     let (_monitor, _browser, tab) = shell_with_a_session("appshell-info-escape", 3147);
     let open = "document.getElementById('infoPopover').classList.contains('open')";
-    harness::eval(&tab, "(function(){ var b = document.createElement('button'); b.id = 'caseAway'; b.type = 'button'; b.textContent = 'away'; b.style.cssText = 'position:fixed;left:0;bottom:0;z-index:9999'; document.body.appendChild(b); window.__focusNext = null; window.__keys = 0; document.addEventListener('keydown', function (e) { if (e.key !== 'F8') return; e.preventDefault(); e.stopImmediatePropagation(); var n = document.getElementById(window.__focusNext); if (n) n.focus(); }, true); addEventListener('keydown', function (e) { if (e.key !== 'Enter' && e.key !== 'Escape') return; window.__keys++; if (e.defaultPrevented) return; e.preventDefault(); if (e.key === 'Enter' && document.activeElement) document.activeElement.click(); }); return 'ok'; })()");
-    let key_focus = |id: &str| {
-        harness::eval(&tab, &format!("window.__focusNext = '{id}'; 'ok'"));
+    harness::eval(&tab, "(function(){ var b = document.createElement('button'); b.id = 'caseAway'; b.type = 'button'; b.textContent = 'away'; b.style.cssText = 'position:fixed;left:0;bottom:0;z-index:9999'; document.body.appendChild(b); window.__focusNext = null; window.__keys = 0; document.addEventListener('keydown', function (e) { if (e.key !== 'F8') return; e.preventDefault(); e.stopImmediatePropagation(); var n = document.querySelector(window.__focusNext); if (n) n.focus(); }, true); addEventListener('keydown', function (e) { if (e.key !== 'Enter' && e.key !== 'Escape') return; window.__keys++; if (e.defaultPrevented) return; e.preventDefault(); if (e.key === 'Enter' && document.activeElement) document.activeElement.click(); }); return 'ok'; })()");
+    // A keyboard focus on the element `sel` names (a CSS selector).
+    let key_focus = |sel: &str| {
+        harness::eval(&tab, &format!("window.__focusNext = {sel:?}; 'ok'"));
         tab.press_key("F8").expect("F8");
-        harness::probe(&tab, &format!("(function(){{ var a = document.activeElement; return {{ on: a && a.id === '{id}', visible: !!a && a.matches(':focus-visible'), active: a ? a.id || a.tagName : null }}; }})()"))
+        harness::probe(&tab, &format!("(function(){{ var a = document.activeElement; return {{ on: !!a && a === document.querySelector({sel:?}), visible: !!a && a.matches(':focus-visible'), active: a ? a.id || a.className || a.tagName : null }}; }})()"))
     };
     let point = |id: &str| {
         let v = harness::probe(&tab, &format!("(function(){{ var r = document.getElementById('{id}').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"));
@@ -14455,7 +14458,7 @@ fn info_s_peek_closes_on_escape_from_a_keyboard_focus_or_a_hover() {
             .expect("the pointer off Info");
 
         // A keyboard peek, then Escape.
-        let on = key_focus(id);
+        let on = key_focus(&format!("#{id}"));
         assert!(
             on["on"] == true && on["visible"] == true,
             "{id}: the case's key gives a keyboard focus (:focus-visible): {on}"
@@ -14497,8 +14500,50 @@ fn info_s_peek_closes_on_escape_from_a_keyboard_focus_or_a_hover() {
             ));
         }
 
+        // A keyboard peek with the focus moved inside the card, then Escape: the focus comes back.
+        let away = key_focus("#caseAway");
+        assert!(
+            away["on"] == true,
+            "{id}: the case's key moves the focus off Info: {away}"
+        );
+        key_focus(&format!("#{id}"));
+        let inside = key_focus("#infoPopover .session-info-label");
+        assert!(
+            inside["on"] == true,
+            "{id}: the case's key puts the focus on a fold inside the card: {inside}"
+        );
+        if !settles(true) {
+            wrong.push(format!(
+                "{id}: a focus inside the card did not keep the peek open"
+            ));
+        }
+        press("Escape");
+        if !settles(false) {
+            wrong.push(format!("{id}: Escape left a peek holding the focus open"));
+        } else if !stays_shut() {
+            wrong.push(format!(
+                "{id}: the peek came back after Escape gave the focus back to Info"
+            ));
+        }
+        if !key_focus_held(&tab, id) {
+            let held = harness::eval(&tab, "(function(){ var a = document.activeElement; return a ? (a.id || a.className || a.tagName) : null; })()");
+            wrong.push(format!(
+                "{id}: Escape did not give the keyboard focus back to Info: it is on {held}"
+            ));
+        }
+        if expanded(id) != "false" {
+            wrong.push(format!(
+                "{id}: aria-expanded reads {} after Escape on a peek holding the focus",
+                expanded(id)
+            ));
+        }
+
         // A hover peek, the focus elsewhere, then Escape.
-        key_focus("caseAway");
+        let away = key_focus("#caseAway");
+        assert!(
+            away["on"] == true,
+            "{id}: the case's key moves the focus off Info: {away}"
+        );
         tab.move_mouse_to_point(point(id))
             .expect("the pointer onto Info");
         if !settles(true) {
