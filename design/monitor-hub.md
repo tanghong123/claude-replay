@@ -216,9 +216,10 @@ it:
   read-only's rules), to a file on disk rather than memory, then hands it to the share sheet (a save
   panel on a Mac).
   A `blob:` download, which the page makes of a smaller file, is WebKit's own and works. A
-  main-frame navigation out of the app's schemes is asked first, as for a frame: a machine's answer
+  main-frame navigation out of the app's schemes that a link starts is asked first, as for a frame;
+  one a script makes by setting the address is refused, and said above the page. A machine's answer
   can ask the page to navigate (the record store follows a `/pull` reply of `{"t":"redirect"}` with
-  `location.assign`), so the request layer refuses such an answer from a relayed machine.
+  `location.assign`), so the request layer also refuses such an answer from a relayed machine.
 - **The key stays out of what is kept**: the web view keeps no history across launches, and the
   page loads nothing from outside the app, which its policy enforces (below).
 
