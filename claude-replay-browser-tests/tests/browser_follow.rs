@@ -707,19 +707,38 @@ fn the_classic_page_scales_its_heights_by_the_width_its_records_are_laid_out_at(
 /// How many of the engine's records have a measured height, of how many (#s513).
 const MEASURED: &str = "(function(){ var it = window.__viewportHistory.export().session.items; return { total: it.length, measured: it.filter(function (i) { return i[1] != null; }).length }; })()";
 
-/// Walk `scroller` from its top to its end, a step of 70% of its height every 160 ms, so the engine
-/// mounts, and so measures, every record. Each step is a reader's, as `harness::scroll_by` makes one:
-/// a wheel on `target` around the move, or a page that follows its tail heals the scroll back.
+/// Walk `scroller` from its top to its end, a step of 70% of its height, so the engine mounts, and so
+/// measures, every record. Each step is a reader's, as `harness::scroll_by` makes one: a wheel on
+/// `target` around the move, or a page that follows its tail heals the scroll back. Each waits for
+/// two frames (at most a second) and then 160 ms: under load the scroll events of steps sent faster
+/// than frames come together, and the engine never mounts what lay between them (s513c, at a load of
+/// 43, measured 130 of 148). And the whole walk goes again, up to three passes, until nearly every
+/// record has a height, since one measured stays measured.
 fn walk_the_whole_session(
     tab: &headless_chrome::Tab,
     scroller: &str,
     target: &str,
 ) -> serde_json::Value {
-    eval(
-        tab,
-        &format!("(async function(){{ var s = {scroller}, t = {target}; var sleep = function (ms) {{ return new Promise(function (r) {{ setTimeout(r, ms); }}); }}; var move = function (top) {{ var dy = top < s.scrollTop ? -120 : 120; t.dispatchEvent(new WheelEvent('wheel', {{ deltaY: dy, bubbles: true }})); s.scrollTo({{ top: top, behavior: 'instant' }}); t.dispatchEvent(new WheelEvent('wheel', {{ deltaY: dy / 120, bubbles: true }})); }}; for (var i = 0; i < 3 && s.scrollTop > 2; i++) {{ move(0); await sleep(500); }} var steps = 0; while (steps < 600 && s.scrollTop + s.clientHeight < s.scrollHeight - 2) {{ move(s.scrollTop + Math.round(s.clientHeight * 0.7)); steps++; await sleep(160); }} await sleep(800); return {{ steps: steps, top: Math.round(s.scrollTop) }}; }})()"),
-        true,
-    )
+    let walk = || {
+        eval(
+            tab,
+            &format!("(async function(){{ var s = {scroller}, t = {target}; var sleep = function (ms) {{ return new Promise(function (r) {{ setTimeout(r, ms); }}); }}; var frames = function () {{ return Promise.race([new Promise(function (r) {{ requestAnimationFrame(function () {{ requestAnimationFrame(r); }}); }}), sleep(1000)]); }}; var move = function (top) {{ var dy = top < s.scrollTop ? -120 : 120; t.dispatchEvent(new WheelEvent('wheel', {{ deltaY: dy, bubbles: true }})); s.scrollTo({{ top: top, behavior: 'instant' }}); t.dispatchEvent(new WheelEvent('wheel', {{ deltaY: dy / 120, bubbles: true }})); }}; for (var i = 0; i < 3 && s.scrollTop > 2; i++) {{ move(0); await sleep(500); }} var steps = 0; while (steps < 600 && s.scrollTop + s.clientHeight < s.scrollHeight - 2) {{ move(s.scrollTop + Math.round(s.clientHeight * 0.7)); steps++; await frames(); await sleep(160); }} await sleep(800); return {{ steps: steps, top: Math.round(s.scrollTop) }}; }})()"),
+            true,
+        )
+    };
+    let mut passes = Vec::new();
+    for _ in 0..3 {
+        passes.push(walk());
+        let m = eval(tab, MEASURED, false);
+        let (total, measured) = (
+            m["total"].as_i64().unwrap_or(0),
+            m["measured"].as_i64().unwrap_or(0),
+        );
+        if total > 0 && measured * 10 >= total * 9 {
+            break;
+        }
+    }
+    serde_json::json!(passes)
 }
 
 /// **A resize that changes only the width keeps every remembered height, and scales it however
@@ -739,6 +758,9 @@ fn scenario_a_small_resize_keeps_every_height(
 ) -> Vec<String> {
     let mark = format!("(function(){{ window.__t0 = performance.now(); window.__w0 = {mount}.getBoundingClientRect().width; return true; }})()");
     let remeasured = format!("(function(){{ var rs = window.__viewportHistory.states.filter(function (s) {{ return s.cause === 'remeasure' && s.t >= window.__t0; }}).map(function (s) {{ return [s.ratio, s.did || null]; }}); var w = {mount}.getBoundingClientRect().width; return {{ count: rs.length, seen: rs, ratio: Math.round(rs.reduce(function (a, r) {{ return a * r[0]; }}, 1) * 1000) / 1000, expected: Math.round(window.__w0 / w * 1000) / 1000, w0: window.__w0, w: w, inner: [innerWidth, innerHeight] }}; }})()");
+    // The browser's own top: headless Chrome's innerHeight is short of the window's height by it
+    // (143px on macOS), so a step is at rest once innerHeight is its height less this.
+    let top = height as i64 - eval(tab, "innerHeight", false).as_i64().unwrap_or(0);
     let walked = walk_the_whole_session(tab, scroller, target);
     let before = eval(tab, MEASURED, false);
     let (total, measured) = (
@@ -778,7 +800,7 @@ fn scenario_a_small_resize_keeps_every_height(
             Duration::from_secs(10),
             &remeasured,
             |v| {
-                v["inner"] == serde_json::json!([w as i64, h as i64])
+                v["inner"] == serde_json::json!([w as i64, h as i64 - top])
                     && (!remeasures || v["count"].as_i64().unwrap_or(0) >= 1)
             },
         );
