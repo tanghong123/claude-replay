@@ -405,7 +405,13 @@ components need nothing new for it: a handle whose backend serves the write rout
 box and the answer buttons, and one that serves none gets neither ("1. The backend contract"). Codex
 native mode is the exception: its page code comes from the monitor (its entry imports
 `/codex-workspace/api.js` and the monitor's stylesheet), which the relay does not pass (D3). So the
-app leaves native mode out until its modules join the kit, an addition for section 5. **Choice for
+app leaves native mode out until its modules join the kit, an addition for section 5.
+
+**Decided on 2026-11-17** (agent-monitor-app #s14, Hong on the dashboard: "Writes come with the
+web-app mount (#s13)"): the app writes to sessions from the moment it mounts the web app
+(`design/app-mount.md`), with no read-only stage first. The compose box, dialog answers and pane
+grants work as on the web app, each under that monitor's own gate; the relay passes the page's write
+routes and still refuses every frame's. What follows is the choice as it stood. **Choice for
 the owner**: writes in the first release with the rest (parity, R3), or a read-only first release
 with writes a stage later. Read-only here means no send, no answer to a dialog, no pane grant, none
 of Codex native mode's writes (`/api/codex/*`) and none of shared review's writes (a Push, a Share,
@@ -524,6 +530,9 @@ agent sets up the repository and the build; distribution through TestFlight is t
 his Apple account (#s413). Each item below is the owner's to approve when it comes up, with a
 recommendation:
 
+- **The web app as one kit mount** (#s551, `design/app-mount.md`): Hong agreed to it on 2026-11-17,
+  with the native options his plan named; the further items that design lists go to him as one
+  decision.
 - **The kit's components and the backend contract** are `design/embedding.md`'s, decided there. The
   app relies on the contract across monitor versions (D2), which is what versioning it is for.
   Settled there since draft 3 (`design/embedding.md` at 52bfd821, by its author within the owner's
@@ -593,13 +602,19 @@ is built in its own repository, and starts with what it can learn before the kit
 | 4 | both | The Mac app: the two components side by side, This Mac on the loopback, detached windows (embedding's step 8, in a later kit); the fleet's answer and its tunnels as the helper; the fleet's page retired | A machine reached only by ssh appears in the Mac app's list; a session opens in a window of its own; reveal works on This Mac only |
 | 5 | both | Notifications, if the owner chooses them (D11) | — |
 
+**Revised on 2026-11-17** (#s551, agent-monitor-app #s14): the app mounts the web app whole
+(`design/app-mount.md`), so phase 1's list and view, and phase 4's on a Mac, are the web app's own
+chrome rather than the two components placed by the app; and writes come with that mount, so
+phase 3 joins it. The mount's own order is in `design/app-mount.md`.
+
 ## 7. What this is not
 
 - **Not a change to the monitor.** No route, field or gate, beyond the optional items in section 5,
   which are the owner's.
 - **Not a server.** Nothing runs anywhere but the monitors, the app on the reader's device, and on a
   Mac the fleet's tunnel helper.
-- **Not a second renderer.** The app hosts the same two components the monitor's page does (D2).
+- **Not a second renderer.** The app hosts the web app itself, the same two components in the same
+  chrome as the monitor's page (D2, revised by #s551).
 - **Not a sync service.** The app stores no session content beyond each machine's last list answer
   and what the components already cache.
 
@@ -628,7 +643,8 @@ sides and they are kept consistent.
 1. **The session list beyond one backend** (section 5, phase 1): the merged source in the kit and an
    optional `machine` field on a row (recommended), or a session list that takes N backends itself.
 2. **How the app learns a monitor's contract version** (section 5, embedding's step 2).
-3. **Writes** (D9, phase 3): in the first release with the rest, or read-only first (recommended).
+3. ~~**Writes** (D9, phase 3)~~: decided 2026-11-17, writes come with the web-app mount
+   (agent-monitor-app #s14, D9).
 4. **Machines reachable only by ssh** (D10, phase 4): the fleet's binary as the Mac app's tunnel
    helper (recommended: phase 0a found a sandboxed app's `ssh` cannot use the reader's keys), a Mac
    build signed outside TestFlight, `~/.ssh` granted through an open panel, or a key of the app's

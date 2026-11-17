@@ -84,23 +84,35 @@ The mount takes either `backend`, one handle (the monitor's page), or `machines`
 - ⌘K's rows name their machine;
 - write mode asks the row's machine whether it is paired, never the page;
 - the address names the merged id (`<machine>/<id>`);
-- the sidebar's head carries a Machines control that calls `onMachines()`, the app's own screen for
-  pairing, forgetting and each machine's state.
+- a Machines control calls `onMachines()`, the app's own screen for pairing, forgetting and each
+  machine's state. It is drawn only where `onMachines` is given. In the sidebar's head it takes the
+  theme toggle's slot, which the app leaves free (`show.theme`, below), so the head keeps the count
+  of controls #223 and #210 measured at its 232px minimum. On the rail it is a glyph after search;
+  in the drawer and a wide phone's column it is where the head's controls are there. Each place is
+  hit-tested at the list's minimum width, as `the_app_shell_resizes_the_session_list` does for the
+  head today.
 
 The "By device" arrangement (D7) comes with phase 2, in the list.
 
 ### What only the native app is given
 
-Each option below is one Hong's yes named. Each is declared in the kit, held by its declaration test
-and a contract case, and offered to the native app only, as `frame` is today (#s436: "the owner
-controls both sides").
+Each option below is declared in the kit, held by its declaration test and a contract case, and
+offered to the native app only, as `frame` is today (#s436: the owner controls both sides). Which of
+them the plan Hong agreed to already named, and which need his ruling, is in "What needs a ruling".
+Each is an option of the mount, which hands it to the list or the view inside; none is a handle's,
+so no other host is offered it.
 
 - **`frame`**: an agent's HTML page in a frame on the app's own scheme, passed to the view as now.
   With it, `onFrameGone(id)`: the view says when no frame shows a page any longer, so the app can
   drop that page (agent-monitor-app #s9's note).
 - **`assets`**: where mdrev's bundle and the Mermaid runtime load from, apart from each machine's
   routes. The app bundles the releases the kit pins (D3: no code from a machine runs in the page).
-  This replaces the app's wrapped `url` and `mdrevUrl` members.
+  Today the view takes both from its handle: mdrev's bundle and its routes through one base
+  (`mdrevUrl`, in `mdrev-pane.js`), and the Mermaid runtime through `url` from the page's
+  `mermaid-runtime` meta (`session-view.js`). So the app wraps each handle to send those few paths
+  to its bundle. With `assets` the mount passes the view where the code loads from, and every
+  route, mdrev's included, still goes through the row's handle. The wrapped `url` and `mdrevUrl`
+  members go.
 - **The theme**: the app gives it, `theme: "system"` to follow the device's appearance, or
   `"light"` or `"dark"` from a setting of its own and `setTheme` as that changes. It switches the
   mount's own toggle off (`show.theme`, below).
@@ -112,9 +124,12 @@ controls both sides").
   relay into the share sheet (agent-monitor-app #s3), and the sheet that asks before a link leaves
   the app (#s12). The app's walk holds both. An option is added only if a measurement shows the
   page's own path does not reach those rules.
-- **Machines and pairing**: `machines` and `onMachines`, above, and `local` declared among
-  `backendHandle`'s options. The function takes it already, but the kit does not declare it; the
-  app passes `local: false`, since nothing on a phone is local (D8).
+- **Machines and pairing**: `machines` and `onMachines`, above.
+- **Locality**: `backendHandle` takes `local` already but the kit does not declare it, so the app
+  passes it from outside the guide (`local: false`: nothing on a phone is local, D8). Declaring it
+  would offer it to every host, which is why it is listed for a ruling.
+- **Native mode**: the mount's handle carries no installer for Codex native mode in the kit. The
+  monitor's page installs it as now, and the app goes without it (D9).
 
 So each of the app's four reaches past the guide goes:
 - `frame` becomes the mount's declared option.
@@ -128,7 +143,8 @@ So each of the app's four reaches past the guide goes:
 The mount takes `show`, as the view does: the view's optional controls (`reading`, `history`,
 `detach`), and two more:
 - `review`: shared review's full-screen sheet on a phone, which writes to colleagues' threads. The
-  native app is read-only until Hong decides otherwise (D9), so it passes `review: false`.
+  writes Hong chose for the app (agent-monitor-app #s14) are the compose box, dialog answers and pane
+  grants; shared review reaches other people, so the app passes `review: false` until he asks for it.
 - `theme`: the theme toggle, off where the app gives the theme.
 
 It passes `detach: false` too, until detached windows come (phase 4). Switching an optional control
@@ -136,9 +152,11 @@ off is a choice #s436 already gives every host.
 
 ### Writes
 
-The mount takes `write` as the view does. Whether the native app turns it on is Hong's choice on
-agent-monitor-app #s14 (D9). With writes off, the mount draws no write switch and no compose box,
-and the relay still refuses every write (D3).
+The mount takes `write` as the view does. Hong chose on agent-monitor-app #s14 (2026-11-17) that the
+app writes from the moment it mounts the web app: the compose box, dialog answers and pane grants, as
+on the web app, each under that machine's own gate and grant. Write mode's switch asks the row's
+machine whether it is paired (above). The relay passes the page's write routes and still refuses
+every frame's (D3). A host that passes no `write` gets no write switch and no compose box.
 
 ### What stays the native app's
 
@@ -150,30 +168,47 @@ the mount's, as in a browser.
 ## What needs a ruling
 
 hd-replay pointed out that the kit offers a host only what Hong has ruled it may change
-(`VIEW_WITHHELD` and `LIST_WITHHELD` in `claude-monitor/src/kit.rs`). So each item is checked
-against what he has said:
+(`VIEW_WITHHELD` and `LIST_WITHHELD` in `claude-monitor/src/kit.rs`). The plan Hong agreed to on
+2026-11-17 named the web app as one mount, from the same code the monitor serves, and these
+native-app options: the app's frame for agent pages, saving a file to the share sheet, links out
+through a sheet, the scripts loading from the bundle, the machines (pairing, the one list, By
+device), and the theme. Anything more comes to him as one decision before it is built (his "sounds
+good" to that, logged on #s551).
 
-| Item | Covered by |
+Writes are decided: they come with the mount (agent-monitor-app #s14, D9).
+
+**Named in the plan he agreed to:**
+
+| Item | Where in the plan |
 |---|---|
-| The web app as one mount, the monitor's page its first host | His yes, 2026-11-17 ("the same code the monitor serves") |
-| `machines`, `onMachines`, the merged list, `local` declared | His yes ("the machines: pairing, the one list, By device"); #s539 A; D8 |
-| `frame` and `onFrameGone` | His yes ("the app's frame for agent pages"); #s436 |
-| `assets` | His yes ("the scripts loading from the bundle") |
-| The theme from the app | His yes ("the theme") |
-| Saves and links out | His yes; no option, the app's own rules |
-| `show.review`, `show.theme` | #s436 (any optional control may be switched off) |
-| Writes | Open: agent-monitor-app #s14 |
+| `mountApp`, with the monitor's page its first host | the web app as one mount, from the same code |
+| `machines` and the merged list | the machines: the one list (and #s539 A) |
+| `frame` | the app's frame for agent pages (and #s436) |
+| `assets` | the scripts loading from the bundle |
+| The theme from the app (`theme: "system"`, `setTheme`) | the theme |
+| Saves and links out, with no option | the share sheet; links out through a sheet |
 
-Nothing else is offered. If review finds an item none of these covers, it goes to him as one
-decision with a recommendation before it is built.
+**For his ruling, each with a recommendation:**
+
+| Item | What it adds | Recommended |
+|---|---|---|
+| `onMachines` and the Machines control | a control in the list's chrome that only the app draws | yes: pairing is in the plan, and the app has no other way into its own screens over a full-page mount |
+| `onFrameGone` | an event out, for the frame only | yes: without it the app keeps every agent page a session ever framed |
+| `show.review` | Review made an optional control | yes: shared review writes to colleagues' threads, beyond the writes Hong chose for the app |
+| `show.theme` | the theme toggle made an optional control | yes, with the theme from the app; else two controls set one theme |
+| `local` declared on `backendHandle` | a handle option every host is offered | yes: it only says what the handle already reads, and a host that frames the parts on another origin needs it too |
+
+These go to him as one decision once this design has been reviewed, filed in this queue.
 
 ## Details for the stages
 
 - **The address on the app's scheme.** The mount writes `?session=` and pushes history, as the web
-  app does. Whether a `WKWebView` page on a custom scheme keeps both is measured in stage 4's walk.
+  app does. Whether a `WKWebView` page on a custom scheme keeps both is measured now, in the app's current
+  page, before stage 2 starts: if it does not, the mount takes the address as an option there.
   The app today also remembers the last session in storage and opens it at launch, since its page
   always loads with no address. Where the address names no session, the mount opens the first, as
-  the web app does; whether it should open the remembered one instead is settled in stage 4.
+  the web app does; whether it should open the remembered one instead is settled with that
+  measurement.
 - **Storage keys.** The mount keeps the web app's keys. On the app's scheme they are the app's
   alone. A key that holds a session id holds the merged id there.
 - **mdrev's pin.** The app bundles the mdrev release the kit names (`pins.js` today), so the pin
@@ -188,7 +223,8 @@ decision with a recommendation before it is built.
 3. **Machines in the mount**, on #s541: `machines`, `onMachines`, ⌘K, write mode per machine, the
    view remounted per row. A browser case with two hermetic monitors. Released.
 4. **The native options**: `frame` with `onFrameGone`, `assets`, the theme from the app,
-   `show.review` and `show.theme`, `local` declared.
+   `show.review` and `show.theme`, `local` declared, the Machines control, each once Hong has
+   ruled on it.
    The kit's declarations, a guide section, and kit.rs's list of what only the native app is given.
    A kit page case mounts it under the app's policy. Released.
 5. **agent-monitor-app #s13** mounts it and drops its own chrome.
@@ -202,5 +238,7 @@ Each stage lands on its own, with the monitor's page working at every step.
 - **The kit page:** `mountApp` from the kit alone, over two hermetic monitors: one merged list,
   each machine's rows opening on their own machine, ⌘K naming machines, a stopped machine's rows
   greyed, scripts allowed from the kit only.
+- **The Machines control:** hit-tested in the head at the list's 232px minimum, on the rail, in the
+  drawer and in a wide phone's column, as the head's other controls are.
 - **The width study** (#s517) run on the kit page as on the monitor's.
 - **The app's walk** on the Simulator: an iPhone upright and sideways, and an iPad, light and dark.

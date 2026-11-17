@@ -197,8 +197,9 @@ by the native app (#s407). None can drift from the others.
 
 Each release publishes a kit beside its binaries, with its digest, as mdrev does. It holds:
 
-- the module: the two components, and the detached page from a later kit;
-- its stylesheet;
+- the module: the two components, and the detached page from a later kit; from step 9 the web
+  app's mount, for the native app, with the markup of the app's shell;
+- its stylesheets (from step 9, the app shell's too);
 - type declarations;
 - the contract and the guide;
 - the conformance check.
