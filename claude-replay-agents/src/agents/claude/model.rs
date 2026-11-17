@@ -2716,6 +2716,13 @@ const QWENWORK_BASH_BACKGROUNDED_SHAPE: &[&str] = &[
 /// tool_result marked `is_error`.
 const QWENWORK_TOOL_ERROR_SHAPE: &[&str] = &["errorType", "isHardFailure"];
 
+/// Every key a Qwenwork tool's cancelled call was met with (#s549, client 1.1.71, measured
+/// 2026-11-17 on aries-black: 1 result, an AskUserQuestion the reader cancelled): `{kind:
+/// "tool-status", status: "cancelled", summary: "User cancelled.", isHardFailure: false}`, on a
+/// tool_result marked `is_error` whose text is the client's refusal sentence. The client's source
+/// builds it for any tool it cancels, with `status` "cancelled" or "denied".
+const QWENWORK_TOOL_STATUS_SHAPE: &[&str] = &["isHardFailure", "kind", "status", "summary"];
+
 /// Every key a Qwenwork Agent (sub-agent spawn) result was met with (#s65, client 1.1.59, measured
 /// 2026-10-09 over all 10 in the store): `{kind, agentId, agentType, content, state,
 /// terminateReason, outputPath, transcriptPath}`, plus `apiError` on the one that failed. `kind` is
@@ -2966,6 +2973,22 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // known in this shape only. REVISIT: on a result NOT marked `is_error`, or a class whose text
     // does not state it.
     ("errorType", QWENWORK_TOOL_ERROR_SHAPE),
+    // #s549 (Qwenwork 1.1.71, 1 result measured 2026-11-17 on aries-black): a cancelled call's
+    // `kind` ("tool-status"), the type tag of `{kind, status, summary, isHardFailure}`, whose other
+    // three are flat-known. The one met was an AskUserQuestion the reader cancelled: its
+    // tool_result is marked `is_error` and its text is the refusal sentence, so the card already
+    // reads "No answer", declined in the agent client (`refused`, #281), which is what `status`
+    // "cancelled" says. The client's source names two statuses, "cancelled" and "denied"; its
+    // summary is "User cancelled.", "Operation cancelled." or the cancel message itself. A generic
+    // word, so known in this shape only. REVISIT: (1) a tool-status result whose text does NOT
+    // carry the refusal sentence (a cancel path whose text is the cancel message, or empty): the
+    // card would say the question failed where the client says the reader cancelled, and `refused`
+    // should take status cancelled or denied on a tool-status result as the refusal; (2) a status
+    // other than cancelled or denied; (3) `isHardFailure` true; (4) the shape on a tool other than
+    // AskUserQuestion or an edit tool (whose refusal text already reads Declined), where `is_error`
+    // makes the call Failed although ToolStatus has Cancelled and Declined: judge then whether a
+    // cancelled Bash or Read should read Cancelled.
+    ("kind", QWENWORK_TOOL_STATUS_SHAPE),
     // #s65 (Qwenwork 1.1.59): a sub-agent result's five keys nothing renders, each generic enough
     // to mean something else on another tool, so each is known only in this shape. `kind` is a type
     // tag (the block is a SubAgent by its tool name). `terminateReason` pairs with `state`, which
@@ -8967,6 +8990,10 @@ mod tests {
             ask("t5"),
             r#"{"type":"user","toolUseResult":{"questions":[],"answers":{"Cut it now?":"Yes"},"annotations":{}},"message":{"content":[{"type":"tool_result","tool_use_id":"t5","content":"The user answered: \"Cut it now?\"=\"Yes\"."}]}}"#.to_string(),
             ask("t6"),
+            // #s549: Qwenwork 1.1.71 records a question the reader cancelled as a tool-status
+            // result beside the refusal sentence; it reads as declined, as Claude Code's does.
+            ask("t7"),
+            format!(r#"{{"type":"user","version":"1.1.71","toolUseResult":{{"kind":"tool-status","status":"cancelled","summary":"User cancelled.","isHardFailure":false}},"message":{{"content":[{{"type":"tool_result","tool_use_id":"t7","is_error":true,"content":"{refusal}"}}]}}}}"#),
         ]
         .join("\n");
         fn asks(blocks: &[Block], out: &mut Vec<Option<Unanswered>>) {
@@ -8991,9 +9018,10 @@ mod tests {
                 Some(Unanswered::Failed),
                 None,
                 None,
+                Some(Unanswered::Declined),
             ],
             "timed out; declined, both ways the client records it; a failure that is not a \
-             refusal; answered; and still waiting (no result yet)"
+             refusal; answered; still waiting (no result yet); and Qwenwork's cancelled question"
         );
     }
 
@@ -11759,6 +11787,22 @@ mod tests {
             ),
             vec!["totalBytes"]
         );
+    }
+
+    /// #s549: a Qwenwork cancelled call's `{kind, status, summary, isHardFailure}` (client 1.1.71)
+    /// reports nothing; beside a key that shape lacks, `kind` is reported again with that key.
+    #[test]
+    fn qwenwork_tool_status_is_known_only_in_its_shape() {
+        let cancelled = serde_json::json!({"kind": "tool-status", "status": "cancelled", "summary": "User cancelled.", "isHardFailure": false});
+        assert_eq!(
+            unknown_tool_result_keys(&cancelled),
+            Vec::<&str>::new(),
+            "{cancelled}"
+        );
+        let stray = serde_json::json!({"kind": "tool-status", "status": "denied", "summary": "Operation cancelled.", "isHardFailure": false, "somethingNew": 1});
+        let mut reported = unknown_tool_result_keys(&stray);
+        reported.sort_unstable();
+        assert_eq!(reported, vec!["kind", "somethingNew"], "{stray}");
     }
 
     /// #s16: the findings a client puts in the model's context after a tool call are one note — the
