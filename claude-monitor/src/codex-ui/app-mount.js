@@ -37,7 +37,8 @@ let appMounted = false;
 /** Draw the web app into `element`, a wrapper the page gives it (design/app-mount.md, "One entry
  *  point, once per page"): the app's `#app` and its three fixed layers (⌘K's, the confirm dialog and
  *  the toast) go in as siblings, as the page's body held them, and the wrapper draws no box of its own
- *  (`.app-mount`). The element must be empty (nothing in it but white space). It returns nothing: no
+ *  (`.app-mount`). The element must be on the page and empty (nothing in it but white space), and the
+ *  page must hold no `#app` of its own, since the app finds its elements by id. It returns nothing: no
  *  member changes a mounted app. It is called once per page and never undone, since the web app is
  *  built on what a page has one of (its stores, the page's backend handle, mdrev's bundle, the ids it
  *  finds its elements by, the document's keymap, the address and the storage keys); a second call
@@ -50,13 +51,16 @@ let appMounted = false;
  *  - `version`: the release the brand names (`v<version>`), "dev" without one. */
 export function mountApp(element, options = {}) {
 if (appMounted) throw new Error("mountApp draws the web app once per page, and this page holds it already");
-for (const name of Object.keys(options)) if (!MOUNT_OPTIONS.includes(name)) throw new Error(`mountApp takes no option named ${name}; its options are ${MOUNT_OPTIONS.join(", ")}`);
 /** A value as a refusal names it: its JSON, or its kind where it has none (a function, a BigInt). */
 const said = value => { try { return JSON.stringify(value) ?? `a ${typeof value}`; } catch { return `a ${typeof value}`; } };
+if (options === null || typeof options !== "object" || Array.isArray(options)) throw new Error(`mountApp takes its options as an object, not ${said(options)}`);
+for (const name of Object.keys(options)) if (!MOUNT_OPTIONS.includes(name)) throw new Error(`mountApp takes no option named ${name}; its options are ${MOUNT_OPTIONS.join(", ")}`);
 if (options.backend == null) throw new Error("mountApp needs its backend: the server the web app reads, as a backend handle (backendHandle())");
 if (typeof options.backend.fetch !== "function") throw new Error(`mountApp takes its backend as a backend handle (backendHandle()), not ${said(options.backend)}`);
 if (options.version != null && typeof options.version !== "string") throw new Error(`mountApp takes its version as a string, the release its brand names, not ${said(options.version)}`);
 if (!element) throw new Error("mountApp draws into an element the page gives it, and none was given");
+if (!element.isConnected) throw new Error("mountApp draws into an element on the page, and this one is not on it");
+if (page.byId("app")) throw new Error("mountApp draws the web app's #app, and this page holds one already");
 if ([...element.childNodes].some(node => !(node.nodeType === 3 && !node.data.trim()))) throw new Error("mountApp draws into an empty element; this one holds the host's nodes");
 appMounted = true;
 useBackend(options.backend);

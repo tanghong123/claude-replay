@@ -1,7 +1,7 @@
 // The session view (#s429, design/session-view-component.md, stage 3): the transcript and its
 // viewport, the turn bar and search, the outline panes, the artifact pane, the compose box and its
 // dialogs, and the phone's dock and sheets — everything of one session, behind one entry point,
-// `mountSessionView`. The app shell (app.js) mounts it as a host would and keeps only what is the
+// `mountSessionView`. The app shell (app-mount.js) mounts it as a host would and keeps only what is the
 // app's: the session list, the drawer and the rail, the brand, the theme, the session search and the
 // toast. What the view needs from the app comes in as options; what the app asks of it is the handle.
 //
@@ -728,7 +728,7 @@ function renderParent(meta) {
   parentBtn.dataset.parent = parent?.id || "";
   parentBtn.title = parent ? `Back to the parent session: ${parent.title || parent.id}  ( ${hintFor("parent")} )` : "Back to the parent session";
   // A deep-linked child gets a history entry for its parent, so the browser's own Back goes there
-  // too: the app's to write, since the session's address is its (`parentShown` in app.js).
+  // too: the app's to write, since the session's address is its (`parentShown` in app-mount.js).
   if (parent) options.parentShown?.(parent.id);
   return parent;
 }
@@ -3896,7 +3896,7 @@ function pageTranscript(direction) {
   viewport.pageBy(direction, { intent: true });
 }
 // The view's half of the keymap, by the keymap's action names: the handle's `keys`. In the app
-// (`keyboard: "page"`) the app binds the page's keys and adds the list's (app.js); engaged, the view
+// (`keyboard: "page"`) the app binds the page's keys and adds the list's (app-mount.js); engaged, the view
 // binds them itself (below).
 const keyActions = {
   // `/`, and ⌘F or Ctrl+F (#s509), from the compose box too: the field focused with its query
@@ -3926,7 +3926,7 @@ if (!shows("reading")) for (const action of ["wrap", "size-down", "size-up"]) de
 // (the list's arrows, `\`) or one that answers `false` is left to the page. It listens in the capture
 // phase, so a host's own listener on the page, bound before the view's, finds the key already taken
 // (`defaultPrevented`) rather than acting on it beside the view. "page" binds nothing: the host
-// routes the page's keys to `keys` (app.js).
+// routes the page's keys to `keys` (app-mount.js).
 if (keyboardMode === "engaged") {
   document.addEventListener("keydown", event => {
     if (!engaged || !element.isConnected) return;
@@ -4006,7 +4006,7 @@ var sessionLoading;
 //    after), so the outline's rendering, its filters and its one click handler serve both.
 //  - `--phone-top`, the bar's measured bottom, places the sheets that hang from the top (Info);
 //    `--phone-bottom`, the dock's top, the sheets that rise from the pill.
-// The drawer and a wide phone's column are the app's (app.js); the rest of the shell is the view's.
+// The drawer and a wide phone's column are the app's (app-mount.js); the rest of the shell is the view's.
 var mobileShell;
 var infoPopoverToggle;
 var phoneDock;

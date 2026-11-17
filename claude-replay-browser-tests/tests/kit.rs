@@ -297,7 +297,9 @@ fn the_web_app_mounts_from_the_kits_second_entry_with_its_own_server_and_version
     );
     let row = harness::probe(
         &tab,
-        &format!("!!document.querySelector('#sessionList .tree-row.session[data-session=\"{SID}\"]')"),
+        &format!(
+            "!!document.querySelector('#sessionList .tree-row.session[data-session=\"{SID}\"]')"
+        ),
     );
     let asks_before_write = harness::probe(&tab, "window.__host.asks.slice()");
     let write = harness::probe(
@@ -329,11 +331,19 @@ fn the_web_app_mounts_from_the_kits_second_entry_with_its_own_server_and_version
         "the kit's second entry gives the mount alone, which refuses before it draws, draws the app's \
          shell into the wrapper, opens the first session and names the mount's version"
     );
-    assert_eq!(row, serde_json::json!(true), "the session is listed in the mount's list");
+    assert_eq!(
+        row,
+        serde_json::json!(true),
+        "the session is listed in the mount's list"
+    );
     let asks: Vec<String> = serde_json::from_value(asks_before_write).unwrap();
     assert!(
         asks.iter().any(|path| path == "/api/sessions"),
         "the list reads its index through the mount's own server: {asks:?}"
+    );
+    assert!(
+        asks.iter().any(|path| path == "/pull"),
+        "and the view its session's records: {asks:?}"
     );
     assert_eq!(
         write,

@@ -694,7 +694,7 @@ export function arrangedGate(sel, alternatives, body = "") {
 }
 
 /** #s431 stage 3 (design/pane-layout.md, "The owner's order"). The app lays out its list by the order
- *  (`arrangeApp`, set on `#app` by app.js), so the app's rules under the phone's window query read
+ *  (`arrangeApp`, set on `#app` by app-mount.js), so the app's rules under the phone's window query read
  *  what the order decided instead of the window:
  *
  *  - **The drawer.** A rule for the list's parts, its handle and scrim, or the app's grid stands where

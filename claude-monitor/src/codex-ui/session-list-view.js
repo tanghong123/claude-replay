@@ -1,7 +1,7 @@
 // The session list (#s430, design/session-list-component.md, stage 2): the sessions to show, their
 // state, project and agent, the filter and the arrangements, the collapsed rail's agent marks and
 // their flyout, and the list keys, behind one entry point, `mountSessionList`. The app shell
-// (app.js) mounts it the way a host would and answers what it says (`onOpen`); session-list.js keeps
+// (app-mount.js) mounts it the way a host would and answers what it says (`onOpen`); session-list.js keeps
 // the helpers the list draws with, which touch no page. The list's code moved here line for line
 // from app.js, at the margin, as the session view's did (design/session-view-component.md, stage 3).
 import { agentLogo, svg } from "./icons.js";

@@ -20,6 +20,8 @@ agent-monitor-kit-{{version}}/
     session-list.css         the list's, every rule under #sessionList
     *.js, shared/*.js        the modules index.js imports, byte for byte as agent-monitor
                              {{version}} serves them at /monitor-ui/
+    other files              agent-monitor's own apps' (app-shell.css among them): a host
+                             loads none of them
   docs/
     embedding-guide.md       this guide
     backend-contract.md      the routes the parts read, contract version {{contract}}

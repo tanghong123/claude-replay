@@ -403,8 +403,7 @@ mod tests {
     /// `frame` is"): `mountApp` itself is withheld, exported from the second entry alone, and so is
     /// every option it takes, its own list (`MOUNT_OPTIONS` in app-mount.js) and this one kept in
     /// step. A name the view or the list also takes (`backend`) is declared for them; the rest are
-    /// the mount's alone and appear in neither the declarations nor the guide. Each later stage adds
-    /// its options to both lists.
+    /// the mount's alone and declared for neither. Each later stage adds its options to both lists.
     const APP_WITHHELD: [&str; 2] = ["backend", "version"];
 
     /// The declarations follow each component's own lists: every option it takes but the ones the
@@ -480,11 +479,10 @@ mod tests {
             .into_iter()
             .chain(frozen_list(list, "MOUNT_OPTIONS"))
             .collect();
+        // What only the mount takes is declared for neither component. Its names are words other
+        // calls may take too (`backendHandle` takes a `version`), so the declarations and the guide
+        // are read for the mount itself, above, rather than for the bare words.
         for name in APP_WITHHELD.iter().filter(|n| !components.contains(**n)) {
-            assert!(
-                !GUIDE.contains(&format!("`{name}`")),
-                "the guide offers no option of the mount's alone: {name}"
-            );
             for interface in [
                 "SessionViewOptions",
                 "SessionListOptions",
@@ -496,10 +494,6 @@ mod tests {
                     "{interface} declares no option of the mount's alone: {name}"
                 );
             }
-            assert!(
-                !TYPES.contains(&format!("`{name}`")) && !TYPES.contains(&format!("{name}?:")),
-                "index.d.ts names no option of the mount's alone: {name}"
-            );
         }
         let doc = &view[view.find("Required: ").unwrap()..];
         let doc = &doc[..doc.find(". The rest").unwrap()];

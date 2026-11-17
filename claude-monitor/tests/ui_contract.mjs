@@ -5088,10 +5088,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // The guards, run over fakes: from the once check to the element's.
   const guards = /^(if \(appMounted\)[\s\S]*?this one holds the host's nodes"\);)$/m.exec(mountSource);
   assert.ok(guards, "the mount checks it is not drawn yet, its options and its element before it touches anything");
-  const guard = new Function("element", "options", "MOUNT_OPTIONS", "appMounted", `${guards[1]}\nreturn "drawn";`);
-  const empty = () => ({ childNodes: [{ nodeType: 3, data: "\n  " }] });
+  const guard = new Function("element", "options", "MOUNT_OPTIONS", "appMounted", "page", `${guards[1]}\nreturn "drawn";`);
+  const empty = () => ({ isConnected: true, childNodes: [{ nodeType: 3, data: "\n  " }] });
   const handle = { base: "/m", paired: true, fetch: () => {} };
-  const mount = (options, element = empty(), mounted = false) => { try { return guard(element, options, MOUNT, mounted); } catch (error) { return `refused: ${error.message}`; } };
+  const bare = { byId: () => null };
+  const mount = (options, element = empty(), mounted = false, onPage = bare) => { try { return guard(element, options, MOUNT, mounted, onPage); } catch (error) { return `refused: ${error.message}`; } };
   assert.equal(mount({ backend: handle }), "drawn", "a backend handle is all it needs");
   assert.equal(mount({ backend: handle, version: "1.2.3" }), "drawn", "and a version for its brand");
   assert.equal(mount({ backend: handle, version: null }), "drawn", "a version left empty is none");
@@ -5104,9 +5105,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     [{ backend: handle, theme: "dark" }, "no option named theme"],
     [{ backend: handle, frame: () => "" }, "no option named frame"],
   ]) assert.match(String(mount(options)), new RegExp(`^refused: .*${why}`), `refused: ${why}`);
+  for (const [options, why] of [[null, "as an object, not null"], ["/m", "as an object, not \"/m\""], [[handle], "as an object"]]) {
+    assert.match(String(mount(options)), new RegExp(`^refused: .*${why}`), `options that are no object are refused: ${why}`);
+  }
   assert.match(String(mount({ backend: handle }, null)), /^refused: .*none was given/, "no element is refused");
-  assert.match(String(mount({ backend: handle }, { childNodes: [{ nodeType: 1 }] })), /^refused: .*host's nodes/, "and one holding the host's nodes");
-  assert.match(String(mount({ backend: handle }, { childNodes: [{ nodeType: 8, data: "" }] })), /^refused: .*host's nodes/, "a comment too");
+  assert.match(String(mount({ backend: handle }, { isConnected: false, childNodes: [] })), /^refused: .*not on it/, "nor one off the page, whose ids the app could not find");
+  assert.match(String(mount({ backend: handle }, empty(), false, { byId: id => (id === "app" ? {} : null) })), /^refused: .*holds one already/, "nor on a page holding an #app of its own, which the app would take for its own");
+  assert.match(String(mount({ backend: handle }, { isConnected: true, childNodes: [{ nodeType: 1 }] })), /^refused: .*host's nodes/, "and one holding the host's nodes");
+  assert.match(String(mount({ backend: handle }, { isConnected: true, childNodes: [{ nodeType: 8, data: "" }] })), /^refused: .*host's nodes/, "a comment too");
   assert.match(String(mount({ backend: handle }, empty(), true)), /^refused: .*once per page/, "a second call throws, whatever it passes");
   assert.match(mountSource, /this one holds the host's nodes"\);\nappMounted = true;\nuseBackend\(options\.backend\);\nelement\.classList\.add\("app-mount"\);\nelement\.innerHTML = APP_SHELL_MARKUP;\n/, "the page counts as holding the app only once every guard has passed, and nothing is drawn before");
   // Its own server and version, never the page's.
