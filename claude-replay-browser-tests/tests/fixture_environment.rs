@@ -289,3 +289,55 @@ fn the_stranded_monitor_reaper_matches_the_whole_port() {
     assert!(!on("--port 13276"));
     assert!(!on("--no-open"));
 }
+
+/// #s525: a read of `~/Downloads` that never answers (a macOS privacy prompt nobody was there to
+/// answer held one in the kernel for two hours) is given up after its wait, and the guard checks
+/// nothing rather than holding the case.
+#[test]
+fn a_downloads_read_that_never_answers_is_given_up_after_its_wait() {
+    let (hold, held) = std::sync::mpsc::channel::<()>();
+    let wait = std::time::Duration::from_millis(300);
+    let start = std::time::Instant::now();
+    let names = harness::list_names_with(
+        std::path::Path::new("/nowhere/Downloads"),
+        wait,
+        move |_| {
+            let _ = held.recv();
+            Ok(Default::default())
+        },
+    );
+    let took = start.elapsed();
+    drop(hold);
+    assert!(
+        names.is_none(),
+        "a read that never answered checks nothing: {names:?}"
+    );
+    assert!(
+        took >= wait && took < wait * 10,
+        "given up after its wait, not before it or long after: {took:?}"
+    );
+}
+
+/// #s525: where the folder answers, the guard is what it was (#s254): a file the developer
+/// downloads meanwhile passes, and a file named like the case's fails the case.
+#[test]
+fn the_downloads_guard_still_fails_a_save_where_the_folder_answers() {
+    let dir = std::env::temp_dir().join(format!("cr-home-downloads-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("old.txt"), b"x").unwrap();
+    let guard = harness::HomeDownloads::of(Some(dir.clone()), harness::DOWNLOADS_READ_WAIT);
+    std::fs::write(dir.join("unrelated.pdf"), b"x").unwrap();
+    guard.assert_gained_nothing_like("tour");
+    std::fs::write(dir.join("tour.mp4"), b"x").unwrap();
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        guard.assert_gained_nothing_like("tour")
+    }));
+    std::fs::remove_dir_all(&dir).unwrap();
+    let panic = caught.expect_err("a save into the folder fails the case");
+    let text = panic.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(
+        text.contains("tour.mp4"),
+        "the failure names the file: {text}"
+    );
+}
