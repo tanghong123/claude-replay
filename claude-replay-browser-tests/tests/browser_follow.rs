@@ -21511,7 +21511,8 @@ fn off_the_phone_a_press_outside_closes_the_filter_menu_and_keeps_the_query() {
     // A point inside `selector` whose element has nothing to press between it and `selector` (no
     // control, link, fold or field), so a real press there presses nothing but the place.
     let plain_point = |selector: &str| -> (f64, f64) {
-        let found = harness::eval(
+        // `probe`, not `eval`: an array comes back from CDP by reference, which `eval` reads as null.
+        let found = harness::probe(
             &tab,
             &format!("(function(){{ var box = document.querySelector('{selector}'); if (!box) return null; var r = box.getBoundingClientRect(), seen = []; for (var fy = 0.15; fy < 0.95; fy += 0.07) for (var fx = 0.05; fx < 0.95; fx += 0.06) {{ var x = r.left + r.width * fx, y = r.top + r.height * fy, e = document.elementFromPoint(x, y); if (!e || !box.contains(e)) continue; var c = e.closest('button, a, input, label, select, textarea, summary, mark, [role=button], [data-scope], [data-tool], [data-fold], [data-reference-path], [tabindex]'); if (c && c !== box && box.contains(c)) {{ seen.push((c.id || c.className || c.tagName) + ''); continue; }} return [x, y]; }} return {{ none: seen.slice(0, 8) }}; }})()"),
         );
