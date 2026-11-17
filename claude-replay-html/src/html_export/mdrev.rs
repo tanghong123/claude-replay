@@ -1175,19 +1175,19 @@ fn notes_add(rel: &Release, d: &Doc, req: &Request, viewer: Option<&Viewer>) -> 
     if let Some(r) = req.deny_mutation("POST") {
         return r;
     }
+    // The record must be a JSON object read whole here (#s558): what this side cannot read, it
+    // cannot check, so it goes no further than this.
+    let Ok(Value::Object(record)) = serde_json::from_slice::<Value>(req.body) else {
+        return status("400 Bad Request", error("a note is a JSON object"));
+    };
     // A note filed `shared: true` opens a thread in the review store (#s10) — the detached tab's to
     // do, never the pane's, whatever a request says (mdrev-cli refuses it under the notes key too).
-    if !shares(viewer)
-        && serde_json::from_slice::<Value>(req.body)
-            .ok()
-            .and_then(|b| b.get("shared").and_then(Value::as_bool))
-            == Some(true)
-    {
+    if !shares(viewer) && record.get("shared").and_then(Value::as_bool) == Some(true) {
         return HttpResponse::forbidden("shared review is not offered here");
     }
     // The viewer never sends a `blob`: mdrev-cli makes it from the document's text. One a request
     // sends is dropped (#s558), since `snapshot` reads the blob a note names.
-    let body = without_blob(req.body);
+    let body = without_blob(req.body, record);
     let _one_at_a_time = document_lock(d);
     let mut args = vec!["notes", "add", "--path", &d.rel];
     if viewer.is_some() {
@@ -1200,15 +1200,13 @@ fn notes_add(rel: &Release, d: &Doc, req: &Request, viewer: Option<&Viewer>) -> 
     status("201 Created", out.out)
 }
 
-/// A note's record as the viewer built it, with any `blob` taken out; a body that is not a JSON
-/// object goes as it came, for mdrev-cli to refuse.
-fn without_blob(body: &[u8]) -> Vec<u8> {
-    match serde_json::from_slice::<Value>(body) {
-        Ok(Value::Object(mut record)) if record.contains_key("blob") => {
-            record.remove("blob");
-            Value::Object(record).to_string().into_bytes()
-        }
-        _ => body.to_vec(),
+/// A note's record (`body`, read as `record`) with any `blob` taken out: written again only when it
+/// carried one, else the bytes as they came.
+fn without_blob(body: &[u8], mut record: serde_json::Map<String, Value>) -> Vec<u8> {
+    if record.remove("blob").is_some() {
+        Value::Object(record).to_string().into_bytes()
+    } else {
+        body.to_vec()
     }
 }
 
@@ -3119,6 +3117,27 @@ esac
             sent,
             json!({"body":"x","anchor":{"exact":"One"}}),
             "the record on stdin, without the blob"
+        );
+        // A body this side cannot read whole is refused, never passed on with what it holds: a
+        // number out of range, a byte that is not UTF-8, a list, no JSON at all.
+        let out_of_range =
+            format!("{{\"body\":\"x\",\"anchor\":{{\"exact\":\"One\"}},\"blob\":\"{unnamed}\",\"n\":1e400}}");
+        let mut not_utf8 = format!("{{\"body\":\"x\",\"blob\":\"{unnamed}\"}}").into_bytes();
+        not_utf8[9] = 0xff; // the `x` of the body
+        for (what, bad) in [
+            ("a number out of range", out_of_range.into_bytes()),
+            ("a byte that is not UTF-8", not_utf8),
+            ("a list", br#"[{"body":"x"}]"#.to_vec()),
+            ("no JSON", b"body=x".to_vec()),
+        ] {
+            let r = call(&f, &held, "annotations", &req("POST", &q, &bad, true));
+            assert_eq!(r.code, "400 Bad Request", "{what}");
+        }
+        assert_eq!(
+            serde_json::from_slice::<Value>(&std::fs::read(f.kit.join("stdin.json")).unwrap())
+                .unwrap(),
+            sent,
+            "none of them reached mdrev-cli"
         );
     }
 
