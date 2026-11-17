@@ -3429,13 +3429,19 @@ panesMenu.onclick = event => {
   nav.after(outlineFooter);
 
   const trigger = footerInfo;
+  // Both Info buttons open this one card, so each says whether it is open (#s548: the rail's never did).
+  const triggers = [trigger];
   let pinned = false;
   let closeTimer = 0;
   const show = open => {
     popover.classList.toggle("open", open);
-    trigger.setAttribute("aria-expanded", String(open));
+    for (const node of triggers) node.setAttribute("aria-expanded", String(open));
   };
   const peek = () => { clearTimeout(closeTimer); show(true); };
+  // A trigger holding focus keeps an unpinned card open only for a reader who reached it by keyboard
+  // (#s548): desktop Chrome focuses a button on a mouse press, so after a second click unpinned the
+  // card, the focus that click left behind kept it open as a peek until focus moved elsewhere.
+  const keyboardOn = node => triggers.includes(node) && node.matches(":focus-visible");
   // A touch sends pointerleave as the finger lifts, BEFORE its click (#s545). So a tap's
   // pointerleave starts this close, and its click pins the card inside the 140 ms: the close must
   // not outlive a pin.
@@ -3443,7 +3449,7 @@ panesMenu.onclick = event => {
     if (pinned) return;
     clearTimeout(closeTimer);
     closeTimer = setTimeout(() => {
-      if (!pinned && !popover.contains(viewRoot.active()) && viewRoot.active() !== trigger) show(false);
+      if (!pinned && !popover.contains(viewRoot.active()) && !keyboardOn(viewRoot.active())) show(false);
     }, 140);
   };
   for (const type of ["pointerenter", "focus"]) trigger.addEventListener(type, peek);
@@ -3474,8 +3480,13 @@ panesMenu.onclick = event => {
     // A press on it is not a press outside (#s545). Unmarked, a second press's pointerdown closed
     // the pinned card and its click pinned it again, so it never closed.
     railInfo.dataset.infoTrigger = "";
+    railInfo.setAttribute("aria-haspopup", "dialog");
+    railInfo.setAttribute("aria-expanded", String(popover.classList.contains("open")));
+    triggers.push(railInfo);
     for (const type of ["pointerenter", "focus"]) railInfo.addEventListener(type, peek);
-    railInfo.addEventListener("pointerleave", leave);
+    // Leaving it by keyboard closes a peek, as leaving the footer's does (#s548: a Tab onto the rail's
+    // Info and away left the card open, and nothing but a pin and a press outside could close it).
+    for (const type of ["pointerleave", "focusout"]) railInfo.addEventListener(type, leave);
     railInfo.addEventListener("click", pin);
   }
 }
