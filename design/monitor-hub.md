@@ -172,13 +172,15 @@ The handler, for a relayed request:
   names, with the path normalized first, so the page cannot reach anything that was not added. It
   follows no redirect: a redirect is handed back to the page as an answer. An entry usually holds a
   token; one for an unpaired monitor holds none (D8, D10);
-- in a read-only release (D9), passes only what read-only allows: the contract's reads (mdrev's
-  `resolve` among them, a POST that only reads, which the guest asks for every link and image in a
-  document), a session's hiding (`/api/ignore`), mdrev's held text (`hold`) and the reader's own
-  notes. Everything else is refused by the relay itself, among it `/api/send`, `/api/answer`,
-  `/api/dialog` (which reads only to answer), `/api/consent`, Codex native mode's `/api/codex/*`
-  (start, stop, send and the rest) and shared review's writes under `api/mdrev-review/`, so
-  read-only does not rest on the page hiding its controls;
+- until the app mounts the web app (agent-monitor-app #s13), passes only what read-only allows: the
+  contract's reads (mdrev's `resolve` among them, a POST that only reads, which the guest asks for
+  every link and image in a document), a session's hiding (`/api/ignore`), mdrev's held text
+  (`hold`) and the reader's own notes. Everything else is refused by the relay itself, among it
+  `/api/send`, `/api/answer`, `/api/dialog` (which reads only to answer), `/api/consent`, Codex
+  native mode's `/api/codex/*` (start, stop, send and the rest) and shared review's writes under
+  `api/mdrev-review/`. From that mount on it also passes the writes Hong chose (D9: the compose box,
+  dialog answers, pane grants and shared review's prefix), and still refuses Codex native mode's,
+  so neither stage rests on the page hiding its controls;
 - answers only the contract's data routes, never the monitor's own page, scripts or stylesheets
   (`/`, its UI modules, its mdrev bundle), so the app's main frame never runs code a machine sent;
 - never relays `/__reveal`, which opens the file manager on the machine that serves it, a side effect
@@ -433,7 +435,8 @@ Sandbox, and a sandboxed app cannot run `ssh` with the reader's keys (#s418, mea
 with only `network.client`): `/usr/bin/ssh` starts but inherits the sandbox, cannot load
 `~/.ssh/id_rsa` ("Operation not permitted") and cannot write `known_hosts`, and the app itself
 cannot list `~/.ssh`. A
-sandboxed app does reach a monitor on the loopback. So the plan: the fleet's binary stays on the Mac
+sandboxed app does reach a monitor on the loopback. So the plan, which Hong chose on 2026-11-17
+(agent-monitor-app #s15: "Fleet binary as the tunnel helper"): the fleet's binary stays on the Mac
 as the tunnel helper, outside the sandbox, opening and re-opening the tunnels as today, and the Mac
 app reaches each tunnelled monitor at the loopback port the helper opened:
 
@@ -534,8 +537,9 @@ his Apple account (#s413). Each item below is the owner's to approve when it com
 recommendation:
 
 - **The web app as one kit mount** (#s551, `design/app-mount.md`): Hong agreed to it on 2026-11-17,
-  with the native options his plan named; the further items that design lists go to him as one
-  decision.
+  with the native options his plan named, and ruled the same day on each item it raised beyond them:
+  writes (agent-monitor-app #s14), a Machines row (#s553), shared review (#s554) and Review on an
+  iPad (#s555). Anything more goes to him the same way.
 - **The kit's components and the backend contract** are `design/embedding.md`'s, decided there. The
   app relies on the contract across monitor versions (D2), which is what versioning it is for.
   Settled there since draft 3 (`design/embedding.md` at 52bfd821, by its author within the owner's
@@ -648,10 +652,9 @@ sides and they are kept consistent.
 2. **How the app learns a monitor's contract version** (section 5, embedding's step 2).
 3. ~~**Writes** (D9, phase 3)~~: decided 2026-11-17, writes come with the web-app mount
    (agent-monitor-app #s14, D9).
-4. **Machines reachable only by ssh** (D10, phase 4): the fleet's binary as the Mac app's tunnel
-   helper (recommended: phase 0a found a sandboxed app's `ssh` cannot use the reader's keys), a Mac
-   build signed outside TestFlight, `~/.ssh` granted through an open panel, or a key of the app's
-   own; and with the helper, the monitor's port in `/api/fleet` (recommended) or no `Host`. Then
-   whether the fleet's page retires (D12).
+4. **Machines reachable only by ssh** (D10, phase 4): decided 2026-11-17, the fleet's binary as the
+   Mac app's tunnel helper (agent-monitor-app #s15). Still open for phase 4: with the helper, the
+   monitor's port in `/api/fleet` (recommended) or no `Host`; then whether the fleet's page retires
+   (D12).
 5. **Notifications** (D11, phase 5): none in the first release (recommended), or pushes sent by each
    monitor.

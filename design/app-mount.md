@@ -1,10 +1,7 @@
 # The web app as one mount, for the native app
 
-> **DRAFT 4** (#s551, 2026-11-17). Not built. hd-replay reviewed draft 1 (3e0674bf,
-> `review-3e0674bf.md` on #s551), draft 2 (2b2f1531, `review-2b2f1531.md`) and draft 3 (643662fd,
-> clean). Draft 4 writes in Hong's two rulings of the same day, #s553 (a Machines row) and #s554
-> (shared review in the app), and his answer to the one question #s554 opened, Review on an iPad
-> (#s555).
+> **DRAFT 5** (#s551, 2026-11-17). Not built. Reviewed on #s551. It carries Hong's rulings of the
+> same day: #s553 (a Machines row), #s554 (shared review in the app) and #s555 (Review on an iPad).
 >
 > Hong's choice of 2026-11-17, closing agent-monitor-app #s9: *"I want the same experience as the
 > current web app on desktop and mobile, but need the native integration on ios devices"*, then
@@ -159,10 +156,23 @@ the page's keymap (`keyboard: "page"`, withheld today) unoffered: only `mountApp
 host is offered `mountApp`. A new kit category is not needed; whether `mountApp` should one day be
 offered to other hosts is a later question.
 
+That the kit carries the mount is Hong's yes on agent-monitor-app #s9 ("the kit ships the whole web
+app as one mount for the native app"): one artifact, one pin, the kit's tests holding every byte.
+The second entry is how the kit carries it while keeping it withheld. Two shapes outside the kit
+were weighed and set aside for that reason: the app building the mount from claude-replay's source
+tree at the pinned tag (its build would need this repository and its generated files, and the kit's
+tests would no longer hold what it ships), and a separate tarball beside the kit (a second artifact
+to publish, check and pin in step). The kit's `package.json` keeps `exports` naming `index.js`
+alone, so a host resolving the package reaches only what it is offered; the app loads
+`native-app.js` by its path in the bundle, as its page loads the kit's files under `/kit/` today.
+
 - **`frame`**: an agent's HTML page in a frame on the app's own scheme, passed to the view as now.
   No "frame gone" event is added. The view asks for a page's address once per tab and keeps it for
-  the tab's life, so the app may drop an address only when no tab can still hold it: when the web
-  view reloads, and when the mount moves the view to another machine.
+  the tab's life, so the app may drop an address only when no tab can still hold it, which it knows
+  only when the web view reloads. A remount on another machine (below) tells the app nothing, so the
+  addresses the old view asked for stay in the app's store until that reload, within the store's
+  caps (1,024 pages or 128 MiB), as a long session's pages do today (agent-monitor-app #s9, whose
+  rule this keeps). A signal for it would be a new withheld option, and Hong's ruling.
 - **`assets`**: where mdrev's bundle and the Mermaid runtime load from, apart from each machine's
   routes. The app bundles the releases the kit's release pins (the app's `pins.js`; D3: no code from
   a machine runs in the page). Today the view takes both from its handle: mdrev's bundle and its
@@ -237,10 +247,13 @@ sheet, links out through a sheet, the scripts loading from the bundle, the machi
 list, By device), and the theme. Anything more comes to him as one decision before it is built (his
 "sounds good", logged on #s551).
 
-**Named in that plan, no ruling needed:** `mountApp` with the monitor's page its first host;
-`machines` and the merged list; `frame`; `assets`; the theme (the toggle as the app's setting,
-`theme` as the start); saves and links out with no option. Each is withheld, as above, so no host is
-offered more than today.
+**Named in that plan, no ruling needed:** `mountApp` with the monitor's page its first host, carried
+by the kit from a second entry (his yes on #s9, above); `machines` and the merged list; `frame`;
+`assets`; the theme (the toggle as the app's setting, `theme` as the start); saves and links out with
+no option. Each is withheld, as above, so no host is offered more than today. So are three options
+that carry what the web app already has, adding nothing a host is not offered: `backend`, the
+monitor page's own server; `version`, the brand the page's body carries today; and `show`, passed on
+to the controls the view and the list already let any host turn off.
 
 **Decided by Hong:**
 - **Writes** (agent-monitor-app #s14): with the mount, as above.
@@ -255,7 +268,6 @@ offered more than today.
   and none at all.
 - **Shared review** (#s554: "In, as on the web app"): as above, under Writes. The alternatives were
   out, with Review hidden through a withheld control, or out with Review drawn and failing.
-
 - **Review on an iPad** (#s555: "The phone's Review sheet on an iPad too (native app only)"):
   `reviewSheet`, a withheld option of `mountApp` beside `onMachines`, which the app passes and the
   mount passes on to the view, as it does `assets` (the view's side in `VIEW_WITHHELD`). With it
@@ -283,20 +295,11 @@ same way.
 **What became of what he asked to see** (his "sounds good" covered a switch to hide Review, a
 signal to free agent pages, `paneLayout` and the keyboard mode):
 - hiding Review is not needed: he chose shared review in the app (#s554);
-- the frame-done signal is dropped: the app frees a page's address when the web view reloads or the
-  view moves to another machine (`frame`, above);
+- the frame-done signal is dropped: the app frees the pages' addresses when the web view reloads,
+  and its store's caps bound them meanwhile (`frame`, above);
 - `paneLayout` is not needed: the mount lays its parts out itself;
 - the keyboard mode stays withheld: only `mountApp` binds the page's keymap, and no host is offered
   `mountApp`.
-
-**Two shapes that ship the mount without a kit entry**, weighed against the second entry:
-- the app builds the mount from claude-replay's source tree at the pinned tag (no kit change; the
-  app's build then needs this repository and its generated files, and the kit's tests no longer
-  hold what it ships);
-- a separate tarball beside the kit (no change to the kit's own contents; a second artifact to
-  publish, check and pin in step).
-
-The second entry is recommended: one artifact, one pin, the kit's tests holding every byte.
 
 ## Details for the stages
 
@@ -320,25 +323,27 @@ The second entry is recommended: one artifact, one pin, the kit's tests holding 
 
 ## The order
 
-1. **#s540 and #s541 land** (in flight).
+1. **#s540 and #s541 land** (#s540 shipped in v1.529.0; #s541 in flight).
 2. **The mount, for one server.** `app-mount.js` with `mountApp`, the shell as a generated module,
-   the wrapper with the three layers, `version` as an option; `app.js` its host on the monitor's
-   page. In the kit (`kit.rs`): a second entry, `native-app.js`; the walk starting from both
-   entries; `app-shell.css` added to the stylesheets; the bundle test widened to that set, and
-   still asserting `app.js` is not in the kit. The whole browser suite and a Simulator walk show
-   nothing changed. Released.
+   the wrapper with the three layers, `backend` and `version` as options; `app.js` its host on the
+   monitor's page. In the kit (`kit.rs`): a second entry, `native-app.js`, left out of
+   `package.json`'s `exports`; the walk starting from both entries; `app-shell.css` added to the
+   stylesheets; the bundle test widened to that set, and still asserting `app.js` is not in the
+   kit. The guards ship with the entry: `mountApp` refuses any option it does not name, from a list
+   of its own as the view's `MOUNT_OPTIONS` is, and a second call throws; the declaration test
+   refuses `mountApp` and the names only the mount takes in `index.d.ts` and the guide (a list
+   beside `VIEW_WITHHELD`), and each later stage adds its options to both lists. The whole browser
+   suite and a Simulator walk show nothing changed. Released.
 3. **Machines in the mount**, on #s541: `machines`, the view remounted per machine with the ids
    mapped, the keymap read at the key, write mode per machine, ⌘K's machines, `assets` and the
-   fallback off. A browser case with two hermetic monitors. No control into the app's screens yet.
-   Released.
+   fallback off. Contract cases: `machines` without `assets` throws, and `assets` reaches mdrev's
+   bundle and the Mermaid runtime while every route goes through the row's handle. A browser case
+   with two hermetic monitors. No control into the app's screens yet. Released.
 4. **The rest for the native app**: the start theme, `show` passed on, the Machines row and its
-   rail glyph (`onMachines`, #s553), and `reviewSheet` passed on to the view (#s555).
-   `mountApp` refuses any option it does not name, as the view does (`MOUNT_OPTIONS`), and the
-   contract cases hold each withheld option by name: a second mount throws, `machines` without
-   `assets` throws, a name not in the list is refused, `assets` reaches mdrev's bundle and the
-   Mermaid runtime while every route goes through the row's handle, the start theme yields to a
-   stored one, and Review is drawn at a desktop width only where the app passes `reviewSheet`. A kit
-   page case under the app's policy. Released.
+   rail glyph (`onMachines`, #s553), and `reviewSheet` passed on to the view (#s555). Contract
+   cases: the start theme yields to a stored one, the Machines row is drawn only where the app
+   passes `onMachines`, and Review is drawn at a desktop width only where the app passes
+   `reviewSheet`. A kit page case under the app's policy. Released.
 5. **agent-monitor-app #s13** mounts it and drops its own chrome.
 
 Each stage lands on its own, with the monitor's page working at every step.

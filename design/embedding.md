@@ -198,8 +198,8 @@ by the native app (#s407). None can drift from the others.
 Each release publishes a kit beside its binaries, with its digest, as mdrev does. It holds:
 
 - the module: the two components, and the detached page from a later kit; from step 9, in a
-  second entry for the native app only (`native-app.js`, not declared and not in the guide), the web
-  app's mount with the markup of the app's shell;
+  second entry for the native app only (`native-app.js`, not declared, not in the guide and not in
+  `package.json`'s `exports`), the web app's mount with the markup of the app's shell;
 - its stylesheets (from step 9, the app shell's too);
 - type declarations;
 - the contract and the guide;
