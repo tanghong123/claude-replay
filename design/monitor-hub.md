@@ -411,9 +411,10 @@ app leaves native mode out until its modules join the kit, an addition for secti
 web-app mount (#s13)"): the app writes to sessions from the moment it mounts the web app
 (`design/app-mount.md`), with no read-only stage first. The compose box, dialog answers and pane
 grants work as on the web app, each under that monitor's own gate. The relay passes the write routes
-of the compose box, dialogs and pane grants, and still refuses every frame's request, shared review's
-writes (`api/mdrev-review/`, until Hong rules otherwise, `design/app-mount.md`) and Codex native
-mode's (`/api/codex/*`), whatever the page shows. What follows is the choice as it stood. **Choice for
+of the compose box, dialogs and pane grants, and, since Hong's #s554 ("In, as on the web app"),
+every route of shared review's prefix (`api/mdrev-review/`, listed in `design/app-mount.md`), each
+under that machine's own mdrev key and review store. It still refuses every frame's request and
+Codex native mode's (`/api/codex/*`), whatever the page shows. What follows is the choice as it stood. **Choice for
 the owner**: writes in the first release with the rest (parity, R3), or a read-only first release
 with writes a stage later. Read-only here means no send, no answer to a dialog, no pane grant, none
 of Codex native mode's writes (`/api/codex/*`) and none of shared review's writes (a Push, a Share,

@@ -1,8 +1,9 @@
 # The web app as one mount, for the native app
 
-> **DRAFT 3** (#s551, 2026-11-17). Not built. hd-replay reviewed draft 1 (3e0674bf,
-> `review-3e0674bf.md` on #s551) and draft 2 (2b2f1531, `review-2b2f1531.md`); this draft answers
-> both. Hong's choice of 2026-11-17, closing
+> **DRAFT 4** (#s551, 2026-11-17). Not built. hd-replay reviewed draft 1 (3e0674bf,
+> `review-3e0674bf.md` on #s551), draft 2 (2b2f1531, `review-2b2f1531.md`) and draft 3 (643662fd,
+> clean). Draft 4 writes in Hong's two rulings of the same day, #s553 (a Machines row) and #s554
+> (shared review in the app), and the one question #s554 opens, Review on an iPad. Hong's choice of 2026-11-17, closing
 > agent-monitor-app #s9: *"I want the same experience as the current web app on desktop and
 > mobile, but need the native integration on ios devices"*, then "Yes" to doing it this way, then
 > *"I'd like to have a single session list that combines sessions from multiple devices"*. It revises
@@ -169,8 +170,9 @@ offered to other hosts is a later question.
   `mdrev` base names the routes alone. The wrapped `url` and `mdrevUrl` members go. A machine whose
   monitor pins a newer mdrev than the bundled one reads with the older guest, the direction #s352
   never had to be safe in; mdrev's conformance check is run with the bundled guest against the
-  newest monitor release as well as the oldest (D8), and a machine the guest fails is listed with
-  a note to update the app.
+  newest monitor release as well as the oldest (D8), on the review prefix as well as the pane's,
+  since a write a mismatched guest makes there reaches colleagues, and a machine the guest fails is
+  listed with a note to update the app.
 - **The theme**: the web app's own toggle is the app's theme setting, kept in the page's storage on
   the app's scheme. `theme` names the theme to start in when nothing is stored, which the app sets
   from the device's appearance. No other theme control is added.
@@ -191,8 +193,8 @@ So each of the app's four reaches past the guide goes:
 - The wrapped `url` and `mdrevUrl` members give way to `assets`. `local` is not needed on iOS: an
   `app://monitor/…` base already reads as not local (`backend.js`); only This Mac, in phase 4, needs
   a local handle, and is settled then.
-- Of the two CSS rules, the back control's room goes with the app's own layout. Review hidden is
-  the ruling below.
+- Of the two CSS rules, the back control's room goes with the app's own layout, and Review hidden
+  goes too: Hong chose shared review in the app (#s554), so the app hides nothing of the web app.
 
 ### Writes
 
@@ -200,8 +202,21 @@ Hong chose on agent-monitor-app #s14 (2026-11-17) that the app writes from the m
 web app: the compose box, dialog answers and pane grants, as on the web app, each under that
 machine's own gate and grant. The mount draws its own write switch, help and confirm dialog, as
 `app.js` does, so it takes no `write` option. The relay passes the write routes of the compose box,
-dialogs and pane grants, and still refuses every frame's request, shared review's writes
-(`api/mdrev-review/`) and Codex native mode's (`/api/codex/*`), whatever the page shows (D3).
+dialogs and pane grants, and still refuses every frame's request and Codex native mode's
+(`/api/codex/*`), whatever the page shows (D3).
+
+**Shared review comes too** (Hong on #s554, 2026-11-17: "In, as on the web app"). Review on a phone
+opens the full-screen sheet over `api/mdrev-review/`, as on the web app, and the relay passes every
+route that prefix answers to the row's machine: the threads (`review`), `review/fetch` and
+`review/push`, a note's body edit (`PATCH`) and Share (`annotations/{id}/share`), `hide`, the
+reader's notes with `--viewer`, draft 8's `review/subscribers`, `review/lookup`,
+`review/subscribe`, `review/unsubscribe`, `review/confirm` and `review/read`, and `POST review/pair`.
+That last one changes the machine's own setup, pairing its mdrev with a review store; the relay passes
+it on purpose, as a paired phone reaches it today. It is all per machine: each write goes out under
+that machine's mdrev viewer key, to the review store its checkout names, as the person that machine's
+mdrev is paired as, and a machine with no viewer key answers the prefix as the pane does (no Share,
+no Push drawn). The relay is the app's code: its refusal of the prefix, the tests that hold it and
+`docs/kit-page.md` change in agent-monitor-app (#s13).
 
 ### What stays the native app's
 
@@ -216,47 +231,51 @@ The plan Hong agreed to on 2026-11-17 named the web app as one mount, from the s
 serves, and these native-app options: the app's frame for agent pages, saving a file to the share
 sheet, links out through a sheet, the scripts loading from the bundle, the machines (pairing, the one
 list, By device), and the theme. Anything more comes to him as one decision before it is built (his
-"sounds good", logged on #s551). Writes are decided (agent-monitor-app #s14, D9).
+"sounds good", logged on #s551).
 
 **Named in that plan, no ruling needed:** `mountApp` with the monitor's page its first host;
 `machines` and the merged list; `frame`; `assets`; the theme (the toggle as the app's setting,
 `theme` as the start); saves and links out with no option. Each is withheld, as above, so no host is
 offered more than today.
 
-**For his ruling.** Each with its goal and the alternatives, a way with no kit change among them:
+**Decided by Hong:**
+- **Writes** (agent-monitor-app #s14): with the mount, as above.
+- **A way into the app's own screens** (#s553: "A Machines row in the sidebar (native app only)"): a
+  "Machines" row in the sidebar's nav, beside Search, and a glyph on the rail after the filter, drawn
+  only where the app passes `onMachines`, a withheld option of `mountApp` whose function the row
+  calls. A nav row fits at every width the nav shows, the drawer and a wide phone's column included,
+  so it takes no slot in the head and needs no other control to give way. The nav is hidden on the
+  rail and in a column showing a pane, which is why the rail has a glyph of its own. Both are drawn
+  by script (production-only chrome, as the session filter is), their classes added to
+  `scripts/session-view-css.mjs`'s lists. The alternatives were a native control over the web view
+  and none at all.
+- **Shared review** (#s554: "In, as on the web app"): as above, under Writes. The alternatives were
+  out, with Review hidden through a withheld control, or out with Review drawn and failing.
 
-1. **A way into the app's own screens.** Goal: pair, forget and see each machine from inside a page
-   the mount fills. Alternatives:
-   - (a) a "Machines" row in the sidebar's nav, beside Search, and a glyph on the rail after the
-     filter, drawn only where the app passes `onMachines` (a withheld option). A nav row fits at
-     every width the nav shows, the drawer and a wide phone's column included, so it takes no
-     slot in the head and needs no other control to give way. The nav is hidden on the rail and in
-     a column showing a pane, which is why the rail has a glyph of its own. Both are drawn by script
-     (production-only chrome, as the session filter is), their classes added to
-     `scripts/session-view-css.mjs`'s lists;
-   - (b) a native control over the web view (no kit change), which covers part of the page the
-     mount lays out and has to dodge its top bar and dock at every width;
-   - (c) none (no kit change): the app's screens only at a first launch and from iOS's Settings.
+**For his ruling: Review on an iPad.** On the web app, shared review lives in two places. A phone
+(the view's phone query) gets the Review sheet, and the view draws Review there only. A desktop gets
+the detached tab, the pane's ↗, which opens the document on a page of its own. In the app an iPad
+takes the desktop's layout, its ↗ is off (`detach: false`, since the app opens no second window yet),
+and the detached page is not in the kit until embedding's step 8. So "as on the web app" gives an
+iPhone shared review with no kit change, an iPad in a narrow Split View too (the phone query holds
+there), and an iPad at full width nothing. Goal: shared review on every device the app runs on.
+Alternatives:
+- (a) a withheld option of the view, `reviewSheet`, which the mount passes in the native app: the
+  phone's Review and its sheet offered at every width, until the detached page comes. No host is
+  offered it, and what `detach: false` does for every other host is unchanged;
+- (b) no kit change: a full-width iPad has no shared review until the detached page comes in a later
+  kit (embedding's step 8, the hub's phase 4);
+- (c) not offered: the view drawing Review wherever `detach` is off, for every host, which changes
+  what a host that turns ↗ off gets.
 
-   Recommended: (a).
-2. **Shared review in the app.** Goal: the web app's Review on a phone (the full-screen sheet over
-   `api/mdrev-review/`) writes to colleagues' threads and pushes to a review store, beyond the
-   writes Hong chose. Alternatives:
-   - (a) out, with the relay refusing `api/mdrev-review/` (the boundary) and Review not drawn in the
-     app, through `show.review`, an optional control of the view withheld from hosts. The kit
-     cannot withhold a control today: its test makes the view's declared controls equal its
-     `OPTIONAL_CONTROLS`, so (a) adds a list of withheld controls to `kit.rs` beside
-     `VIEW_WITHHELD`;
-   - (b) out with no kit change: the relay refuses, Review is still drawn, and its sheet fails to
-     reach the review routes;
-   - (c) in: shared review as on the web app, the relay passing its routes to the machine, each
-     push and share going out as the reader.
+Recommended: (a). Filed for him with (b) the default, since (a) is more than his yes named.
 
-   Recommended: (a) for the first release; (c) is a later step if he wants it.
+Nothing else is offered. If a later review finds an item none of these covers, it goes to him the
+same way.
 
 **What became of what he asked to see** (his "sounds good" covered a switch to hide Review, a
 signal to free agent pages, `paneLayout` and the keyboard mode):
-- hiding Review is item 2 above;
+- hiding Review is not needed: he chose shared review in the app (#s554);
 - the frame-done signal is dropped: the app frees a page's address when the web view reloads or the
   view moves to another machine (`frame`, above);
 - `paneLayout` is not needed: the mount lays its parts out itself;
@@ -272,9 +291,6 @@ signal to free agent pages, `paneLayout` and the keyboard mode):
 
 The second entry is recommended: one artifact, one pin, the kit's tests holding every byte.
 
-Nothing else is offered. If a later review finds an item none of these covers, it goes to him the
-same way.
-
 ## Details for the stages
 
 - **The address on the app's scheme.** The mount writes `?session=` and pushes history, as the web
@@ -288,6 +304,10 @@ same way.
   nothing) is settled in stage 4.
 - **Storage keys.** The mount keeps the web app's keys. On the app's scheme they are the app's
   alone. The list's keys that hold a session id hold the merged id; the view's hold the machine's own.
+- **Read marks as the sheet closes.** mdrev sends `review/read` with `{now: true}` and `keepalive`
+  as a page leaves. Whether the app's scheme handler receives a keepalive request at all, at a
+  reload or as the app goes to the background, is measured in stage 4; if not, the marks wait for
+  the next `review/fetch`, which sends what is due.
 - **Renaming.** `app-mount.js` joins `ui::asset`, and the class checks in
   `scripts/session-view-css.mjs` read it as they read `app.js` today.
 
@@ -304,8 +324,8 @@ same way.
    mapped, the keymap read at the key, write mode per machine, ⌘K's machines, `assets` and the
    fallback off. A browser case with two hermetic monitors. No control into the app's screens yet.
    Released.
-4. **The rest for the native app**: the start theme, `show` passed on, and, once Hong has ruled,
-   the way into the app's screens and Review's place. `mountApp` refuses any option it does not
+4. **The rest for the native app**: the start theme, `show` passed on, the Machines row and its
+   rail glyph (`onMachines`, #s553), and, once Hong has ruled, Review on an iPad. `mountApp` refuses any option it does not
    name, as the view does (`MOUNT_OPTIONS`), and the contract cases hold each withheld option by
    name: a second mount throws, `machines` without `assets` throws, a name not in the list is
    refused, `assets` reaches mdrev's bundle and the Mermaid runtime while every route goes through
@@ -324,7 +344,12 @@ Each stage lands on its own, with the monitor's page working at every step.
   greyed, the view's keys working after a switch of machine, and scripts allowed from the kit only.
 - **Writes on each machine:** on that page, the compose box sending to a session of each machine, a
   dialog answered and a pane grant asked on each, each under that machine's own gate.
-- **The way into the app's screens**, once ruled: hit-tested in the nav and on the rail at the
-  list's minimum width, in the drawer and in a wide phone's column.
+- **The Machines row**: hit-tested in the nav and on the rail at the list's minimum width, in the
+  drawer and in a wide phone's column; absent wherever `onMachines` is not passed.
+- **Shared review on each machine**: on the kit page, a hermetic review store per machine, as
+  `the_detached_tab_offers_shared_review_and_the_pane_does_not` builds one, with a push, a share and
+  a subscription from the sheet reaching each machine's own store; mdrev's `conform` on each
+  machine's review prefix with the bundled guest.
 - **The width study** (#s517) run on the kit page as on the monitor's.
-- **The app's walk** on the Simulator: an iPhone upright and sideways, and an iPad, light and dark.
+- **The app's walk** on the Simulator: an iPhone upright and sideways, and an iPad, light and dark,
+  with the Review sheet opened, a note shared and the sheet closed on each.
