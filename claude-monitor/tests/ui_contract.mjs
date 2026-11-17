@@ -2628,7 +2628,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(src, /syncPosition\(placed = null\) \{\n(?:    \/\/.*\n)*    if \(!this\.laidOut\(\)\) return;/, "nor re-reads one");
   assert.match(src, /let placed = !shown \? "hidden" : quiet && p0 && \(p0\.source === "tail" \|\| holdTail\) && !returning \? "quiet" : this\.placeAfter\(/, "nor places; shown again, it places even the tail");
   assert.match(src, /const drift = p0 && p0\.at != null && !this\.inFlight\(\) && !returning \? startTop - p0\.at : 0;/, "and reads no drift of the reader's in the offset the box came back with");
-  assert.match(src, /remeasure\(\) \{\n(?:    \/\/.*\n)*    if \(!this\.laidOut\(\)\) return;/, "a remeasure without a width keeps every height");
+  assert.match(src, /remeasure\(options = \{\}\) \{\n(?:    \/\/.*\n)*    if \(!this\.laidOut\(\)\) return;/, "a remeasure without a width keeps every height");
   assert.match(src, /if \(returning && !options\.range\) options = \{ \.\.\.options, range: p => this\.rangeFor\(p\) \};/, "shown again, the window is mounted for the viewport the box came back with");
   assert.match(src, /onScroll\(event\) \{\n(?:    \/\/.*\n)*    if \(!this\.laidOut\(\)\) return;/, "and an offset the hidden box lost is no scroll of the reader's");
   // The review of b65a0e52: what a hidden transaction still did, each now held.
@@ -3399,9 +3399,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // pages scale, both floor at their own estimate, and this page seeds the width the ratio is
   // taken against — the engine's is zero until the first remeasure, and on this page the FIRST
   // width change is the one that matters.
-  assert.match(classic, /window\.addEventListener\("resize", function \(\) \{ vw\.remeasure\(\); \}, \{ passive: true \}\);/, "the classic page re-measures on a resize");
+  assert.match(classic, /window\.addEventListener\("resize", function \(\) \{ vw\.remeasure\(\{ widthOnly: true \}\); \}, \{ passive: true \}\);/, "the classic page re-measures on a resize, which changes nothing but the width and the height (#s513)");
   assert.match(classic, /if \(!recHeights\[i\]\) continue;\s*\n\s*recHeights\[i\] = Math\.max\(EST_H, recHeights\[i\] \* ratio\);\s*\n\s*\}\s*\n\s*this\.rebuildPrefix\(\);/, "…scaling what was MEASURED, floored; the learned mean is the engine's to re-guess (#196 stage 3)");
-  assert.match(module, /if \(ratio && Math\.abs\(ratio - 1\) > 0\.01\) \{ this\.scaleHeights\(ratio\); this\.scaleGuesses\(ratio\); \} else \{ this\.clearHeights\(\); this\.resetGuesses\(\); \}/, "…which the engine does by the same ratio, or forgets with the heights when there is no ratio");
+  assert.match(module, /if \(did === "scale"\) \{ this\.scaleHeights\(ratio\); this\.scaleGuesses\(ratio\); \} else if \(did === "clear"\) \{ this\.clearHeights\(\); this\.resetGuesses\(\); \}/, "…which the engine does by the same ratio, or forgets with the heights when there is no ratio");
   assert.match(classic, /vw\.lastWidth = vwin\.getBoundingClientRect\(\)\.width \|\| 0;/, "…against a width seeded from the mount");
   // Step 4: the classic page — the REFERENCE — is the engine's second consumer, not a second
   // copy of it. The ten pins that stood here until #140 step 4 named this page's own sums, its
@@ -3627,7 +3627,39 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(src, /rest\(\) \{\n    if \(this\.dragging\) return;[^\n]*\n    if \(this\.readerOwnsPosition\(\)\) \{ this\.armRest\(\); return; \}/, "…and the one timer re-arms while they are still moving");
   assert.match(src, /this\.dragging = false;\n(?:\s*\/\/.*\n)*\s*this\.updateWindow\(\);/, "a drag ends in the model's own reset — the offset names a record, not the position from before the drag");
   assert.match(src, /const ratio = this\.lastWidth && width \? this\.lastWidth \/ width : 0;/, "a width change has a ratio…");
-  assert.match(src, /if \(ratio && Math\.abs\(ratio - 1\) > 0\.01\) \{ this\.scaleHeights\(ratio\); this\.scaleGuesses\(ratio\); \} else \{ this\.clearHeights\(\); this\.resetGuesses\(\); \}/, "…and scales the remembered heights and the learned means; anything else still relearns them — as the mutation step of the remeasure transaction (#196 stage 2)");
+  assert.match(src, /if \(did === "scale"\) \{ this\.scaleHeights\(ratio\); this\.scaleGuesses\(ratio\); \} else if \(did === "clear"\) \{ this\.clearHeights\(\); this\.resetGuesses\(\); \}/, "…and scales the remembered heights and the learned means; anything else still relearns them — as the mutation step of the remeasure transaction (#196 stage 2)");
+  // #s513: under the step a ratio is no evidence of a width change (a font at an unchanged width reads
+  // 1, and so does a window edge dragged a few pixels), so the caller says what changed. Only the
+  // width (a resize, a column's own observer, the pane's layout): scaled by any ratio, kept at 1. A
+  // change of content or type (a filter, a text size): relearned under the step, as before.
+  assert.match(src, /const WIDTH_STEP = 0\.01;/, "the step is the engine's one constant");
+  {
+    // The decision itself, run over a table rather than read as text.
+    const line = src.match(/\n    const did = (.+);\n/);
+    assert.ok(line, "remeasure decides what to do in one line");
+    const decide = new Function("ratio", "options", "WIDTH_STEP", `return ${line[1]};`);
+    for (const [ratio, widthOnly, want, why] of [
+      [0, false, "clear", "no width to compare"],
+      [0, true, "clear", "no width to compare, even for a resize"],
+      [1, false, "clear", "a text size at an unchanged width"],
+      [1.004, false, "clear", "a filter that opened folds as the column moved a little"],
+      [1, true, "width", "a resize of the height alone keeps every height"],
+      [1.004, true, "scale", "a resize under the step scales"],
+      [0.997, true, "scale", "a slow drag's step scales"],
+      [1.02, false, "scale", "past the step any remeasure scales"],
+      [0.98, true, "scale", "past the step a resize scales"],
+    ]) assert.equal(decide(ratio, { widthOnly }, 0.01), want, `${why} (ratio ${ratio}, widthOnly ${widthOnly})`);
+  }
+  assert.match(src, /fields: \{ ratio: Math\.round\(ratio \* 1e6\) \/ 1e6, did \},/, "the history says what was done, its ratio exact enough for a drag's product");
+  {
+    const classicSrc = readFileSync(new URL("../../claude-replay-html/src/html/export.js", import.meta.url), "utf8");
+    const viewSrc = readFileSync(new URL("../src/codex-ui/session-view.js", import.meta.url), "utf8");
+    assert.match(classicSrc, /if \(!w \|\| !vw\.lastWidth \|\| Math\.abs\(w - vw\.lastWidth\) < 1\) return;\n      vw\.remeasure\(\{ widthOnly: true \}\);/, "the classic page's column observer is width-only, with no step of its own");
+    assert.doesNotMatch(classicSrc, /> 0\.01/, "the classic page keeps no copy of the engine's step");
+    assert.match(viewSrc, /paneLaidOutWidth = width;\n(?:  \/\/.*\n)*  viewport\.remeasure\(\{ widthOnly: true \}\);\n\};/, "the pane's layout is width-only");
+    assert.match(viewSrc, /if \(layoutChanged\) \{ viewport\.remeasure\(\); paneLaidOutWidth = laidOutWidth\(\); \}/, "a reading change is not: its text size relearns the heights");
+    assert.equal((viewSrc.match(/remeasure\(\{ widthOnly: true \}\)/g) || []).length, 1, "nothing else in the view remeasures width-only, the tool filter included");
+  }
   assert.match(vpSrc, /this\.state\.heights\.set\(key, Math\.max\(ESTIMATE, height \* ratio\)\)/, "…never under the floor an estimate must be (rule 5)");
   console.log("#132 steps 3-4 cases passed");
 }

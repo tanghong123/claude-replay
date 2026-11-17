@@ -527,10 +527,10 @@ fn jump_to_bottom_lands_after_a_viewport_resize() {
 /// first load, and a short one growing past the window, at windows narrower than `main`'s 820px cap
 /// binds (about 1075px), where the column follows the window. And a third: in wide mode on a 1920px
 /// window the column is over 1500px, where a 15px scrollbar is under the engine's 1% threshold; there
-/// the width is taken without a remeasure (one would read the ratio as no width change and clear
-/// every remembered height), and the next resize still scales by the column's own widths. The ratios
-/// of every remeasure since the mark are multiplied, since each starts from the width the one before
-/// ended at.
+/// the width-only remeasure scales by it all the same (#s513: a plain one would read the ratio as no
+/// width change and clear every remembered height), and the next resize still scales by the column's
+/// own widths. The ratios of every remeasure since the mark are multiplied, since each starts from the
+/// width the one before ended at.
 #[test]
 #[ignore] // needs a local Chrome/Chromium; see the module docs
 fn the_classic_page_scales_its_heights_by_the_width_its_records_are_laid_out_at() {
@@ -655,8 +655,8 @@ fn the_classic_page_scales_its_heights_by_the_width_its_records_are_laid_out_at(
             "{name}: the page's scrollbar takes room: {room}"
         );
         if wide {
-            // The scene's premise: the scrollbar narrowed the column while it watched, so no
-            // remeasure below means the width was taken, not that nothing moved.
+            // The scene's premise: the scrollbar narrowed the column while it watched, so a
+            // remeasure that scaled, never one that cleared, is what the check below asks of it.
             let moved = eval(
                 &tab,
                 "window.__wg - document.querySelector('.vwin').getBoundingClientRect().width",
@@ -666,10 +666,10 @@ fn the_classic_page_scales_its_heights_by_the_width_its_records_are_laid_out_at(
                 moved.as_f64().unwrap_or(0.0) >= 14.5,
                 "{name}: premise, the scrollbar narrowed the column while the scene watched: {moved}"
             );
-            let early = eval(&tab, "JSON.stringify(window.__viewportHistory.states.filter(function (s) { return s.cause === 'remeasure' && s.t >= window.__tg; }).map(function (s) { return s.ratio; }))", false);
+            let early = eval(&tab, "JSON.stringify(window.__viewportHistory.states.filter(function (s) { return s.cause === 'remeasure' && s.did === 'clear' && s.t >= window.__tg; }).map(function (s) { return s.ratio; }))", false);
             if early.as_str() != Some("[]") {
                 wrong.push(format!(
-                    "{name}: the scrollbar beside a wide column remeasured (ratios {early}), which clears every remembered height"
+                    "{name}: the scrollbar beside a wide column cleared every remembered height (ratios {early})"
                 ));
             }
         }
@@ -701,6 +701,299 @@ fn the_classic_page_scales_its_heights_by_the_width_its_records_are_laid_out_at(
         wrong.is_empty(),
         "the remeasure scales by the column's own widths, before and after: {wrong:#?}"
     );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// How many of the engine's records have a measured height, of how many, and the kinds of those
+/// that have none (#s513). The engine stores a height only where it differs from its estimate
+/// (`heightChanged` in `measureMounted`), so a process group folded to its head row, which is its
+/// kind's floor, never has one: the app shell's long session has 18 of them.
+const MEASURED: &str = "(function(){ var it = window.__viewportHistory.export().session.items, none = {}; it.forEach(function (i) { if (i[1] == null) none[i[0]] = (none[i[0]] || 0) + 1; }); return { total: it.length, measured: it.filter(function (i) { return i[1] != null; }).length, unmeasured: none }; })()";
+
+/// Whether `MEASURED` read nearly every record measured: 90% of those that are not unmeasured
+/// process groups, which are folded to their floor and so have nothing to store.
+fn nearly_all_measured(m: &serde_json::Value) -> bool {
+    let total = m["total"].as_i64().unwrap_or(0);
+    let measured = m["measured"].as_i64().unwrap_or(0);
+    let folded = m["unmeasured"]["process"].as_i64().unwrap_or(0);
+    total - folded > 0 && measured * 10 >= (total - folded) * 9
+}
+
+/// Walk `scroller` from its top to its end, a step of 70% of its height, so the engine mounts every
+/// record and measures nearly every one a measure can store (`nearly_all_measured`). Each step is a reader's, as `harness::scroll_by` makes one: a wheel on
+/// `target` around the move, or a page that follows its tail heals the scroll back. Each waits for
+/// two frames (at most a second) and then 160 ms: under load the scroll events of steps sent faster
+/// than frames come together, and the engine never mounts what lay between them (s513c, at a load of
+/// 43, measured 130 of 148). Each step is a call of its own, since a call has 30 s to answer and a
+/// whole walk at a second a step would not. And the whole walk goes again, up to three passes,
+/// until nearly every record has a height, since one measured stays measured.
+fn walk_the_whole_session(
+    tab: &headless_chrome::Tab,
+    scroller: &str,
+    target: &str,
+) -> serde_json::Value {
+    let helpers = format!("var s = {scroller}, t = {target}; var sleep = function (ms) {{ return new Promise(function (r) {{ setTimeout(r, ms); }}); }}; var frames = function () {{ return Promise.race([new Promise(function (r) {{ requestAnimationFrame(function () {{ requestAnimationFrame(r); }}); }}), sleep(1000)]); }}; var move = function (top) {{ var dy = top < s.scrollTop ? -120 : 120; t.dispatchEvent(new WheelEvent('wheel', {{ deltaY: dy, bubbles: true }})); s.scrollTo({{ top: top, behavior: 'instant' }}); t.dispatchEvent(new WheelEvent('wheel', {{ deltaY: dy / 120, bubbles: true }})); }};");
+    let to_top = format!("(async function(){{ {helpers} for (var i = 0; i < 3 && s.scrollTop > 2; i++) {{ move(0); await sleep(500); }} return Math.round(s.scrollTop); }})()");
+    let step = format!("(async function(){{ {helpers} if (s.scrollTop + s.clientHeight >= s.scrollHeight - 2) return {{ end: true, top: Math.round(s.scrollTop) }}; move(s.scrollTop + Math.round(s.clientHeight * 0.7)); await frames(); await sleep(160); return {{ end: false, top: Math.round(s.scrollTop) }}; }})()");
+    let walk = || {
+        eval(tab, &to_top, true);
+        let mut steps = 0;
+        let mut at = serde_json::Value::Null;
+        while steps < 600 {
+            at = eval(tab, &step, true);
+            if at["end"] == true {
+                break;
+            }
+            steps += 1;
+        }
+        std::thread::sleep(Duration::from_millis(800));
+        serde_json::json!({ "steps": steps, "top": at["top"] })
+    };
+    let mut passes = Vec::new();
+    for _ in 0..3 {
+        passes.push(walk());
+        if nearly_all_measured(&eval(tab, MEASURED, false)) {
+            break;
+        }
+    }
+    serde_json::json!(passes)
+}
+
+/// **A resize that changes only the width keeps every remembered height, and scales it however
+/// small the change** (#s513), on the page `page` whose scroller, wheel target and engine mount are
+/// the expressions given. The session is walked whole so nearly every record has a measured
+/// height. Then the window narrows by 4px, its height alone changes, and its edge is dragged 60px in 2px steps.
+/// A remeasure reads a ratio within 1% of 1 as no width change, and before #s513 it cleared every
+/// height at each of those steps, as for a font: the next walk laid out from per-kind floors again.
+/// Now the caller says only the width changed: every step under 1% scales, so the drag's steps add
+/// up to the column's own widths, and the height alone keeps the heights as they are. What each
+/// step got wrong is returned.
+fn scenario_a_small_resize_keeps_every_height(
+    tab: &headless_chrome::Tab,
+    page: &str,
+    (scroller, target, mount): (&str, &str, &str),
+    (width, height): (f64, f64),
+) -> Vec<String> {
+    let mark = format!("(function(){{ window.__t0 = performance.now(); window.__w0 = {mount}.getBoundingClientRect().width; return true; }})()");
+    let remeasured = format!("(function(){{ var rs = window.__viewportHistory.states.filter(function (s) {{ return s.cause === 'remeasure' && s.t >= window.__t0; }}).map(function (s) {{ return [s.ratio, s.did || null]; }}); var w = {mount}.getBoundingClientRect().width; return {{ count: rs.length, seen: rs, ratio: Math.round(rs.reduce(function (a, r) {{ return a * r[0]; }}, 1) * 1000) / 1000, expected: Math.round(window.__w0 / w * 1000) / 1000, w0: window.__w0, w: w, inner: [innerWidth, innerHeight] }}; }})()");
+    // The browser's own top: headless Chrome's innerHeight is short of the window's height by it
+    // (measured, 143px on macOS), so a step is at rest once innerHeight is its height less this.
+    let top = height as i64 - eval(tab, "innerHeight", false).as_i64().unwrap_or(0);
+    let walked = walk_the_whole_session(tab, scroller, target);
+    let before = eval(tab, MEASURED, false);
+    let (total, measured) = (
+        before["total"].as_i64().unwrap_or(0),
+        before["measured"].as_i64().unwrap_or(0),
+    );
+    assert!(
+        total >= 60 && nearly_all_measured(&before),
+        "{page}: premise, the walk ({walked}) measured nearly every record: {before}"
+    );
+    let mut wrong = Vec::new();
+    let (w1, h1) = (width - 4.0, height - 120.0);
+    let (w2, h2) = (w1 - 60.0, h1);
+    for (step, (w, h), remeasures) in [
+        ("the window 4px narrower", (w1, height), true),
+        ("the window's height alone", (w1, h1), false),
+        (
+            "the window's edge dragged 60px in 2px steps",
+            (w2, h2),
+            true,
+        ),
+    ] {
+        eval(tab, &mark, false);
+        if w == w2 {
+            for i in 1..=30 {
+                harness::resize(tab, w1 - 2.0 * i as f64, h);
+                std::thread::sleep(Duration::from_millis(60));
+            }
+        } else {
+            harness::resize(tab, w, h);
+        }
+        // The app shell remeasures nothing for a height alone (its pane's layout asks only for a
+        // width that changed); the classic page does, on every resize.
+        wait_probe(
+            tab,
+            &format!(
+                "{page}: {step} at rest, innerWidth and innerHeight [{w}, {}] (the browser's top {top}px)",
+                h as i64 - top
+            ),
+            Duration::from_secs(10),
+            &remeasured,
+            |v| {
+                v["inner"] == serde_json::json!([w as i64, h as i64 - top])
+                    && (!remeasures || v["count"].as_i64().unwrap_or(0) >= 1)
+            },
+        );
+        std::thread::sleep(Duration::from_millis(900));
+        let seen = eval(tab, &remeasured, false);
+        let (w0, wn) = (
+            seen["w0"].as_f64().unwrap_or(0.0),
+            seen["w"].as_f64().unwrap_or(0.0),
+        );
+        if w == w1 && h == height {
+            assert!(
+                (w0 - wn).abs() >= 1.0 && (w0 / wn - 1.0).abs() < 0.01,
+                "{page}: premise, {step} moved the column by under 1% of its width: {seen}"
+            );
+        }
+        if w == w2 {
+            assert!(
+                (w0 / wn - 1.0).abs() > 0.03,
+                "{page}: premise, the drag moved the column by over 3% of its width: {seen}"
+            );
+            // Every step scaled by its own ratio, so they multiply to the column's own widths; kept
+            // at each step, the heights would end the drag as stale as the drag was long.
+            let (ratio, expected) = (
+                seen["ratio"].as_f64().unwrap_or(0.0),
+                seen["expected"].as_f64().unwrap_or(-1.0),
+            );
+            if (ratio - expected).abs() > 0.003 {
+                wrong.push(format!(
+                    "{page}: {step}: the heights were scaled by {ratio} for a column that changed by {expected}: {seen}"
+                ));
+            }
+        }
+        let after = eval(tab, MEASURED, false);
+        let kept = after["measured"].as_i64().unwrap_or(0);
+        eprintln!("{page}: {step}: {seen}, measured {kept} of {total} (before {measured})");
+        if kept < measured {
+            wrong.push(format!(
+                "{page}: {step} left {kept} of {total} records measured, of {measured} before (remeasures since: {seen})"
+            ));
+        }
+        if seen["seen"]
+            .as_array()
+            .is_some_and(|rs| rs.iter().any(|r| r[1] == "clear"))
+        {
+            wrong.push(format!("{page}: {step} cleared the heights: {seen}"));
+        }
+    }
+    wrong
+}
+
+#[test]
+#[ignore] // needs a local Chrome/Chromium; see the module docs
+fn the_classic_page_keeps_every_height_through_a_resize_under_one_percent() {
+    let _serial = serial();
+    let base = base("classic-small-resize");
+    std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
+    let turn = |i: u32| {
+        user(
+            &format!(
+                "question {i}: {}",
+                "lorem ipsum dolor sit amet consectetur. ".repeat(4)
+            ),
+            i % 60,
+        ) + &assistant(
+            &format!(
+                "answer {i}: {}",
+                "sed do eiusmod tempor incididunt ut labore. ".repeat(9)
+            ),
+            i % 60,
+        )
+    };
+    let src = base.join("long.jsonl");
+    std::fs::write(&src, (0..60).map(turn).collect::<String>()).unwrap();
+    let args = Args {
+        no_cache: true,
+        ..Default::default()
+    };
+    let server = start_server(&args, std::slice::from_ref(&src)).expect("server starts");
+    let url = server.url_for_root(0).expect("hosted");
+    let (browser, tab) = harness::chrome_tab();
+    // 1000px: narrower than `main`'s 820px cap binds (about 1075px), so the column follows the window.
+    harness::resize(&tab, 1000.0, 800.0);
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    wait_for(&tab, "the page drawn", Duration::from_secs(20), |s| {
+        s["blocks"].as_i64().unwrap_or(-1) >= 2
+    });
+    let wrong = scenario_a_small_resize_keeps_every_height(
+        &tab,
+        "the classic page",
+        (
+            "document.scrollingElement",
+            "window",
+            "document.querySelector('.vwin')",
+        ),
+        (1000.0, 800.0),
+    );
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    drop(tab);
+    drop(browser);
+    drop(server);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The app shell's half of #s513, and what must still clear: a text size step changes the type at an
+/// unchanged width, which a ratio cannot see, so the reading change relearns every height.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_keeps_every_height_through_a_resize_under_one_percent_and_relearns_them_for_a_text_size(
+) {
+    let _serial = serial();
+    let base = base("appshell-small-resize");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000005130".to_string();
+    stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3142, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    // 1000px: the list at 300 and the outline as its glyphs, so the transcript is under its measure's cap
+    // and follows the window.
+    harness::resize(&tab, 1000.0, 800.0);
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        &format!("innerWidth === 1000 && !!document.querySelector('.virtual-window') && {VIEW_CAUGHT_UP}"),
+        "the app shell to mount the session",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 120)",
+    );
+    let transcript = "document.querySelector('#sessionView .transcript')";
+    let mount = "document.querySelector('#sessionView .virtual-window')";
+    let mut wrong = scenario_a_small_resize_keeps_every_height(
+        &tab,
+        "the app shell",
+        (transcript, transcript, mount),
+        (1000.0, 800.0),
+    );
+    // A text size step: walked whole again, then `+`, the keymap's larger step.
+    walk_the_whole_session(&tab, transcript, transcript);
+    let before = eval(&tab, MEASURED, false);
+    eval(
+        &tab,
+        &format!("(function(){{ window.__t0 = performance.now(); window.__w0 = {mount}.getBoundingClientRect().width; document.body.dispatchEvent(new KeyboardEvent('keydown', {{ key: '+', bubbles: true, cancelable: true }})); return true; }})()"),
+        false,
+    );
+    let probe = format!("(function(){{ var rs = window.__viewportHistory.states.filter(function (s) {{ return s.cause === 'remeasure' && s.t >= window.__t0; }}).map(function (s) {{ return [s.ratio, s.did || null]; }}); return {{ count: rs.length, seen: rs, w0: window.__w0, w: {mount}.getBoundingClientRect().width }}; }})()");
+    let seen = wait_probe(
+        &tab,
+        "the text size step's remeasure",
+        Duration::from_secs(10),
+        &probe,
+        |v| v["count"].as_i64().unwrap_or(0) >= 1,
+    );
+    std::thread::sleep(Duration::from_millis(900));
+    let after = eval(&tab, MEASURED, false);
+    eprintln!("the app shell: a text size step: {seen}, measured {after} (before {before})");
+    assert!(
+        (seen["w0"].as_f64().unwrap_or(0.0) - seen["w"].as_f64().unwrap_or(-1.0)).abs() < 1.0,
+        "premise: the text size step left the transcript's width as it was: {seen}"
+    );
+    if seen["seen"][0][1] != "clear" {
+        wrong.push(format!(
+            "the app shell: a text size step at an unchanged width did not relearn the heights: {seen}"
+        ));
+    }
+    if after["measured"].as_i64().unwrap_or(0) >= before["measured"].as_i64().unwrap_or(0) {
+        wrong.push(format!(
+            "the app shell: a text size step kept every measured height ({after}, before {before})"
+        ));
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    drop(monitor);
     let _ = std::fs::remove_dir_all(&base);
 }
 

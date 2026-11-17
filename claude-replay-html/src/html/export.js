@@ -3800,26 +3800,26 @@
   // whatever the reader was on, and a pinned view converges on the tail — which iterates to the
   // fixed point as the re-measured heights keep moving it. That is the monitor's rail opening or
   // closing beside this page, and leaving the heights alone is what made a jump to the end land
-  // 693px short of it afterwards.
-  window.addEventListener("resize", function () { vw.remeasure(); }, { passive: true });
+  // 693px short of it afterwards. A resize changes nothing but the width and the height, so it is a
+  // width-only remeasure (#s513): under the engine's step it scales by the ratio too, and a resize
+  // of the height alone keeps every height. Both used to clear them all.
+  window.addEventListener("resize", function () { vw.remeasure({ widthOnly: true }); }, { passive: true });
   // #s492: the column's width also changes with no `resize`. Where a scrollbar takes room (Linux,
   // Windows, a Mac set to always show them), the page's own scrollbar appears once the records
   // outgrow the window, or goes when a filter leaves them inside it, and moves the column by its
   // width; wide mode lifts the column's caps (`applyWide`), at load too. Unheard, the engine kept
   // the width it read as the mount was attached, and the next resize scaled every remembered height
   // by a ratio from that column (1.193 where the column's own widths give 1.168, measured). So a
-  // change of the mount's own width is heard here. Past the engine's own threshold it is a
-  // remeasure, which scales; under it (a scrollbar beside a column over about 1500px wide) the
-  // width is only taken, because `remeasure` would read so small a ratio as no width change and
-  // clear every remembered height. A resize remeasures first (the resize steps run before the
-  // observers in a frame), so this finds the width it left, unless that remeasure itself brought
-  // the scrollbar in or out, which is a change of its own.
+  // change of the mount's own width is heard here, as a width-only remeasure, which scales by the
+  // ratio even under the engine's step (a scrollbar beside a column over about 1500px wide), where
+  // a plain remeasure would clear every height (#s513). A resize remeasures first (the resize
+  // steps run before the observers in a frame), so this finds the width it left, unless that
+  // remeasure itself brought the scrollbar in or out, which is a change of its own.
   if (typeof ResizeObserver !== "undefined") {
     new ResizeObserver(function () {
       var w = vwin.getBoundingClientRect().width;
       if (!w || !vw.lastWidth || Math.abs(w - vw.lastWidth) < 1) return;
-      if (Math.abs(vw.lastWidth / w - 1) > 0.01) vw.remeasure();
-      else vw.lastWidth = w;
+      vw.remeasure({ widthOnly: true });
     }).observe(vwin);
   }
   spy();
