@@ -473,9 +473,6 @@ impl Readers {
                     "{reason}; showing the sections its database holds{}",
                     layout.note.map(|n| format!(". {n}")).unwrap_or_default()
                 ));
-                // #s579: the reader needs to know only that the list may differ from the app's.
-                layout.summary =
-                    Some("This list may not match the Codex app's sidebar".to_string());
                 Ok(layout)
             }
         }
@@ -1125,8 +1122,6 @@ impl CodexData {
         }
     }
 
-    /// The note for a layout drawn from this data: a catalogue that could not be read, and threads
-    /// that could not be.
     /// The plain line for what [`note`](Self::note) says (#s579): threads not shown, or a list that
     /// is the monitor's guess.
     fn summary(&self) -> Option<String> {
@@ -1143,6 +1138,8 @@ impl CodexData {
         }
     }
 
+    /// The note for a layout drawn from this data: a catalogue that could not be read, and threads
+    /// that could not be.
     fn note(&self) -> Option<String> {
         let unreadable = (self.unreadable > 0).then(|| {
             format!(
@@ -1559,9 +1556,13 @@ const CODEX_STATE_LIMIT: u64 = 64 << 20;
 /// the threads with no project (`projectless-thread-ids`), each thread's project while the app
 /// has not yet moved it into its database (`thread-project-assignments`), and how the state file's
 /// project ids map to the database's. Since ChatGPT 26.1111 (#s579) the sidebar's atoms are the
-/// account's own (`sidebar_atoms`), and so are the pins in the app-server's order
-/// (`app-server-pinned-thread-order-v1`) and the project order (`unified-sidebar-project-order-v1`,
-/// with the ChatGPT app's projects); the top-level pins and order are what the app kept before.
+/// account's own (`sidebar_atoms`), and so are the pins' order (`app-server-pinned-thread-order-v1`)
+/// and the project order (`unified-sidebar-project-order-v1`, with the ChatGPT app's projects). The
+/// rest stays at the top level (measured on a state file ChatGPT 26.1111.21308 wrote, 2026-11-19),
+/// and the app keeps `pinned-thread-ids` and `project-order` current there: its code writes the
+/// pins on every pin, unpin, reorder and move into a section, and the project order on every
+/// reorder, dropping a project as it goes. A project being deleted waits out an undo window in
+/// the account's `app-server-pending-project-deletions-by-host` before its database row goes.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct CodexSidebar {
     section_order: Vec<String>,
@@ -1569,8 +1570,15 @@ struct CodexSidebar {
     collapsed_custom: HashSet<String>,
     collapsed_builtin: HashMap<String, bool>,
     pinned: Vec<String>,
-    /// Project ids as the state file names them, in the app's order, with their names.
-    projects: Vec<(String, String)>,
+    /// Project ids as the state file names them, in the app's order, with the state file's name
+    /// for each it names (`local-projects`). The layout draws one the state file names, or the
+    /// database lists, unless it is being deleted.
+    projects: Vec<(String, Option<String>)>,
+    /// Projects the app is deleting, by either id: drawn nowhere, though the database may still
+    /// hold them until the undo window ends.
+    deleting: HashSet<String>,
+    /// Whose atoms the sidebar was read from.
+    atoms_from: AtomsFrom,
     /// The database's project id for a state-file project id.
     server_project: HashMap<String, String>,
     /// A thread's project (a state-file id) while the app has not moved it into its database.
@@ -1584,6 +1592,19 @@ struct CodexSidebar {
     chat_sort: String,
     /// The person's thread order per project, for the `manual` mode.
     thread_orders: HashMap<String, Vec<String>>,
+}
+
+/// Where the sidebar's atoms were found (#s579).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum AtomsFrom {
+    /// The signed-in account's own, `electron-owner-atoms:<owner>`.
+    #[default]
+    Owner,
+    /// Another account's, read only where the state file names no signed-in account: the list
+    /// may not be this account's, and the page says so.
+    OtherAccount,
+    /// `electron-persisted-atom-state`, where the app kept them before 26.1111.
+    Shared,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1637,31 +1658,82 @@ fn codex_state<'a>(
 /// Where the app keeps the sidebar's atoms (#s579): the signed-in account's own,
 /// `electron-owner-atoms:<owner>` with the owner `electron-renderer-content-owner` names (measured
 /// with ChatGPT 26.1111.21308, which hosts the Codex app, on 2026-11-18: every sidebar atom is there
-/// and `electron-persisted-atom-state` holds none); another account's, which the app keeps beside
-/// it; or `electron-persisted-atom-state`, where the app kept them before. The first that holds the
-/// sections.
-fn sidebar_atoms(state: &Value) -> Option<&serde_json::Map<String, Value>> {
+/// and `electron-persisted-atom-state` holds none), then `electron-persisted-atom-state`, where the
+/// app kept them before. Another account's atoms, which the app may keep beside, are read only
+/// where no signed-in account is named: they are that account's sidebar, not this one's. The first
+/// whose `sidebar-custom-sections-v3` holds an account's section order.
+fn sidebar_atoms(state: &Value) -> Option<(&serde_json::Map<String, Value>, AtomsFrom)> {
     const OWNED: &str = "electron-owner-atoms:";
+    let holds_sections = |atoms: &serde_json::Map<String, Value>| {
+        atoms
+            .get("sidebar-custom-sections-v3")
+            .and_then(Value::as_object)
+            .is_some_and(|accounts| accounts.values().any(|v| v.get("sectionOrder").is_some()))
+    };
     let owner = state
         .get("electron-renderer-content-owner")
         .and_then(Value::as_str)
-        .and_then(|owner| state.get(format!("{OWNED}{owner}").as_str()));
-    let others = state
-        .as_object()
-        .into_iter()
-        .flat_map(|top| top.iter())
-        .filter(|(key, _)| key.starts_with(OWNED))
-        .map(|(_, atoms)| atoms);
+        .and_then(|owner| state.get(format!("{OWNED}{owner}").as_str()))
+        .and_then(Value::as_object);
+    let mut others: Vec<(&String, &serde_json::Map<String, Value>)> = if owner.is_some() {
+        Vec::new()
+    } else {
+        state
+            .as_object()
+            .into_iter()
+            .flat_map(|top| top.iter())
+            .filter(|(key, _)| key.starts_with(OWNED))
+            .filter_map(|(key, atoms)| Some((key, atoms.as_object()?)))
+            .collect()
+    };
+    others.sort_by(|a, b| a.0.cmp(b.0));
     owner
+        .map(|atoms| (atoms, AtomsFrom::Owner))
         .into_iter()
-        .chain(others)
-        .chain(state.get("electron-persisted-atom-state"))
-        .filter_map(Value::as_object)
-        .find(|atoms| atoms.contains_key("sidebar-custom-sections-v3"))
+        .chain(
+            others
+                .into_iter()
+                .map(|(_, atoms)| (atoms, AtomsFrom::OtherAccount)),
+        )
+        .chain(
+            state
+                .get("electron-persisted-atom-state")
+                .and_then(Value::as_object)
+                .map(|atoms| (atoms, AtomsFrom::Shared)),
+        )
+        .find(|(atoms, _)| holds_sections(atoms))
+}
+
+/// The projects the app is deleting (#s579): its pending deletions for this machine's host, by the
+/// state file's id and the database's. The account's own (`electron-owner-value:<key>:<owner>`),
+/// else the top-level key the app used before.
+fn pending_deletions(state: &Value) -> HashSet<String> {
+    const KEY: &str = "app-server-pending-project-deletions-by-host";
+    let owned = state
+        .get("electron-renderer-content-owner")
+        .and_then(Value::as_str)
+        .and_then(|owner| state.get(format!("electron-owner-value:{KEY}:{owner}").as_str()));
+    owned
+        .or_else(|| state.get(KEY))
+        .and_then(Value::as_object)
+        .into_iter()
+        .flat_map(|hosts| hosts.iter())
+        .filter(|(host, _)| host.starts_with("local"))
+        .filter_map(|(_, projects)| projects.as_object())
+        .flat_map(|projects| projects.iter())
+        .flat_map(|(legacy, pending)| {
+            let server = pending
+                .get("projectId")
+                .and_then(Value::as_str)
+                .map(str::to_string);
+            std::iter::once(legacy.clone()).chain(server)
+        })
+        .collect()
 }
 
 fn parse_codex_sidebar(state: &Value) -> Result<CodexSidebar, String> {
-    let atoms = sidebar_atoms(state);
+    let found = sidebar_atoms(state);
+    let atoms = found.map(|(atoms, _)| atoms);
     let unknown = || {
         "The Codex app's sidebar state is in a format this monitor does not know \
          (no sidebar-custom-sections-v3 in its account's atoms or the shared ones)"
@@ -1763,9 +1835,9 @@ fn parse_codex_sidebar(state: &Value) -> Result<CodexSidebar, String> {
     // #s579: the project order where the app keeps it now, per account: the unified sidebar's
     // (`unified-sidebar-project-order-v1`), which holds the ChatGPT app's projects too
     // (`chatgpt:project:<id>`) and may still name a project since removed. Only the Codex app's
-    // projects, by the state file's id (a database id is mapped back), and only those the state
-    // file still names; then any it names that the unified order has not caught up with, in the
-    // old order. Without it, the old top-level `project-order`, as before.
+    // projects, by the state file's id (a database id is mapped back); then any the old order names
+    // that the unified order has not caught up with. Without it, the old top-level `project-order`,
+    // as before. Which of them still exist the layout decides, where the database is read.
     let state_id: HashMap<&str, &str> = server_project
         .iter()
         .map(|(state, server): (&String, &String)| (server.as_str(), state.as_str()))
@@ -1780,8 +1852,7 @@ fn parse_codex_sidebar(state: &Value) -> Result<CodexSidebar, String> {
                 .iter()
                 .filter_map(Value::as_str)
                 .filter_map(|key| key.strip_prefix("codex:project:"))
-                .map(|id| state_id.get(id).copied().unwrap_or(id).to_string())
-                .filter(|id| name_of(id).is_some());
+                .map(|id| state_id.get(id).copied().unwrap_or(id).to_string());
             for id in codex.chain(legacy_order.iter().cloned()) {
                 if !order.contains(&id) {
                     order.push(id);
@@ -1794,10 +1865,27 @@ fn parse_codex_sidebar(state: &Value) -> Result<CodexSidebar, String> {
     let projects = order
         .into_iter()
         .map(|id| {
-            let name = name_of(&id).unwrap_or_else(|| id.clone());
+            let name = name_of(&id);
             (id, name)
         })
         .collect();
+    // #s579: the pins. The set is the top-level `pinned-thread-ids`, which the app writes on every
+    // pin, unpin, reorder and move into a section (read in its code, 26.1111.21308); the account's
+    // `app-server-pinned-thread-order-v1` is only their order, and may still name a thread since
+    // unpinned, which the app drops as it draws them, as this does. Never the unified sidebar's pin
+    // order, which keeps pins since removed and the ChatGPT app's projects.
+    let pin_set = strings(state.get("pinned-thread-ids"));
+    let pin_order = strings(atoms.and_then(|a| a.get("app-server-pinned-thread-order-v1")));
+    let mut pinned: Vec<String> = Vec::new();
+    for id in pin_order
+        .iter()
+        .filter(|id| pin_set.contains(id))
+        .chain(pin_set.iter())
+    {
+        if !pinned.contains(id) {
+            pinned.push(id.clone());
+        }
+    }
     let thread_project = state
         .get("thread-project-assignments")
         .and_then(Value::as_object)
@@ -1816,15 +1904,10 @@ fn parse_codex_sidebar(state: &Value) -> Result<CodexSidebar, String> {
             .into_iter()
             .collect(),
         collapsed_builtin,
-        // #s579: the pins where the app keeps them now, per account, in its order
-        // (`app-server-pinned-thread-order-v1`), else the old top-level list. Never the unified
-        // sidebar's pin order, which keeps pins since removed and the ChatGPT app's projects.
-        pinned: atoms
-            .and_then(|a| a.get("app-server-pinned-thread-order-v1"))
-            .filter(|v| v.is_array())
-            .map(|v| strings(Some(v)))
-            .unwrap_or_else(|| strings(state.get("pinned-thread-ids"))),
+        pinned,
         projects,
+        deleting: pending_deletions(state),
+        atoms_from: found.map_or(AtomsFrom::Shared, |(_, from)| from),
         server_project,
         thread_project,
         projectless: strings(state.get("projectless-thread-ids")),
@@ -1914,7 +1997,7 @@ fn codex_sidebar_layout(data: &CodexData, sidebar: &CodexSidebar) -> Layout {
             .projects
             .iter()
             .find(|(id, _)| id == project)
-            .map(|(_, name)| name.clone())
+            .and_then(|(_, name)| name.clone())
             .or_else(|| {
                 let server = sidebar
                     .server_project
@@ -1968,6 +2051,17 @@ fn codex_sidebar_layout(data: &CodexData, sidebar: &CodexSidebar) -> Layout {
             CustomItem::Thread(_) => None,
         })
         .collect();
+    // #s579: a project the app still has: one the state file names, or one only the database knows
+    // (made since the app moved projects into it), unless the app is deleting it.
+    let exists = |project: &str, named: bool| {
+        let server = sidebar
+            .server_project
+            .get(project)
+            .map_or(project, String::as_str);
+        !sidebar.deleting.contains(project)
+            && !sidebar.deleting.contains(server)
+            && (named || data.projects.iter().any(|(id, _)| id == server))
+    };
     let builtin = |key: &str| sidebar.collapsed_builtin.get(key).copied().unwrap_or(false);
     let mut out = Vec::new();
     let mut unknown = Vec::new();
@@ -1992,6 +2086,7 @@ fn codex_sidebar_layout(data: &CodexData, sidebar: &CodexSidebar) -> Layout {
                 groups: sidebar
                     .projects
                     .iter()
+                    .filter(|(id, name)| exists(id, name.is_some()))
                     .filter(|(id, _)| !in_custom.contains(id.as_str()))
                     .map(|(id, _)| folder(id))
                     .collect(),
@@ -2047,14 +2142,23 @@ fn codex_sidebar_layout(data: &CodexData, sidebar: &CodexSidebar) -> Layout {
             unknown.join(", ")
         )
     });
+    // #s579: atoms read from another account, where the state file names none signed in, are that
+    // account's sidebar: the reader is told the list may not be theirs.
+    let account = (sidebar.atoms_from == AtomsFrom::OtherAccount).then(|| {
+        "The Codex app's state file names no signed-in account; this follows the sidebar of \
+         another account it keeps"
+            .to_string()
+    });
     let summary = if note.is_some() {
         Some("Some of the Codex app's sections are not shown here".to_string())
+    } else if account.is_some() {
+        Some(MAY_NOT_MATCH.to_string())
     } else {
         data.summary()
     };
     Layout {
         sections: out,
-        note: join_notes(note, data.note()),
+        note: join_notes(join_notes(note, account), data.note()),
         summary,
     }
 }
@@ -2201,9 +2305,14 @@ fn codex_layout(data: &CodexData) -> Layout {
     Layout {
         sections: out,
         note: join_notes(note, data.note()),
-        summary: data.summary(),
+        // #s579: the database's sections are the monitor's guess at the app's sidebar, whatever
+        // else the note says, and the reader needs to know only that.
+        summary: Some(MAY_NOT_MATCH.to_string()),
     }
 }
+
+/// The plain line over a Codex list that may differ from the app's sidebar (#s579).
+const MAY_NOT_MATCH: &str = "This list may not match the Codex app's sidebar";
 
 fn codex_entry(
     t: &CodexThread,
@@ -3021,12 +3130,13 @@ mod tests {
             .contains("sidebar-custom-sections-v3"));
     }
 
-    /// #s579: the pins and the project order where the app keeps them now, in the account's atoms:
-    /// the pins in the app-server's order (never the unified sidebar's pin order, which keeps pins
-    /// since removed and a ChatGPT project), the projects in the unified sidebar's order, the
-    /// Codex app's only, a database id mapped to the state file's, a project since removed left
-    /// out, and one the unified order has not caught up with after it. Without the new keys the
-    /// old top-level ones decide, as before.
+    /// #s579: the pins and the project order where the app keeps them now. The pins are the
+    /// top-level list, which the app writes on every pin change, in the order the account's atoms
+    /// keep (`app-server-pinned-thread-order-v1`), which may name a thread since unpinned: it is
+    /// dropped, and a pin the order has not caught up with follows. Never the unified sidebar's pin
+    /// order. The projects in the unified sidebar's order, the Codex app's only, a database id
+    /// mapped to the state file's, then any the old order names after it; which still exist the
+    /// layout decides. Without the new keys the old top-level ones decide, as before.
     #[test]
     fn pins_and_project_order_are_read_where_the_app_keeps_them_now() {
         let legacy = codex_state_json();
@@ -3049,8 +3159,9 @@ mod tests {
         current["electron-persisted-atom-state"] = json!({});
         current["electron-renderer-content-owner"] = json!("owner-a");
         current["electron-owner-atoms:owner-a"] = atoms;
+        current["pinned-thread-ids"] = json!(["t-pin", "t-chat", "t-new"]);
         let owned = &mut current["electron-owner-atoms:owner-a"];
-        owned["app-server-pinned-thread-order-v1"] = json!(["t-chat", "t-pin"]);
+        owned["app-server-pinned-thread-order-v1"] = json!(["t-unpinned-since", "t-chat", "t-pin"]);
         owned["unified-sidebar-pinned-order-v1"] = json!([
             "codex:thread:local:t-unpinned-long-ago",
             "chatgpt:project:g-p-1",
@@ -3067,24 +3178,89 @@ mod tests {
         let new = parse_codex_sidebar(&current).unwrap();
         assert_eq!(
             new.pinned,
-            vec!["t-chat", "t-pin"],
-            "the app-server's pins, in its order"
+            vec!["t-chat", "t-pin", "t-new"],
+            "the pins in the account's order, one it no longer pins dropped, a new one after"
         );
         assert_eq!(
             order(&new),
-            vec!["lp-docs", "lp-web", "lp-api", "lp-empty"],
-            "the unified order's Codex projects (srv-web is lp-web; lp-removed is gone), then lp-empty"
+            vec!["lp-docs", "lp-web", "lp-removed", "lp-api", "lp-empty"],
+            "the unified order's Codex projects (srv-web is lp-web), then lp-empty from the old order"
         );
-        assert_eq!(new.projects[1].1, "web", "named as the state file names it");
-        // A pin list present but empty is the account's word: no pins.
+        assert_eq!(
+            new.projects[1].1.as_deref(),
+            Some("web"),
+            "named as the state file names it"
+        );
+        assert_eq!(
+            new.projects[2].1, None,
+            "the state file names no lp-removed"
+        );
+        // An order with nothing in it orders nothing: the pins in the top-level list's order.
         current["electron-owner-atoms:owner-a"]["app-server-pinned-thread-order-v1"] = json!([]);
-        assert!(parse_codex_sidebar(&current).unwrap().pinned.is_empty());
+        assert_eq!(
+            parse_codex_sidebar(&current).unwrap().pinned,
+            vec!["t-pin", "t-chat", "t-new"]
+        );
+    }
+
+    /// #s579 review: a Projects folder is drawn for a project the app still has: one the state file
+    /// names, or one only the database knows (made after the app moved projects there); not one
+    /// that neither knows, from the unified order or the old one, and not one the app is deleting,
+    /// which waits out its undo window in the database.
+    #[test]
+    fn a_project_folder_is_drawn_for_a_project_the_app_still_has() {
+        let mut state = codex_state_json();
+        let atoms = state["electron-persisted-atom-state"].take();
+        state["electron-persisted-atom-state"] = json!({});
+        state["electron-renderer-content-owner"] = json!("owner-a");
+        state["electron-owner-atoms:owner-a"] = atoms;
+        // Projects alone, and no custom section holding a project, so every folder is there.
+        state["electron-owner-atoms:owner-a"]["sidebar-custom-sections-v3"]["acct-1"]
+            ["sectionOrder"] = json!(["threads"]);
+        state["electron-owner-atoms:owner-a"]["sidebar-custom-sections-v3"]["acct-1"]["sections"] =
+            json!([]);
+        state["electron-owner-atoms:owner-a"]["unified-sidebar-project-order-v1"] = json!([
+            "codex:project:srv-fresh",
+            "codex:project:lp-removed",
+            "codex:project:lp-api",
+            "codex:project:srv-going",
+        ]);
+        // The old order names a project the state file no longer does.
+        state["project-order"] = json!(["lp-api", "lp-gone", "lp-web"]);
+        state["electron-owner-value:app-server-pending-project-deletions-by-host:owner-a"] = json!({
+            "local:/h/.codex": { "lp-going": { "projectId": "srv-going", "deleteAfterMs": 1 } },
+        });
+        let data = CodexData {
+            projects: vec![
+                ("srv-api".into(), "api".into()),
+                ("srv-web".into(), "web".into()),
+                ("srv-fresh".into(), "fresh".into()),
+                ("srv-going".into(), "going".into()),
+            ],
+            ..Default::default()
+        };
+        let sidebar = parse_codex_sidebar(&state).unwrap();
+        assert!(sidebar.deleting.contains("srv-going") && sidebar.deleting.contains("lp-going"));
+        let layout = codex_sidebar_layout(&data, &sidebar);
+        let folders: Vec<&str> = layout.sections[0]
+            .groups
+            .iter()
+            .map(|g| g.label.as_str())
+            .collect();
+        assert_eq!(
+            folders,
+            vec!["fresh", "api", "web"],
+            "the database's own project by its name; no folder for lp-removed, srv-going or lp-gone"
+        );
+        assert_eq!(layout.summary, None, "a faithful list says nothing over it");
     }
 
     /// #s579: the app now keeps the sidebar's atoms per account, under
     /// `electron-owner-atoms:<owner>`, and none in `electron-persisted-atom-state`: they are read
     /// there, the account `electron-renderer-content-owner` names first, and the shared atoms still
-    /// read as before. The page's line says nothing then: the list is the app's.
+    /// read as before. The page's line says nothing then: the list is the app's. Another account's
+    /// atoms are read only where no account is named, and the line says the list may not match; a
+    /// sidebar atom with no section order is passed over, not taken for the sidebar.
     #[test]
     fn the_sidebar_is_read_from_the_account_s_own_atoms() {
         let legacy = codex_state_json();
@@ -3095,28 +3271,55 @@ mod tests {
         owned["electron-owner-atoms:owner-a"] = atoms.clone();
         owned["electron-owner-atoms:owner-b"] = json!({ "sidebar-width": 300 });
         let want = parse_codex_sidebar(&legacy).unwrap();
-        assert_eq!(
-            parse_codex_sidebar(&owned).unwrap(),
-            want,
-            "the account's own atoms"
-        );
-        // The renderer naming another account than the one with a sidebar: the one that has it.
+        assert_eq!(want.atoms_from, AtomsFrom::Shared);
+        let read = |state: &Value| parse_codex_sidebar(state).unwrap();
+        let same = |got: CodexSidebar| CodexSidebar {
+            atoms_from: want.atoms_from,
+            ..got
+        };
+        let mine = read(&owned);
+        assert_eq!(mine.atoms_from, AtomsFrom::Owner);
+        assert_eq!(same(mine), want, "the account's own atoms");
+        // The account named has no sidebar: not another account's; the shared atoms have none
+        // either, so the state file is of a shape not known (and the database's sections stand in).
         owned["electron-renderer-content-owner"] = json!("owner-b");
-        assert_eq!(
-            parse_codex_sidebar(&owned).unwrap(),
-            want,
-            "another account's atoms"
+        assert!(parse_codex_sidebar(&owned)
+            .unwrap_err()
+            .contains("sidebar-custom-sections-v3"));
+        // No account named: another account's, said over the list.
+        let mut nobody = owned.clone();
+        nobody
+            .as_object_mut()
+            .unwrap()
+            .remove("electron-renderer-content-owner");
+        let theirs = read(&nobody);
+        assert_eq!(theirs.atoms_from, AtomsFrom::OtherAccount);
+        let mut known = theirs.clone();
+        known.section_order.retain(|id| id != "x-new");
+        let layout = codex_sidebar_layout(&CodexData::default(), &known);
+        assert_eq!(layout.summary.as_deref(), Some(MAY_NOT_MATCH));
+        assert!(
+            layout.note.as_deref().unwrap().contains("another account"),
+            "{:?}",
+            layout.note
         );
+        assert_eq!(same(theirs), want);
         // The account's own atoms win over stale shared ones.
         let mut both = owned.clone();
         both["electron-renderer-content-owner"] = json!("owner-a");
         let mut stale = atoms.clone();
         stale["sidebar-custom-sections-v3"]["acct-1"]["sectionOrder"] = json!(["chats"]);
-        both["electron-persisted-atom-state"] = stale;
+        both["electron-persisted-atom-state"] = stale.clone();
+        assert_eq!(same(read(&both)), want, "the owner's first");
+        // An account's sidebar atom with no section order in it is passed over.
+        let mut empty = both.clone();
+        empty["electron-owner-atoms:owner-a"]["sidebar-custom-sections-v3"] = json!({});
+        let shared = read(&empty);
+        assert_eq!(shared.atoms_from, AtomsFrom::Shared);
         assert_eq!(
-            parse_codex_sidebar(&both).unwrap(),
-            want,
-            "the owner's first"
+            shared.section_order,
+            vec!["chats"],
+            "the shared atoms, read next"
         );
         // The fixture holds a section of a kind not known (`x-new`): one plain line says so.
         let layout = codex_sidebar_layout(&CodexData::default(), &want);
@@ -3128,6 +3331,150 @@ mod tests {
         known.section_order.retain(|id| id != "x-new");
         let layout = codex_sidebar_layout(&CodexData::default(), &known);
         assert_eq!(layout.summary, None, "a faithful list says nothing over it");
+        // The database's sections, where the state file cannot be read, are a guess, said so.
+        assert_eq!(
+            codex_layout(&CodexData::default()).summary.as_deref(),
+            Some(MAY_NOT_MATCH)
+        );
+    }
+
+    /// #s579 review: a state file as ChatGPT 26.1111.21308 writes it, written by hand after the
+    /// shape measured on 2026-11-19 (keys and kinds; no content of the measured file): the
+    /// sidebar's atoms and the pins' and projects' orders among some 1,800 other atoms of the
+    /// signed-in account (per-thread ones, a ChatGPT project's folder state); the shared atoms
+    /// holding drafts and tab routes only; per-account values beside them (`electron-owner-value:`);
+    /// and at the top level the project names and order, the pins, the threads with no project,
+    /// each thread's project and the ids' mapping. The layout is the app's sidebar, with nothing
+    /// said over it.
+    #[test]
+    fn a_state_file_in_the_measured_26_1111_shape_reads_as_the_app_s_sidebar() {
+        let state = json!({
+            "electron-renderer-content-owner": "0wner",
+            "electron-owner-atoms:0wner": {
+                "sidebar-custom-sections-v3": { "user-a/acct-1": {
+                    "sections": [
+                        { "id": "cs-1", "name": "Client work", "hostSectionIds": { "local": "db-s1" },
+                          "itemKeys": ["codex:project:lp-api", "codex:thread:local:t-c"], "appearance": null },
+                    ],
+                    "collapsedSectionIds": [],
+                    "sectionOrder": ["pinned", "orbit", "custom:cs-1", "threads", "chats"],
+                }},
+                "sidebar-collapsed-sections-v1": { "pinned": false, "threads": false, "chats": true, "agents": true },
+                "sidebar-project-expanded-v1-codex:lp-web": true,
+                "sidebar-project-expanded-v1-chatgpt:g-p-1": true,
+                "sidebar-project-list-expanded-v1": true,
+                "sidebar-width": 300.5,
+                "app-server-pinned-thread-order-v1": ["t-b", "t-a"],
+                "unified-sidebar-pinned-order-v1": ["chatgpt:project:g-p-1", "codex:thread:local:t-a"],
+                "unified-sidebar-project-order-v1": [
+                    "chatgpt:project:g-p-1", "codex:project:lp-web", "codex:project:lp-api",
+                    "chatgpt:project:g-p-2", "codex:project:p-new",
+                ],
+                "flat-project-sidebar-preferences-v1": { "chatSortMode": "updated_at" },
+                "thread-reference-capability:t-a": true,
+                "thread-workspace-state-v1:t-a": {},
+                "client-thread-bindings-v1": {},
+            },
+            "electron-persisted-atom-state": {
+                "composer-prompt-drafts-v2": {},
+                "thread-tab-routes-v1:t-a": {},
+            },
+            "electron-owner-value:selected-project:0wner": { "type": "local", "projectId": "lp-web" },
+            "electron-owner-value:app-server-migrated-pinned-thread-ids-by-host:0wner": { "local:/h/.codex": ["t-a"] },
+            "electron-owner-value:app-server-projects-migration-by-host:0wner": {
+                "local:/h/.codex": { "version": 1, "projectsMigrated": true, "threadAssignmentsMigrated": true },
+            },
+            "local-projects": {
+                "lp-web": { "id": "lp-web", "name": "web" },
+                "lp-api": { "id": "lp-api", "name": "api" },
+                "p-new": { "id": "p-new", "name": "new" },
+            },
+            "project-order": ["lp-web", "lp-api", "p-new"],
+            "pinned-thread-ids": ["t-a", "t-b"],
+            "projectless-thread-ids": ["t-chat"],
+            "thread-project-assignments": { "t-w": { "projectId": "lp-web", "projectKind": "local" } },
+            "thread-project-membership-host-ids": { "t-w": "local" },
+            "app-server-project-id-by-legacy-project-id-by-host": {
+                "local:/h/.codex": { "lp-web": "srv-web", "lp-api": "srv-api", "p-new": "p-new" },
+            },
+        });
+        let t = |id: &str, recency: i64| CodexThread {
+            id: id.into(),
+            row: id.into(),
+            title: Some(format!("thread {id}")),
+            recency,
+            ..Default::default()
+        };
+        let data = CodexData {
+            projects: vec![
+                ("srv-web".into(), "web".into()),
+                ("srv-api".into(), "api".into()),
+                ("p-new".into(), "new".into()),
+            ],
+            threads: vec![
+                CodexThread {
+                    pinned: true,
+                    ..t("t-a", 1)
+                },
+                CodexThread {
+                    pinned: true,
+                    ..t("t-b", 2)
+                },
+                t("t-c", 3),
+                CodexThread {
+                    project: Some("srv-web".into()),
+                    ..t("t-w", 4)
+                },
+                CodexThread {
+                    project: Some("srv-api".into()),
+                    ..t("t-api", 5)
+                },
+                t("t-chat", 6),
+            ],
+            ..Default::default()
+        };
+        let sidebar = parse_codex_sidebar(&state).unwrap();
+        assert_eq!(sidebar.atoms_from, AtomsFrom::Owner);
+        let layout = codex_sidebar_layout(&data, &sidebar);
+        let shown: Vec<(String, bool, Vec<String>)> = layout
+            .sections
+            .iter()
+            .map(|s| {
+                let mut all = ids(&s.entries);
+                for g in &s.groups {
+                    all.push(format!(
+                        "{}{}:{}",
+                        g.label,
+                        if g.collapsed { "(closed)" } else { "" },
+                        ids(&g.entries).join(",")
+                    ));
+                }
+                (s.label.clone(), s.collapsed, all)
+            })
+            .collect();
+        assert_eq!(
+            shown,
+            vec![
+                (
+                    "Pinned".to_string(),
+                    false,
+                    vec!["t-b".to_string(), "t-a".into()]
+                ),
+                (
+                    "Client work".into(),
+                    false,
+                    vec!["t-c".into(), "api(closed):t-api".into()]
+                ),
+                (
+                    "Projects".into(),
+                    false,
+                    vec!["web:t-w".into(), "new(closed):".into()]
+                ),
+                ("Chats".into(), true, vec!["t-chat".into()]),
+            ]
+        );
+        assert_eq!(layout.summary, None);
+        assert_eq!(layout.note, None);
     }
 
     /// #s387: threads in a project folder and in Chats follow the app's chats order: the newest

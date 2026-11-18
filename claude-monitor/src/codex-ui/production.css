@@ -1522,6 +1522,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #sessionList .arranged-view{width:44px;height:44px;margin-top:-10px;margin-bottom:-10px}
   #sessionList .arranged-view .icon{width:18px;height:18px}
   #sessionList .arrange-strip-close{width:44px;height:44px;margin:-10px -6px -10px 0}
+  /* #s579: Details under the line, a 44px target that takes no more of the line than its words. */
+  #sessionList .arrange-strip-more{display:inline-flex;align-items:center;min-width:44px;min-height:44px;margin:-15px 0;padding:0 6px;vertical-align:middle}
 }
 @media(max-width:760px),(pointer:coarse) and (max-height:500px){
   :root{--sidebar:min(86vw,360px)}

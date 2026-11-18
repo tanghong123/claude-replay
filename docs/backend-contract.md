@@ -187,9 +187,10 @@ Another app's own arrangement of the same sessions, for the list's Arrange choic
 - With it: `{source, label, available, reason, note, summary, sections, pending?, stale?}`, where a
   section is `{id, label, collapsed, entries, groups: [{id, label, collapsed, keep, entries}]}` and
   an entry is `{id: <session id>, title, pane: "<server>|<pane>" or null, children: Entry[]}`. The
-  first ask may answer `pending: true` with no sections. `summary` is one plain line, or null, said
-  only when the list differs from the app's in a way the reader would notice; `note` is its detail,
-  which the page shows on a click.
+  first ask may answer `pending: true` with no sections. `summary` is optional: one plain line, or
+  null, said only when the list differs from the app's in a way the reader would notice. With a
+  line, `note` is its detail, which the page shows on a click; without one (null, or a server from
+  before that sends no `summary`), the page shows `note` as it is.
 - 404 for a source it does not know.
 
 **Without it:** the list offers only its own arrangements.
