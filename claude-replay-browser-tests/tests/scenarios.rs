@@ -15789,13 +15789,15 @@ fn app_shell_the_search_box_shows_its_own_query() {
     // failures reported together, so a change that breaks one shows which.
     let long = "uo(R): needle beside a query far longer than any search box shows";
     let short = "uo(R): needle";
-    let limits = "(function(){ var bar = document.querySelector('.workspace>.topbar'), cluster = document.querySelector('.header-search-cluster'), box = document.querySelector('.header-searchbox'), t = document.getElementById('sessionTitle'), h = t.parentElement, b = bar.getBoundingClientRect(), w = function (e) { return Math.round(e.getBoundingClientRect().width); }; var past = [...bar.children].filter(function (c) { return c.offsetWidth && c.getBoundingClientRect().right > b.right + 1; }).map(function (c) { return (c.id || c.className) + ':' + Math.round(c.getBoundingClientRect().right - b.right); }); return JSON.stringify({ floor: cluster.style.getPropertyValue('--search-floor'), cluster: w(cluster), box: w(box), title: [w(t), parseFloat(getComputedStyle(t).minWidth), t.scrollWidth], heading: [w(h), parseFloat(getComputedStyle(h).minWidth)], past: past, bar: Math.round(b.width), view: w(document.getElementById('sessionView')), layout: document.getElementById('sessionView').className.split(' ').filter(function (c) { return /^pl-outline-|^pl-phone$/.test(c); }).join(' ') }); })()";
+    let limits = "(function(){ var bar = document.querySelector('.workspace>.topbar'), cluster = document.querySelector('.header-search-cluster'), box = document.querySelector('.header-searchbox'), t = document.getElementById('sessionTitle'), h = t.parentElement, b = bar.getBoundingClientRect(), w = function (e) { return Math.round(e.getBoundingClientRect().width); }; var past = [...bar.children].filter(function (c) { return c.offsetWidth && c.getBoundingClientRect().right > b.right + 1; }).map(function (c) { return (c.id || c.className) + ':' + Math.round(c.getBoundingClientRect().right - b.right); }); return JSON.stringify({ floor: cluster.style.getPropertyValue('--search-floor'), cluster: w(cluster), box: w(box), title: [w(t), parseFloat(getComputedStyle(t).minWidth), t.scrollWidth], heading: [w(h), parseFloat(getComputedStyle(h).minWidth)], edges: [t.getBoundingClientRect().right, h.getBoundingClientRect().right, cluster.getBoundingClientRect().left].map(Math.round), past: past, bar: Math.round(b.width), view: w(document.getElementById('sessionView')), layout: document.getElementById('sessionView').className.split(' ').filter(function (c) { return /^pl-outline-|^pl-phone$/.test(c); }).join(' ') }); })()";
     let read = || -> serde_json::Value {
         serde_json::from_str(eval(tab, limits).as_str().unwrap_or("{}")).unwrap()
     };
     let mut failed: Vec<String> = Vec::new();
     // The box fills its cluster (a floor past the box's own width rule left a blank gap beside it),
-    // nothing in the bar goes past the session's column, and the title keeps its first word.
+    // nothing in the bar goes past the session's column, and the title, held at its first word by its
+    // `min-width`, stays inside its heading, which stays clear of the search: a floor that kept the
+    // word by overflowing would lay the name under the box while nothing went past the bar.
     let check = |what: &str, seen: &serde_json::Value| -> Vec<String> {
         let mut out = Vec::new();
         let gap = seen["cluster"].as_i64().unwrap_or(0) - seen["box"].as_i64().unwrap_or(0);
@@ -15809,12 +15811,11 @@ fn app_shell_the_search_box_shows_its_own_query() {
                 "{what}: the bar's controls go past the session's column: {seen}"
             ));
         }
-        let (tw, tmin) = (
-            seen["title"][0].as_f64().unwrap_or(0.0),
-            seen["title"][1].as_f64().unwrap_or(0.0),
-        );
-        if tw + 1.0 < tmin {
-            out.push(format!("{what}: the title is below its first word: {seen}"));
+        let edge = |i: usize| seen["edges"][i].as_i64().unwrap_or(0);
+        if edge(0) > edge(1) + 1 || edge(1) > edge(2) + 1 {
+            out.push(format!(
+                "{what}: the title goes past its heading, or the heading under the search: {seen}"
+            ));
         }
         out
     };
