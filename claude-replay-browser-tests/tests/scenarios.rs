@@ -2248,15 +2248,16 @@ fn app_shell_keeps_a_turn_steps_hold_through_a_wheel_over_its_session_list() {
     scenario_a_wheel_beside_the_transcript_keeps_a_turn_steps_hold(&page.tab, Surface::AppShell);
 }
 
-/// #s526: on the classic page a wheel over the full-size image view zooms the image and leaves the
-/// reader where the step put them, so the turn the step landed stays the current one: from the end,
-/// where turn N-1 is in view and `[` moves nothing, `[`, an image opened full size, a real wheel
-/// over it, Escape, and `[` again go to N-1 and then N-2. The page ended the hold on that wheel, so
-/// its second `[` counted from N again and landed N-1 a second time. The image is opened through
-/// the page's own opener (a click on an `.aimg` anywhere opens it), on an image drawn nowhere: an
-/// image in the last turns brings its attachment row, the turns no longer fit, the step moves the
-/// view, and the hold no longer decides anything. The app shell's image opens in its pane, outside
-/// the transcript, and already kept the hold.
+/// #s526: on the classic page the full-size image view's own input zooms and pans the image and
+/// leaves the reader where a turn step put them, so the turn the step landed stays the current one:
+/// from the end, where turn N-1 is in view and `[` moves nothing, `[`, an image opened full size, a
+/// real wheel over it, `1` (its actual size, past its box), ArrowDown (which pans it), Escape, and
+/// `[` again go to N-1 and then N-2. The page ended the hold on that wheel, and then on that arrow
+/// key, so its second `[` counted from N again and landed N-1 a second time. The image is opened
+/// through the page's own opener (a click on an `.aimg` anywhere opens it), on an image drawn
+/// nowhere: an image in the last turns brings its attachment row, the turns no longer fit, the step
+/// moves the view, and the hold no longer decides anything. The app shell's image opens in its pane,
+/// outside the transcript, and already kept the hold.
 #[test]
 #[ignore = "needs a local Chrome"]
 fn classic_page_keeps_a_turn_steps_hold_through_a_wheel_over_the_full_size_image() {
@@ -2271,6 +2272,15 @@ fn classic_page_keeps_a_turn_steps_hold_through_a_wheel_over_the_full_size_image
         )
         .as_bool()
     };
+    let stage = |tab: &headless_chrome::Tab| {
+        eval(
+            tab,
+            "(function(){ var s = document.querySelector('.lightbox .lb-stage'), i = s && s.querySelector('img'); return s ? JSON.stringify([s.dataset.zoom || '', s.dataset.pannable || '', i ? i.style.transform : '']) : '[]'; })()",
+        )
+        .as_str()
+        .unwrap_or("[]")
+        .to_string()
+    };
     let mut readings = Vec::new();
     step_back_from_the_end(tab, surface, &mut readings);
     assert_eq!(
@@ -2278,12 +2288,10 @@ fn classic_page_keeps_a_turn_steps_hold_through_a_wheel_over_the_full_size_image
         Some(true),
         "the premise: the step moved nothing, so only the hold names turn 29: {readings:?}"
     );
+    // A picture far larger than the window, so its actual size is past its box and the arrows pan it.
     let opened = eval(
         tab,
-        &format!(
-            "(function(){{ var i = document.createElement('img'); i.className = 'aimg'; i.alt = 'a screenshot'; i.src = 'data:image/png;base64,{}'; i.style.display = 'none'; document.body.appendChild(i); i.click(); i.remove(); return !!document.querySelector('.lightbox .lb-stage'); }})()",
-            harness::TINY_PNG_B64.trim()
-        ),
+        "(function(){ var c = document.createElement('canvas'); c.width = 3000; c.height = 3000; var i = document.createElement('img'); i.className = 'aimg'; i.alt = 'a screenshot'; i.src = c.toDataURL('image/png'); i.style.display = 'none'; document.body.appendChild(i); i.click(); i.remove(); return !!document.querySelector('.lightbox .lb-stage'); })()",
     );
     assert_eq!(
         opened.as_bool(),
@@ -2291,12 +2299,31 @@ fn classic_page_keeps_a_turn_steps_hold_through_a_wheel_over_the_full_size_image
         "the premise: the image opens full size: {readings:?}"
     );
     settle();
+    let fitted = stage(tab);
     wheel_over(
         tab,
         "document.querySelector('.lightbox .lb-stage')",
         &readings,
     );
     settle();
+    let wheeled = stage(tab);
+    key(tab, "1", false);
+    settle();
+    let actual = stage(tab);
+    key(tab, "ArrowDown", false);
+    settle();
+    let panned = stage(tab);
+    let zoom = |s: &str| serde_json::from_str::<Vec<String>>(s).unwrap_or_default();
+    let (f, w, a, p) = (zoom(&fitted), zoom(&wheeled), zoom(&actual), zoom(&panned));
+    assert!(
+        f.len() == 3
+            && w.len() == 3
+            && f[0] != w[0]
+            && a.get(..2) == Some(&["100".to_string(), "yes".to_string()][..])
+            && p.len() == 3
+            && p[2] != a[2],
+        "the premise: the wheel zoomed the image, `1` put it at its actual size past its box, and ArrowDown panned it: fitted {fitted}, wheeled {wheeled}, actual {actual}, panned {panned}: {readings:?}"
+    );
     until_engine_quiet(tab);
     key(tab, "Escape", false);
     settle();
