@@ -1852,10 +1852,17 @@ fn scenario_an_echoed_write_keeps_the_jump(
     settle();
     until_engine_quiet(tab);
     let last = "JSON.stringify((function(){ var h = window.__viewportHistory.states, x = h[h.length - 1]; return [x.position, x.turn]; })())";
-    let jumped: (String, i64) =
-        serde_json::from_str(eval(tab, last).as_str().unwrap_or("[\"\",-1]")).unwrap();
+    let read_last = || -> (Option<String>, Option<i64>) {
+        let got = eval(tab, last);
+        serde_json::from_str(got.as_str().unwrap_or("null"))
+            .unwrap_or_else(|e| panic!("the engine's last state ({got}): {e}"))
+    };
+    let jumped = read_last();
+    let jumped_turn = jumped
+        .1
+        .unwrap_or_else(|| panic!("the jump's state names a turn: {jumped:?}"));
     assert!(
-        (jumped.1 - target as i64).abs() <= 1,
+        jumped.0.is_some() && (jumped_turn - target as i64).abs() <= 1,
         "the jump put turn {target} under `P`: {jumped:?}"
     );
     assert_eq!(
@@ -1891,14 +1898,12 @@ fn scenario_an_echoed_write_keeps_the_jump(
         serde_json::from_str(since.as_str().unwrap_or("[]")).unwrap();
     let echo = eval(tab, "JSON.stringify(window.__echo.echoes)");
     assert!(!since.is_empty(), "the growth is recorded: {echo}");
-    let strays: Vec<_> = since.iter().filter(|x| x.2 != Some(jumped.1)).collect();
+    let strays: Vec<_> = since.iter().filter(|x| x.2 != Some(jumped_turn)).collect();
     assert!(
         strays.is_empty(),
-        "every state after the echo keeps the jump's turn {} under `P` ({grown} grew; the echo {echo}): {strays:?}",
-        jumped.1
+        "every state after the echo keeps the jump's turn {jumped_turn} under `P` ({grown} grew; the echo {echo}): {strays:?}"
     );
-    let last_now: (String, i64) =
-        serde_json::from_str(eval(tab, last).as_str().unwrap_or("[\"\",-1]")).unwrap();
+    let last_now = read_last();
     assert_eq!(
         last_now, jumped,
         "`P` is still the jump's: the echo {echo}, the states {since:?}"
