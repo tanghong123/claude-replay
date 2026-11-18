@@ -14216,11 +14216,10 @@ fn the_app_shell_puts_a_turns_time_and_duration_below_its_bubble() {
             };
             let last = &t[t.len() - 1];
             t.iter().all(|r| {
-                    n(r, 1) >= n(bubble, 3)
-                        && n(r, 3) <= n(turn, 3)
-                        && (n(r, 1) - n(&t[0], 1)).abs() <= 1
-                })
-                && t.windows(2).all(|p| n(&p[0], 2) <= n(&p[1], 0))
+                n(r, 1) >= n(bubble, 3)
+                    && n(r, 3) <= n(turn, 3)
+                    && (n(r, 1) - n(&t[0], 1)).abs() <= 1
+            }) && t.windows(2).all(|p| n(&p[0], 2) <= n(&p[1], 0))
                 && (n(last, 2) - n(bubble, 2)).abs() <= 5
                 && n(bubble, 2) >= n(turn, 2) - 2
                 && (u["notice"].is_null() || n(&u["notice"], 1) >= n(last, 3))
