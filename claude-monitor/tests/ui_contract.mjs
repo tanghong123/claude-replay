@@ -1547,7 +1547,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(resolveKey(ev("\u3010"), "view", { tagName: "INPUT" }), null, "…never while typing");
   assert.equal(resolveKey(ev("\u3011"), "list"), null, "…and not while the list has focus");
   assert.equal(resolveKey(ev("\u3011"), "view", { tagName: "DIV", closest: sel => (sel === "[data-guest-keys]" ? {} : null) }), null, "…nor inside a guest");
-  assert.equal(resolveKey(ev("\u3011", { metaKey: true }), "view"), null, "…nor with a platform modifier");
+  for (const mod of ["metaKey", "ctrlKey", "altKey"]) assert.equal(resolveKey(ev("\u3011", { [mod]: true }), "view"), null, `…nor with ${mod} held`);
   for (const b of KEYMAP) assert.ok(!["\u3010", "\u3011"].includes(b.key), "no binding names a full-width bracket itself");
   assert.equal(hintFor("turn-next"), "]", "the hint still names the bracket key");
   assert.equal(resolveKey(ev("ArrowDown"), "list").action, "list-next");
