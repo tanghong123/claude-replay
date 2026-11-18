@@ -15783,25 +15783,81 @@ fn app_shell_the_search_box_shows_its_own_query() {
             );
         }
     }
-    // The floor's limits (train2's review), with a query longer than any box shows: the box grows
-    // no wider than its own width rule, so the cluster is never wider than the box (a blank gap
-    // beside it); a title whose first word is wider than the 80px it gives way to keeps that word
-    // (its CSS floor) without the bar overflowing; and when the session's column narrows with no
-    // window resize (the pane's drag) the floor is fitted again, nothing in the bar past the
-    // column. The first word is emulated by its measure, `--title-word`, which the bar's rules read.
+    // The floor's limits (train2's reviews), measured with the floor set: the session's name is a long
+    // one, held against the header's repaints, and its first word is emulated by its measure,
+    // `--title-word` on the bar, which the bar's rules and the fit read. Every limit is read and the
+    // failures reported together, so a change that breaks one shows which.
     let long = "uo(R): needle beside a query far longer than any search box shows";
-    let limits = "(function(){ var bar = document.querySelector('.workspace>.topbar'), cluster = document.querySelector('.header-search-cluster'), box = document.querySelector('.header-searchbox'), t = document.getElementById('sessionTitle'), b = bar.getBoundingClientRect(); var past = [...bar.children].filter(function (c) { return c.offsetWidth && c.getBoundingClientRect().right > b.right + 1; }).map(function (c) { return (c.id || c.className) + ':' + Math.round(c.getBoundingClientRect().right); }); return JSON.stringify({ bar: Math.round(b.right), past: past, cluster: Math.round(cluster.getBoundingClientRect().width), box: Math.round(box.getBoundingClientRect().width), title: [Math.round(t.getBoundingClientRect().width), getComputedStyle(t).minWidth], floor: cluster.style.getPropertyValue('--search-floor'), view: Math.round(document.getElementById('sessionView').getBoundingClientRect().width), classes: document.getElementById('sessionView').className }); })()";
-    let read = |what: &str| -> serde_json::Value {
-        let seen: serde_json::Value =
-            serde_json::from_str(eval(tab, limits).as_str().unwrap_or("{}")).unwrap();
-        let gap = seen["cluster"].as_i64().unwrap_or(0) - seen["box"].as_i64().unwrap_or(0);
-        assert!(
-            gap.abs() <= 1 && seen["past"].as_array().is_some_and(|p| p.is_empty()),
-            "{what}: the box fills its cluster and nothing in the bar goes past the column: {seen}"
-        );
-        seen
+    let short = "uo(R): needle";
+    let limits = "(function(){ var bar = document.querySelector('.workspace>.topbar'), cluster = document.querySelector('.header-search-cluster'), box = document.querySelector('.header-searchbox'), t = document.getElementById('sessionTitle'), h = t.parentElement, b = bar.getBoundingClientRect(), w = function (e) { return Math.round(e.getBoundingClientRect().width); }; var past = [...bar.children].filter(function (c) { return c.offsetWidth && c.getBoundingClientRect().right > b.right + 1; }).map(function (c) { return (c.id || c.className) + ':' + Math.round(c.getBoundingClientRect().right - b.right); }); return JSON.stringify({ floor: cluster.style.getPropertyValue('--search-floor'), cluster: w(cluster), box: w(box), title: [w(t), parseFloat(getComputedStyle(t).minWidth), t.scrollWidth], heading: [w(h), parseFloat(getComputedStyle(h).minWidth)], past: past, bar: Math.round(b.width), view: w(document.getElementById('sessionView')), layout: document.getElementById('sessionView').className.split(' ').filter(function (c) { return /^pl-outline-|^pl-phone$/.test(c); }).join(' ') }); })()";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(eval(tab, limits).as_str().unwrap_or("{}")).unwrap()
     };
-    for width in [1440.0, 1100.0] {
+    let mut failed: Vec<String> = Vec::new();
+    // The box fills its cluster (a floor past the box's own width rule left a blank gap beside it),
+    // nothing in the bar goes past the session's column, and the title keeps its first word.
+    let check = |what: &str, seen: &serde_json::Value| -> Vec<String> {
+        let mut out = Vec::new();
+        let gap = seen["cluster"].as_i64().unwrap_or(0) - seen["box"].as_i64().unwrap_or(0);
+        if gap.abs() > 1 {
+            out.push(format!(
+                "{what}: the cluster is {gap}px wider than its box: {seen}"
+            ));
+        }
+        if !seen["past"].as_array().is_some_and(|p| p.is_empty()) {
+            out.push(format!(
+                "{what}: the bar's controls go past the session's column: {seen}"
+            ));
+        }
+        let (tw, tmin) = (
+            seen["title"][0].as_f64().unwrap_or(0.0),
+            seen["title"][1].as_f64().unwrap_or(0.0),
+        );
+        if tw + 1.0 < tmin {
+            out.push(format!("{what}: the title is below its first word: {seen}"));
+        }
+        out
+    };
+    let hold = |word: &str, query: &str| {
+        eval(
+            tab,
+            &format!("(function(){{ var b = document.getElementById('transcriptSearchInput'); b.value = ''; b.dispatchEvent(new Event('input', {{bubbles: true}})); b.blur(); var t = document.getElementById('sessionTitle'); var name = 'A session whose name needs every pixel the top bar can give it'; if (!window.__heldTitle) {{ window.__heldTitle = new MutationObserver(function () {{ if (t.textContent !== name) t.textContent = name; }}); window.__heldTitle.observe(t, {{childList: true, characterData: true, subtree: true}}); }} t.textContent = name; document.querySelector('.workspace>.topbar').style.setProperty('--title-word', {word:?}); document.getElementById('sessionView').style.maxWidth = ''; return 'held'; }})()"),
+        );
+        settle();
+        eval(
+            tab,
+            &format!("(function(){{ var b = document.getElementById('transcriptSearchInput'); b.focus(); b.value = {query:?}; b.dispatchEvent(new Event('input', {{bubbles: true}})); b.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', bubbles: true, cancelable: true}})); return 'typed'; }})()"),
+        );
+        settle();
+    };
+    // The bar's room changes with no window resize (the pane's drag, as the view sees it: its own box
+    // narrows); the floor must be what a fit made now would set, which an input re-fits at once.
+    let narrowed = |what: &str,
+                    by: i64,
+                    before: &serde_json::Value|
+     -> (serde_json::Value, Vec<String>) {
+        let view = before["view"].as_i64().unwrap_or(0);
+        eval(tab, &format!("(function(){{ document.getElementById('sessionView').style.maxWidth = '{}px'; return 1; }})()", view - by));
+        settle();
+        settle();
+        let now = read();
+        eval(tab, "(function(){ document.getElementById('transcriptSearchInput').dispatchEvent(new Event('input', {bubbles: true})); return 1; })()");
+        let fresh = read();
+        let mut out = check(what, &now);
+        if now["floor"] != fresh["floor"] {
+            out.push(format!("{what}: the floor was not fitted again as the bar narrowed ({} held, a fit now sets {}): {now}", now["floor"], fresh["floor"]));
+        }
+        if now["layout"]
+            .as_str()
+            .is_some_and(|l| l.contains("pl-outline-bar") || l.contains("pl-phone"))
+        {
+            out.push(format!(
+                "{what}: the narrowing reached a layout the floor does not apply to: {now}"
+            ));
+        }
+        (now, out)
+    };
+    let resize = |width: f64| {
         harness::resize(tab, width, 860.0);
         harness::until(
             tab,
@@ -15811,28 +15867,43 @@ fn app_shell_the_search_box_shows_its_own_query() {
             "innerWidth",
         );
         harness::until_preview_parked(tab);
-        eval(tab, "(function(){ document.querySelector('.session-heading').style.setProperty('--title-word', '110px'); return 'word'; })()");
-        eval(
-            tab,
-            &format!("(function(){{ var b = document.getElementById('transcriptSearchInput'); b.focus(); b.value = {long:?}; b.dispatchEvent(new Event('input', {{bubbles: true}})); b.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', bubbles: true, cancelable: true}})); return 'typed'; }})()"),
-        );
-        settle();
-        let seen = read(&format!("at {width}px, a long query held"));
-        if width == 1100.0 {
-            // The pane's drag, as the view sees it: its own box narrows while the window stays.
-            let view = seen["view"].as_i64().unwrap_or(0);
-            eval(
-                tab,
-                &format!("(function(){{ document.getElementById('sessionView').style.maxWidth = '{}px'; return 'narrowed'; }})()", view - 120),
-            );
-            settle();
-            settle();
-            read(&format!(
-                "at {width}px, the column narrowed by 120px with no window resize (it held {seen})"
-            ));
-            eval(tab, "(function(){ document.getElementById('sessionView').style.maxWidth = ''; return 'restored'; })()");
-        }
+    };
+    // At 1440px a long query asks more than the box's own width rule gives: the floor stops there.
+    resize(1440.0);
+    hold("110px", long);
+    let wide = read();
+    if wide["floor"].as_str().is_none_or(|f| f.is_empty()) {
+        failed.push(format!("at 1440px, a long query: a floor is set (the case measures nothing without one): {wide}"));
     }
+    failed.extend(check("at 1440px, a long query", &wide));
+    // Narrowed by 340px, the title's first word leaves the query less than the floor held: a floor fitted
+    // to the old room pushed the bar's last controls out of the column.
+    let (after, out) = narrowed("at 1440px, the column narrowed by 340px", 340, &wide);
+    failed.extend(out);
+    if after["floor"] == wide["floor"] {
+        failed.push(format!("at 1440px narrowed by 340px: the narrowing changes what a fit sets (the case measures nothing otherwise): before {wide}, after {after}"));
+    }
+    // At 1100px the longest first word the bar keeps (160px), and a long one: the floor's default leaves
+    // the word its room, and the title's share is what its heading can give, at the window's width and
+    // narrowed by 40px.
+    resize(1100.0);
+    for word in ["160px", "110px"] {
+        hold(word, short);
+        let at = read();
+        failed.extend(check(&format!("at 1100px, a {word} first word"), &at));
+        let (_, out) = narrowed(
+            &format!("at 1100px with a {word} first word, the column narrowed by 40px"),
+            40,
+            &at,
+        );
+        failed.extend(out);
+    }
+    eval(tab, "(function(){ if (window.__heldTitle) window.__heldTitle.disconnect(); document.getElementById('sessionView').style.maxWidth = ''; return 1; })()");
+    assert!(
+        failed.is_empty(),
+        "the floor's limits:\n{}",
+        failed.join("\n")
+    );
 }
 
 /// #298 — the owner: "after / focuses on the search box, we should offer esc to defocus (same effect
