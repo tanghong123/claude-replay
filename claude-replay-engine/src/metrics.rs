@@ -671,7 +671,8 @@ impl RequestPricing {
     /// page's Ultrafast tab read raw, and
     /// <https://developers.openai.com/api/docs/guides/ultrafast-mode>): a request selects it with
     /// `service_tier` "ultrafast"; listed for gpt-6-astra and, since 2026-10-08, gpt-6.1-sol, 6x
-    /// Standard short and long.
+    /// Standard short and long, and since 2026-11-18 (#s572) for gpt-6.2-astra and gpt-6.2-sol, 3x
+    /// through 2027-02-28 and 6x from 2027-03-01 (the catalog carries the 3x until it is re-read).
     /// A 1-hour cache write costs 2x the input rate (#s359), taking the input's long factor and
     /// the tier's multiplier as the input does.
     /// The boolean marks an estimate with incomplete billing evidence, not a lower bound.
@@ -2563,6 +2564,57 @@ mod request_pricing_tests {
                     "{model} {tier:?}"
                 );
                 assert!(!estimated, "{model} {tier:?}");
+            }
+        }
+    }
+
+    /// #s572: gpt-6.2-astra and gpt-6.2-sol, priced before first use (the pricing page read raw
+    /// 2026-11-18T04:29Z): on every class, short and over 272K, Fast 2x, Batch half and Ultrafast 3x
+    /// (its promotion through 2027-02-28), and no Flex row, so a Flex request prices at Standard as
+    /// an estimate.
+    #[test]
+    fn the_gpt_6_2_models_price_each_tier_the_page_lists() {
+        let table = PriceTable::default();
+        let tokens = TokenCounts {
+            input: 1_000_000,
+            cache_creation: 1_000_000,
+            cache_read: 1_000_000,
+            output: 1_000_000,
+            ..Default::default()
+        };
+        // Standard, the four classes summed (input, 30m write, cached, output), short and long.
+        for (model, short, long) in [
+            (
+                "gpt-6.2-astra",
+                8.0 + 10.0 + 0.4 + 40.0,
+                16.0 + 20.0 + 0.8 + 60.0,
+            ),
+            (
+                "gpt-6.2-sol",
+                2.0 + 2.5 + 0.1 + 10.0,
+                4.0 + 5.0 + 0.2 + 15.0,
+            ),
+        ] {
+            for (is_long, standard) in [(false, short), (true, long)] {
+                for (tier, factor, estimate) in [
+                    (ServiceTier::Standard, 1.0, false),
+                    (ServiceTier::Fast, 2.0, false),
+                    (ServiceTier::Batch, 0.5, false),
+                    (ServiceTier::from_recorded("ultrafast"), 3.0, false),
+                    (ServiceTier::Flex, 1.0, true),
+                ] {
+                    let context = RequestPricing {
+                        tier,
+                        long_context: Some(is_long),
+                        tier_confirmed: true,
+                    };
+                    let (cost, estimated) = context.cost_with(&table, model, tokens);
+                    assert!(
+                        (cost.unwrap() - standard * factor).abs() < 1e-9,
+                        "{model} {tier:?} long={is_long}: {cost:?}"
+                    );
+                    assert_eq!(estimated, estimate, "{model} {tier:?} long={is_long}");
+                }
             }
         }
     }
