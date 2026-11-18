@@ -13452,24 +13452,28 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     let settled = |width: u32, open: bool| {
         format!("innerWidth === {width} && {VIEW_CAUGHT_UP} && document.getElementById('sessionView').classList.contains('preview-off') === {} && document.getElementById('sessionView').getAnimations({{ subtree: true }}).filter(function (a) {{ return a instanceof CSSTransition; }}).length === 0 && document.getElementById('sessionTitle').textContent === 'Harbour tide table notes'", !open)
     };
-    let at = |width: u32, open: bool, what: &str| -> serde_json::Value {
+    let at = |tab: &headless_chrome::Tab,
+              width: u32,
+              open: bool,
+              what: &str|
+     -> serde_json::Value {
         if width < 500 {
-            harness::mouse_window(&tab, width, 900);
+            harness::mouse_window(tab, width, 900);
         } else {
-            harness::clear_metrics(&tab);
-            harness::resize(&tab, width as f64, 900.0);
+            harness::clear_metrics(tab);
+            harness::resize(tab, width as f64, 900.0);
         }
         let toggle = format!("(function(){{ var v = document.getElementById('sessionView'); if (v.classList.contains('preview-off') === {open}) document.getElementById('previewBtn').click(); return true; }})()");
-        harness::eval(&tab, &toggle);
+        harness::eval(tab, &toggle);
         harness::until(
-            &tab,
+            tab,
             &settled(width, open),
             &format!("{what} at {width}px, the pane {}", if open { "open" } else { "shut" }),
             Duration::from_secs(15),
             "({ w: innerWidth, cls: document.getElementById('sessionView').className, title: document.getElementById('sessionTitle').textContent })",
         );
-        harness::until_preview_parked(&tab);
-        harness::probe(&tab, probe)
+        harness::until_preview_parked(tab);
+        harness::probe(tab, probe)
     };
     let fits = |seen: &serde_json::Value, what: &str| {
         assert!(
@@ -13498,7 +13502,7 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         "document.body.innerText.slice(0, 200)",
     );
     // 540px: the drawer's handle at the bar's left, the session 520px.
-    let narrow = at(540, false, "the app");
+    let narrow = at(&tab, 540, false, "the app");
     fits(&narrow, "the app at 540px");
     // A click on the folded search box opens it to its width, for typing, and still inside the
     // column.
@@ -13812,12 +13816,12 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     );
     harness::eval(&tab, "document.getElementById('readingBtn').click(); 1");
     // 500px: the narrowest under the handle, the session at M.
-    fits(&at(500, false, "the app"), "the app at 500px");
+    fits(&at(&tab, 500, false, "the app"), "the app at 500px");
     // 600px: beside the rail, the session 526px.
-    fits(&at(600, false, "the app"), "the app at 600px");
+    fits(&at(&tab, 600, false, "the app"), "the app at 600px");
     // 1100px, the pane open beside the session: the session 512px, its bar beside the pane's tabs.
     fits(
-        &at(1100, true, "the app"),
+        &at(&tab, 1100, true, "the app"),
         "the app at 1100px, the pane open",
     );
     // There the view is wider than the session (the pane beside it), so the bar takes the search
@@ -13861,12 +13865,17 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     );
     // 1040px, the pane open: the session at M.
     fits(
-        &at(1040, true, "the app"),
+        &at(&tab, 1040, true, "the app"),
         "the app at 1040px, the pane open",
     );
 
-    // A host's pane, the view the whole page.
-    harness::clear_metrics(&tab);
+    // A host's pane, the view the whole page, in a browser of its own: headless_chrome's browser
+    // loop stops after 30 s without a target event, which the app (it sets no title) never gives,
+    // and the next one, the host page's navigation, then closes the whole connection
+    // (`harness::fresh_tab`).
+    drop(tab);
+    drop(_browser);
+    let (_browser, tab) = harness::fresh_tab(&monitor);
     harness::resize(&tab, 1000.0, 900.0);
     harness::open_host_page(&tab, &monitor, &format!("session={sid}"));
     harness::until(
@@ -13877,15 +13886,18 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         "document.body.innerText.slice(0, 200)",
     );
     fits(
-        &at(1000, true, "the host"),
+        &at(&tab, 1000, true, "the host"),
         "a host's 1000px pane, the pane open",
     );
-    fits(&at(490, false, "the host"), "a host's 490px pane");
-    // A host that switched Aa off keeps fold-all in the bar, in Aa's room.
+    fits(&at(&tab, 490, false, "the host"), "a host's 490px pane");
+    // A host that switched Aa off keeps fold-all in the bar, in Aa's room (a browser of its own too).
     harness::clear_metrics(&tab);
+    drop(tab);
+    drop(_browser);
+    let (_browser, tab) = harness::fresh_tab(&monitor);
     harness::resize(&tab, 1000.0, 900.0);
     harness::open_host_page(&tab, &monitor, &format!("session={sid}&hide=reading"));
-    let no_aa = at(1000, true, "the host without Aa");
+    let no_aa = at(&tab, 1000, true, "the host without Aa");
     fits(&no_aa, "a host's 1000px pane without Aa");
     assert!(
         no_aa["bar"].as_array().is_some_and(|b| b
