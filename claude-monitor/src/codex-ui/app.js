@@ -555,21 +555,51 @@ var mobileShell;
 // view hears whether writing is on and asks for the confirm through its `write` option, and is told
 // when the switch moves (`writeChanged`). Native mode wraps the switch's handler (native-entry.js,
 // native-mode.js), so it is bound before either loads.
+// #s577: where this reader's writes cannot reach the monitor, the switch is drawn disabled and says
+// why under it (`writeReason`), the first thing missing as the server named it (`data-write`): a
+// switch that turned on and could not send looked like a broken one. A click on it, or on ⓘ, opens
+// the longer help.
+const WRITE_NEED = {
+  monitor: {
+    line: "Needs a paired monitor: <code>agent-monitor --pair</code>",
+    help: "<b>Write mode needs a paired monitor</b><p>Stop the monitor and run this in a terminal:</p><code>agent-monitor --pair</code>",
+  },
+  browser: {
+    line: "This browser is not paired with the monitor",
+    help: "<b>This browser is not paired</b><p>The monitor is paired, but this browser holds no pairing token, so the monitor would refuse what it sends. Open the address <code>agent-monitor</code> printed in its terminal when it started: it carries the token.</p>",
+  },
+  host: {
+    line: "This page only reads sessions",
+    help: "<b>This page does not write</b><p>The server that serves it offers reading only.</p>",
+  },
+};
+const writeReason = document.createElement("div");
+writeReason.id = "writeReason";
+writeReason.className = "write-reason";
+page.byId("writeBtn").after(writeReason);
+const writeReasonText = need => { const el = document.createElement("div"); el.innerHTML = need.line; return el.textContent; };
 function paintWrite() {
+  const need = controlState.writes ? null : WRITE_NEED[controlState.writeNeed] || WRITE_NEED.monitor;
   page.byId("writeSwitch").setAttribute("aria-checked", String(controlState.write));
+  page.byId("writeSwitch").setAttribute("aria-disabled", String(!!need));
   page.byId("writeBtn").classList.toggle("on", controlState.write);
+  page.byId("writeBtn").classList.toggle("disabled", !!need);
   page.byId("sidebarMiniWrite").classList.toggle("on", controlState.write);
-  page.byId("writeInfo").hidden = controlState.paired;
+  page.byId("sidebarMiniWrite").classList.toggle("disabled", !!need);
+  page.byId("sidebarMiniWrite").title = need ? `Write mode: ${writeReasonText(need)}` : "Write mode";
+  page.byId("writeInfo").hidden = !need;
+  writeReason.hidden = !need;
+  writeReason.innerHTML = need ? need.line : "";
 }
 function showPairHelp() {
   const help = page.byId("writeHelp");
-  help.innerHTML = controlState.paired
-    ? "<b>Monitor is paired</b><p>With write mode on, a writable session shows a compose box. A live terminal still needs its own grant.</p>"
-    : "<b>Write mode needs a paired monitor</b><p>Stop the monitor and run this in a terminal:</p><code>agent-monitor --pair</code>";
+  const need = controlState.writes ? null : WRITE_NEED[controlState.writeNeed] || WRITE_NEED.monitor;
+  help.innerHTML = need ? need.help
+    : "<b>Monitor is paired</b><p>With write mode on, a writable session shows a compose box. A live terminal still needs its own grant.</p>";
   help.hidden = false; help.classList.add("show");
 }
 page.byId("writeSwitch").onclick = () => {
-  if (!controlState.paired) { showPairHelp(); return; }
+  if (!controlState.writes) { showPairHelp(); return; }
   controlState.write = !controlState.write;
   paintWrite();
   viewHandle.writeChanged();

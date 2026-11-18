@@ -583,3 +583,9 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 :is(#sessionView,#app) .outline-turn-pending .outline-label,:is(#sessionView,#app) .outline-turn-pending .outline-number,:is(#sessionView,#app) .outline-epoch.outline-turn-pending{color:var(--faint)}
 :is(#sessionView,#app) .outline-turn-row{grid-template-columns:minmax(24px,max-content) minmax(0,1fr) auto}
 :is(#sessionView,#app) .outline-turn-row .outline-number{white-space:nowrap;min-width:calc((var(--outline-digits,2) + 2) * 1ch)}
+.write-control.disabled .mode-switch{opacity:.42;cursor:default}
+.write-control.disabled .icon{opacity:.6}
+.sidebar .write-reason{margin:-3px 10px 6px 38px;color:var(--faint);font-size:11.5px;line-height:1.4;overflow-wrap:anywhere}
+.sidebar .write-reason[hidden]{display:none}
+.sidebar .write-reason code{font:11px var(--mono);color:var(--sub);white-space:nowrap}
+.sidebar-mini-button.disabled{opacity:.5}

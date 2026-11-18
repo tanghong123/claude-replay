@@ -227,6 +227,23 @@ pub fn install_mdrev(scratch: &Path, state: Option<PathBuf>) {
     );
 }
 
+/// Whether the page this request is served may write (#s577), by the checks every write route
+/// makes of the requests the page will send: the table serves writes (`Serves::admits`), the
+/// monitor is paired, and the request carries the token (`Request::deny_mutation`). Each failure
+/// names what would fix it, so the first named is the one a reader can act on: pairing does not
+/// help a table that serves no writes, and a token does not help an unpaired monitor.
+fn write_gate(paired: bool, serves_writes: bool, authenticated: bool) -> ui::WriteGate {
+    if !serves_writes {
+        ui::WriteGate::NotServed
+    } else if !paired {
+        ui::WriteGate::MonitorUnpaired
+    } else if !authenticated {
+        ui::WriteGate::BrowserUnpaired
+    } else {
+        ui::WriteGate::Open
+    }
+}
+
 /// One request through the table.
 pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpResponse {
     let (name, query) = (req.name, req.query);
@@ -248,7 +265,11 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
     match name {
         // The app shell, whatever `?ui=` says: `?ui=classic` and a `ui.json` that remembered the
         // classic view both get it since that view was retired (#s98).
-        "" | "index.html" => HttpResponse::html(ui::app_page(front.version, front.paired)),
+        "" | "index.html" => HttpResponse::html(ui::app_page(
+            front.version,
+            front.paired,
+            write_gate(front.paired, ceiling.writes, req.authenticated),
+        )),
         // A Markdown document from the preview pane, in a tab of its own (#271).
         "markdown" => HttpResponse::html(ui::markdown_page()),
         // An image from the preview pane, in a tab of its own (#s11).
@@ -328,6 +349,26 @@ mod tests {
     use super::*;
     use claude_replay_html::{RootLock, ServiceConfig};
     use claude_replay_present::cache::Presentation;
+
+    /// #s577: the page says whether its writes are admitted, by the checks a write route makes, and
+    /// if not, the first thing missing that the reader can act on.
+    #[test]
+    fn the_page_says_whether_its_writes_reach_the_monitor() {
+        use ui::WriteGate::*;
+        assert_eq!(write_gate(true, true, true), Open);
+        assert_eq!(write_gate(false, true, false), MonitorUnpaired);
+        assert_eq!(write_gate(true, true, false), BrowserUnpaired);
+        assert_eq!(write_gate(true, false, true), NotServed);
+        assert_eq!(
+            write_gate(false, false, false),
+            NotServed,
+            "pairing does not help a table that serves no writes"
+        );
+        let page = |gate| ui::app_page("t", true, gate);
+        assert!(page(Open).contains(r#"data-paired="true" data-write="open""#));
+        assert!(page(BrowserUnpaired).contains(r#"data-write="browser""#));
+        assert!(ui::page("t", false).contains(r#"data-paired="false" data-write="monitor""#));
+    }
 
     fn make_backend(tag: &str) -> Arc<Backend> {
         make_backend_serving(tag, Serves::ALL)

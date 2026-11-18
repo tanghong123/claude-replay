@@ -350,6 +350,28 @@ impl SendRefusal {
             }
         }
     }
+
+    /// The word a session row carries when the page offers it no send (`sendBlock`, #s577): the
+    /// page says why in its own words, by this word. `None` for a refusal that is no lasting fact
+    /// about the session (a grant still to give, a session gone) or that another control answers
+    /// (a Codex session Codex native mode owns reads as live, and native mode writes to it).
+    pub fn block_code(self) -> Option<&'static str> {
+        Some(match self {
+            Self::NoSuchSession | Self::SessionIsLive | Self::SessionNotLive | Self::NoConsent => {
+                return None
+            }
+            Self::ProjectHasActiveSession => "project-busy",
+            Self::UnsupportedAgent => "unsupported-agent",
+            Self::UnprovenLink => "unproven-pane",
+            Self::NotInTmux => "no-pane",
+            Self::HerdrClaudeOnly => "herdr-codex",
+            Self::PaneShared => "pane-shared",
+            Self::PaneNotForeground => "not-foreground",
+            Self::PaneOtherTerminal => "other-terminal",
+            Self::ContinuedElsewhere => "continued",
+            Self::PaneParked => "parked",
+        })
+    }
 }
 
 /// A host-installed ownership view. Inactive runtimes own no ordinary session.
@@ -1541,6 +1563,8 @@ impl Index {
                 )
             })
             .collect();
+        // #s577: a live row the page offers no send says why, by the pane decision itself.
+        annotate_send_blocks(&mut snapshot, st);
         // The agent-state pass (#194): derive busy/wait/idle from what this tick just
         // observed and dump transitions + the snapshot under `<cache_root>/state/`.
         st.state_tracker.tick(&self.cache_root, &facts);
@@ -2481,6 +2505,40 @@ impl Index {
 /// `state`/`conf` are the long-standing process/index fields and remain byte-for-byte in
 /// meaning.  The new names are deliberately separate: consumers can adopt busy/wait/idle and
 /// its reason without breaking an older client that switches on growing/idle/finished.
+/// #s577: why a LIVE row takes no message from the page, as `sendBlock` (`SendRefusal::block_code`).
+/// It is the refusal of `pane_send_target`, the pure decision the pane send itself takes (less the
+/// rescan the send pays for), over the links this scan just banked — so the page says what a send
+/// would be told, and a second copy of the rule cannot drift from the first. Only live rows: a
+/// finished row's reasons (its agent, `continuedIn`, `projActive`) are on the row already, and the
+/// page reads them by the rule it offers the resume by (`composeBlock`). A row the page can type
+/// into (`injectable`) carries none.
+fn annotate_send_blocks(root: &mut Value, st: &State) {
+    let Some(groups) = root.get_mut("groups").and_then(Value::as_array_mut) else {
+        return;
+    };
+    for row in groups
+        .iter_mut()
+        .filter_map(|g| g.get_mut("rows").and_then(Value::as_array_mut))
+        .flatten()
+    {
+        if row.get("injectable").is_some() {
+            continue;
+        }
+        let Some(sid) = row.get("id").and_then(Value::as_str).map(str::to_string) else {
+            continue;
+        };
+        if st.send_links.get(&sid).and_then(|l| l.pid).is_none() {
+            continue;
+        }
+        if let Some(code) = pane_send_target(st, &sid)
+            .err()
+            .and_then(SendRefusal::block_code)
+        {
+            row["sendBlock"] = json!(code);
+        }
+    }
+}
+
 fn annotate_agent_state(root: &mut Value, tracker: &crate::state::StateTracker) {
     let Some(groups) = root.get_mut("groups").and_then(Value::as_array_mut) else {
         return;
@@ -10836,6 +10894,44 @@ n/Users/x/proj
         assert!(!pane_shared(&procs, 700, &addr));
     }
 
+    /// #s577: every lasting reason a session takes no message has words on the page, which says
+    /// it by the row's `sendBlock` (`control-store.js`), so a new refusal cannot reach the page as a
+    /// word it does not know.
+    #[test]
+    fn every_send_block_has_words_on_the_page() {
+        let page = include_str!("codex-ui/control-store.js");
+        use SendRefusal::*;
+        let all = [
+            NoSuchSession,
+            SessionIsLive,
+            ProjectHasActiveSession,
+            UnsupportedAgent,
+            SessionNotLive,
+            UnprovenLink,
+            NotInTmux,
+            NoConsent,
+            HerdrClaudeOnly,
+            PaneShared,
+            PaneNotForeground,
+            PaneOtherTerminal,
+            ContinuedElsewhere,
+            PaneParked,
+        ];
+        let codes: Vec<_> = all.iter().filter_map(|r| r.block_code()).collect();
+        assert_eq!(codes.len(), 10, "{codes:?}");
+        for code in codes {
+            assert!(
+                page.contains(&format!("\"{code}\": \"")),
+                "no words for {code}"
+            );
+        }
+        assert_eq!(
+            NoConsent.block_code(),
+            None,
+            "a grant still to give is asked for, not a reason"
+        );
+    }
+
     /// #s334: a tmux marker names a pane only when tmux is the nearest multiplexer up the chain.
     /// Claude Code's background shape: the attach client sits in pane %3, while the session's
     /// engine (`--bg-pty-host`) runs under `claude daemon run`, which inherits the client's
@@ -10895,12 +10991,17 @@ n/Users/x/proj
         let mut facts = Vec::new();
         idx.assemble(&st, &mut facts);
         st.send_links = send_links_of(&facts);
-        let snapshot = idx.assemble(&st, &mut Vec::new());
+        let mut snapshot = idx.assemble(&st, &mut Vec::new());
         assert_eq!(st.send_links[child].pid, Some(900));
         assert!(st.send_links[child].confirmed);
         assert_eq!(registry_row(&snapshot, child)["term"], "tty");
         assert!(registry_row(&snapshot, child).get("injectable").is_none());
         assert_eq!(pane_send_target(&st, child), Err(SendRefusal::NotInTmux));
+        // #s577: the row the page offers no send says why, in the pane decision's own word; the
+        // client's, which the page types into, says nothing.
+        annotate_send_blocks(&mut snapshot, &st);
+        assert_eq!(registry_row(&snapshot, child)["sendBlock"], "no-pane");
+        assert!(registry_row(&snapshot, outer).get("sendBlock").is_none());
         // The session keeps its client's pane: the child, carrying %3 below helpers only, is in no
         // pane, so it is no sibling there (#s333).
         assert_eq!(st.send_links[outer].pid, Some(800));

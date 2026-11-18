@@ -271,7 +271,7 @@ export const APP_CHROME = Object.freeze([
   ".search-input", ".search-layer", ".search-result", ".search-result-stale", ".search-results", ".searchbox",
   ".side-head", ".sidebar", ".sidebar-collapse", ".sidebar-mini", ".sidebar-mini-badge", ".sidebar-mini-button", ".sidebar-mini-separator", ".sidebar-resizer",
   ".toast",
-  ".write-control", ".write-help", ".write-info",
+  ".write-control", ".write-help", ".write-info", ".write-reason",
 ]);
 
 /** The session list's own body, which hangs on its element `#sessionList` (#s430 stage 3): the tree,

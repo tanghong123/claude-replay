@@ -19,8 +19,31 @@
 function composeCapability(row, paired) {
   if (!paired || !row) return { inject: false, resume: false, mode: null };
   const inject = !!row.injectable;
-  const resume = row.state === "finished" && !row.projActive && ["claude", "codex"].includes(row.agent);
+  // #s577: a conversation that went on in another session (`continuedIn`) is refused its resume by
+  // the server (it would fork the conversation off at the move), so it is offered none.
+  const resume = row.state === "finished" && !row.projActive && !row.continuedIn && ["claude", "codex"].includes(row.agent);
   return { inject, resume, mode: inject ? "tmux" : resume ? "resume" : null };
+}
+
+/** Why a row takes no message (#s577), as a word the page says in its own words; null where
+ *  `composeCapability` offers a transport, or for no row. A live row's reason is the server's own
+ *  pane decision (`sendBlock`), which only the server can make: the pane, the processes in it and
+ *  their terminals are read there. A finished row's are read here, off the row, by the rule above
+ *  that offers the resume, in the order the server refuses one. */
+function composeBlock(row, paired) {
+  if (!row) return null;
+  if (!paired) return "unpaired";
+  const { inject, resume } = composeCapability(row, paired);
+  if (inject || resume) return null;
+  if (row.sendBlock) return row.sendBlock;
+  if (!["claude", "codex"].includes(row.agent)) return "unsupported-agent";
+  // A live row the server named no reason for: Codex native mode's own session, or a refusal the
+  // page has no words for.
+  if (row.pid) return "live";
+  if (row.continuedIn) return "continued";
+  // Active, and no process found to type into or wait for.
+  if (row.state !== "finished") return "unlinked";
+  return row.projActive ? "project-busy" : "live";
 }
 
 const sendQuery = target => `/api/send?target=${encodeURIComponent(target || "")}`;
@@ -85,4 +108,4 @@ async function runRevoke({ target, post }) {
   return revokeOutcome(d);
 }
 
-export { composeCapability, sendQuery, consentQuery, grantOutcome, sendOutcome, revokeOutcome, runSend, runRevoke };
+export { composeCapability, composeBlock, sendQuery, consentQuery, grantOutcome, sendOutcome, revokeOutcome, runSend, runRevoke };

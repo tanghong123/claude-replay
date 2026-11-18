@@ -30,7 +30,7 @@ import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/
 import { families, familyKey, groupSessions, groupVisible, hideAction, ignoreQuery, rowVisible, visibleTree } from "../../claude-replay-html/src/html/shared/session-visibility.js";
 import { ARRANGE_SOURCES, CALM_SECS, DATE_GROUPS, arrangeSessions, dateGroup, familyHolds, flatFamilies, isDefaultView, nestSideSessions, paneLookup, rowLookup, sectionView, viewSection } from "../src/codex-ui/session-list.js";
 import { BLOCKED_SUMMARY, BUCKETS, FILTER_BUCKETS, FILTER_LABELS, RECENT_SECS, REASONS, REASON_BUCKETS, denoteState, displayState, needsPerson, sessionBucket, sessionFilterBuckets } from "../../claude-replay-html/src/html/shared/state-labels.js";
-import { composeCapability, consentQuery, grantOutcome, runRevoke, runSend, sendOutcome, sendQuery } from "../../claude-replay-html/src/html/shared/control-protocol.js";
+import { composeBlock, composeCapability, consentQuery, grantOutcome, runRevoke, runSend, sendOutcome, sendQuery } from "../../claude-replay-html/src/html/shared/control-protocol.js";
 import { cursorText, freshCursor, parseRecords, pullQuery, recordsQuery, reducePull } from "../../claude-replay-html/src/html/shared/record-stream.js";
 import { applyViewChoices, parseViewMemory, serializeViewMemory, viewChoices, viewMemoryKey } from "../../claude-monitor/src/codex-ui/view-memory.js";
 
@@ -1866,6 +1866,20 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(composeCapability({ state: "finished", agent: "codex" }, true), { inject: false, resume: true, mode: "resume" });
   assert.equal(composeCapability({ state: "finished", agent: "codex", projActive: true }, true).mode, null, "constraint 2: another live session in the project → neither");
   assert.equal(composeCapability({ state: "finished", agent: "qoderwork" }, true).mode, null, "resume is claude/codex only");
+  // #s577: a conversation that went on elsewhere is refused its resume, so it is offered none; and
+  // a row offered nothing says why, the server's pane decision for a live row, the row's own facts
+  // in the order the server refuses a resume for a finished one.
+  assert.equal(composeCapability({ state: "finished", agent: "claude", continuedIn: "s2" }, true).mode, null, "continuedIn: no resume");
+  assert.equal(composeBlock({ state: "finished", agent: "claude" }, true), null, "a resumable row has no reason");
+  assert.equal(composeBlock({ injectable: true, pid: 4, state: "growing", agent: "claude" }, true), null, "a pane the page types into has no reason");
+  assert.equal(composeBlock(null, true), null, "no row, no reason");
+  assert.equal(composeBlock({ state: "finished", agent: "claude" }, false), "unpaired");
+  assert.equal(composeBlock({ pid: 4, state: "growing", agent: "claude", sendBlock: "no-pane" }, true), "no-pane", "a live row says the server's word");
+  assert.equal(composeBlock({ pid: 4, state: "idle", agent: "codex" }, true), "live", "a live row the server named nothing for");
+  assert.equal(composeBlock({ state: "finished", agent: "qoderwork" }, true), "unsupported-agent");
+  assert.equal(composeBlock({ state: "finished", agent: "claude", continuedIn: "s2", projActive: true }, true), "continued", "the move is named before the busy project, as the server refuses");
+  assert.equal(composeBlock({ state: "finished", agent: "codex", projActive: true }, true), "project-busy");
+  assert.equal(composeBlock({ state: "growing", agent: "claude" }, true), "unlinked", "active with no process found");
   assert.equal(sendQuery("a b"), "/api/send?target=a%20b"); assert.equal(consentQuery("s1"), "/api/consent?target=s1"); assert.equal(consentQuery("s1", "revoke"), "/api/consent?op=revoke&target=s1");
   assert.equal(grantOutcome({ code: "passcode-required" }).kind, "passcode-required"); assert.equal(grantOutcome({ code: "bad-passcode" }).tone, "err");
   assert.equal(grantOutcome({ code: "locked", error: "wait" }).message, "wait"); assert.equal(grantOutcome({ ok: true }).kind, "granted"); assert.equal(grantOutcome(null).kind, "error");
@@ -1899,7 +1913,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     assert.doesNotMatch(src, /\/api\/(send|consent)\?/, `${name} builds no /api query of its own`);
   }
   const stateSrc2 = readFileSync(new URL("../../claude-monitor/src/codex-ui/control-store.js", import.meta.url), "utf8");
-  assert.match(stateSrc2, /composeCapability\(row, backend\(\)\.paired\)/, "the app shell's canInject/canResume are the shared rule");
+  assert.match(stateSrc2, /composeCapability\(row, backend\(\)\.writes\)/, "the app shell's canInject/canResume are the shared rule, for a reader whose writes reach the server (#s577)");
   console.log("seam (c) cases passed");
 }
 
