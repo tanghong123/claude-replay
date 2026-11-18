@@ -7010,7 +7010,23 @@ fn phone_layers_amiss(
         ("the reply box", "writeSwitch", "document.getElementById('writeSwitch').click()", "#composeInput", "document.getElementById('closeComposer').click(); document.getElementById('writeSwitch').click()"),
     ];
     let mut amiss = Vec::new();
+    // #s498: `CR_S498_TRACE=1` records who opens and closes the session's menu (its `open` class and
+    // `hidden`, each with the stack that changed it), focus moves, presses and keys, step by step,
+    // and prints the record with the menu's state for a step that is amiss.
+    let trace = std::env::var_os("CR_S498_TRACE").is_some();
+    if trace {
+        harness::eval(tab, S498_TRACE);
+    }
     for (name, opener, open, target, close) in steps {
+        if trace {
+            harness::eval(
+                tab,
+                &format!(
+                    "(function(){{ window.__s498 && window.__s498.mark({}); return true; }})()",
+                    serde_json::json!(format!("step {name}"))
+                ),
+            );
+        }
         if not_offered.contains(&name) {
             let shown = harness::probe(
                 tab,
@@ -7048,6 +7064,12 @@ fn phone_layers_amiss(
             || found["outside"] != serde_json::json!([])
             || found["missed"] != serde_json::json!([])
         {
+            if trace {
+                eprintln!(
+                    "#s498 trace, {name} amiss: {}",
+                    harness::probe(tab, "(function(){ var m = document.getElementById('sessionCopyMenu'), c = getComputedStyle(m), a = document.activeElement; return { menu: m.className, hidden: m.hidden, visibility: c.visibility, opacity: c.opacity, expanded: document.getElementById('sessionTitle').getAttribute('aria-expanded'), active: a ? (a.id ? '#' + a.id : a.tagName) : null, log: window.__s498 ? window.__s498.log : null }; })()")
+                );
+            }
             amiss.push((name.to_string(), found));
         }
         if !close.is_empty() {
@@ -7056,6 +7078,11 @@ fn phone_layers_amiss(
     }
     amiss
 }
+
+/// [`phone_layers_amiss`]'s recorder under `CR_S498_TRACE` (#s498): each change of the session
+/// menu's `open` class or `hidden`, with the frames that made it, and every focus move, press and
+/// key, timed from the recorder's start. Installed once per page.
+const S498_TRACE: &str = "(function(){ if (window.__s498) return true; var t0 = performance.now(), log = []; var at = function(){ return Math.round(performance.now() - t0); }; var name = function(e){ return !e ? 'nothing' : e.id ? '#' + e.id : (e.tagName || 'document').toLowerCase(); }; var stack = function(){ return (new Error().stack || '').split('\\n').slice(2, 8).map(function(l){ return l.trim(); }).join(' | '); }; window.__s498 = { log: log, mark: function(what){ log.push({ at: at(), what: what }); } }; var m = document.getElementById('sessionCopyMenu'), cl = m.classList; ['toggle', 'add', 'remove'].forEach(function(k){ var f = cl[k].bind(cl); cl[k] = function(){ var before = cl.contains('open'); var r = f.apply(null, arguments); if (before !== cl.contains('open')) log.push({ at: at(), what: (before ? '-open' : '+open') + ' by ' + k, by: stack() }); return r; }; }); var hd = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'hidden'); Object.defineProperty(m, 'hidden', { configurable: true, get: function(){ return hd.get.call(m); }, set: function(v){ var before = hd.get.call(m); hd.set.call(m, v); if (before !== !!v) log.push({ at: at(), what: 'hidden=' + !!v, by: stack() }); } }); ['focusin', 'focusout'].forEach(function(type){ document.addEventListener(type, function(e){ log.push({ at: at(), what: type + ' ' + name(e.target) }); }, true); }); document.addEventListener('pointerdown', function(e){ log.push({ at: at(), what: 'pointerdown ' + e.pointerType + ' on ' + name(e.target) }); }, true); document.addEventListener('keydown', function(e){ log.push({ at: at(), what: 'keydown ' + e.key }); }, true); return true; })()";
 
 /// Appends a review sheet to the view as `openReviewSheet` (preview.js) does on a phone: the case's
 /// sessions offer no Markdown file to review, so it is put there by hand, its close control at its top
