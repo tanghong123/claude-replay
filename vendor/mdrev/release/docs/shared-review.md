@@ -658,7 +658,9 @@ the server at once, so it hears a mismatch while it can still ask its person
 again; the viewer's Confirm asks it again. The pairing records the check, the
 account and where they came from, and each push commit carries them as
 `Pushed-as:` — checked at pairing and self-reported since; the server's own
-log is the authority on who pushed.
+log is the authority on who pushed. A team service that pushes with an account
+of its own names that account, for the person signed in to it, whose name and
+email the commit carries as its author.
 
 Confirming sends what the panel showed, and a request changed since is
 refused, as a push sends only the ids it listed. A request is good for a day.
@@ -851,7 +853,7 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.81",
+  "mdrev": "1.1.84",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }

@@ -9,7 +9,7 @@ You will serve some static files, add one script to a page, implement six small 
 ## 1. What is in the box
 
 ```text
-mdrev-embed-1.1.81/
+mdrev-embed-1.1.84/
   README.md
   bundle/              the guest — what the reader's browser runs
     mdrev.js             the entry: an ES module exporting mountMdrev   (~510 KB)
@@ -180,14 +180,14 @@ $(brew --prefix mdrev)/bin/mdrev-v2
 
 `brew pin mdrev` holds a version while you qualify the next one; `brew info tanghong123/tap/mdrev` says which is current.
 
-**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.81`, with two tarballs: `mdrev-1.1.81-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.81.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
+**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.84`, with two tarballs: `mdrev-1.1.84-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.84.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
 
 ```bash
-curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.81/mdrev-embed-1.1.81.tar.gz
-tar xzf mdrev-embed-1.1.81.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.81
+curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.84/mdrev-embed-1.1.84.tar.gz
+tar xzf mdrev-embed-1.1.84.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.84
 ```
 
-Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.81/mdrev-cli` — with node on the path. The releases page lists the current version.
+Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.84/mdrev-cli` — with node on the path. The releases page lists the current version.
 
 **From source** — `bash scripts/build-release.sh` in a checkout of the repository emits both tarballs into `dist-release/public/`.
 
@@ -196,8 +196,8 @@ Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.81/mdrev-cli` — 
 Run the sample host against a git checkout that has Markdown in it:
 
 ```bash
-tar xzf mdrev-embed-1.1.81.tar.gz
-cd mdrev-embed-1.1.81
+tar xzf mdrev-embed-1.1.84.tar.gz
+cd mdrev-embed-1.1.84
 ./mdrev-v2 ~/src/your-docs/README.md --last 3   # or --root ~/src/your-docs for the whole checkout
 # mdrev-v2: README.md @ /Users/you/src/your-docs
 #   http://127.0.0.1:4600/?path=README.md&from=…&code=…
@@ -332,7 +332,7 @@ The options, all of them:
 | `rangeAsked` | the reader asked for `range` **just now**, in so many words — a command line, a "what changed since Tuesday" control. mdrev remembers the mode each document was last read in, and that memory outranks the range a page opens with: right for a reload, a bookmark or a shared link, wrong for a range a reader named a second ago, which came up clean and read as "nothing changed". The viewer cannot tell those apart — both arrive as nothing but a range — so this is you saying which you have. Leave it out for a page that is merely showing a range it was holding. Read once, at mount: a move to another document goes back to that document's own preference. Setting it also makes the viewer call your `onNavigate` once at mount, with the very path and range you passed — that is how the claim is spent, so the address you keep no longer carries it into a reload | `false` |
 | `note` | the comment to open at — a shared record's `shr-` id, or a note's `ann-` id — when your address names one (a link from an unread list or a notification). The viewer scrolls to it, opens its card and marks read what that draws. Read once, at mount, never written back: the next move leaves it, so keep it out of the address you write after `onNavigate` | none |
 | `onNavigate(path, range)` | the reader chose another range or document. `range` is `{from, to}`; `to === 'WORKTREE'` is "as it stands", `from === 'EMPTY'` is "before the first revision", `from === null` a plain read. The viewer never touches your URL — this is how you keep it in step | — |
-| `onOpenDocument(path, range, hash?)` | the reader picked another document in the current collection, from the file rail or a document link. A host with document tabs handles the request here, before this viewer moves; keep this mount alive to preserve its reading position and drafts. `hash` is a link's heading fragment, when present. Without this callback, navigation stays inside the viewer as before. Same-document heading links stay inside the viewer either way | — |
+| `onOpenDocument(path, range, hash?)` | the reader picked another document in the current collection, from the file rail or a document link. A host with document tabs handles the request here, before this viewer moves; keep this mount alive to preserve its reading position and drafts. `hash` is a link's heading fragment, when present. One fragment is not a heading: `#mdrev-compare=<from>..<to>`, with two full 40-character commit IDs, asks for the linked document as a redline from the first commit to the second. The viewer passes it on as it passes any fragment; a host that honours it opens that range, as mdrev's own host does for the guide's links, and one that does not opens the document as named. Without this callback, navigation stays inside the viewer as before. Same-document heading links stay inside the viewer either way | — |
 | `hash` | a heading fragment to reveal once the initial document renders; accepts a leading `#` and percent-encoded headings | none |
 | `onOpenOther(root, path, cap)` | the reader picked a document from somewhere else — a recents row, a tree leaf, a link out of this collection. `root` is your own opaque name for the collection, handed back exactly as `/recents` or `/tree` gave it, and `cap` is the capability that row carried, if you minted one. Answer it with `mounted.open(path, undefined, {cap})` when the collection is the one already mounted and `mounted.open(path, undefined, {root, cap})` when it is not — **pass the `cap` either way**: a capability is minted for a (collection, path) pair, so the one that opens a sibling is not the one the mount was given, and a move inside a collection that drops it leaves the viewer asking with the wrong capability or none — **not** by navigating the page: a reload costs the reader everything the viewer was holding, the file tree's open branches included. Left out, the viewer has nowhere to send the click | — |
 | `onOpenPage(page)` | go to a page **you** named: a branch from your optional `/branches`, or a note drawn on another branch from `/notes-elsewhere` (contract.md). The viewer hands back `page` exactly as you gave it and never navigates itself. Left out, the Branch section and those notes are not offered | — |
@@ -467,9 +467,9 @@ What is fixed, and is worth a moment if you are fitting this to a framework that
 | `POST /annotations?path=` | the note as stored, **201** | `mdrev-cli notes add --path P --root R` with the request body on stdin |
 | `PATCH /annotations/{id}?path=` `POST /annotations/{id}/replies?path=` `DELETE /annotations/{id}?path=` | the note as it now is; 204 for delete | `notes resolve\|wontfix\|reopen ID --note "…"`, `notes reply ID --body "…"`, `notes delete ID`. A read-and-file-only host may answer 501 |
 | `GET /documents` — optional | `{files: [{path, cap?}]}` | every document you hold, for the viewer's switcher — not what changed, not what was opened. `git ls-files -- '*.md' '**/*.md'`. Gating? Mint a `cap` **per row**, or the rows are documents the viewer may name and not open |
-| `GET /snapshot?blob=` — optional | the text a note was taken on, `text/plain` | `git cat-file -p <blob>`. With it, notes are placed by walking the diff from that text — exact; without it, by searching for the quote |
+| `GET /snapshot?blob=` — optional | the text a note was taken on, `text/plain` | `git cat-file blob <blob>`, only for a blob a note on the asked document names; 404 for any other. With it, notes are placed by walking the diff from that text — exact; without it, by searching for the quote |
 | `GET /tree?node=` — optional | `{nodes: [{id, label, kind, root?, path?, cap?, count?, removable?}]}` | your documents arranged your way, one level at a time. `kind` is `branch` (opens; pass its `id` back) or `doc` (carries `root`/`path` to open). A BRANCH is asked for only when it is opened; the TOP level is asked for once per collection whether or not the reader opens the section, because its header carries `count`. A branch need not be a directory. `count` is how many documents are under it — **leave it out when knowing would cost more than the number is worth**, and the row simply has no badge |
-| `GET /changed?from=&to=&since=` — optional | `{files: [{path, status, cap?}]}` | what a range touched, for the rail. `status` is `A`/`M`/`D`/`R`; a rename is named by where it ended up. `EMPTY` as `from` means before the first revision. `since` is an instant, sent when the reader picked a WINDOW ("the past week") rather than two revisions — answer the window literally, not the commit it resolved to. Gating? A `cap` **per row**, as for `/documents` |
+| `GET /changed?from=&to=&since=&path=` — optional | `{files: [{path, status, cap?}]}` | what a range touched, for the rail. `status` is `A`/`M`/`D`/`R`; a rename is named by where it ended up. `EMPTY` as `from` means before the first revision. `since` is an instant, sent when the reader picked a WINDOW ("the past week") rather than two revisions — answer the window literally, not the commit it resolved to. `path` (with its `cap`) is the document on screen, for a host whose collection holds a repository of its own below it; one history per collection? Ignore it. Gating? A `cap` **per row**, as for `/documents` |
 | `GET /recents` — optional | `[{root, path, at, label?, cap?}]`, newest first | what this reader opened lately, for the switcher. `root` is your opaque name for the collection — handed back, never parsed; send a `label` for what to call it on screen. Span every collection you hold: filtered to the one on screen, it cannot do its job |
 | `GET /stat?path=&cap=` — optional | `{mtimeMs}` | when the document was last written, or `null`. Shown beside its name; nothing shown without it |
 | `POST /reveal` — optional | `{ok: true}` | show a file to the person at the machine — the rail's right-click menu. The body names the row: a document by its `path` and the `cap` its listing minted, plus the `root` of the row's OWN collection when that is not the one in the query; a folder by the node id `/tree` gave it, with `folder: true`. **501 means you never can** and the viewer drops the entry; `403`/`410`/`5xx` are about that one row and it keeps offering the rest |
@@ -571,6 +571,15 @@ Three things to decide:
 - **Permissions.** Who may file, close or delete whose note is yours, applied at the routes before the command runs; `mdrev-cli` enforces none.
 
 Two more verbs for a host that would rather not read git itself: `mdrev-cli text --path P [--rev R]` and `mdrev-cli revisions --path P` answer `/text` and `/revisions` in the contract's shapes.
+
+And one for a host whose page asks several of these at once. Opening a document, the viewer asks for its revisions, its notes and the review state in the same moment, and each command is a process start of its own, a few hundred milliseconds. `mdrev-cli batch` runs them in one process. Its stdin is a JSON list of command lines without the repository, which the batch's own line names once for all of them (`--root R`, or `--copy D --ref B --notes-dir N`, and `--state-dir`); an item that names its own is refused:
+
+```sh
+echo '[["revisions","--path","doc.md"],["notes","list","--path","doc.md","--all","--records","--viewer"],["review","status","--quick"]]' \
+  | mdrev-cli batch --root ~/src/your-docs
+```
+
+Each item runs as it would alone, in order, and answers one line of JSON as soon as it is done: `{"i":0,"code":0,"out":"…","err":""}`, the item's place in the list, its exit code, and its stdout and stderr as strings. Parse `out` as you would the command's own answer, and answer that route while the rest still run. An item that fails (1, or 2 for no such document) has that as its answer, and the rest still run. It takes only these four read commands: `revisions`, `text`, `notes list` (without `--follow`) and `review status` (without `--fetch`). Each does in a batch exactly what it does alone, including what it already writes alone: a plain `notes list` by an agent still records what that agent has read, a listing in service mode still syncs, and `review status` still follows a review store that moved. A command that changes notes or the store runs alone, as before. The batch exits 0 when it ran the items, and 1, running none of them, when the batch itself is wrong: stdin that is not such a list, or an item it does not take. mdrev's own host waits a few milliseconds for reads that come together, runs them as one batch, and runs a read that comes alone as it always did.
 
 ## 7. Live reload
 
