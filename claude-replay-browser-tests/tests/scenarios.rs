@@ -14158,6 +14158,76 @@ fn both_shells_say_how_long_a_turn_took_and_stay_silent_when_unrecorded() {
     }
 }
 
+/// #s580, Hong: a user turn's time and its duration sit on one line BELOW its bubble, ending at the
+/// bubble's right edge, at every width. Beside the bubble they took its room, "particularly bad
+/// when we are on narrow screens". At a desktop window, a narrow one and a phone: nothing beside
+/// the bubble (its right edge is the turn's), the two under it on one line, in order, the last
+/// ending at the bubble's edge. The classic page draws its prompt as a card the width of the
+/// column, the time in the card's own head row, and is left as it is.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_puts_a_turns_time_and_duration_below_its_bubble() {
+    let _serial = serial();
+    let fx = turn_duration_fixture("turn-time-below-app");
+    let page = open_with(Surface::AppShell, &fx, 3011, "mountall=1");
+    let tab = &page.tab;
+    let read = "(function(){ \
+        var t = [...document.querySelectorAll('.turn.user')].find(function (u) { return u.querySelector(':scope > .turn-time[title=\"How long this turn took\"]'); }); \
+        if (!t) return 'null'; \
+        var r = function (e) { var b = e.getBoundingClientRect(); return [Math.round(b.left), Math.round(b.top), Math.round(b.right), Math.round(b.bottom)]; }; \
+        var times = [...t.querySelectorAll(':scope > .turn-time')]; \
+        return JSON.stringify({ w: innerWidth, phone: document.getElementById('sessionView').classList.contains('pl-phone'), \
+          turn: r(t), bubble: r(t.querySelector(':scope > .user-prompt')), times: times.map(r), \
+          titles: times.map(function (e) { return e.title; }), texts: times.map(function (e) { return e.textContent.trim(); }) }); })()";
+    let below = |v: &serde_json::Value| -> bool {
+        let n = |a: &serde_json::Value, i: usize| a[i].as_i64().unwrap_or(i64::MIN);
+        let (turn, bubble, times) = (&v["turn"], &v["bubble"], &v["times"]);
+        let (Some(t), titles) = (times.as_array(), &v["titles"]) else {
+            return false;
+        };
+        t.len() == 2
+            && titles[0] == "When this turn was sent"
+            && titles[1] == "How long this turn took"
+            && t.iter()
+                .all(|r| n(r, 1) >= n(bubble, 3) && n(r, 3) <= n(turn, 3))
+            && (n(&t[0], 1) - n(&t[1], 1)).abs() <= 1
+            && n(&t[0], 2) <= n(&t[1], 0)
+            && (n(&t[1], 2) - n(bubble, 2)).abs() <= 8
+            && n(bubble, 2) >= n(turn, 2) - 2
+    };
+    let poll = |what: &str, done: &dyn Fn(&serde_json::Value) -> bool| {
+        let mut last = serde_json::Value::Null;
+        for _ in 0..40 {
+            last = serde_json::from_str(eval(tab, read).as_str().unwrap_or("null"))
+                .unwrap_or(serde_json::Value::Null);
+            if done(&last) {
+                return last;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        panic!("{what}: {last}");
+    };
+    harness::resize(tab, 1440.0, 900.0);
+    let wide = poll(
+        "a desktop window: the time and duration on one line below the bubble, at its edge",
+        &|v| v["w"] == 1440 && below(v),
+    );
+    assert_eq!(
+        wide["texts"][1].as_str().map(|s| !s.is_empty()),
+        Some(true),
+        "the second is the duration: {wide}"
+    );
+    harness::resize(tab, 900.0, 800.0);
+    poll("a narrow window: the same", &|v| {
+        v["w"] == 900 && v["phone"] == false && below(v)
+    });
+    harness::phone(tab, 390, 844);
+    poll(
+        "a phone: the same, the two sharing one line rather than a line each",
+        &|v| v["w"] == 390 && v["phone"] == true && below(v),
+    );
+}
+
 /// An `AskUserQuestion` call and the answers that came back (#255).
 fn ask_question_fixture(name: &str) -> Fixture {
     let base = base(name);
