@@ -1791,10 +1791,13 @@ fn app_shell_pages_and_steps_around_a_deep_jump() {
 /// WebKit scrolls on a thread of its own, and given two of the engine's writes close together it can
 /// hand the page the FIRST again after the second, the offset and the layout at it with a scroll event,
 /// before it settles on the second (or on whatever the engine wrote since). Chrome never does, so the
-/// shim hooks the scroller's `scrollTop` setter: a write that follows another within 80ms puts the
-/// earlier one back on the next task with its scroll event, and 12ms later the latest, with its own.
-/// Once per arming, so it plays one echo and cannot feed on its own writes. A case's `next`, set after
-/// arming, runs in the frame after the engine's first write: the growth that makes the second.
+/// shim hooks the scroller's `scrollTop` setter: once armed, the engine's write after its first puts
+/// the first back on the next task with its scroll event, and 12ms later the latest, with its own.
+/// WebKit did it for writes 10ms apart; the shim takes any gap (`gap` records it), because a loaded
+/// headless tab can be several frames between the two, and the echo, not the gap, is what the engine
+/// must survive (an 80ms window missed the second write in half the runs on a busy Mac). Once per
+/// arming, so it plays one echo and cannot feed on its own writes. A case's `next`, set after arming,
+/// runs in the frame after the engine's first write: the growth that makes the second.
 fn echo_shim(surface: Surface) -> String {
     let (scroller, target) = match surface {
         Surface::Classic => ("document.scrollingElement", "window"),
@@ -1818,7 +1821,7 @@ fn echo_shim(surface: Surface) -> String {
                     // so the two writes come a frame apart whatever the tab's frame rate (two growths
                     // in consecutive frames could be measured in one transaction, or a lazy frame apart).
                     if (st.armed && st.next) {{ var next = st.next; st.next = null; requestAnimationFrame(next); }}
-                    if (!st.armed || !prev || now - prev.at > 80 || Math.abs(prev.top - top) <= 1) return;
+                    if (!st.armed || !prev || Math.abs(prev.top - top) <= 1) return;
                     st.armed = false;
                     var echo = {{ from: Math.round(prev.top), to: Math.round(top), gap: Math.round(now - prev.at) }};
                     st.echoes.push(echo);
@@ -1889,7 +1892,7 @@ fn scenario_an_echoed_write_keeps_the_jump(
     until(
         tab,
         "window.__echo.echoes.length > 0 && window.__echo.echoes[0].rested != null",
-        "the engine to write twice within 80ms as the content above grows, and the shim to play the first back",
+        "the engine to write twice as the content above grows, and the shim to play the first back",
         Duration::from_secs(10),
         "JSON.stringify(window.__echo)",
     );
