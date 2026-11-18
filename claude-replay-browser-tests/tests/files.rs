@@ -2037,7 +2037,14 @@ fn a_touch_screen_beside_the_list_reveals_nothing_on_a_hover_inside_a_record() {
         let chain = eval(&tab, &format!("(function(){{ var e = document.querySelector({target:?}), n = 0; for (; e; e = e.parentElement) e.setAttribute('data-hk-hover', n++); return n; }})()"))
             .as_i64()
             .unwrap_or_else(|| panic!("{target} is drawn, to give a tap's hover"));
-        let _ = tab.call_method(CSS::Enable(None));
+        // CSS.forcePseudoState needs the CSS agent, which needs the DOM agent first (Linux's Chrome
+        // refuses CSS.enable without it; the Mac's took it).
+        tab.call_method(headless_chrome::protocol::cdp::DOM::Enable {
+            include_whitespace: None,
+        })
+        .expect("the DOM agent is enabled");
+        tab.call_method(CSS::Enable(None))
+            .expect("the CSS agent is enabled");
         for i in 0..chain {
             let node = tab
                 .find_element(&format!("[data-hk-hover='{i}']"))
