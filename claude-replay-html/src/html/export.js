@@ -3700,15 +3700,23 @@
   // Input on the transcript only, as the app shell's (`readerMoves`): here the WINDOW is the
   // transcript's scroller, so input anywhere it scrolls counts (the stream, its margins, the bar
   // over it), but a wheel over the sidebar, the task panel or an open menu of the top bar scrolls
-  // that panel or menu and leaves the reader where the step put them.
+  // that panel or menu, and a wheel or a touch on the full-size image zooms or pans the image, as
+  // ArrowUp and ArrowDown pan it once it is zoomed past its box (#s526): each leaves the reader
+  // where the step put them. The full-size view's backdrop and caption are not the image: input
+  // there scrolls the transcript under it.
   var SCROLL_KEYS = { ArrowUp: 1, ArrowDown: 1, PageUp: 1, PageDown: 1, Home: 1, End: 1, " ": 1 };
   function onTranscript(t) {
-    return !(t instanceof Element && t.closest("#sidebar, #taskpanel, #toolmenu, #agentmenu, #taskmenu, #artifactmenu"));
+    return !(t instanceof Element && t.closest("#sidebar, #taskpanel, #toolmenu, #agentmenu, #taskmenu, #artifactmenu, .lb-stage"));
+  }
+  // As the image view takes them: no ⌘, Ctrl or ⌥ (a modified arrow scrolls the page under it).
+  function pansImage(e) {
+    return !e.metaKey && !e.ctrlKey && !e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown") &&
+      !!document.querySelector('.lightbox .lb-stage[data-pannable="yes"]');
   }
   ["wheel", "touchmove", "keydown"].forEach(function (ev) {
     window.addEventListener(ev, function (e) {
       if (!onTranscript(e.target)) return;
-      if (ev !== "keydown" || (SCROLL_KEYS[e.key] && !shared.isEditable(e.target))) stepLanded = null;
+      if (ev !== "keydown" || (SCROLL_KEYS[e.key] && !shared.isEditable(e.target) && !pansImage(e))) stepLanded = null;
     }, { capture: true, passive: true });
   });
   function stepTurn(dir) {
