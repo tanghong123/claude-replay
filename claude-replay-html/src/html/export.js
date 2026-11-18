@@ -3708,13 +3708,15 @@
   function onTranscript(t) {
     return !(t instanceof Element && t.closest("#sidebar, #taskpanel, #toolmenu, #agentmenu, #taskmenu, #artifactmenu, .lb-stage"));
   }
-  function pansImage(key) {
-    return (key === "ArrowUp" || key === "ArrowDown") && !!document.querySelector('.lightbox .lb-stage[data-pannable="yes"]');
+  // As the image view takes them: no ⌘, Ctrl or ⌥ (a modified arrow scrolls the page under it).
+  function pansImage(e) {
+    return !e.metaKey && !e.ctrlKey && !e.altKey && (e.key === "ArrowUp" || e.key === "ArrowDown") &&
+      !!document.querySelector('.lightbox .lb-stage[data-pannable="yes"]');
   }
   ["wheel", "touchmove", "keydown"].forEach(function (ev) {
     window.addEventListener(ev, function (e) {
       if (!onTranscript(e.target)) return;
-      if (ev !== "keydown" || (SCROLL_KEYS[e.key] && !shared.isEditable(e.target) && !pansImage(e.key))) stepLanded = null;
+      if (ev !== "keydown" || (SCROLL_KEYS[e.key] && !shared.isEditable(e.target) && !pansImage(e))) stepLanded = null;
     }, { capture: true, passive: true });
   });
   function stepTurn(dir) {

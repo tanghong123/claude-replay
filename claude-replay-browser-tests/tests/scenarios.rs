@@ -2260,7 +2260,7 @@ fn app_shell_keeps_a_turn_steps_hold_through_a_wheel_over_its_session_list() {
 /// outside the transcript, and already kept the hold.
 #[test]
 #[ignore = "needs a local Chrome"]
-fn classic_page_keeps_a_turn_steps_hold_through_a_wheel_over_the_full_size_image() {
+fn classic_page_keeps_a_turn_steps_hold_through_zooming_and_panning_the_full_size_image() {
     let _serial = serial();
     let fx = fixture_short_last_turns("scenario-turnhold-lightbox-classic");
     let page = open(Surface::Classic, &fx, 0);
