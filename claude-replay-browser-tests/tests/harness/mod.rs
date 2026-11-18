@@ -4269,30 +4269,23 @@ pub fn open_host_page_with(
             .is_some_and(|h| h.contains("session-view-host"))
             && seen["ready"] == "complete";
         if !loaded {
-            // A tab that answers no script is busy or stopped: the renderers' CPU says which.
-            let busy = std::process::Command::new("ps")
-                .args(["-axo", "pcpu=,etime=,command="])
-                .output()
-                .map(|o| {
-                    let mut rows: Vec<String> = String::from_utf8_lossy(&o.stdout)
-                        .lines()
-                        .filter(|l| l.contains("--type=renderer"))
-                        .map(|l| l.trim().chars().take(60).collect())
-                        .collect();
-                    rows.sort_by(|a, b| {
-                        let cpu = |r: &String| {
-                            r.split_whitespace()
-                                .next()
-                                .and_then(|c| c.parse::<f64>().ok())
-                                .unwrap_or(0.0)
-                        };
-                        cpu(b).total_cmp(&cpu(a))
-                    });
-                    rows.truncate(3);
-                    rows.join(" | ")
-                })
-                .unwrap_or_default();
-            panic!("the host page (session-view-host?{query}) to finish loading: {e}; the tab answers a script: {alive}; the tab: {at}; stored before it: {stored}; the busiest renderers: {busy}");
+            // A script's own error, which `eval` folds into null.
+            let ask = |js: &str| match tab.evaluate(js, false) {
+                Ok(r) => format!("{}", r.value.unwrap_or_default()),
+                Err(e) => format!("error: {e:#}"),
+            };
+            let alive = ask("1 + 1");
+            // The host page reaches the tab through the interceptor above, which headless_chrome
+            // answers on its own event thread: a request it never answers stays paused, the old
+            // page gone and the new one never committed. Turning the Fetch domain off lets such a
+            // request through (to the monitor, which answers 404): a page that then moves was held.
+            let released = tab
+                .call_method(headless_chrome::protocol::cdp::Fetch::Disable(None))
+                .map(|_| "Fetch disabled".to_string())
+                .unwrap_or_else(|e| format!("Fetch.disable failed: {e:#}"));
+            std::thread::sleep(Duration::from_secs(3));
+            let after = ask("JSON.stringify({ href: location.href, ready: document.readyState, title: document.title })");
+            panic!("the host page (session-view-host?{query}) to finish loading: {e}; the tab answers 1 + 1 with: {alive}; the tab: {at}; stored before it: {stored}; then {released}, and 3 s later the tab reads: {after}");
         }
         eprintln!(
             "the host page (session-view-host?{query}) loaded with no navigation event ({e}): {at}"
