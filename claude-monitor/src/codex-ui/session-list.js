@@ -43,7 +43,9 @@ export function machineShortLabel(label, labels = []) {
   const text = String(label ?? "").trim();
   if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+\.?$/i.test(text) || /^[\d.]+\.?$/.test(text)) return text;
   const short = text.slice(0, text.indexOf("."));
-  const clash = labels.some(other => { const name = String(other ?? "").trim(); return name && name !== text && (name === short || machineShortLabel(name) === short); });
+  // Host names ignore case, so `Mac.tail1.ts.net` beside `mac.tail2.ts.net` keeps both whole too.
+  const cut = short.toLowerCase();
+  const clash = labels.some(other => { const name = String(other ?? "").trim(); return name && name !== text && (name.toLowerCase() === cut || machineShortLabel(name).toLowerCase() === cut); });
   return clash ? text : short;
 }
 

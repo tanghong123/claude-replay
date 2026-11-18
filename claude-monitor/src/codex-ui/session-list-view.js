@@ -451,11 +451,11 @@ function machineNote(entry) {
   if (entry.state === "waiting") return "waiting for its first answer";
   return "";
 }
-/** A machine and how it answers. It goes by its host name's first label (#s561, Hong: "limit to the
- *  first dot component maybe"); `name` gives the whole label instead, for a title. */
 /** The name a machine goes by in the list: its label, cut to the host name's first label where that
- *  keeps it apart from the list's other machines (`machineShortLabel`). */
+ *  keeps it apart from the list's other machines (#s561, Hong: "limit to the first dot component
+ *  maybe"; `machineShortLabel`). */
 const machineName = entry => machineShortLabel(entry.label, indexState.machines.map(other => other.label));
+/** A machine and how it answers; `name` gives the whole label instead, for a title. */
 function machineWords(entry, name = machineName(entry)) {
   const note = machineNote(entry);
   return note ? `${name}: ${note}` : name;
@@ -471,6 +471,9 @@ const groupedByMachine = () => shows("filter") && indexState.byMachine && machin
  *  project heads and rows do not repeat it. The rail's flyout, drawn by the same functions over
  *  every machine, keeps the label. */
 let drawingMachine = false;
+/** Whether the last draw was the list by activity grouped by machine, where Collapse all folds the
+ *  machines' heads alone: the agents and projects it does not show stay as the reader left them. */
+let drawnGroupedFlat = false;
 function machineTag(key) {
   const entry = drawingMachine ? null : machineState(key);
   return entry ? `<span class="tree-machine${machineStale(key) ? " tree-machine-stale" : ""}" title="${escapeText(machineWords(entry, entry.label))}">${escapeText(machineName(entry))}</span>` : "";
@@ -711,6 +714,7 @@ function renderTree() {
   // Grouped by machine (#s561), the machines' heads fold in the list by activity too, so the two
   // controls stay.
   const grouped = !arranged && groupedByMachine();
+  drawnGroupedFlat = grouped && flat;
   for (const control of [collapseBtn, expandBtn]) control.toggleAttribute("data-flat", (flat && !grouped) || arranged);
   if (arranged) html = arrangedSessionsHtml(layout, agents, shownAgents);
   else if (grouped) html = machineGroupsHtml(shownAgents, flat, filtered);
@@ -815,6 +819,9 @@ if (shows("filter")) sheetParts[0] += `
 <button class="scope-option" type="button" role="checkbox" aria-checked="false" data-by-machine title="A head for each machine, holding its own agents and projects"><span class="scope-check"></span><span>Group by machine</span></button>
 </div></div>`;
 filterSheet.innerHTML = sheetParts.join(`\n<div class="scope-menu-divider"></div>\n`);
+// Hidden at once, before the first index answer draws anything: the sheet can be opened during the
+// first scan.
+paintMachinePart();
 /** Whether the filter offers anything: with its three controls off, neither its glyph nor its sheet is
  *  drawn or handed to the host. */
 const hasSheet = sheetParts.length > 0;
@@ -836,6 +843,7 @@ function setBuckets(next) {
 function toggleFilterSheet(open) {
   if (!open && railFlyoutFor === "filter") { closeRailFlyout(false); return; }
   if (open && shows("arrangements")) refreshSources();
+  if (open) paintMachinePart();
   filterSheet.hidden = !open; filterBtn.setAttribute("aria-expanded", String(open));
   fitFilterSheet();
 }
@@ -1114,12 +1122,7 @@ function renderFilterControl(counts, shown, total) {
   }
   const include = filterSheet.querySelector("[data-include-hidden]");
   if (include) { include.classList.toggle("on", indexState.showHidden); include.setAttribute("aria-checked", String(indexState.showHidden)); }
-  const machinePart = filterSheet.querySelector("[data-machine-part]");
-  if (machinePart) {
-    machinePart.hidden = machineCount() < 2;
-    const box = machinePart.querySelector("[data-by-machine]");
-    box.classList.toggle("on", indexState.byMachine); box.setAttribute("aria-checked", String(indexState.byMachine));
-  }
+  paintMachinePart();
   for (const option of filterSheet.querySelectorAll("[data-arrange]")) {
     const key = option.dataset.arrange, on = indexState.arrange === key;
     option.classList.toggle("on", on); option.setAttribute("aria-checked", String(on));
@@ -1186,7 +1189,17 @@ railMarks.onclick = event => {
   if (event.detail === 0) railFlyout.querySelector("[role=treeitem]")?.focus();
 };
 railMarks.onkeydown = event => { if (event.key === "ArrowRight") { const mark = event.target.closest("[data-mini-agent]"); if (mark) { event.preventDefault(); mark.click(); } } };
+/** #s561: the Group by machine row, offered over more than one machine and showing the choice. The
+ *  markup does not hide it, so this alone does: at the mount, as the sheet opens and at each draw. */
+function paintMachinePart() {
+  const machinePart = filterSheet.querySelector("[data-machine-part]");
+  if (!machinePart) return;
+  machinePart.hidden = machineCount() < 2;
+  const box = machinePart.querySelector("[data-by-machine]");
+  box.classList.toggle("on", indexState.byMachine); box.setAttribute("aria-checked", String(indexState.byMachine));
+}
 collapseBtn.onclick = () => {
+  if (drawnGroupedFlat) { for (const entry of indexState.machines) indexState.collapsed.add(`m:${entry.machine}`); persist(); renderTree(); return; }
   for (const agent of groupedSessions()) {
     indexState.collapsed.add(`a:${agent.id}`);
     // #s561: grouped by machine, each machine's head and its agents' heads fold under their own keys.

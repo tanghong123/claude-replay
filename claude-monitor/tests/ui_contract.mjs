@@ -5479,6 +5479,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     ["studio.home", ["studio.home", "laptop.home"], "studio"],
     ["mac.ts.net", ["mac", "mac.ts.net"], "mac.ts.net"],
     ["mac.ts.net", ["mac.ts.net", "mac.ts.net"], "mac"],
+    ["Mac.tail1.ts.net", ["Mac.tail1.ts.net", "mac.tail2.ts.net"], "Mac.tail1.ts.net"],
   ]) assert.equal(machineShortLabel(label, labels), shown, `${label} beside ${labels.join(", ")} shows as ${shown}`);
   const sections = machineSections(tree, [...late.machines].reverse());
   assert.deepEqual(sections.map(section => [section.machine.machine, section.machine.state]), [["b", "stale"], ["a", "live"]], "a section per machine, in the order the machines are listed, each saying how it answers");
@@ -5493,6 +5494,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // choice remembered; under a machine's head no project or row repeats its machine.
   assert.match(listViewSource, /if \(shows\("filter"\)\) sheetParts\[0\] \+= `\n<div data-machine-part>/, "the box comes right after the states, before Include hidden, hidden by the code alone");
   assert.match(listViewSource, /machinePart\.hidden = machineCount\(\) < 2;/, "and is offered only over more than one machine");
+  assert.match(listViewSource, /filterSheet\.innerHTML = sheetParts\.join\([^\n]*\);\n(?:\/\/[^\n]*\n)*paintMachinePart\(\);/, "hidden from the mount on, before the first answer draws the list");
+  assert.match(listViewSource, /if \(open\) paintMachinePart\(\);/, "and painted again as the sheet opens");
   assert.match(listViewSource, /const groupedByMachine = \(\) => shows\("filter"\) && indexState\.byMachine && machineCount\(\) > 1;/);
   assert.match(listViewSource, /const entry = drawingMachine \? null : machineState\(key\);/, "under its head, a machine is not named again");
   assert.match(listViewSource, /const was = drawingMachine;[\s\S]*?finally \{ drawingMachine = was; \}/, "and a draw inside a draw gives the mark back as it found it");
