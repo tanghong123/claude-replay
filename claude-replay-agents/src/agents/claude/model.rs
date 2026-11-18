@@ -1751,6 +1751,15 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             "hookCount",
             "hookInfos",
             "hookErrors",
+            // #s571 (client 2.1.327): a list on the `stop_hook_summary` record beside
+            // `hookErrors`, of indexes into it naming the errors that were failures (a hook that
+            // ended with `hook_non_blocking_error` or `hook_error_during_execution`) rather than
+            // feedback; the client draws "Stop hook failed" for them, "Stop hook reported a
+            // problem" for the rest. Every one met so far is empty, and the page draws no stop
+            // hook summary. Revisit if a list arrives non-empty for a failure the page does not
+            // show as a note, if a `hook_error_during_execution` attachment appears, or once the
+            // owner wants a stop hook's summary drawn.
+            "failedHookErrorIndexes",
             "hookAdditionalContext",
             "preventedContinuation",
             "stopReason",
@@ -11830,6 +11839,28 @@ mod tests {
                 "{ty}: its census keys are all known"
             );
         }
+    }
+
+    /// #s571: client 2.1.327's stop hook summary carries `failedHookErrorIndexes`, which is known
+    /// (nothing reads it), while a key beside it that nobody has met is still reported.
+    #[test]
+    fn stop_hook_summary_failed_hook_error_indexes_is_known() {
+        let summary = |extra: &str| -> Value {
+            serde_json::from_str(&format!(
+                r#"{{"type":"system","subtype":"stop_hook_summary","version":"2.1.327","sessionId":"s-s571","uuid":"u1","timestamp":"2026-11-18T01:00:00Z","hookCount":1,"hookInfos":[{{"command":"true","durationMs":3}}],"hookErrors":["feedback"],"failedHookErrorIndexes":[],"preventedContinuation":false,"stopReason":"","hasOutput":true,"level":"suggestion","toolUseID":"t1"{extra}}}"#
+            ))
+            .unwrap()
+        };
+        assert_eq!(
+            unknown_record_keys(&summary(""), "system", &[]),
+            Vec::<&str>::new(),
+            "failedHookErrorIndexes is known"
+        );
+        assert_eq!(
+            unknown_record_keys(&summary(r#","hookLabelX":"x""#), "system", &[]),
+            vec!["hookLabelX"],
+            "a sibling nobody has met is still reported"
+        );
     }
 
     /// #361, as #359 did for record types: the QoderWork family's own keys are known to the
