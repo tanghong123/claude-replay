@@ -2024,6 +2024,15 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .session-loading-bar>i{display:block;width:0;height:100%;background:var(--primary);transition:width .15s linear}
 .sv-session-main:has(>.session-loading:not([hidden])) .monitor-empty{visibility:hidden}
 @keyframes session-loading-in{from{opacity:0}to{opacity:1}}
+/* #s583, Hong: an open drawer is above everything of the session view. Where the view fills the window
+   (the drawer's widths) it is no box of its own, so its layers (the turn strip at 26, the jump to the
+   latest, the composer, its popovers) stacked against the drawer (20) and its scrim (15), and the
+   strip drew across the drawer's head. While the drawer is open, and while it slides away, the view
+   is a stacking context of its own, which paints below the scrim; the list's own menus are mounted
+   outside the drawer and keep their place. */
+#app.app-drawer:not(.mobile-detail)>#sessionView{isolation:isolate}
+#app.app-drawer.mobile-detail>#sessionView{animation:drawer-closing .22s}
+@keyframes drawer-closing{from,to{isolation:isolate}}
 @keyframes session-loading-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.session-loading{animation:none}.session-loading-spinner{animation:none}}
 
