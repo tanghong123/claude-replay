@@ -366,11 +366,14 @@ mode (`violation` trace entries) and its no-violation scenario on both surfaces.
   the questions that ask whether the reader moved (`positionFor`, `syncPosition`, a transaction's
   drift, `place()`'s correction, a landing's decision, I1) read the latest write in its place
   (`readTop`). The layout IS at the echo, so what is read on screen while it lasts is moved by the
-  difference to describe the view at the latest write: a captured anchor (`captureDomAnchor`,
-  `anchorAfter`) and a model position (`modelAnchor`) carry the latest write as their offset, and the
-  checks that read the screen (I7, I10) read it there too. Read as it stood, a capture named the
-  echo's offset and the next placement wrote it for real, and every transaction during an echo
-  reported the echo's distance as an I7 displacement. The record is forgotten wherever `wrote` is
+  difference to describe the view at the latest write: a captured anchor (`captureDomAnchor`, which
+  judges what is visible against the viewport moved there, and `anchorAfter`) and a model position
+  (`modelAnchor`) carry the latest write as their offset, the window chosen from the offset
+  (`rangeForScroll`) is the one there, and the checks that read the screen (I7, I10) read it there
+  too. Read as it stood, a capture named the echo's offset and the next placement wrote it for real,
+  or chose an item the reader could not see; a fallback mount missed the reader; and every
+  transaction during an echo reported the echo's distance as an I7 displacement. The node contract
+  holds the capture and the window over a frame that reads the earlier write. The record is forgotten wherever `wrote` is
   (the reader's input, a drag, a hide, an event that was theirs), a smooth write keeps none, an event
   delivered more than `ECHO_MS` after the latest write is no echo whatever its stamp, and nothing is
   written again: the browser rests at the latest write by itself. Chrome never echoes; the scenarios

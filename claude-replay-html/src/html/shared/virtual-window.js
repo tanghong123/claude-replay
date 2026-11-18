@@ -562,8 +562,10 @@ class VirtualWindow {
     return this.topPad.getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop() - this.padDebt;
   }
 
+  /** The window the reader needs, read at the latest write while the browser echoes an earlier one
+   *  (#s568): chosen at the echo's offset, a fallback mount missed the reader by the writes' distance. */
   rangeForScroll() {
-    return rangeForScroll(this.prefix, this.count, this.frame.scrollTop() - this.contentTop(), this.frame.clientHeight(), this.overscan);
+    return rangeForScroll(this.prefix, this.count, this.readTop() - this.contentTop(), this.frame.clientHeight(), this.overscan);
   }
 
   rangeAround(index) {
@@ -599,12 +601,13 @@ class VirtualWindow {
    *  item that starts BELOW the viewport is no anchor at all — the reader has left the window
    *  entirely (a dragged thumb does that) and the scroll offset places it. */
   captureDomAnchor() {
-    const viewportTop = this.frame.viewportTop();
     // While the browser echoes an earlier write (#s568) the layout is the echo's, and the reader is
-    // where the latest write put them: what is read on screen is moved by the difference (`lag`, 0
-    // otherwise), so the anchor describes the view at the write. Read as it stood, it named the
-    // echo's offset, and the next placement wrote that offset for real: the reader moved.
+    // where the latest write put them: the viewport is moved by the difference (`lag`, 0 otherwise),
+    // so what is visible, what straddles its top and where the anchor sits are all judged at the
+    // write. Judged as the layout stood, the capture named the echo's offset (the next placement
+    // wrote it for real), or an item the reader could not see.
     const at = this.readTop(), lag = this.frame.scrollTop() - at;
+    const viewportTop = this.frame.viewportTop() - lag;
     const viewportBottom = viewportTop + this.frame.clientHeight();
     const rects = element => {
       const rect = element.getBoundingClientRect();
@@ -625,7 +628,7 @@ class VirtualWindow {
     // Alongside the anchor, the model form of the same position (#191), read from the same sums,
     // now — before any rewrite moves them. It is the fallback if the anchor's identity is gone or
     // names another record by the time it is placed (framework I12; #165).
-    const anchor = { source: "anchor", key: child.element.dataset.unitKey, index: Number(child.element.dataset.unitIndex), top: child.top - viewportTop + lag, block: null, blockTop: 0, at, fallback: this.modelAnchor() };
+    const anchor = { source: "anchor", key: child.element.dataset.unitKey, index: Number(child.element.dataset.unitIndex), top: child.top - viewportTop, block: null, blockTop: 0, at, fallback: this.modelAnchor() };
     const rowIn = element => firstVisible([...element.querySelectorAll("[data-block-index]")].map(rects), viewportTop, Infinity, 1, true);
     // ONE predicate, applied from the item down: refine only while the thing you are holding
     // STRADDLES the viewport edge. Whatever straddles is the only thing whose top the reader
@@ -652,7 +655,7 @@ class VirtualWindow {
       if (!inner) break;
       row = inner;
     }
-    if (row) { anchor.block = row.element.dataset.blockIndex; anchor.blockTop = row.top - viewportTop + lag; }
+    if (row) { anchor.block = row.element.dataset.blockIndex; anchor.blockTop = row.top - viewportTop; }
     return anchor;
   }
 
@@ -1010,8 +1013,8 @@ class VirtualWindow {
    *  (#s568, `ECHO_MS`)? Only while that write is what the engine believes, no scroll event has
    *  reported it, it was made under `ECHO_MS` before `at` (an event's own stamp, or now), and `top` is
    *  one of the writes before it. The layout is at the echoed offset too (the anchor the export's
-   *  stray update re-read was the one a layout 403px higher shows), so geometry reads the offset as
-   *  it is and only the question "did the reader move" reads past an echo (`readTop`). */
+   *  stray update re-read was the one a layout 403px higher shows), so what is read on screen while
+   *  it lasts, and the window chosen from the offset, are moved to the latest write (`readTop`). */
   echoOf(top, at = performance.now()) {
     if (typeof this.wrote !== "number" || this.latestHeard || this.dragging) return false;
     const writes = this.recentWrites;

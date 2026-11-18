@@ -18,7 +18,7 @@ import { RESULT_MARK, resultBodyHtml } from "../../claude-replay-html/src/html/s
 import { isInteraction, interactionCard, interactionHtml } from "../../claude-replay-html/src/html/shared/interaction.js";
 import { splitQuery, querySpans, zeroCounts, countRecord, countLabel, writePrefix, prefixOf, CLASS_ORDER, MIN_NEEDLE, toolMatches, recordHasTool, toolLetters, resolveTools, RESERVED_TOOLS } from "../../claude-replay-html/src/html/shared/search.js";
 import { chainWalk, toolTree } from "../../claude-replay-html/src/html/shared/filter.js";
-import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, HeightGuess, correction, firstVisible, classifyScroll, traceWanted } from "../../claude-replay-html/src/html/shared/virtual-window.js";
+import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, HeightGuess, correction, firstVisible, classifyScroll, traceWanted, VirtualWindow } from "../../claude-replay-html/src/html/shared/virtual-window.js";
 import { taskGlyph, taskStatus as cardStatus, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml, TASK_NO_TITLE, TASK_NO_DETAILS } from "../../claude-replay-html/src/html/shared/task-card.js";
 import { displayName, toolHead, stateLabel, nextHeadStep, headStepState, headStepOf } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
@@ -3607,7 +3607,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // under a topbar and a session header, so the fallback range — the one taken when no mounted
   // element is visible, which is exactly where a jump from far away leaves the reader — named an
   // item that far late.
-  assert.match(src, /rangeForScroll\(this\.prefix, this\.count, this\.frame\.scrollTop\(\) - this\.contentTop\(\), this\.frame\.clientHeight\(\), this\.overscan\)/, "…and so is the range a scroll offset asks for");
+  assert.match(src, /rangeForScroll\(this\.prefix, this\.count, this\.readTop\(\) - this\.contentTop\(\), this\.frame\.clientHeight\(\), this\.overscan\)/, "…and so is the range a scroll offset asks for (read at the latest write while an echo shows, #s568)");
   assert.match(src, /return itemTop \+ within - sat;\s*\n\s*\}\s*\n/, "the offset `P` names is derived from the anchor's own rect (offsetOf)…");
   assert.match(src, /place\(position, drift = 0, smooth = false\) \{\n    if \(!position\) return false;\n(?:    if \(this\.dragging\) this\.violation\("I14".*\n)?    const base = this\.offsetOf\(position\);\n(?:.*\n){0,60}?      this\.frame\.scrollTo\(want\);\n/, "…and the write-back is absolute — `scrollTo(where it goes)`, never `scrollBy(how far it drifted)`");
   assert.equal((src.match(/this\.frame\.scrollTo\(/g) || []).length, 2, "#196 (framework I2): the engine writes the offset in exactly ONE place, place() — its instant form and its smooth form (#196 stage 4)");
@@ -3965,9 +3965,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // #s568): a capture there named the echo's offset, which the next placement wrote for real, and
   // every transaction during an echo reported its distance as an I7 displacement.
   for (const read of [
-    "const at = this.readTop(), lag = this.frame.scrollTop() - at;",
-    "top: child.top - viewportTop + lag, block: null, blockTop: 0, at, fallback: this.modelAnchor() };",
-    "anchor.blockTop = row.top - viewportTop + lag; }",
+    "const at = this.readTop(), lag = this.frame.scrollTop() - at;\n    const viewportTop = this.frame.viewportTop() - lag;",
+    "top: child.top - viewportTop, block: null, blockTop: 0, at, fallback: this.modelAnchor() };",
+    "anchor.blockTop = row.top - viewportTop; }",
+    "return rangeForScroll(this.prefix, this.count, this.readTop() - this.contentTop(), this.frame.clientHeight(), this.overscan);",
     "const at = this.readTop(), y = at - this.contentTop();",
     "next.getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop() - at",
     "const y = this.readTop() - this.contentTop();\n    const first = this.indexAt(Math.max(0, y));",
@@ -3976,6 +3977,33 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     "performance.now() - latest.at > ECHO_MS",
   ])
     assert.ok(engine.includes(read), `a read on screen during an echo is moved to the latest write: ${read} (#s568)`);
+  // …held by what the engine does, not only by its text (the second review of #s568: the browser
+  // cases' echo comes while a jump's hold answers first, so no capture runs in it). A frame that reads
+  // the earlier write, W1, while the engine's latest is W2: 200px items from the content's top.
+  {
+    const VT = 40, H = 400, item = (i, w1) => ({
+      dataset: { unitKey: `u${i}`, unitIndex: String(i) },
+      getBoundingClientRect: () => ({ top: VT + 200 * i - w1, bottom: VT + 200 * (i + 1) - w1, height: 200 }),
+      querySelectorAll: () => [], querySelector: () => null,
+    });
+    const echoing = (w1, w2) => Object.assign(Object.create(VirtualWindow.prototype), {
+      frame: { scrollTop: () => w1, viewportTop: () => VT, clientHeight: () => H, scrollHeight: () => 4000 },
+      mount: { children: Array.from({ length: 20 }, (_, i) => item(i, w1)) },
+      prefix: prefixSums(20, () => 200), count: 20, overscan: 0,
+      readTop: () => w2, contentTop: () => 0, modelAnchor: () => null, placeholderAt: () => false,
+    });
+    for (const [w1, w2, key] of [[1000, 1650, "u8"], [1650, 1000, "u5"]]) {
+      const vw = echoing(w1, w2), anchor = vw.captureDomAnchor();
+      assert.equal(anchor.key, key, `the anchor is the item the reader sees at the latest write ${w2}, not at the echo's ${w1} (#s568)`);
+      assert.equal(vw.offsetOf(anchor), w2, `…and it names the latest write as the offset (#s568)`);
+      const range = vw.rangeForScroll();
+      assert.ok(range.lo <= Math.floor(w2 / 200) && range.hi >= Math.ceil((w2 + H) / 200), `the window chosen from the offset covers the reader at ${w2}, not the echo's ${w1}: ${JSON.stringify(range)} (#s568)`);
+    }
+    // Not echoing, the same reads describe the layout as it stands.
+    const still = echoing(1000, 1000), anchor = still.captureDomAnchor();
+    assert.equal(anchor.key, "u5");
+    assert.equal(still.offsetOf(anchor), 1000);
+  }
   assert.match(engine, /const drift = p0 && p0\.at != null && !this\.inFlight\(\) && !returning \? startTop - p0\.at : 0;/, "no drift while a smooth write travels");
   assert.match(engine, /const smooth = !!options\.smooth \|\| this\.inFlight\(\);/, "…and a placement then is issued smooth again, toward the recomputed destination");
   // The commanded hold: kept while the anchor resolves at its index, released on the reader's signal.
