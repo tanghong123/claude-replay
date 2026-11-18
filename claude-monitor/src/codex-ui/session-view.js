@@ -235,6 +235,37 @@ function writeStyle(node, name, value) {
   if (!viewWrote.has(node)) viewWrote.set(node, new Map());
   viewWrote.get(node).set(name, node.style.getPropertyValue(name));
 }
+// The host's own value of a property the view writes OVER for a while (the keyboard ride's transform
+// on the host's box), by element and property: what was there when the view wrote over it, with its
+// priority, put back when the view takes its value away (#s511).
+const hostUnder = new Map();
+/** The host's own value of `name` on `node` as the view writes over it: the value there now when it
+ *  is not the one the view last wrote (the host's, which the host may have changed since the view
+ *  last wrote), else the one kept when the view first wrote over it. */
+function hostValue(node, name) {
+  const now = node.style.getPropertyValue(name);
+  const kept = hostUnder.get(node)?.get(name);
+  if (now === viewWrote.get(node)?.get(name)) return kept || { value: "", priority: "" };
+  const host = { value: now, priority: node.style.getPropertyPriority(name) };
+  if (!hostUnder.has(node)) hostUnder.set(node, new Map());
+  hostUnder.get(node).set(name, host);
+  return host;
+}
+/** Take the view's value of `name` off `node` and put the host's back, but only while the value there
+ *  is the one the view wrote: one the view never wrote, or the host has written since, is the host's
+ *  and stays as it is (#s511: the ride with no shift removed a host's own transform from its box). */
+function unwriteStyle(node, name) {
+  if (!node) return;
+  const wrote = viewWrote.get(node)?.get(name);
+  if (wrote === undefined) return;
+  // The host's value written over the view's is the host's: the view has nothing there to take back.
+  if (node.style.getPropertyValue(name) === wrote) {
+    const { value, priority } = hostUnder.get(node)?.get(name) || { value: "", priority: "" };
+    if (value) node.style.setProperty(name, value, priority); else node.style.removeProperty(name);
+  }
+  hostUnder.get(node)?.delete(name);
+  viewWrote.get(node).delete(name);
+}
 // The view's own stores, fresh for this mount (stage 7): the open session's records and how they are
 // drawn, and how the view is laid out and read, with the reader's remembered choices.
 const recordState = createRecordState();
@@ -375,6 +406,9 @@ const sayFile = item => say(options.onFile, { name: String(item.fileName || item
 let outlineCurrent = null;
 // Whether the Turns pane follows the session (#s207) — declared here for the same reason.
 let turnsFollow = true;
+// The turn a turn step last landed, while the view stays where it landed (#s487, `stepLanded`) —
+// declared here for the same reason: `currentUserUnitIndex` reads it during the first render.
+let stepLanded = null;
 
 const byId = viewRoot.byId;
 const transcript = byId("transcript");
@@ -507,7 +541,7 @@ turnStickyText.id = "turnStickyText";
 turnStickyBar.append(turnStickyCaret, turnStickyText);
 byId("transcript").prepend(turnStickyBar);
 let turnStickyAt = null;
-turnStickyBar.onclick = () => { if (turnStickyAt != null) { setTurnsFollow(true); viewport.jumpToRecord(turnStickyAt, "turn"); } };
+turnStickyBar.onclick = () => { if (turnStickyAt != null) { setTurnsFollow(true); jumpToRecord(turnStickyAt, "turn"); } };
 // #s37 (design/phone-landscape.md §3.4): on a phone the turn is the top bar's SUBTITLE, under the
 // session's title, where the strip above was a third row of chrome (production.css hides that strip
 // there). It always names the turn the reader is in — the strip waited until its card had scrolled
@@ -571,11 +605,25 @@ bindComponentEvents(transcript, recordState, {
 // (`keyboard: "engaged"`); with the page's keyboard (`"page"`, the app's) the view is always engaged,
 // as before.
 let engaged = keyboardMode === "page";
+const inView = target => !!target && typeof target.closest === "function" && element.contains(target) && !inGuest(target);
 if (keyboardMode === "engaged") {
-  const inView = target => !!target && typeof target.closest === "function" && element.contains(target);
-  const engage = event => { engaged = inView(event.target) && !inGuest(event.target); };
+  const engage = event => { engaged = inView(event.target); };
   for (const type of ["pointerdown", "mousedown", "focusin"]) document.addEventListener(type, engage, { capture: true, signal });
 }
+// The Escape the view hears on the whole page, which closes its layers (Info's card, the copy menu,
+// the search's popovers, the task card, a phone's pane sheet), is its own only while the reader
+// works in it (#s535), like its keymap: a host whose own dialog Escape closes must not close ours
+// with it. With the page's keyboard the view is always engaged, as before. A pointer resting over
+// the view is not working in it (a keyboard reader leaves it on the transcript), but a layer a
+// hover holds open (Info's peek, the copy menu) is the reader's while the pointer is on it or its
+// trigger, so those two also close on Escape then, whatever the last press was (#s557, WCAG 1.4.13:
+// content a hover shows is dismissible without moving the pointer). An Escape the browser hands to
+// the view itself (the focus inside it, outside a guest) is the view's too, whatever the last press
+// was (#s560's review): a press outside that kept the focus here (a host's toolbar control that
+// cancels its mousedown, a scrollbar) left a menu open by the control holding the focus, deaf to
+// its Escape.
+const viewEscape = event => event.key === "Escape" && (engaged || inView(event.target));
+const hovered = (...nodes) => nodes.some(node => !!node && node.matches(":hover"));
 
 // #s25: the pane changes the TRANSCRIPT's layout only where it is a grid column (a wide desktop).
 // Elsewhere — a phone, or below 1180px — it lies over the transcript, whose width and so every
@@ -587,11 +635,11 @@ if (keyboardMode === "engaged") {
 // later in the mount, measures everything, and the mount's end takes the width it left as the one
 // the next change is measured from.
 // It remeasures once, from the width it was last laid out at to the width it settles at, and only when
-// that width changed (#s431 stage 3): a remeasure at the same width throws every measured height away,
-// and one read while a track glides (the pane's, the outline's, or a host's list around the view)
-// scales every height to a column the reader never sees settled, from which the next change scales
-// again. So it is the ONE way the view remeasures for its width: the pane, the outline, the window's
-// resize and a host's `resized()` all come here. It takes the view's own decision first, since the
+// that width changed (#s431 stage 3): at the same width there is nothing to scale by, and one read
+// while a track glides (the pane's, the outline's, or a host's list around the view) scales every
+// height to a column the reader never sees settled, from which the next change scales again. So it
+// is the ONE way the view remeasures for its width: the pane, the outline, the window's resize and a
+// host's `resized()` all come here. It takes the view's own decision first, since the
 // pane's width is the layout's (`--preview-fit`) and a host's change to the view's box reaches the
 // layout only at its observer's next delivery; and it waits out any glide that moves the transcript's
 // edges: a transition of a width or a grid's tracks on a box that holds the transcript, or on one beside
@@ -619,7 +667,8 @@ const paneLayoutChanged = ({ decided = false } = {}) => {
   // comes back at.
   if (!width || Math.abs(width - paneLaidOutWidth) < 0.5) return;
   paneLaidOutWidth = width;
-  viewport.remeasure();
+  // Only the width changed (#s513): the engine scales the heights by it even under its 1% step.
+  viewport.remeasure({ widthOnly: true });
 };
 layoutHeard = () => { if (!settleOutline()) paneLayoutChanged({ decided: true }); };
 // The reader opened or shut the pane: the order arranges the view again, and the pane glides whole
@@ -905,7 +954,7 @@ function agentTargetsNow(records, meta = recordState.meta) {
 /** A jump held for its records (a turn, a record, a search hit) lands once they are here; a search
  *  hit then lands on its own mark, as a step does (#s278). */
 function landHeldJump() {
-  if (!heldTurnJump || !viewport.jumpToRecord(heldTurnJump.record, heldTurnJump.reveal || "turn")) return;
+  if (!heldTurnJump || !jumpToRecord(heldTurnJump.record, heldTurnJump.reveal || "turn")) return;
   const { record, reveal } = heldTurnJump;
   heldTurnJump = null;
   if (reveal === "search" || reveal === "filter") {
@@ -1053,7 +1102,7 @@ function dropFar() {
  *  moves first. */
 function jumpOrFetch(r, reveal) {
   heldTurnJump = null;
-  const landed = viewport.jumpToRecord(r, reveal);
+  const landed = jumpToRecord(r, reveal);
   // Whether it must wait is the unit's to say — owed records, read or not yet taken — never the
   // store's alone, which knows nothing of a piece waiting to go in.
   const unit = recordState.units[unitAt(r)];
@@ -1140,7 +1189,7 @@ function landOnHash() {
     return false;
   }
   for (const rid of chain) recordState.folds.set(rid, false);
-  if (!viewport.jumpToRecord(index, "hash")) {
+  if (!jumpToRecord(index, "hash")) {
     // Here, but its unit still owes records (#s277): the same wait, which a reader who moves ends.
     if (hashWait?.identity !== identity) hashWait = { identity, at: performance.now(), record: index };
     else if (viewport.lastUserInput > hashWait.at) { landedHash = identity; hashWait = null; return false; }
@@ -1152,7 +1201,7 @@ function landOnHash() {
   landedHash = identity;
   const nested = chain.length > 1 ? viewport.window.querySelector(`[data-record-id="${CSS.escape(id)}"]`) : null;
   if (nested) {
-    viewport.reveal(nested, { top: 18 });
+    revealElement(nested, { top: 18 });
     nested.closest(".renderer-turn")?.classList.add("source-flash");
   }
   return true;
@@ -1869,7 +1918,7 @@ const navigatorClick = event => {
     // (`jumpToRecord` refuses the loading card): the page goes there when they do. Stage 2 (#s277)
     // lands at once on the turn's placeholder and reads that turn first (`jumpOrFetch`).
     if (recordStore.windowed) { jumpOrFetch(record, "turn"); return; }
-    if (!viewport.jumpToRecord(record, "turn") && turn.classList.contains("outline-turn-pending")) {
+    if (!jumpToRecord(record, "turn") && turn.classList.contains("outline-turn-pending")) {
       heldTurnJump = { record, at: performance.now() };
       toast("Still loading — the page goes there when it arrives");
     }
@@ -2139,7 +2188,7 @@ function stepSearch(delta) {
   }
   recordState.landed = matches[recordState.match];
   // A record a tail-first open has not brought yet is not reached (#314): nothing landed there.
-  if (viewport.jumpToRecord(recordState.landed, textual ? "search" : "filter")) recordState.landedAt = performance.now();
+  if (jumpToRecord(recordState.landed, textual ? "search" : "filter")) recordState.landedAt = performance.now();
   else {
     // #s278: a hit whose turn is still on its way reads that turn and lands once its unit is whole
     // (`landHeldJump`), unless the reader moves first.
@@ -2216,7 +2265,7 @@ function landOnCurrentMark() {
   // match crosses the cover (#s267: a third of a short space under a group's 40px head did), and a
   // cover over the whole column leaves none: the match lands just below the bar or the head.
   const space = Math.max(0, floor - ceiling);
-  viewport.reveal(mark, { top: Math.min(120, ceiling - view.top + Math.min(space / 3, Math.max(0, space - box.height))) });
+  revealElement(mark, { top: Math.min(120, ceiling - view.top + Math.min(space / 3, Math.max(0, space - box.height))) });
 }
 /** Where a landing may put `mark` at the transcript's top: below the turn bar while it is drawn
  *  (#123; hidden on a phone, where the turn is the top bar's subtitle), on or off, since a landing can
@@ -2456,21 +2505,42 @@ searchSuggest = document.createElement("div");
 searchSuggest.className = "search-suggest"; searchSuggest.id = "searchSuggest"; searchSuggest.hidden = true;
 searchSuggest.setAttribute("role", "listbox");
 viewRoot.$(".header-search-cluster").appendChild(searchSuggest);
-/** Size the field to its text while the phone's box is open, and keep the end in view (#353). */
+/** What a phone's open box shows, empty, where the whole hint does not fit: the first that does (#s516). */
+const SEARCH_PLACEHOLDERS = ["Search this session", "Search"];
+/** Size the field to its text while the phone's box is open, and keep the end in view (#353). An
+ *  EMPTY field fills the room and shows its placeholder from the start: the whole hint where it
+ *  fits, else the first of `SEARCH_PLACEHOLDERS` that does (#s516). Sized to the hint, the field was
+ *  181px in a 178px strip on the iPhone 17 Pro upright (158px with the keyboard down), and with the
+ *  caret at the end the strip scrolled the hint's first letters away; a 320px phone's strip is 76px
+ *  with the keyboard down. */
 function fitSearchField() {
   if (!searchField || !fieldMeasure) return;
   const input = byId("transcriptSearchInput");
-  if (!viewRoot.$(".header-searchbox")?.classList.contains("phone-open")) { input.style.width = ""; return; }
+  const hint = input.dataset.hint || input.placeholder;
+  if (!viewRoot.$(".header-searchbox")?.classList.contains("phone-open")) { input.style.width = ""; input.placeholder = hint; return; }
   const cs = getComputedStyle(input);
   fieldMeasure.style.font = cs.font; fieldMeasure.style.letterSpacing = cs.letterSpacing;
-  // With chips the placeholder is not shown (#355), so an empty field takes no room of its own.
-  fieldMeasure.textContent = input.value || (searchChips.classList.contains("has-chips") ? "" : input.placeholder);
-  const text = Math.ceil(fieldMeasure.getBoundingClientRect().width) + 8;
   const chips = searchChips.classList.contains("has-chips") ? searchChips.getBoundingClientRect().width + 4 : 0;
-  input.style.width = `${Math.max(48, Math.floor(searchField.clientWidth - chips), text)}px`;
+  const room = Math.max(48, Math.floor(searchField.clientWidth - chips));
+  if (!input.value) {
+    // With chips the placeholder is not shown (#355), so the field's room is all it takes, and the
+    // strip keeps its end in view as it does while typing.
+    const fits = text => { fieldMeasure.textContent = text; return Math.ceil(fieldMeasure.getBoundingClientRect().width) + 8 <= room; };
+    input.placeholder = [hint, ...SEARCH_PLACEHOLDERS].find(fits) || SEARCH_PLACEHOLDERS[SEARCH_PLACEHOLDERS.length - 1];
+    input.style.width = `${room}px`;
+    searchField.scrollLeft = chips ? searchField.scrollWidth : 0;
+    return;
+  }
+  fieldMeasure.textContent = input.value;
+  const text = Math.ceil(fieldMeasure.getBoundingClientRect().width) + 8;
+  input.style.width = `${Math.max(room, text)}px`;
   if (input.selectionStart === input.value.length) searchField.scrollLeft = searchField.scrollWidth;
 }
 addEventListener("resize", () => fitSearchField(), { signal });
+// The strip's room changes without the window's (#s516): the magnifier gives way while the field holds
+// the focus (the keyboard up), and the dock narrows beside a pane. The strip is a flex item that
+// takes what the box leaves, whatever the field inside it measures, so a fit never resizes it again.
+new ResizeObserver(() => fitSearchField()).observe(searchField);
 // #310, #313: on a phone (the view's phone family, `PHONE_QUERY` read from its own classes, #s431; #s32 a landscape phone too) the search box is an icon with its
 // input hidden. A tap on it OPENS it across the bar's second row, and it stays open until a tap lands outside the search's own
 // surfaces (the box, the drop-down, the filter popover) or Escape — never on blur, since a touch
@@ -2898,7 +2968,7 @@ function applyToolFilter() {
     const start = recordIndexAtTop();
     const target = indices.find(index => index >= start) ?? indices[0];
     recordState.match = target == null ? -1 : indices.indexOf(target);
-    recordState.landed = target != null && viewport.jumpToRecord(target, "filter") ? target : null;
+    recordState.landed = target != null && jumpToRecord(target, "filter") ? target : null;
     recordState.landedAt = performance.now();
   } else if (recordState.filterHits) {
     const snapshot = recordState.filterSnapshot;
@@ -3224,7 +3294,7 @@ function paintJump() {
   const label = n ? `${n} new message${n === 1 ? "" : "s"} — jump to the latest` : "Jump to the latest";
   button.title = label; button.setAttribute("aria-label", label);
 }
-byId("jumpToBottom").onclick = () => { setTurnsFollow(true); viewport.follow(); };
+byId("jumpToBottom").onclick = () => { stepLanded = null; setTurnsFollow(true); viewport.follow(); };
 function updateStickyHeaders() { const top = transcript.getBoundingClientRect().top; viewport.window.querySelectorAll("[data-process-surface]").forEach(surface => { const rect = surface.getBoundingClientRect(); surface.dataset.prodSticky = String(rect.top < top && rect.bottom > top + 40); }); }
 
 // The outline pane has TWO states: open, and collapsed to its icon rail ("off"). #55 shipped a
@@ -3417,7 +3487,18 @@ panesMenu.onclick = event => {
     node.addEventListener("focusout", schedulePanesClose);
   }
   panesMenu.addEventListener("pointerenter", () => clearTimeout(panesCloseTimer));
-  panesTrigger.addEventListener("keydown", event => { if (event.key === "Escape") setPanesMenu(false); });
+  // Escape closes the menu wherever the reader is (#s560), as it does Info's peek (#s557, WCAG
+  // 1.4.13: what a hover shows is dismissible without moving the pointer): when the Escape is the
+  // view's (#s535; the focus on the caption or in the menu makes it so), or while the pointer is on
+  // the menu or its caption. A focus inside the menu goes back to the caption FIRST, since the
+  // caption's focus listener opens the menu, and the close then shuts it; nothing new arrives while
+  // the pointer and the focus stay, so it stays shut.
+  addEventListener("keydown", event => {
+    if (event.key !== "Escape" || !panesMenu.classList.contains("open")) return;
+    if (!viewEscape(event) && !hovered(panesTrigger, panesMenu)) return;
+    if (panesMenu.contains(viewRoot.active())) panesTrigger.focus();
+    setPanesMenu(false);
+  }, { signal });
 }
 {
   // The Info card leaves the stack and its BODY becomes the popover's content, so everything
@@ -3439,38 +3520,76 @@ panesMenu.onclick = event => {
   nav.after(outlineFooter);
 
   const trigger = footerInfo;
+  // Both Info buttons open this one card, so each says whether it is open (#s548: the rail's never
+  // did).
+  const triggers = [trigger];
   let pinned = false;
   let closeTimer = 0;
+  // The Info that last opened the card, where Escape gives a focus inside it back (#s557).
+  let opener = trigger;
+  const from = event => { if (triggers.includes(event?.currentTarget)) opener = event.currentTarget; };
   const show = open => {
     popover.classList.toggle("open", open);
-    trigger.setAttribute("aria-expanded", String(open));
+    for (const node of triggers) node.setAttribute("aria-expanded", String(open));
   };
-  const peek = () => { clearTimeout(closeTimer); show(true); };
+  const peek = event => { from(event); clearTimeout(closeTimer); show(true); };
+  // A trigger holding focus keeps an unpinned card open only for a reader who reached it by
+  // keyboard (#s548): desktop Chrome focuses a button on a mouse press, so after a second click
+  // unpinned the card, the focus that click left behind kept it open as a peek until focus moved
+  // elsewhere.
+  const keyboardOn = node => triggers.includes(node) && node.matches(":focus-visible");
+  // Only a mouse peeks (#s545). A finger's pointerenter comes as it lands, and WebKit spends a tap
+  // whose hover shows content as that hover, with no click: on the iPad every tap on Info peeked,
+  // sent no click to pin, and its pointerleave as the finger lifted closed what it had shown.
+  const hover = event => { if (event.pointerType === "mouse") peek(event); };
+  const unhover = event => { if (event.pointerType === "mouse") leave(); };
   const leave = () => {
     if (pinned) return;
     clearTimeout(closeTimer);
     closeTimer = setTimeout(() => {
-      if (!popover.contains(viewRoot.active()) && viewRoot.active() !== trigger) show(false);
+      if (!pinned && !popover.contains(viewRoot.active()) && !keyboardOn(viewRoot.active())) show(false);
     }, 140);
   };
-  for (const type of ["pointerenter", "focus"]) trigger.addEventListener(type, peek);
+  trigger.addEventListener("pointerenter", hover);
+  trigger.addEventListener("focus", peek);
   for (const node of [trigger, popover]) {
-    node.addEventListener("pointerleave", leave);
+    node.addEventListener("pointerleave", unhover);
     node.addEventListener("focusout", leave);
   }
   popover.addEventListener("pointerenter", () => clearTimeout(closeTimer));
-  // Click PINS it, so the reader can read inside it, fold a group, or select a value to copy. A press
-  // that pins is the reader asking for the session's Info, which the host hears (`onInfo`); a hover's
-  // peek is not.
-  const pin = () => { pinned = !pinned; show(pinned || true); if (pinned) sayInfo(); else leave(); };
+  // Click PINS it, so the reader can read inside it, fold a group, or select a value to copy. A
+  // press that pins is the reader asking for the session's Info, which the host hears (`onInfo`); a
+  // hover's peek is not. A second press UNPINS it and closes it at once (#s556): handed to the
+  // peek's close, a card whose Info held a keyboard focus stayed open, so a keyboard reader's
+  // second Enter left it open with aria-expanded true, and Escape closes only a pinned card. The
+  // 140 ms close is a peek's.
+  const pin = event => { from(event); clearTimeout(closeTimer); pinned = !pinned; show(pinned); if (pinned) sayInfo(); };
   trigger.addEventListener("click", pin);
-  // The phone's "i" in the top bar (#313) is this same control: a tap pins or unpins, and there is
-  // no hover to peek with, so an unpin closes at once.
-  infoPopoverToggle = () => { pinned = !pinned; show(pinned); if (pinned) sayInfo(); };
+  // The phone's "i" in the top bar (#313) is this same control: a tap pins or unpins.
+  infoPopoverToggle = pin;
   addEventListener("pointerdown", event => {
     if (pinned && !popover.contains(event.target) && !trigger.contains(event.target) && !event.target.closest?.("[data-info-trigger]")) { pinned = false; show(false); }
   }, { capture: true, signal });
-  addEventListener("keydown", event => { if (event.key === "Escape" && pinned) { pinned = false; show(false); } }, { signal });
+  // Escape closes the card, a peek as well as a pinned one (#s557, WCAG 1.4.13: content shown on
+  // hover or focus can be dismissed without moving either). A peek opens only on a hover or focus
+  // arriving, and the card never covers its Info (it opens above the footer's, beside the rail's),
+  // so it stays shut while the pointer or the focus stays there. A focus inside the card goes back
+  // to the Info that opened it (or one drawn) rather than staying on a control the close hides; it
+  // moves FIRST, since that Info's focus listener peeks, and the close then shuts what it opened.
+  // In a host (#s535) the Escape is the view's only while the reader works in it or the focus is
+  // inside it (#s560), so a pinned card closes only then; a peek also closes while the pointer is
+  // on it or on an Info that opens it.
+  addEventListener("keydown", event => {
+    if (event.key !== "Escape" || !popover.classList.contains("open")) return;
+    if (!viewEscape(event) && (pinned || !hovered(popover, ...triggers))) return;
+    pinned = false;
+    if (popover.contains(viewRoot.active())) {
+      const drawn = node => node.getClientRects().length > 0;
+      (drawn(opener) ? opener : triggers.find(drawn))?.focus();
+    }
+    clearTimeout(closeTimer);
+    show(false);
+  }, { signal });
   // The collapsed rail's Info button is the SAME control now — one gesture in both states,
   // rather than click-in-rail and hover-when-open.
   const railInfo = nav.parentElement?.querySelector('[data-nav-card-open="session"]');
@@ -3478,8 +3597,19 @@ panesMenu.onclick = event => {
     railInfo.removeAttribute("data-nav-card-open");
     railInfo.id = "outlineRailInfo";
     railInfo.title = "Session details";
-    for (const type of ["pointerenter", "focus"]) railInfo.addEventListener(type, peek);
-    railInfo.addEventListener("pointerleave", leave);
+    // A press on it is not a press outside (#s545). Unmarked, a second press's pointerdown closed
+    // the pinned card and its click pinned it again, so it never closed.
+    railInfo.dataset.infoTrigger = "";
+    railInfo.setAttribute("aria-haspopup", "dialog");
+    railInfo.setAttribute("aria-expanded", String(popover.classList.contains("open")));
+    triggers.push(railInfo);
+    railInfo.addEventListener("pointerenter", hover);
+    railInfo.addEventListener("focus", peek);
+    // Leaving it closes a peek, as leaving the footer's does: by keyboard (#s548: a Tab onto the
+    // rail's Info and away left the card open, and nothing but a pin and a press outside could
+    // close it), and by a mouse alone (#s545).
+    railInfo.addEventListener("pointerleave", unhover);
+    railInfo.addEventListener("focusout", leave);
     railInfo.addEventListener("click", pin);
   }
 }
@@ -3589,7 +3719,7 @@ taskPopover.addEventListener("click", event => {
   const find = event.target.closest("[data-task-find]");
   if (find) { const index = Number(find.dataset.taskFind), task = (recordState.meta?.tasks || [])[index]; closeTaskPopover(false); if (task) findTaskRecord(task, String(task.id ?? index)); }
 });
-document.addEventListener("keydown", event => { if (event.key === "Escape" && !taskPopover.hidden) { event.stopPropagation(); closeTaskPopover(); } }, { capture: true, signal });
+document.addEventListener("keydown", event => { if (viewEscape(event) && !taskPopover.hidden) { event.stopPropagation(); closeTaskPopover(); } }, { capture: true, signal });
 document.addEventListener("pointerdown", event => { if (!taskPopover.hidden && !taskPopover.contains(event.target) && !event.target.closest("[data-task-open]")) closeTaskPopover(false, event.target === taskScrim ? event : null); }, { signal });
 const scrimLifted = event => {
   if (scrimPointer == null || event.pointerId !== scrimPointer) return;
@@ -3715,6 +3845,10 @@ function unitRow(key) {
 // still being evaluated, and that `const` is declared further down — a temporal dead zone.)
 function currentUserUnitIndex(atKey) {
   const units = recordState.units;
+  // A turn the reader stepped to is the current one while the view stays where the step left it,
+  // the end rule below included (#s487).
+  const landed = landedTurnIndex();
+  if (landed >= 0) return landed;
   if (units.length && (viewport.following || viewport.gapToBottom() <= viewport.slacks.hold)) {
     let last = -1;
     for (const unit of units) if (unit.type === "user") last++;
@@ -3855,7 +3989,7 @@ function readerMoves(event) {
   // The session first, reading no layout: wheels and touchmoves over the transcript arrive at the
   // engine's own rate, and a glide is no place to make the browser lay out the outline (#372).
   if (transcript.contains(target) || (type === "keydown" && target === page.body())) {
-    if (type === "wheel" || type === "touchmove" || (type === "pointerdown" && target === transcript) || (type === "keydown" && SCROLL_KEYS.has(event.key) && !editable(target))) setTurnsFollow(true);
+    if (type === "wheel" || type === "touchmove" || (type === "pointerdown" && target === transcript) || (type === "keydown" && SCROLL_KEYS.has(event.key) && !editable(target))) { stepLanded = null; setTurnsFollow(true); }
     return;
   }
   // Only then the list, and only for input in or around it.
@@ -3872,11 +4006,76 @@ function readerMoves(event) {
 }
 for (const kind of ["wheel", "touchmove", "pointerdown", "keydown"]) document.addEventListener(kind, readerMoves, { capture: true, passive: true, signal });
 
+/** Every commanded move the view makes to a record or an element goes through these two but the
+ *  turn step's own (#s487 review): each ends the step's hold on the current turn. A move that
+ *  moves nothing (a search hit, a task or an agent already in view while the end of the session
+ *  holds the view where a step left it) leaves the landed row where it was, so the hold's own test
+ *  (`landedTurnIndex`) cannot see it end, and the bar went on naming a turn the reader had moved
+ *  away from. A move to a turn's own record (a click on a turn in the Turns pane or on the bar,
+ *  `reveal` "turn", which a compaction's row shares) SETS it to that turn instead, as the step's
+ *  own landing does: where the end of the session holds the view the click moves nothing, and the
+ *  end rule (#199) named the last turn again, so the next `[` landed where the reader already was.
+ *  A head step's reveal (`stepHead`) is not one of them: it moves among the rows inside the turns,
+ *  and where it moves the view the hold ends by its own test. */
+function jumpToRecord(recordIndex, reveal) {
+  stepLanded = null;
+  const landed = viewport.jumpToRecord(recordIndex, reveal);
+  if (landed && reveal === "turn") holdTurn(recordState.units.find(unit => unit.type === "user" && unit.from === recordIndex));
+  return landed;
+}
+function revealElement(element, options) {
+  stepLanded = null;
+  return viewport.reveal(element, options);
+}
+/** #s487: the index among the user turns of the turn the last turn step landed, or -1 while the
+ *  view is not where the step left it (the reader's input, another commanded move or another
+ *  session ends it). From the
+ *  end of a session whose last turns are short, `[` lands turn N-1 within the hold slack of the
+ *  end, where the end rule (#199) named the LAST turn: the next `[` counted from N again and
+ *  landed N-1 again, and the bar named N. (Before #s502 the engine also kept the pin there, so
+ *  the tail took the reader back to the end.) Where
+ *  N-1 was already in view the step moved nothing at all. The step's own landing is what the
+ *  reader chose, so it stays the current turn until the view moves: read by the landed row's
+ *  place in the scroller, which a converge to the tail or a scroll changes and the engine's hold
+ *  of a commanded landing does not. Never the position rule the classic page had until #s503 (the
+ *  last turn above the landing line): at a landing the bottom clamped, that line crosses an
+ *  earlier turn, so counting from it skips one. The classic page keeps the same memory now. */
+function landedTurnIndex() {
+  const at = stepLanded;
+  if (!at) return -1;
+  const row = at.session === recordState.session ? unitRow(at.key) : null;
+  if (row && Math.abs(row.getBoundingClientRect().top - viewport.scroller.getBoundingClientRect().top - at.top) <= 1) {
+    let index = -1;
+    for (const unit of recordState.units) {
+      if (unit.type !== "user") continue;
+      index++;
+      if (unit.key === at.key) return index;
+    }
+  }
+  // Not cleared here: the bar is also painted mid-transaction, before the placement puts the row
+  // back where it landed (`afterRender`). What ends the hold is the reader's input, the jump to
+  // the latest, the next step, every commanded move but one to a turn (`jumpToRecord`,
+  // `revealElement`) or another session.
+  return -1;
+}
 function stepTurn(delta) {
   setTurnsFollow(true);
   const turns = userUnits(); if (!turns.length) return;
   const next = Math.max(0, Math.min(turns.length - 1, currentUserUnitIndex() + delta));
-  viewport.jumpToRecord(turns[next].from, "turn");
+  stepLanded = null;
+  // Following decided as a jump to the end decides it (#s502): kept only where the step lands at
+  // the end, never within the hold slack short of it, where the tail would take the reader back.
+  if (!viewport.jumpToRecord(turns[next].from, "turn", "acquire")) return;
+  holdTurn(turns[next]);
+}
+/** The user turn `unit`, now where a move put its row, becomes the current one (`landedTurnIndex`). */
+function holdTurn(unit) {
+  const row = unit ? unitRow(unit.key) : null;
+  if (!row) return;
+  stepLanded = { session: recordState.session, key: unit.key, top: row.getBoundingClientRect().top - viewport.scroller.getBoundingClientRect().top };
+  // A landing the bottom clamped moves nothing, so no scroll event repaints the bar or the pane.
+  queueTurn(updateTurnBar());
+  updateOutlineFocus();
 }
 function stepHead(delta) {
   const heads = [...transcript.querySelectorAll("button.renderer-head")].filter(head => head.offsetParent !== null);
@@ -3940,16 +4139,20 @@ if (keyboardMode === "engaged") {
 // press there is the browser's find.
 byId("composer").dataset.commandKeys = "";
 // Discoverability in the shell's idiom: the key in the control's own title / hint. A phone's box
-// names `/` alone (#s509): its field is a strip as wide as its text, scrolled to its end, so an
-// empty one showing "( / or ⌘F )" lost its start on a 390px phone, and ⌘F is a hardware keyboard's.
-const searchHint = () => { byId("transcriptSearchInput").placeholder = `Search this session  ( ${hintFor("search", { command: !phoneSearch.matches })} )`; };
+// names `/` alone (#s509): ⌘F is a hardware keyboard's, and "( / or ⌘F )" did not fit a 390px phone's
+// strip. Its open box, empty, shows the hint where it fits and a shorter text where it does not
+// (`fitSearchField`, #s516); the hint is kept in `data-hint`.
+const searchHint = () => { const input = byId("transcriptSearchInput"); input.dataset.hint = input.placeholder = `Search this session  ( ${hintFor("search", { command: !phoneSearch.matches })} )`; fitSearchField(); };
 searchHint();
 phoneSearch.addEventListener("change", searchHint, { signal });
 byId("findPrev").title = `Previous match (${hintFor("hit-prev")})`; byId("findNext").title = `Next match (${hintFor("hit-next")})`;
 byId("turnPrev").title = `Previous turn (${hintFor("turn-prev")})`; byId("turnNext").title = `Next turn (${hintFor("turn-next")})`;
 // The header's own turn steppers were in the design but never bound; they step the same way the keys do.
 byId("turnPrev").onclick = () => stepTurn(-1); byId("turnNext").onclick = () => stepTurn(1);
-addEventListener("keydown", event => { if (event.key === "Escape") { setSessionCopyMenu(false); setPopover(null); } }, { signal });
+addEventListener("keydown", event => {
+  if (viewEscape(event)) { setSessionCopyMenu(false); setPopover(null); }
+  else if (event.key === "Escape" && hovered(sessionTitle, sessionCopyMenu)) setSessionCopyMenu(false);
+}, { signal });
 
 // #313 — while a session loads, a veil over the session area says so. It dims what is below the top
 // bars, which already name the new session, and speaks in three phases: loading; after
@@ -4303,7 +4506,7 @@ var phoneDock;
     clearTimeout(catchTimer);
     paneScrim.classList.remove("catching");
   });
-  addEventListener("keydown", event => { if (event.key === "Escape") closePane(); }, { signal });
+  addEventListener("keydown", event => { if (viewEscape(event)) closePane(); }, { signal });
   // #s431 stage 3 (design/pane-layout.md, "The glyphs in the top bar"): off the phone reader, where the
   // owner's order leaves the outline's glyphs no column of their own, the same three glyphs join the
   // session's top bar, after the title and its tools and before Info and the pane's control; each
@@ -4399,20 +4602,56 @@ var phoneDock;
   // Asked again as the view leaves the phone family (a host widening its pane while the keyboard is
   // up hears no viewport event), so the grid's transform and `keyboardRides` do not outlive the ride.
   let rideAgain = () => {};
+  // The page's offset at rest, in the visual viewport's page coordinates (#s512, in `ride`).
+  let pageRest = 0;
   if (viewport2) {
     const root = viewRoot.styleRoot();
+    // The ride moves the host's box by `shift` over iOS's page scroll, on top of whatever transform the
+    // host gave it, and with nothing to move (`hold` keeps native mode's containing block at 0) takes
+    // its own value away, putting the host's back. It used to write the shift alone and remove the
+    // property at no shift, which took a host's own transform off its box (#s511): at the mount, at
+    // each focus change at any width, and at each page scroll of a phone reader.
+    const rideBox = (shift, hold) => {
+      if (!grid) return;
+      if (!(shift > 0 || hold)) { unwriteStyle(grid, "transform"); return; }
+      const { value } = hostValue(grid, "transform");
+      writeStyle(grid, "transform", `translateY(${shift}px)${value && value !== "none" ? ` ${value}` : ""}`);
+    };
+    // How far the page reaches past the layout viewport, which iOS's keyboard leaves alone, read off the
+    // page's scrolling element (the body in a quirks-mode host). Its overflow style is not read: a host
+    // that locks its scroll for a modal (`overflow: hidden` on its body) keeps the offset its reader
+    // left it at, and a page that clips what overflows is told from no page that reaches past the
+    // viewport at all (the app's) by that overflow alone (#s512's third review).
+    const pageRange = () => {
+      const scroller = root.ownerDocument?.scrollingElement || root;
+      return Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    };
     const ride = () => {
       const typing = typesInto();
       // The ride ending decides again (#s431 stage 4): the gaps the layout kept while it rode may be
       // stale (a host's bar hidden while the reader typed), and on iOS, where the page's scroll and the
       // grid's transform cancel, the box may not move, so no watch of its place hears it.
       const rode = keyboardRides;
-      const pageTop = TOUCH.matches ? viewport2.pageTop : 0;
+      // #s512: on a touch screen the page's offset is iOS's lift for a focused field only while a field
+      // takes the keyboard or a ride is under way. Otherwise it is the reader's own, and a host's page
+      // they scrolled by finger was put back to its top, its box moved for a frame, at every scroll.
+      // That offset at rest (`pageRest`, read by every ride the keyboard has no part in, and kept within
+      // how far the page can scroll) is what iOS's lift is measured from and where the page is given
+      // back once the keyboard is down, so a pane low in a tall host page stays where the reader
+      // scrolled it through a reply. A page that reaches no further than the viewport (the app's own)
+      // rests at its top by construction: any offset it has is iOS's, as before #s512, so one iOS
+      // leaves behind as its keyboard goes is given back as it was (the review of e28e3a00).
+      const range = TOUCH.matches ? pageRange() : 0;
+      const lifts = TOUCH.matches && (typing || rode || range < 1);
+      if (!lifts) pageRest = viewport2.pageTop;
+      // Kept within the range, and never above the top (a bounce past it reads a negative offset).
+      pageRest = Math.max(0, Math.min(pageRest, range));
+      const pageTop = lifts ? viewport2.pageTop - pageRest : 0;
       if (controls.nativeActive && PHONE.matches) {
         const frame = sharedKeyboardFrame(grid.getBoundingClientRect().height, { height: viewport2.height, scale: viewport2.scale, pageTop });
         // Keep one containing block even at zero offset; Safari pans during keyboard animation.
         keyboardRides = Math.abs(viewport2.scale - 1) < 0.01 && frame.shift > 0;
-        writeStyle(grid, "transform", Math.abs(viewport2.scale - 1) < 0.01 ? `translateY(${frame.shift}px)` : "");
+        rideBox(Math.abs(viewport2.scale - 1) < 0.01 ? frame.shift : 0, Math.abs(viewport2.scale - 1) < 0.01);
         sessionView.classList.toggle("keyboard-up", typing && frame.keyboardOpen);
         writeStyle(root, "--phone-kb", `${typing ? frame.inset : 0}px`);
         if (rode && !keyboardRides) layout.decide();
@@ -4425,11 +4664,12 @@ var phoneDock;
       const shortfall = steady ? Math.max(0, Math.round(root.clientHeight - viewport2.height)) : 0;
       const covered = typing ? shortfall : 0;
       const shift = steady ? Math.max(0, Math.round(pageTop)) : 0;
-      // Once the keyboard is down there is nothing to fight: the page goes back to the top. This reads
-      // the viewport as it is, unguarded, so it acts only as it did before #s451.
-      if (steady && !shortfall && shift) scrollTo(0, 0);
+      // Once the keyboard is down there is nothing to fight: the page goes back to where it rested (the
+      // app's top; a host page, where the reader left it, #s512). This reads the viewport as it is,
+      // unguarded, so it acts only as it did before #s451.
+      if (steady && !shortfall && shift) scrollTo(scrollX, pageRest);
       keyboardRides = shift > 0;
-      writeStyle(grid, "transform", shift ? `translateY(${shift}px)` : "");
+      rideBox(shift, false);
       sessionView.classList.toggle("keyboard-up", covered > 0);
       writeStyle(root, "--phone-kb", `${covered}px`);
       if (rode && !keyboardRides) layout.decide();
@@ -4439,8 +4679,15 @@ var phoneDock;
     viewport2.addEventListener("resize", ride, { signal });
     viewport2.addEventListener("scroll", ride, { signal });
     // The page's scroll is the ride's only under iOS's keyboard (a touch screen's, which `ride` reads
-    // for itself, #s497); off a phone this listener has nothing to do.
-    addEventListener("scroll", () => { if (PHONE.matches || grid.style.transform) ride(); }, { passive: true, signal });
+    // for itself, #s497): off a touch screen's phone reader this listener has nothing to do but take
+    // back a transform the ride left (#s511: a desktop host's page asked a ride on every scroll), and,
+    // on a touch screen, keep the page's rest where the reader scrolled it, for a ride a host's pane
+    // narrowed into the phone reader under a focused field would measure from (#s512's review; read
+    // without a layout read, and kept within the page's range by the ride that uses it).
+    addEventListener("scroll", () => {
+      if (PHONE.matches && TOUCH.matches || viewWrote.get(grid)?.has("transform")) ride();
+      else if (TOUCH.matches && !typesInto() && !keyboardRides) pageRest = viewport2.pageTop;
+    }, { passive: true, signal });
     // Focus moving may come with no resize of the visual viewport (a stale shortfall stays short, and
     // a keyboard rising into it leaves the height as it was), so the ride is asked again once focus
     // has settled where it went, whether it left a field or came to one.
@@ -4450,6 +4697,9 @@ var phoneDock;
   // Across the breakpoint the Tasks list changes what it shows (#319: every state on a phone); the
   // desktop's rail comes off or goes back on in the app (#s33, `applySidebar`).
   PHONE.addEventListener("change", () => { placeToolbar(); place(); rideAgain(); if (!PHONE.matches) closePane(); renderNavigator(); paintCompose(); }, { signal });
+  // So does a change of screen (#s511): off a touch screen the page's offset is no keyboard's, and a
+  // transform a ride wrote there would stay until the next scroll or viewport event.
+  TOUCH.addEventListener("change", () => rideAgain(), { signal });
   // Into the wide layout the drop-down has no button (the column shows its panes); out of it, the
   // app sends the column's borrowed list home and the handle speaks of the drawer again.
   WIDE.addEventListener("change", () => { if (WIDE.matches) closePane(); place(); }, { signal });
@@ -4558,9 +4808,12 @@ return fenced({
     taskScrim.remove(); taskPopover.remove();
     for (const [, , id] of PHONE_PANES) { const node = byId(id); if (node && !element.contains(node)) node.remove(); }
     for (const { node, style, values } of hostStyles) {
-      for (const [name, value, priority] of values) {
+      for (const [name, atMount, priorityAtMount] of values) {
         const wrote = viewWrote.get(node)?.get(name);
         if (wrote === undefined || node.style.getPropertyValue(name) !== wrote) continue;
+        // A value the view wrote over the host's (the ride's transform) gives back the host's as it was
+        // when the view last wrote over it, which the host may have changed since the mount (#s511).
+        const { value, priority } = hostUnder.get(node)?.get(name) || { value: atMount, priority: priorityAtMount };
         if (value) node.style.setProperty(name, value, priority); else node.style.removeProperty(name);
       }
       if (style === null && !node.getAttribute("style")) node.removeAttribute("style");

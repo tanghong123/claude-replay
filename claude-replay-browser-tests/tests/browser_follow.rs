@@ -527,10 +527,10 @@ fn jump_to_bottom_lands_after_a_viewport_resize() {
 /// first load, and a short one growing past the window, at windows narrower than `main`'s 820px cap
 /// binds (about 1075px), where the column follows the window. And a third: in wide mode on a 1920px
 /// window the column is over 1500px, where a 15px scrollbar is under the engine's 1% threshold; there
-/// the width is taken without a remeasure (one would read the ratio as no width change and clear
-/// every remembered height), and the next resize still scales by the column's own widths. The ratios
-/// of every remeasure since the mark are multiplied, since each starts from the width the one before
-/// ended at.
+/// the width-only remeasure scales by it all the same (#s513: a plain one would read the ratio as no
+/// width change and clear every remembered height), and the next resize still scales by the column's
+/// own widths. The ratios of every remeasure since the mark are multiplied, since each starts from the
+/// width the one before ended at.
 #[test]
 #[ignore] // needs a local Chrome/Chromium; see the module docs
 fn the_classic_page_scales_its_heights_by_the_width_its_records_are_laid_out_at() {
@@ -655,8 +655,8 @@ fn the_classic_page_scales_its_heights_by_the_width_its_records_are_laid_out_at(
             "{name}: the page's scrollbar takes room: {room}"
         );
         if wide {
-            // The scene's premise: the scrollbar narrowed the column while it watched, so no
-            // remeasure below means the width was taken, not that nothing moved.
+            // The scene's premise: the scrollbar narrowed the column while it watched, so a
+            // remeasure that scaled, never one that cleared, is what the check below asks of it.
             let moved = eval(
                 &tab,
                 "window.__wg - document.querySelector('.vwin').getBoundingClientRect().width",
@@ -666,10 +666,10 @@ fn the_classic_page_scales_its_heights_by_the_width_its_records_are_laid_out_at(
                 moved.as_f64().unwrap_or(0.0) >= 14.5,
                 "{name}: premise, the scrollbar narrowed the column while the scene watched: {moved}"
             );
-            let early = eval(&tab, "JSON.stringify(window.__viewportHistory.states.filter(function (s) { return s.cause === 'remeasure' && s.t >= window.__tg; }).map(function (s) { return s.ratio; }))", false);
+            let early = eval(&tab, "JSON.stringify(window.__viewportHistory.states.filter(function (s) { return s.cause === 'remeasure' && s.did === 'clear' && s.t >= window.__tg; }).map(function (s) { return s.ratio; }))", false);
             if early.as_str() != Some("[]") {
                 wrong.push(format!(
-                    "{name}: the scrollbar beside a wide column remeasured (ratios {early}), which clears every remembered height"
+                    "{name}: the scrollbar beside a wide column cleared every remembered height (ratios {early})"
                 ));
             }
         }
@@ -701,6 +701,299 @@ fn the_classic_page_scales_its_heights_by_the_width_its_records_are_laid_out_at(
         wrong.is_empty(),
         "the remeasure scales by the column's own widths, before and after: {wrong:#?}"
     );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// How many of the engine's records have a measured height, of how many, and the kinds of those
+/// that have none (#s513). The engine stores a height only where it differs from its estimate
+/// (`heightChanged` in `measureMounted`), so a process group folded to its head row, which is its
+/// kind's floor, never has one: the app shell's long session has 18 of them.
+const MEASURED: &str = "(function(){ var it = window.__viewportHistory.export().session.items, none = {}; it.forEach(function (i) { if (i[1] == null) none[i[0]] = (none[i[0]] || 0) + 1; }); return { total: it.length, measured: it.filter(function (i) { return i[1] != null; }).length, unmeasured: none }; })()";
+
+/// Whether `MEASURED` read nearly every record measured: 90% of those that are not unmeasured
+/// process groups, which are folded to their floor and so have nothing to store.
+fn nearly_all_measured(m: &serde_json::Value) -> bool {
+    let total = m["total"].as_i64().unwrap_or(0);
+    let measured = m["measured"].as_i64().unwrap_or(0);
+    let folded = m["unmeasured"]["process"].as_i64().unwrap_or(0);
+    total - folded > 0 && measured * 10 >= (total - folded) * 9
+}
+
+/// Walk `scroller` from its top to its end, a step of 70% of its height, so the engine mounts every
+/// record and measures nearly every one a measure can store (`nearly_all_measured`). Each step is a reader's, as `harness::scroll_by` makes one: a wheel on
+/// `target` around the move, or a page that follows its tail heals the scroll back. Each waits for
+/// two frames (at most a second) and then 160 ms: under load the scroll events of steps sent faster
+/// than frames come together, and the engine never mounts what lay between them (s513c, at a load of
+/// 43, measured 130 of 148). Each step is a call of its own, since a call has 30 s to answer and a
+/// whole walk at a second a step would not. And the whole walk goes again, up to three passes,
+/// until nearly every record has a height, since one measured stays measured.
+fn walk_the_whole_session(
+    tab: &headless_chrome::Tab,
+    scroller: &str,
+    target: &str,
+) -> serde_json::Value {
+    let helpers = format!("var s = {scroller}, t = {target}; var sleep = function (ms) {{ return new Promise(function (r) {{ setTimeout(r, ms); }}); }}; var frames = function () {{ return Promise.race([new Promise(function (r) {{ requestAnimationFrame(function () {{ requestAnimationFrame(r); }}); }}), sleep(1000)]); }}; var move = function (top) {{ var dy = top < s.scrollTop ? -120 : 120; t.dispatchEvent(new WheelEvent('wheel', {{ deltaY: dy, bubbles: true }})); s.scrollTo({{ top: top, behavior: 'instant' }}); t.dispatchEvent(new WheelEvent('wheel', {{ deltaY: dy / 120, bubbles: true }})); }};");
+    let to_top = format!("(async function(){{ {helpers} for (var i = 0; i < 3 && s.scrollTop > 2; i++) {{ move(0); await sleep(500); }} return Math.round(s.scrollTop); }})()");
+    let step = format!("(async function(){{ {helpers} if (s.scrollTop + s.clientHeight >= s.scrollHeight - 2) return {{ end: true, top: Math.round(s.scrollTop) }}; move(s.scrollTop + Math.round(s.clientHeight * 0.7)); await frames(); await sleep(160); return {{ end: false, top: Math.round(s.scrollTop) }}; }})()");
+    let walk = || {
+        eval(tab, &to_top, true);
+        let mut steps = 0;
+        let mut at = serde_json::Value::Null;
+        while steps < 600 {
+            at = eval(tab, &step, true);
+            if at["end"] == true {
+                break;
+            }
+            steps += 1;
+        }
+        std::thread::sleep(Duration::from_millis(800));
+        serde_json::json!({ "steps": steps, "top": at["top"] })
+    };
+    let mut passes = Vec::new();
+    for _ in 0..3 {
+        passes.push(walk());
+        if nearly_all_measured(&eval(tab, MEASURED, false)) {
+            break;
+        }
+    }
+    serde_json::json!(passes)
+}
+
+/// **A resize that changes only the width keeps every remembered height, and scales it however
+/// small the change** (#s513), on the page `page` whose scroller, wheel target and engine mount are
+/// the expressions given. The session is walked whole so nearly every record has a measured
+/// height. Then the window narrows by 4px, its height alone changes, and its edge is dragged 60px in 2px steps.
+/// A remeasure reads a ratio within 1% of 1 as no width change, and before #s513 it cleared every
+/// height at each of those steps, as for a font: the next walk laid out from per-kind floors again.
+/// Now the caller says only the width changed: every step under 1% scales, so the drag's steps add
+/// up to the column's own widths, and the height alone keeps the heights as they are. What each
+/// step got wrong is returned.
+fn scenario_a_small_resize_keeps_every_height(
+    tab: &headless_chrome::Tab,
+    page: &str,
+    (scroller, target, mount): (&str, &str, &str),
+    (width, height): (f64, f64),
+) -> Vec<String> {
+    let mark = format!("(function(){{ window.__t0 = performance.now(); window.__w0 = {mount}.getBoundingClientRect().width; return true; }})()");
+    let remeasured = format!("(function(){{ var rs = window.__viewportHistory.states.filter(function (s) {{ return s.cause === 'remeasure' && s.t >= window.__t0; }}).map(function (s) {{ return [s.ratio, s.did || null]; }}); var w = {mount}.getBoundingClientRect().width; return {{ count: rs.length, seen: rs, ratio: Math.round(rs.reduce(function (a, r) {{ return a * r[0]; }}, 1) * 1000) / 1000, expected: Math.round(window.__w0 / w * 1000) / 1000, w0: window.__w0, w: w, inner: [innerWidth, innerHeight] }}; }})()");
+    // The browser's own top: headless Chrome's innerHeight is short of the window's height by it
+    // (measured, 143px on macOS), so a step is at rest once innerHeight is its height less this.
+    let top = height as i64 - eval(tab, "innerHeight", false).as_i64().unwrap_or(0);
+    let walked = walk_the_whole_session(tab, scroller, target);
+    let before = eval(tab, MEASURED, false);
+    let (total, measured) = (
+        before["total"].as_i64().unwrap_or(0),
+        before["measured"].as_i64().unwrap_or(0),
+    );
+    assert!(
+        total >= 60 && nearly_all_measured(&before),
+        "{page}: premise, the walk ({walked}) measured nearly every record: {before}"
+    );
+    let mut wrong = Vec::new();
+    let (w1, h1) = (width - 4.0, height - 120.0);
+    let (w2, h2) = (w1 - 60.0, h1);
+    for (step, (w, h), remeasures) in [
+        ("the window 4px narrower", (w1, height), true),
+        ("the window's height alone", (w1, h1), false),
+        (
+            "the window's edge dragged 60px in 2px steps",
+            (w2, h2),
+            true,
+        ),
+    ] {
+        eval(tab, &mark, false);
+        if w == w2 {
+            for i in 1..=30 {
+                harness::resize(tab, w1 - 2.0 * i as f64, h);
+                std::thread::sleep(Duration::from_millis(60));
+            }
+        } else {
+            harness::resize(tab, w, h);
+        }
+        // The app shell remeasures nothing for a height alone (its pane's layout asks only for a
+        // width that changed); the classic page does, on every resize.
+        wait_probe(
+            tab,
+            &format!(
+                "{page}: {step} at rest, innerWidth and innerHeight [{w}, {}] (the browser's top {top}px)",
+                h as i64 - top
+            ),
+            Duration::from_secs(10),
+            &remeasured,
+            |v| {
+                v["inner"] == serde_json::json!([w as i64, h as i64 - top])
+                    && (!remeasures || v["count"].as_i64().unwrap_or(0) >= 1)
+            },
+        );
+        std::thread::sleep(Duration::from_millis(900));
+        let seen = eval(tab, &remeasured, false);
+        let (w0, wn) = (
+            seen["w0"].as_f64().unwrap_or(0.0),
+            seen["w"].as_f64().unwrap_or(0.0),
+        );
+        if w == w1 && h == height {
+            assert!(
+                (w0 - wn).abs() >= 1.0 && (w0 / wn - 1.0).abs() < 0.01,
+                "{page}: premise, {step} moved the column by under 1% of its width: {seen}"
+            );
+        }
+        if w == w2 {
+            assert!(
+                (w0 / wn - 1.0).abs() > 0.03,
+                "{page}: premise, the drag moved the column by over 3% of its width: {seen}"
+            );
+            // Every step scaled by its own ratio, so they multiply to the column's own widths; kept
+            // at each step, the heights would end the drag as stale as the drag was long.
+            let (ratio, expected) = (
+                seen["ratio"].as_f64().unwrap_or(0.0),
+                seen["expected"].as_f64().unwrap_or(-1.0),
+            );
+            if (ratio - expected).abs() > 0.003 {
+                wrong.push(format!(
+                    "{page}: {step}: the heights were scaled by {ratio} for a column that changed by {expected}: {seen}"
+                ));
+            }
+        }
+        let after = eval(tab, MEASURED, false);
+        let kept = after["measured"].as_i64().unwrap_or(0);
+        eprintln!("{page}: {step}: {seen}, measured {kept} of {total} (before {measured})");
+        if kept < measured {
+            wrong.push(format!(
+                "{page}: {step} left {kept} of {total} records measured, of {measured} before (remeasures since: {seen})"
+            ));
+        }
+        if seen["seen"]
+            .as_array()
+            .is_some_and(|rs| rs.iter().any(|r| r[1] == "clear"))
+        {
+            wrong.push(format!("{page}: {step} cleared the heights: {seen}"));
+        }
+    }
+    wrong
+}
+
+#[test]
+#[ignore] // needs a local Chrome/Chromium; see the module docs
+fn the_classic_page_keeps_every_height_through_a_resize_under_one_percent() {
+    let _serial = serial();
+    let base = base("classic-small-resize");
+    std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
+    let turn = |i: u32| {
+        user(
+            &format!(
+                "question {i}: {}",
+                "lorem ipsum dolor sit amet consectetur. ".repeat(4)
+            ),
+            i % 60,
+        ) + &assistant(
+            &format!(
+                "answer {i}: {}",
+                "sed do eiusmod tempor incididunt ut labore. ".repeat(9)
+            ),
+            i % 60,
+        )
+    };
+    let src = base.join("long.jsonl");
+    std::fs::write(&src, (0..60).map(turn).collect::<String>()).unwrap();
+    let args = Args {
+        no_cache: true,
+        ..Default::default()
+    };
+    let server = start_server(&args, std::slice::from_ref(&src)).expect("server starts");
+    let url = server.url_for_root(0).expect("hosted");
+    let (browser, tab) = harness::chrome_tab();
+    // 1000px: narrower than `main`'s 820px cap binds (about 1075px), so the column follows the window.
+    harness::resize(&tab, 1000.0, 800.0);
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    wait_for(&tab, "the page drawn", Duration::from_secs(20), |s| {
+        s["blocks"].as_i64().unwrap_or(-1) >= 2
+    });
+    let wrong = scenario_a_small_resize_keeps_every_height(
+        &tab,
+        "the classic page",
+        (
+            "document.scrollingElement",
+            "window",
+            "document.querySelector('.vwin')",
+        ),
+        (1000.0, 800.0),
+    );
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    drop(tab);
+    drop(browser);
+    drop(server);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// The app shell's half of #s513, and what must still clear: a text size step changes the type at an
+/// unchanged width, which a ratio cannot see, so the reading change relearns every height.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_keeps_every_height_through_a_resize_under_one_percent_and_relearns_them_for_a_text_size(
+) {
+    let _serial = serial();
+    let base = base("appshell-small-resize");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000005130".to_string();
+    stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3142, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    // 1000px: the list at 300 and the outline as its glyphs, so the transcript is under its measure's cap
+    // and follows the window.
+    harness::resize(&tab, 1000.0, 800.0);
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        &format!("innerWidth === 1000 && !!document.querySelector('.virtual-window') && {VIEW_CAUGHT_UP}"),
+        "the app shell to mount the session",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 120)",
+    );
+    let transcript = "document.querySelector('#sessionView .transcript')";
+    let mount = "document.querySelector('#sessionView .virtual-window')";
+    let mut wrong = scenario_a_small_resize_keeps_every_height(
+        &tab,
+        "the app shell",
+        (transcript, transcript, mount),
+        (1000.0, 800.0),
+    );
+    // A text size step: walked whole again, then `+`, the keymap's larger step.
+    walk_the_whole_session(&tab, transcript, transcript);
+    let before = eval(&tab, MEASURED, false);
+    eval(
+        &tab,
+        &format!("(function(){{ window.__t0 = performance.now(); window.__w0 = {mount}.getBoundingClientRect().width; document.body.dispatchEvent(new KeyboardEvent('keydown', {{ key: '+', bubbles: true, cancelable: true }})); return true; }})()"),
+        false,
+    );
+    let probe = format!("(function(){{ var rs = window.__viewportHistory.states.filter(function (s) {{ return s.cause === 'remeasure' && s.t >= window.__t0; }}).map(function (s) {{ return [s.ratio, s.did || null]; }}); return {{ count: rs.length, seen: rs, w0: window.__w0, w: {mount}.getBoundingClientRect().width }}; }})()");
+    let seen = wait_probe(
+        &tab,
+        "the text size step's remeasure",
+        Duration::from_secs(10),
+        &probe,
+        |v| v["count"].as_i64().unwrap_or(0) >= 1,
+    );
+    std::thread::sleep(Duration::from_millis(900));
+    let after = eval(&tab, MEASURED, false);
+    eprintln!("the app shell: a text size step: {seen}, measured {after} (before {before})");
+    assert!(
+        (seen["w0"].as_f64().unwrap_or(0.0) - seen["w"].as_f64().unwrap_or(-1.0)).abs() < 1.0,
+        "premise: the text size step left the transcript's width as it was: {seen}"
+    );
+    if seen["seen"][0][1] != "clear" {
+        wrong.push(format!(
+            "the app shell: a text size step at an unchanged width did not relearn the heights: {seen}"
+        ));
+    }
+    if after["measured"].as_i64().unwrap_or(0) >= before["measured"].as_i64().unwrap_or(0) {
+        wrong.push(format!(
+            "the app shell: a text size step kept every measured height ({after}, before {before})"
+        ));
+    }
+    assert!(wrong.is_empty(), "{wrong:#?}");
+    drop(monitor);
     let _ = std::fs::remove_dir_all(&base);
 }
 
@@ -2188,6 +2481,209 @@ fn the_session_view_in_a_host_takes_its_keys_only_while_the_reader_works_in_it()
     );
 }
 
+/// #s535: a host's Escape is the host's. Mounted alone in the test host page with its default,
+/// `keyboard: "engaged"`, the session view closes its layers on Escape only while the reader works
+/// in it, as it answers its keymap: with Info's card pinned and the Reading menu open, a focus that
+/// goes to the host's own button leaves both open, an Escape pressed there leaves both open, and
+/// once the focus is back in the view an Escape closes each. A pointer resting on the transcript is
+/// not working in the view: with it there the host's Escape still closes neither. A hover engages
+/// nothing, yet a peek it opened on Info closes on Escape with the focus still on the host's button
+/// and the pointer still on Info (#s557's rule, WCAG 1.4.13). An Escape the browser hands to the
+/// view itself is the view's: with a peek opened by a focus on Info and a press on the host that
+/// kept the focus there, Escape closes it (#s560's review). The host's own listener hears every
+/// Escape, none prevented. With `keyboard: "page"` (the app's) the view is always engaged, so the
+/// same Escape from the host's button closes them as before. The view's other page-wide Escapes
+/// (the task card, a phone's pane sheet) read the same test. Keys are dispatched by script where
+/// the focus is (`PRESS`), so no CDP key is left repeating (#270).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_closes_its_layers_on_escape_only_while_the_reader_works_in_it() {
+    let _serial = serial();
+    let base = base("host-escape-engaged");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000005e5".to_string();
+    let mut jsonl = harness::user_at("look at the plan", &harness::at("00:01"));
+    jsonl += &harness::assistant_at("here it is", &harness::at("00:02"));
+    stores.claude_session(&sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3150, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1400.0, 900.0);
+    // The Info the view draws at this width, and the two layers' states.
+    let info = "(document.getElementById('outlineFooterInfo') && document.getElementById('outlineFooterInfo').getBoundingClientRect().width > 0 ? document.getElementById('outlineFooterInfo') : document.getElementById('outlineRailInfo'))";
+    let layers = "({ info: document.getElementById('infoPopover').classList.contains('open'), reading: document.getElementById('readingOptions').classList.contains('open') })";
+    // Info pinned by a press and a click on it, the Reading menu opened by a click on its button:
+    // each a press inside the view, so the view is engaged after it.
+    let open_both = format!(
+        "(function(){{ var i = {info}; i.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }})); i.click(); var r = document.getElementById('readingBtn'); r.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }})); r.click(); return 'ok'; }})()"
+    );
+    let state = |what: &str| -> serde_json::Value {
+        std::thread::sleep(Duration::from_millis(400));
+        harness::probe(
+            &tab,
+            &format!("(function(){{ var l = {layers}; l.active = (document.activeElement || {{}}).id || document.activeElement.tagName; l.what = {what:?}; return l; }})()"),
+        )
+    };
+    let host_keys = "window.__host.keys.filter(function (k) { return k.key === 'Escape'; }).map(function (k) { return k.prevented; })";
+    // The real pointer moved onto an element (`js` gives it): a hover, which presses nothing.
+    let hover = |js: &str| {
+        let v = harness::probe(
+            &tab,
+            &format!("(function(){{ var r = ({js}).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"),
+        );
+        tab.move_mouse_to_point(headless_chrome::browser::tab::point::Point {
+            x: v[0].as_f64().unwrap(),
+            y: v[1].as_f64().unwrap(),
+        })
+        .expect("the pointer moves");
+    };
+    let mut seen = Vec::new();
+    for mode in ["engaged", "page"] {
+        let query = if mode == "page" {
+            format!("session={sid}&keyboard=page")
+        } else {
+            format!("session={sid}")
+        };
+        harness::open_host_page(&tab, &monitor, &query);
+        harness::until(
+            &tab,
+            &format!("!!document.getElementById('readingBtn') && !!{info} && {info}.getBoundingClientRect().width > 0 && !!document.querySelector('.transcript') && document.querySelector('.transcript').innerText.indexOf('here it is') >= 0"),
+            "the session and its Info in the host's view",
+            Duration::from_secs(20),
+            "document.getElementById('sessionView') ? document.getElementById('sessionView').className : 'no view'",
+        );
+        // The pointer rests on the host's button, off the view, so no hover is the view's.
+        hover("document.getElementById('hostButton')");
+        harness::eval(&tab, &open_both);
+        seen.push(state(&format!("{mode}: both opened")));
+        harness::eval(&tab, "document.getElementById('hostButton').focus(); 'ok'");
+        seen.push(state(&format!("{mode}: the focus on the host's button")));
+        let taken = harness::probe(&tab, &format!("{PRESS}('Escape')"));
+        let mut after = state(&format!("{mode}: Escape on the host's button"));
+        after["taken"] = taken;
+        seen.push(after);
+        if mode == "engaged" {
+            // A pointer resting on the transcript is not working in the view: a keyboard reader
+            // leaves it there. A pinned card and a menu a click opened stay open.
+            hover("document.querySelector('.transcript')");
+            harness::probe(&tab, &format!("{PRESS}('Escape')"));
+            seen.push(state(
+                "engaged: Escape on the host's button, the pointer on the transcript",
+            ));
+            harness::eval(&tab, &format!("{info}.focus(); 'ok'"));
+            let taken = harness::probe(&tab, &format!("{PRESS}('Escape')"));
+            let mut back = state("engaged: Escape with the focus back on Info");
+            back["taken"] = taken;
+            seen.push(back);
+            // A hover opens Info's peek and engages nothing: with the focus on the host's button,
+            // Escape still closes it, the pointer resting on Info (#s557, WCAG 1.4.13).
+            harness::eval(&tab, "document.getElementById('hostButton').focus(); 'ok'");
+            hover(info);
+            seen.push(state(
+                "engaged: a hover on Info, the focus on the host's button",
+            ));
+            harness::probe(&tab, &format!("{PRESS}('Escape')"));
+            seen.push(state("engaged: Escape with the pointer on Info"));
+            // A focus on Info opens its peek and engages the view; a press on the host that keeps
+            // the focus there (a control that cancels its mousedown) ends the engagement. The
+            // Escape goes to Info itself, so it is the view's and closes the peek (#s560's review).
+            hover("document.getElementById('hostButton')");
+            harness::eval(&tab, &format!("{info}.focus(); 'ok'"));
+            harness::eval(
+                &tab,
+                "document.getElementById('hostButton').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); 'ok'",
+            );
+            let mut kept = state(
+                "engaged: a peek on Info's focus, then a press on the host that kept the focus",
+            );
+            kept["onInfo"] = harness::probe(&tab, &format!("document.activeElement === {info}"));
+            seen.push(kept);
+            harness::probe(&tab, &format!("{PRESS}('Escape')"));
+            seen.push(state("engaged: Escape on Info, the last press the host's"));
+            seen.push(harness::probe(&tab, host_keys));
+        }
+    }
+    drop(monitor);
+    let both = |v: &serde_json::Value| (v["info"].clone(), v["reading"].clone());
+    let t = serde_json::json!(true);
+    let f = serde_json::json!(false);
+    let open = (t.clone(), t.clone());
+    let shut = (f.clone(), f.clone());
+    assert_eq!(
+        both(&seen[0]),
+        open,
+        "engaged: Info pinned and Reading open: {}",
+        seen[0]
+    );
+    assert_eq!(
+        (both(&seen[1]), seen[1]["active"].clone()),
+        (open.clone(), serde_json::json!("hostButton")),
+        "engaged: a focus on the host's button leaves both open: {}",
+        seen[1]
+    );
+    assert_eq!(
+        both(&seen[2]),
+        open,
+        "engaged: an Escape on the host's button is the host's and closes neither: {}",
+        seen[2]
+    );
+    assert_eq!(
+        both(&seen[3]),
+        open,
+        "engaged: with the pointer resting on the transcript, the host's Escape still closes neither: {}",
+        seen[3]
+    );
+    assert_eq!(
+        both(&seen[4]),
+        shut,
+        "engaged: with the focus back in the view, Escape closes both: {}",
+        seen[4]
+    );
+    assert_eq!(
+        (seen[5]["info"].clone(), seen[5]["active"].clone()),
+        (t.clone(), serde_json::json!("hostButton")),
+        "engaged: a hover on Info opens its peek, the focus left on the host's button: {}",
+        seen[5]
+    );
+    assert_eq!(
+        seen[6]["info"],
+        f,
+        "engaged: Escape closes a peek a hover opened, the pointer still on Info, whatever the last press was: {}",
+        seen[6]
+    );
+    assert_eq!(
+        (seen[7]["info"].clone(), seen[7]["onInfo"].clone()),
+        (t.clone(), t.clone()),
+        "engaged: a focus on Info opens its peek and keeps the focus through the host's press: {}",
+        seen[7]
+    );
+    assert_eq!(
+        seen[8]["info"],
+        f,
+        "engaged: an Escape the browser hands to Info is the view's and closes the peek, whatever the last press was: {}",
+        seen[8]
+    );
+    assert_eq!(
+        seen[9],
+        serde_json::json!([false, false, false, false, false]),
+        "engaged: the host's own listener heard every Escape, the view preventing and stopping none: {}",
+        seen[9]
+    );
+    assert_eq!(both(&seen[10]), open, "page: both opened: {}", seen[10]);
+    assert_eq!(
+        both(&seen[11]),
+        open,
+        "page: a focus on the host's button leaves both open: {}",
+        seen[11]
+    );
+    assert_eq!(
+        both(&seen[12]),
+        shut,
+        "page: the view is always engaged, so the same Escape closes both as before: {}",
+        seen[12]
+    );
+}
+
 /// The session list mounted alone (#s430, design/session-list-component.md, stage 2): in a page of
 /// the case's own (`fixtures/host/session-list-host.html`, answered by the browser itself on the
 /// monitor's origin), with no app shell and no session view, `mountSessionList` fills itself from
@@ -2910,8 +3406,9 @@ fn the_session_list_in_a_host_unmounts_and_mounts_again() {
         Duration::from_secs(60),
         "document.getElementById('tree').innerText",
     );
-    // A section's menu open and closed, the filter's sheet open and closed: every listener bound.
-    let escape = "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))";
+    // A section's menu open and closed, the filter's sheet open and closed: every listener bound. The
+    // Escape is the reader's in the list, so it is dispatched there (#s559: a host's is the host's).
+    let escape = "document.getElementById('sessionList').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))";
     harness::eval(
         &tab,
         "document.querySelector('#tree .arranged-head [data-section-view]').click()",
@@ -3210,9 +3707,10 @@ fn the_session_list_in_a_host_places_its_layers_by_their_controls_in_a_transform
         &tab,
         "(function(){ var m = document.getElementById('sectionViewMenu'), a = document.querySelector('#tree .arranged-head [data-section-view]'); var r = m.getBoundingClientRect(), c = a.getBoundingClientRect(); var x = r.left + r.width / 2, y = r.top + Math.min(r.height / 2, 40); var hit = document.elementFromPoint(x, y); return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom), anchorRight: Math.round(c.right), anchorBottom: Math.round(c.bottom), pressedAt: window.__anchorAtPress, margin: Math.round(parseFloat(getComputedStyle(m).marginTop) || 0), inWindow: r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight, pressed: !!hit && m.contains(hit) }; })()",
     );
+    // The reader's Escape in the list closes the menu (#s559: a host's is the host's).
     harness::eval(
         &tab,
-        "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))",
+        "document.getElementById('sessionList').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))",
     );
     harness::eval(&tab, "document.getElementById('filterBtn').click()");
     harness::until(
@@ -3298,6 +3796,268 @@ fn the_session_list_in_a_host_places_its_layers_by_their_controls_in_a_transform
     assert_eq!(
         clipped["lastPressed"], true,
         "and its last row takes a press there: {clipped}"
+    );
+}
+
+/// #s559, after #s535 did the same for the session view: a host's Escape is the host's. Mounted with
+/// its default, `keyboard: "engaged"`, the session list closes its layers on Escape only while the
+/// reader works in it, or when the browser hands the Escape to the list itself (the focus inside it).
+/// The filter's sheet and a section's menu, each opened by a press and a click: a focus that goes to
+/// the host's own button leaves each open and an Escape there is the host's (the section menu's used to
+/// be stopped from reaching it); with the focus back in the list, Escape closes each. A press on the
+/// host that keeps the focus on the filter's button (a control that cancels its mousedown) ends the
+/// engagement, and an Escape at that button still closes the sheet. With a host that places the rail,
+/// a flyout a hover opened closes on Escape while the pointer is on its mark, the focus left on the
+/// host's button (WCAG 1.4.13, as the view's Info peek); one a click pinned stays open on the host's
+/// Escape. With `keyboard: "page"` (the app's) the list is always engaged, so the host's Escape closes
+/// the sheet as before. Keys are dispatched where the focus is (`PRESS`), so no CDP key is left
+/// repeating (#270). Before #s559 every one of these Escapes closed the list's layer.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_list_in_a_host_closes_its_layers_on_escape_only_while_the_reader_works_in_it() {
+    let _serial = serial();
+    let base = base("list-host-escape");
+    let stores = Stores::new(&base);
+    let ids = [
+        "cccccccc-0000-4000-8000-0000000005f1",
+        "cccccccc-0000-4000-8000-0000000005f2",
+    ];
+    list_host_world(&stores, &ids);
+    stores.app_session("local_f1", ids[0], "App first", 60, None);
+    stores.app_session("local_f2", ids[1], "App second", 120, None);
+    stores.app_settings(&[("cg-plan", "Planning", &["local_f2"])]);
+    let monitor = Monitor::spawn(Kind::V1, 3152, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1200.0, 900.0);
+    harness::open_list_host_page_with(&tab, &monitor, "mount=0");
+    harness::eval(
+        &tab,
+        "localStorage.setItem('am-prod-session-arrange', 'claude-app'); localStorage.setItem('am-prod-session-filter', '[\"recent\",\"blocked\",\"idle\"]'); 'ok'",
+    );
+    let layers = "({ sheet: !!document.getElementById('sessionFilter') && !document.getElementById('sessionFilter').hidden, menu: !!document.getElementById('sectionViewMenu') && !document.getElementById('sectionViewMenu').hidden, flyout: !!document.getElementById('railFlyout') && !document.getElementById('railFlyout').hidden })";
+    let state = |what: &str| -> serde_json::Value {
+        std::thread::sleep(Duration::from_millis(400));
+        harness::probe(
+            &tab,
+            &format!("(function(){{ var l = {layers}; var a = document.activeElement; l.active = a ? (a.id || (a.dataset && (a.dataset.sectionView || a.dataset.miniAgent) ? 'list:' + (a.dataset.sectionView ? 'section' : 'mark') : a.tagName)) : null; l.what = {what:?}; return l; }})()"),
+        )
+    };
+    let host_keys = "window.__host.keys.filter(function (k) { return k.key === 'Escape'; }).map(function (k) { return k.prevented; })";
+    // A press and then a click on what `js` gives, as a mouse makes them: the press engages the list.
+    let press_click = |js: &str| {
+        harness::eval(
+            &tab,
+            &format!("(function(){{ var e = {js}; e.dispatchEvent(new PointerEvent('pointerdown', {{ bubbles: true }})); e.dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }})); e.click(); return 'ok'; }})()"),
+        );
+    };
+    // The real pointer moved onto what `js` gives: a hover, which presses nothing. It aims at the
+    // middle of the part inside the window: no list stylesheet reaches a mark placed in the host's
+    // rail, so its icon draws at the default size, wider than the 48px rail, past the window's edge.
+    let hover = |js: &str| {
+        let v = harness::probe(
+            &tab,
+            &format!("(function(){{ var r = ({js}).getBoundingClientRect(); var l = Math.max(r.left, 0), t = Math.max(r.top, 0), w = Math.min(r.right, innerWidth - 1), b = Math.min(r.bottom, innerHeight - 1); return [(l + w) / 2, (t + b) / 2]; }})()"),
+        );
+        tab.move_mouse_to_point(headless_chrome::browser::tab::point::Point {
+            x: v[0].as_f64().unwrap(),
+            y: v[1].as_f64().unwrap(),
+        })
+        .expect("the pointer moves");
+    };
+    let host_focus = "document.getElementById('hostButton').focus(); 'ok'";
+    let escape = format!("{PRESS}('Escape')");
+    let anchor = "document.querySelector('#tree .arranged-head [data-section-view]')";
+    let mut seen = Vec::new();
+    // The list drawn by itself, its controls and sheet in its own head.
+    harness::open_list_host_page_with(&tab, &monitor, "");
+    until_list_drawn(&tab);
+    harness::until(
+        &tab,
+        &format!("!!{anchor}"),
+        "the list arranged like the Claude app, its sections' menus offered",
+        Duration::from_secs(60),
+        "document.getElementById('tree').innerText",
+    );
+    hover("document.getElementById('hostButton')");
+    press_click("document.getElementById('filterBtn')");
+    seen.push(state("engaged: the filter's sheet opened"));
+    harness::eval(&tab, host_focus);
+    harness::probe(&tab, &escape);
+    seen.push(state("engaged: Escape on the host's button"));
+    harness::eval(&tab, "document.getElementById('filterBtn').focus(); 'ok'");
+    harness::probe(&tab, &escape);
+    seen.push(state(
+        "engaged: Escape with the focus back on the filter's button",
+    ));
+    press_click(anchor);
+    harness::eval(&tab, host_focus);
+    harness::probe(&tab, &escape);
+    seen.push(state(
+        "engaged: a section's menu, Escape on the host's button",
+    ));
+    harness::eval(&tab, &format!("{anchor}.focus(); 'ok'"));
+    harness::probe(&tab, &escape);
+    seen.push(state(
+        "engaged: Escape with the focus back on the section's control",
+    ));
+    press_click("document.getElementById('filterBtn')");
+    harness::eval(&tab, "document.getElementById('filterBtn').focus(); 'ok'");
+    harness::eval(
+        &tab,
+        "document.getElementById('hostButton').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); 'ok'",
+    );
+    seen.push(state(
+        "engaged: the sheet, the focus on its button, then a press on the host that kept it",
+    ));
+    harness::probe(&tab, &escape);
+    seen.push(state(
+        "engaged: Escape on the filter's button, the last press the host's",
+    ));
+    seen.push(harness::probe(&tab, host_keys));
+    // A host that places the list's parts, its rail among them, and the rail drawn.
+    harness::open_list_host_page_with(&tab, &monitor, "mount=0");
+    harness::eval(
+        &tab,
+        "window.__host.mount(window.__host.placing); window.__list.compact(true); 'ok'",
+    );
+    let mark = "document.querySelector('#sidebarMiniAgents [data-mini-agent]')";
+    harness::until(
+        &tab,
+        &format!("!!{mark} && {mark}.getBoundingClientRect().width > 0"),
+        "the rail's agent marks drawn in the host's rail",
+        Duration::from_secs(30),
+        "JSON.stringify({ rail: document.getElementById('hostRail').innerHTML.slice(0, 200), errors: window.__host.errors })",
+    );
+    hover("document.getElementById('hostButton')");
+    harness::eval(&tab, host_focus);
+    hover(mark);
+    harness::until(
+        &tab,
+        "!document.getElementById('railFlyout').hidden",
+        "a hover on a mark to open its flyout",
+        Duration::from_secs(5),
+        "document.getElementById('railFlyout').outerHTML.slice(0, 200)",
+    );
+    seen.push(state(
+        "rail: a hover opened a mark's flyout, the focus on the host's button",
+    ));
+    harness::probe(&tab, &escape);
+    seen.push(state("rail: Escape with the pointer on the mark"));
+    press_click(mark);
+    hover("document.getElementById('hostButton')");
+    harness::eval(&tab, host_focus);
+    seen.push(state(
+        "rail: a click pinned the flyout, the focus on the host's button",
+    ));
+    harness::probe(&tab, &escape);
+    seen.push(state("rail: Escape on the host's button"));
+    seen.push(harness::probe(&tab, host_keys));
+    // The page's keyboard, the app's: the list is always engaged.
+    harness::open_list_host_page_with(&tab, &monitor, "keyboard=page");
+    until_list_drawn(&tab);
+    press_click("document.getElementById('filterBtn')");
+    harness::eval(&tab, host_focus);
+    seen.push(state(
+        "page: the sheet opened, the focus on the host's button",
+    ));
+    harness::probe(&tab, &escape);
+    seen.push(state("page: Escape on the host's button"));
+    drop(monitor);
+    let t = serde_json::json!(true);
+    let f = serde_json::json!(false);
+    let at = |i: usize, key: &str| seen[i][key].clone();
+    assert_eq!(
+        at(0, "sheet"),
+        t,
+        "engaged: the filter's sheet opens: {}",
+        seen[0]
+    );
+    assert_eq!(
+        (at(1, "sheet"), at(1, "active")),
+        (t.clone(), serde_json::json!("hostButton")),
+        "engaged: an Escape on the host's button is the host's and leaves the sheet open: {}",
+        seen[1]
+    );
+    assert_eq!(
+        at(2, "sheet"),
+        f,
+        "engaged: with the focus back in the list, Escape closes the sheet: {}",
+        seen[2]
+    );
+    assert_eq!(
+        (at(3, "menu"), at(3, "active")),
+        (t.clone(), serde_json::json!("hostButton")),
+        "engaged: an Escape on the host's button leaves a section's menu open: {}",
+        seen[3]
+    );
+    assert_eq!(
+        at(4, "menu"),
+        f,
+        "engaged: with the focus back on the section's control, Escape closes its menu: {}",
+        seen[4]
+    );
+    assert_eq!(
+        (at(5, "sheet"), at(5, "active")),
+        (t.clone(), serde_json::json!("filterBtn")),
+        "engaged: the sheet stays open and its button keeps the focus through the host's press: {}",
+        seen[5]
+    );
+    assert_eq!(
+        at(6, "sheet"),
+        f,
+        "engaged: an Escape the browser hands to the list is the list's, whatever the last press was: {}",
+        seen[6]
+    );
+    // Five Escapes: the host heard all but the one the section's menu takes and stops as it closes,
+    // and none was prevented.
+    assert_eq!(
+        seen[7],
+        serde_json::json!([false, false, false, false]),
+        "engaged: the host's own listener heard every Escape but the section menu's own: {}",
+        seen[7]
+    );
+    assert_eq!(
+        (at(8, "flyout"), at(8, "active")),
+        (t.clone(), serde_json::json!("hostButton")),
+        "rail: a hover on a mark opens its flyout, the focus left on the host's button: {}",
+        seen[8]
+    );
+    assert_eq!(
+        (at(9, "flyout"), at(9, "active")),
+        (f.clone(), serde_json::json!("hostButton")),
+        "rail: Escape closes a flyout a hover opened while the pointer is on its mark, and leaves the focus in the host: {}",
+        seen[9]
+    );
+    assert_eq!(
+        at(10, "flyout"),
+        t,
+        "rail: a click pins the flyout: {}",
+        seen[10]
+    );
+    assert_eq!(
+        at(11, "flyout"),
+        t,
+        "rail: a pinned flyout stays open on the host's Escape: {}",
+        seen[11]
+    );
+    assert_eq!(
+        seen[12],
+        serde_json::json!([false, false]),
+        "rail: the host heard both Escapes, none prevented: {}",
+        seen[12]
+    );
+    assert_eq!(
+        (at(13, "sheet"), at(13, "active")),
+        (t.clone(), serde_json::json!("hostButton")),
+        "page: the sheet opens and the focus goes to the host's button: {}",
+        seen[13]
+    );
+    assert_eq!(
+        at(14, "sheet"),
+        f,
+        "page: the list is always engaged, so the host's Escape closes the sheet as before: {}",
+        seen[14]
     );
 }
 
@@ -3438,6 +4198,10 @@ fn the_session_list_in_a_host_lays_out_its_rows_by_its_own_width_and_touch() {
 /// `[`, `]`, `j` and Space did nothing until the reader clicked in the transcript; before stage 4 the
 /// open session clicked again kept it too. Only the keyboard's focus on a row, a step's or Tab's, is
 /// kept as the list is rewritten, which the case presses through the app's own keymap, there and back.
+/// Each `[` is read where the reader RESTS, still there a second later (#s487): from the end it
+/// landed turn N-1 inside the hold slack, where the engine kept the pin, and the tail's converge
+/// took the reader back to the end within about 0.1s, so a case that polled for "moved at some
+/// poll" passed on that dip (a turn step keeps the pin only at the true end now, the owner's #s502).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked() {
@@ -3502,18 +4266,23 @@ fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked() {
         &tab,
         "(document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true, cancelable: true })); 'ok'",
     );
+    // Where the press leaves the reader once it RESTS, read twice a second apart (#s487): a
+    // reading taken while the view moves can catch a dip that the tail's converge then undoes,
+    // and a case that polled for "moved at some point" passed on exactly that dip.
     let moved_from = |rest: i64| {
-        let deadline = Instant::now() + Duration::from_secs(10);
-        loop {
-            if harness::eval(&tab, &format!("{scrolled} < {rest} - 20")) == serde_json::json!(true)
-            {
-                return true;
-            }
-            if Instant::now() > deadline {
-                return false;
-            }
-            harness::pause("click keys", Duration::from_millis(200));
-        }
+        let (landed, _) = harness::until_still(
+            &tab,
+            scrolled,
+            |v| v.as_i64().is_some_and(|v| v < rest - 20),
+            Duration::from_secs(10),
+        );
+        harness::pause("click keys", Duration::from_secs(1));
+        let later = harness::eval(&tab, scrolled);
+        (
+            landed.as_i64().is_some_and(|v| v < rest - 20) && later == landed,
+            landed,
+            later,
+        )
     };
     let moved = moved_from(rest);
     // The open session's row clicked again: the app redraws nothing, and the click still hands the
@@ -3577,8 +4346,10 @@ fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked() {
         "the click chose the session and the redraw left no row of the list with the focus"
     );
     assert!(
-        moved,
-        "so `[` is the transcript's: it steps back a turn from the end ({rest}px)"
+        moved.0,
+        "so `[` is the transcript's: it steps back a turn from the end ({rest}px) and rests there: {}px, then {}px a second later",
+        moved.1,
+        moved.2
     );
     assert_eq!(
         again_focus,
@@ -3586,8 +4357,10 @@ fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked() {
         "the open session's row clicked again, which redraws nothing, keeps no focus either"
     );
     assert!(
-        moved_again,
-        "so `[` is still the transcript's ({again_rest}px)"
+        moved_again.0,
+        "so `[` is still the transcript's ({again_rest}px) and rests where it went: {}px, then {}px a second later",
+        moved_again.1,
+        moved_again.2
     );
     assert_eq!(
         (stepped, stepped_back),
@@ -4362,6 +5135,21 @@ fn place_host_pane(tab: &headless_chrome::Tab, left: u32, width: u32) -> serde_j
         VIEW_LAYOUT,
     );
     harness::probe(tab, VIEW_LAYOUT)
+}
+
+/// A field of the host's page with the focus, as a field takes the keyboard on a phone (#s512: iOS lifts
+/// the page for a focused field alone, and the view's ride reads the page's offset as that lift only
+/// while a field has the focus or a ride is under way). Fixed at the window's top left, outside the
+/// view; made once.
+fn focus_host_field(tab: &headless_chrome::Tab) {
+    harness::until(
+        tab,
+        "(function(){ var i = document.getElementById('hostField'); if (!i) { i = document.createElement('input'); i.id = 'hostField'; i.type = 'text'; i.style.cssText = 'position:fixed;top:0;left:0;width:40px;height:20px'; document.body.appendChild(i); } i.focus(); return document.activeElement === i; })()",
+        "a field of the host's page to take the focus",
+        Duration::from_secs(5),
+        "(document.activeElement || {}).id || ''",
+    );
+    harness::eval(tab, TWO_FRAMES);
 }
 
 /// One placement of the host's pane: its left edge and width, whether the view is to read as a phone,
@@ -5434,10 +6222,12 @@ fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
     );
     // That step resized the view, a decision of the whole layout, which holds: the count hears a hold.
     let resized = harness::eval(&tab, "window.__holds");
-    // The keyboard up in that pane (the review of stage 4): iOS scrolls the page 100px and the view's
-    // ride moves the host's box (the `grid` it was given) back over it. The view, placed for the
-    // keyboard, keeps the gaps it read at the bar, still boxed 40px from the top; on the code before it
-    // a ride read no gaps, unboxing a pane under a bar for as long as the keyboard was up.
+    // The keyboard up in that pane (the review of stage 4): a field takes it (one of the host's, #s512:
+    // iOS lifts the page only for a focused field), iOS scrolls the page 100px and the view's ride moves
+    // the host's box (the `grid` it was given) back over it. The view, placed for the keyboard, keeps
+    // the gaps it read at the bar, still boxed 40px from the top; on the code before it a ride read no
+    // gaps, unboxing a pane under a bar for as long as the keyboard was up.
+    focus_host_field(&tab);
     harness::eval(
         &tab,
         "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 200; } }); Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return 100; } }); visualViewport.dispatchEvent(new Event('scroll')); return true; })()",
@@ -5588,6 +6378,395 @@ fn a_desktop_host_page_that_scrolls_keeps_its_offset_beside_a_phone_reader() {
     );
 }
 
+/// #s511 (the review of #s497): the keyboard ride writes a transform on the host's box (the `grid` it
+/// was given) and took it away by removing the property, so a ride with nothing to move removed the
+/// host's OWN transform: at the mount, at each focus change at any width, and at each page scroll of a
+/// phone reader. A host that slides its pane in by a transform (#s467 supports a host moving the box)
+/// saw it jump back as the reader clicked into the search field. In a mouse window: a pane of 400px
+/// (the view a phone reader) that its host moved 12px by a transform before the mount keeps it through
+/// the mount, the search field taking focus and a page scroll, and no other value is ever written
+/// there. On a phone: the ride moves the box over iOS's page scroll on top of the host's transform, a
+/// transform the host changes during the ride is kept under the ride's, the ride's end gives back the
+/// host's, and so does an unmount in the middle of a ride (the host's value as it last wrote it, not
+/// the one at the mount). Red on 06fc5412: the mount and the focus took the host's transform off, and
+/// the ride wrote its own alone.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_host_s_own_transform_on_its_pane_outlives_the_keyboard_ride() {
+    let _serial = serial();
+    let base = base("host-own-transform");
+    let monitor = Monitor::spawn(Kind::V1, 3136, &base, None, true);
+    // A mouse window: the host moves its pane before it mounts the view.
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1400.0, 900.0);
+    harness::open_host_page(&tab, &monitor, "mount=0");
+    harness::eval(
+        &tab,
+        "(function(){ document.body.style.height = '3000px'; var p = document.getElementById('hostPane'); p.style.left = '500px'; p.style.right = 'auto'; p.style.width = '400px'; p.style.transform = 'translateX(12px)'; window.__transforms = []; new MutationObserver(function(){ window.__transforms.push(p.style.transform); }).observe(p, { attributes: true, attributeFilter: ['style'] }); return window.__host.mount(); })()",
+    );
+    harness::until(
+        &tab,
+        &format!("(function(){{ var v = document.getElementById('sessionView'); return !!v && Math.round(v.getBoundingClientRect().width) === 400 && v.classList.contains('pl-phone'); }})() && {VIEW_CAUGHT_UP}"),
+        "the view mounted as a phone reader in the host's 400px pane",
+        Duration::from_secs(10),
+        VIEW_LAYOUT,
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let facts = "JSON.stringify({ coarse: matchMedia('(pointer:coarse)').matches, focused: (document.activeElement || {}).id || '', scroll: Math.round(scrollY), transform: document.getElementById('hostPane').style.transform, written: window.__transforms.filter(function (t) { return t !== 'translateX(12px)'; }) })";
+    let read = |tab: &headless_chrome::Tab| -> serde_json::Value {
+        serde_json::from_str(harness::eval(tab, facts).as_str().unwrap_or("{}")).unwrap_or_default()
+    };
+    let mounted = read(&tab);
+    // The reader opens the search, which focuses its field: a focus change asks for a ride.
+    harness::eval(
+        &tab,
+        "(function(){ document.querySelector('#sessionView .header-searchbox').click(); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(document.activeElement || {}).id === 'transcriptSearchInput'",
+        "the search field to take focus",
+        Duration::from_secs(5),
+        facts,
+    );
+    harness::pause(
+        "the ride a focus change asks for",
+        Duration::from_millis(300),
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let focused = read(&tab);
+    // A page scroll, which asks a phone reader's ride too.
+    harness::eval(&tab, "(function(){ scrollBy(0, 300); return true; })()");
+    harness::pause("any ride a scroll event starts", Duration::from_millis(300));
+    harness::eval(&tab, TWO_FRAMES);
+    let scrolled = read(&tab);
+    for (what, at) in [
+        ("the mount", &mounted),
+        ("the search field taking focus", &focused),
+        ("a page scroll", &scrolled),
+    ] {
+        assert_eq!(
+            (at["coarse"].clone(), at["transform"].clone(), at["written"].clone()),
+            (serde_json::json!(false), serde_json::json!("translateX(12px)"), serde_json::json!([])),
+            "in a mouse window the host's own transform outlives {what}, and nothing else is written there: {at}"
+        );
+    }
+    assert_eq!(
+        (focused["focused"].clone(), scrolled["scroll"].clone()),
+        (
+            serde_json::json!("transcriptSearchInput"),
+            serde_json::json!(300)
+        ),
+        "the field had focus and the page kept its scroll: {focused} {scrolled}"
+    );
+
+    // A phone: the host moves its pane by a transform, and the keyboard comes up.
+    let (_browser2, tab2) = harness::chrome_tab();
+    monitor.pair(&tab2);
+    harness::phone(&tab2, 390, 844);
+    harness::open_host_page(&tab2, &monitor, "");
+    place_host_pane(&tab2, 0, 390);
+    // A field of the host's takes the keyboard (#s512: iOS lifts the page only for a focused field).
+    focus_host_field(&tab2);
+    harness::eval(
+        &tab2,
+        "(function(){ var p = document.getElementById('hostPane'); p.style.transform = 'translateX(-20px)'; window.__kb = { top: 0, short: 0 }; Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - window.__kb.short; } }); Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return window.__kb.top; } }); return true; })()",
+    );
+    harness::eval(&tab2, TWO_FRAMES);
+    let transform = "document.getElementById('hostPane').style.transform";
+    let ride = |top: u32, short: u32, event: &str| {
+        harness::eval(
+            &tab2,
+            &format!("(function(){{ window.__kb = {{ top: {top}, short: {short} }}; visualViewport.dispatchEvent(new Event('{event}')); return true; }})()"),
+        );
+    };
+    ride(100, 300, "scroll");
+    harness::until(
+        &tab2,
+        &format!("{transform} === 'translateY(100px) translateX(-20px)'"),
+        "the ride to move the host's box over the page's scroll on top of the host's transform",
+        Duration::from_secs(5),
+        transform,
+    );
+    // The host slides its pane on while the keyboard is up: the ride keeps the new value under its own.
+    harness::eval(
+        &tab2,
+        "(function(){ document.getElementById('hostPane').style.transform = 'translateX(-30px)'; return true; })()",
+    );
+    ride(100, 300, "scroll");
+    harness::until(
+        &tab2,
+        &format!("{transform} === 'translateY(100px) translateX(-30px)'"),
+        "the ride to keep the transform the host changed during it",
+        Duration::from_secs(5),
+        transform,
+    );
+    // The keyboard goes down: the host's transform comes back, as the host last wrote it.
+    ride(0, 0, "resize");
+    harness::until(
+        &tab2,
+        &format!("{transform} === 'translateX(-30px)'"),
+        "the ride's end to give the host's transform back",
+        Duration::from_secs(5),
+        transform,
+    );
+    // Up again, and the host unmounts the view in the middle of the ride.
+    ride(100, 300, "scroll");
+    harness::until(
+        &tab2,
+        &format!("{transform} === 'translateY(100px) translateX(-30px)'"),
+        "the ride to move the box again",
+        Duration::from_secs(5),
+        transform,
+    );
+    let unmounted = harness::eval(
+        &tab2,
+        &format!("(function(){{ window.__view.unmount(); return {transform}; }})()"),
+    );
+    drop(monitor);
+    assert_eq!(
+        unmounted,
+        serde_json::json!("translateX(-30px)"),
+        "an unmount in the middle of a ride gives the host's transform back as the host last wrote it"
+    );
+}
+
+/// #s512 (left open by #s497): on a touch screen the keyboard ride read ANY page offset as the one iOS
+/// makes to lift a focused field above its keyboard (#s41), so a host page on an iPad or a phone,
+/// scrolled by the reader's finger beside a phone reader (a 400px pane), went back to its top at each
+/// scroll and its pane was given a `translateY` of the offset for a frame. And a reader who scrolled
+/// such a page down to its pane and then tapped into a field of the view had the whole offset taken
+/// for iOS's lift: the box moved by all of it, and the page went back to its top as the keyboard went
+/// down. Here a touch gesture beside the pane scrolls the page with nothing focused: the page keeps its
+/// offset and no transform is ever written. Then the search field takes focus there, iOS's lift is
+/// modelled as the page scrolled 150px more under a keyboard 300px tall: the box moves by the 150px
+/// alone, and as the keyboard goes down the page goes back to where the reader left it, the transform
+/// with it. Last the host locks its scroll for a modal of its own (`overflow: hidden` on its body) and
+/// the field lets go of focus: the page and the box are left alone. Red on c723f926: the gesture's
+/// offset was snapped to 0, and the lift was read as the whole offset and ended at the page's top; and
+/// on 0642dfac, which read a clipped page as one that cannot scroll, the lock moved the box by the
+/// whole offset and sent the page to its top (#s512's third review).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_touch_host_page_keeps_the_offset_the_reader_scrolled_it_to_beside_a_phone_reader() {
+    use headless_chrome::protocol::cdp::Input::{GestureSourceType, SynthesizeScrollGesture};
+    let _serial = serial();
+    let base = base("host-touch-scroll");
+    let monitor = Monitor::spawn(Kind::V1, 3137, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::phone(&tab, 820, 1180);
+    harness::open_host_page(&tab, &monitor, "");
+    place_host_pane(&tab, 400, 400);
+    // A page taller than the window, and every transform the host's box takes from here on, each once.
+    harness::eval(
+        &tab,
+        "(function(){ document.body.style.height = '3000px'; var p = document.getElementById('hostPane'), last = p.style.transform; window.__transforms = []; new MutationObserver(function(){ var t = p.style.transform; if (t !== last) { last = t; if (t) window.__transforms.push(t); } }).observe(p, { attributes: true, attributeFilter: ['style'] }); return true; })()",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let facts = "JSON.stringify({ phone: document.getElementById('sessionView').classList.contains('pl-phone'), coarse: matchMedia('(pointer:coarse)').matches, focused: (document.activeElement || {}).id || '', scroll: Math.round(scrollY), transform: document.getElementById('hostPane').style.transform, transforms: window.__transforms })";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default()
+    };
+    let before = read();
+    assert!(
+        before["phone"] == true && before["coarse"] == true && before["scroll"] == 0 && before["focused"] == "",
+        "the view is a phone reader on a touch screen, in a page at its top with nothing focused: {before}"
+    );
+    // The reader's finger, on the host's page beside the pane: 400px down, no fling.
+    tab.call_method(SynthesizeScrollGesture {
+        x: 200.0,
+        y: 800.0,
+        x_distance: Some(0.0),
+        y_distance: Some(-400.0),
+        x_overscroll: None,
+        y_overscroll: None,
+        prevent_fling: Some(true),
+        speed: Some(800),
+        gesture_source_Type: Some(GestureSourceType::Touch),
+        repeat_count: None,
+        repeat_delay_ms: None,
+        interaction_marker_name: None,
+    })
+    .expect("a touch scroll gesture");
+    harness::pause("any ride a scroll event starts", Duration::from_millis(300));
+    harness::eval(&tab, TWO_FRAMES);
+    let mut scrolled = read();
+    // Where Chrome's synthesized touch scroll moves nothing at all (Linux's headless Chrome, as its
+    // synthesized tap stops at touchend there, #366): no offset and no transform, so nothing was
+    // snapped either. The finger's offset is then given to the page as a plain scroll, which the ride
+    // reads the same way (a scroll on a touch screen with nothing focused): a ride that took it for
+    // iOS's lift snaps it back to 0, as it did the gesture's on c723f926.
+    if scrolled["scroll"] == 0 && scrolled["transforms"] == serde_json::json!([]) {
+        eprintln!(
+            "the touch scroll gesture moved nothing: the finger's offset goes in as a page scroll"
+        );
+        harness::eval(&tab, "(function(){ scrollBy(0, 400); return true; })()");
+        harness::pause("any ride a scroll event starts", Duration::from_millis(300));
+        harness::eval(&tab, TWO_FRAMES);
+        scrolled = read();
+    }
+    let at = scrolled["scroll"].as_i64().unwrap_or(0);
+    // The search field takes focus where the reader is: then iOS lifts the page 150px for it under a
+    // keyboard 300px tall (the page really scrolled, the keyboard shadowed as the other ride cases do).
+    harness::eval(
+        &tab,
+        "(function(){ document.querySelector('#sessionView .header-searchbox').click(); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(document.activeElement || {}).id === 'transcriptSearchInput'",
+        "the search field to take focus",
+        Duration::from_secs(5),
+        facts,
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    harness::eval(
+        &tab,
+        &format!("(function(){{ Object.defineProperty(visualViewport, 'height', {{ configurable: true, get: function () {{ return innerHeight - 300; }} }}); scrollTo(0, {lifted}); visualViewport.dispatchEvent(new Event('resize')); return true; }})()", lifted = at + 150),
+    );
+    harness::until(
+        &tab,
+        &format!("Math.round(scrollY) === {} && document.getElementById('hostPane').style.transform === 'translateY(150px)'", at + 150),
+        "the ride to move the box by iOS's lift alone",
+        Duration::from_secs(5),
+        facts,
+    );
+    let lifted = read();
+    // The keyboard goes down: the page goes back to where the reader left it, and the transform goes.
+    harness::eval(
+        &tab,
+        "(function(){ delete visualViewport.height; visualViewport.dispatchEvent(new Event('resize')); return true; })()",
+    );
+    harness::until(
+        &tab,
+        &format!("Math.round(scrollY) === {at} && document.getElementById('hostPane').style.transform === ''"),
+        "the page given back to the reader's offset as the keyboard went down",
+        Duration::from_secs(5),
+        facts,
+    );
+    harness::pause(
+        "any ride the page's scroll back starts",
+        Duration::from_millis(300),
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let ended = read();
+    // The host's scroll lock, the page where the reader left it, and the field letting go of focus.
+    harness::eval(
+        &tab,
+        "(function(){ document.body.style.overflow = 'hidden'; if (document.activeElement) document.activeElement.blur(); return true; })()",
+    );
+    harness::pause("the ride the focus change asks", Duration::from_millis(300));
+    harness::eval(&tab, TWO_FRAMES);
+    let locked = read();
+    drop(monitor);
+    assert!(
+        at >= 200 && scrolled["transforms"] == serde_json::json!([]),
+        "a page the reader's finger scrolled keeps its offset, and its pane is never transformed: {scrolled}"
+    );
+    assert_eq!(
+        lifted["transforms"],
+        serde_json::json!(["translateY(150px)"]),
+        "with a field focused the ride moves the box by iOS's lift alone, never by the reader's offset: {lifted}"
+    );
+    assert_eq!(
+        (ended["scroll"].clone(), ended["transform"].clone()),
+        (serde_json::json!(at), serde_json::json!("")),
+        "the keyboard down gives the page back to the reader's offset: {ended}"
+    );
+    assert!(
+        locked["focused"] == ""
+            && locked["scroll"] == serde_json::json!(at)
+            && locked["transform"] == ""
+            && locked["transforms"] == lifted["transforms"],
+        "a host's scroll lock keeps the page where its reader left it, and its box unmoved: {locked}"
+    );
+}
+
+/// #s512's review (of e28e3a00): the ride reads the page's offset as iOS's lift whatever has focus only
+/// where the page cannot scroll at all, and gives it back to the top, as it did before #s512; a page
+/// that scrolls keeps the offset its reader left it at. The app's own page is the first kind, so its
+/// ride is what it was by construction rather than by assumption. On a phone, upright and sideways,
+/// with a long session open: the app's page has no scroll range, at rest and with the search field
+/// focused; and an offset iOS leaves behind with nothing focused (shadowed, 120px, as a field that
+/// blurred with no ride would leave it) is given back to the top, the app moved over it meanwhile, and
+/// the transform goes with it. Red on e28e3a00, which took that offset for the page's rest and kept it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_app_page_cannot_scroll_so_its_keyboard_ride_rests_at_its_top() {
+    let _serial = serial();
+    let base = base("app-page-range");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000512";
+    stores.claude_session(sid, &harness::long_session(30, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3138, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let facts = "JSON.stringify({ range: document.documentElement.scrollHeight - document.documentElement.clientHeight, phone: !!document.getElementById('sessionView') && document.getElementById('sessionView').classList.contains('pl-phone'), w: innerWidth, h: innerHeight, focused: (document.activeElement || {}).id || '' })";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default()
+    };
+    let mut seen = Vec::new();
+    for (width, height) in [(390, 844), (844, 390)] {
+        harness::phone(&tab, width, height);
+        tab.navigate_to(&monitor.url(&format!("?ui=app&session={sid}")))
+            .unwrap();
+        tab.wait_until_navigated().unwrap();
+        harness::until(
+            &tab,
+            "document.querySelectorAll('.virtual-window .turn.user').length >= 3",
+            "the app shell to draw the session's turns",
+            Duration::from_secs(20),
+            facts,
+        );
+        harness::eval(&tab, TWO_FRAMES);
+        let rest = read();
+        // An offset iOS left behind, nothing focused: the ride gives the page back to its top.
+        let left: serde_json::Value = serde_json::from_str(
+            harness::eval(
+                &tab,
+                "(async function(){ var app = document.getElementById('app'), put = window.scrollTo, asked = []; window.scrollTo = function (x, y) { asked.push(typeof x === 'object' && x ? x.top : y); return put.apply(this, arguments); }; var frames = function () { return new Promise(function (r) { requestAnimationFrame(function () { requestAnimationFrame(r); }); }); }; Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return 120; } }); visualViewport.dispatchEvent(new Event('scroll')); await frames(); var during = app.style.transform; delete visualViewport.pageTop; visualViewport.dispatchEvent(new Event('scroll')); await frames(); window.scrollTo = put; return JSON.stringify({ asked: asked, during: during, after: app.style.transform, focused: (document.activeElement || {}).id || '' }); })()",
+            )
+            .as_str()
+            .unwrap_or("{}"),
+        )
+        .unwrap_or_default();
+        // The search open and its field focused: where a reply or a search stands before iOS lifts.
+        harness::eval(
+            &tab,
+            "(function(){ var b = document.querySelector('#sessionView .header-searchbox'); if (b) b.click(); return !!b; })()",
+        );
+        harness::until(
+            &tab,
+            "(document.activeElement || {}).id === 'transcriptSearchInput'",
+            "the search field to take focus",
+            Duration::from_secs(5),
+            facts,
+        );
+        harness::eval(&tab, TWO_FRAMES);
+        seen.push((width, height, rest, read(), left));
+    }
+    drop(monitor);
+    let flat = |v: &serde_json::Value| v["range"].as_f64().is_some_and(|r| r < 1.0);
+    for (width, height, rest, typing, left) in &seen {
+        assert!(
+            rest["phone"] == true && flat(rest) && flat(typing),
+            "a phone's app page has no scroll range, at rest and with a field focused ({width}x{height}): {rest} {typing}"
+        );
+        assert!(
+            left["focused"] == ""
+                && left["asked"].as_array().is_some_and(|a| a.iter().any(|y| y.as_f64() == Some(0.0)))
+                && left["during"] == "translateY(120px)"
+                && left["after"] == "",
+            "an offset iOS left behind with nothing focused is given back to the top, the app moved over it \
+             until then, and nothing is left on it after ({width}x{height}): {left}"
+        );
+    }
+}
+
 /// #s431 stage 4 (the second delta review of b4ad87a9): the gaps a decision during the keyboard ride
 /// keeps come only from a decision that saw a box while no ride moved it, and the ride's end decides
 /// again. A view its host mounts hidden decided once at 0×0, whose foot read the window's whole height
@@ -5609,12 +6788,14 @@ fn the_session_view_in_a_host_reads_its_gaps_again_around_the_keyboard_ride() {
     harness::open_host_page(&tab, &monitor, "mount=0");
     let facts = "(function(){ var v = document.getElementById('sessionView'), p = document.getElementById('hostPane'); return { paneY: v ? v.style.getPropertyValue('--pane-y') : null, paneB: v ? v.style.getPropertyValue('--pane-b') : null, boxed: v ? v.classList.contains('pl-boxed') : null, top: v ? Math.round(v.getBoundingClientRect().top) : null, transform: p.style.transform, scroll: Math.round(scrollY) }; })()";
     let seen = format!("JSON.stringify({facts})");
-    // Mounted hidden; the keyboard up (shadowed, as the move case does) before the pane is shown.
+    // Mounted hidden; the keyboard up (shadowed, as the move case does) before the pane is shown, for a
+    // field of the host's page (#s512: iOS lifts the page only for a focused field).
     harness::eval(
         &tab,
         "document.getElementById('hostPane').hidden = true; window.__host.mount(); 'ok'",
     );
     harness::eval(&tab, TWO_FRAMES);
+    focus_host_field(&tab);
     harness::eval(
         &tab,
         "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 200; } }); Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return 100; } }); visualViewport.dispatchEvent(new Event('scroll')); return true; })()",
@@ -12026,9 +13207,11 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
         "{narrow}"
     );
     no_footer(&narrow);
+    // A press before the click, as a reader's own click has (#s535: the view's Escape closes its
+    // layers only while the reader works in it, and a script's click alone engages nothing).
     harness::eval(
         &tab,
-        "document.getElementById('phonePane-turns').click(); 'ok'",
+        "var t = document.getElementById('phonePane-turns'); t.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); t.click(); 'ok'",
     );
     let panel = harness::probe(&tab, "(function(){ var m = document.getElementById('phonePaneMenu'), w = document.querySelector('#sessionView .workspace'), b = m.getBoundingClientRect(), wb = w.getBoundingClientRect(), bar = w.querySelector('.topbar').getBoundingClientRect(); return { shown: !m.hidden && b.width > 0, inCard: m.parentElement === w, width: Math.round(b.width), gap: Math.round(wb.right - b.right), below: b.top >= bar.bottom, rows: m.querySelectorAll('.outline-turn-row').length }; })()");
     assert_eq!(panel["shown"], true, "{panel}");
@@ -14059,8 +15242,8 @@ fn the_app_shell_keeps_cost_visible_with_info_behind_a_glyph() {
         "the reference material moved wholesale, so its folding groups keep working: {seen}"
     );
     assert_eq!(seen["open"], false, "…and it starts shut: {seen}");
-    // Peek on hover.
-    harness::eval(&tab, "document.querySelector('.outline-footer-info').dispatchEvent(new PointerEvent('pointerenter', { bubbles: false })); 'ok'");
+    // Peek on a mouse's hover (a finger's peeks nothing, #s545).
+    harness::eval(&tab, "document.querySelector('.outline-footer-info').dispatchEvent(new PointerEvent('pointerenter', { bubbles: false, pointerType: 'mouse' })); 'ok'");
     harness::until(
         &tab,
         "document.getElementById('infoPopover').classList.contains('open')",
@@ -14069,7 +15252,7 @@ fn the_app_shell_keeps_cost_visible_with_info_behind_a_glyph() {
         "document.getElementById('infoPopover').className",
     );
     // Leaving closes a peek…
-    harness::eval(&tab, "document.querySelector('.outline-footer-info').dispatchEvent(new PointerEvent('pointerleave', { bubbles: false })); 'ok'");
+    harness::eval(&tab, "document.querySelector('.outline-footer-info').dispatchEvent(new PointerEvent('pointerleave', { bubbles: false, pointerType: 'mouse' })); 'ok'");
     harness::until(
         &tab,
         "!document.getElementById('infoPopover').classList.contains('open')",
@@ -14082,12 +15265,670 @@ fn the_app_shell_keeps_cost_visible_with_info_behind_a_glyph() {
         &tab,
         "document.querySelector('.outline-footer-info').click(); 'ok'",
     );
-    harness::eval(&tab, "document.querySelector('.outline-footer-info').dispatchEvent(new PointerEvent('pointerleave', { bubbles: false })); 'ok'");
+    harness::eval(&tab, "document.querySelector('.outline-footer-info').dispatchEvent(new PointerEvent('pointerleave', { bubbles: false, pointerType: 'mouse' })); 'ok'");
     std::thread::sleep(std::time::Duration::from_millis(400));
     let pinned = harness::probe(&tab, state);
     assert_eq!(
         pinned["open"], true,
         "a pinned panel stays open after the pointer leaves: {pinned}"
+    );
+}
+
+/// #s545, found on the iPad Simulator: a TAP on Info opened nothing. The finger's `pointerenter`
+/// peeked the card, and WebKit spends a tap whose hover shows content as that hover and sends no
+/// click, so nothing pinned it and the lift's `pointerleave` closed the peek. So only a mouse
+/// peeks, and a finger's landing shows nothing; Chrome sends the click anyway, so the case reads
+/// the card as the finger lands. A first fix, which kept the peek's 140 ms close (started by the
+/// touch's `pointerleave` BEFORE its click) from shutting a card the click had pinned, changed
+/// nothing on the iPad, and stays held here. And the rail's Info could not be closed by pressing
+/// it: the page-wide press that closes a pinned card counted it as a press outside, so a second
+/// press's `pointerdown` closed the card and its click pinned it again. Each Info control is
+/// pressed here as a finger does (enter, down, up, out, leave, then the click) and as a mouse does
+/// (enter, down, up, click), twice: the first press pins the card, the second closes it. A mouse
+/// sends no `pointerleave` before its click, which is why the case above (#170) never saw any of
+/// it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_tap_on_info_pins_the_card_and_a_second_press_closes_it() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-info-tap", 3143);
+    let open = "document.getElementById('infoPopover').classList.contains('open')";
+    let press = |id: &str, kind: &str| {
+        let leave = if kind == "touch" {
+            "p('pointerout', true); p('pointerleave', false);"
+        } else {
+            ""
+        };
+        format!("(function(){{ var b = document.getElementById('{id}'); if (!b || !b.getBoundingClientRect().width) return 'no ' + '{id}'; var card = document.getElementById('infoPopover'), was = card.classList.contains('open'); var p = function (type, bubbles) {{ b.dispatchEvent(new PointerEvent(type, {{ bubbles: bubbles, cancelable: true, composed: true, pointerType: '{kind}', pointerId: 7, isPrimary: true }})); }}; p('pointerover', true); p('pointerenter', false); p('pointerdown', true); var landed = '{kind}' === 'touch' && !was && card.classList.contains('open'); p('pointerup', true); {leave} b.click(); return landed ? 'the card showed as the finger landed' : 'ok'; }})()")
+    };
+    let mut wrong = Vec::new();
+    for (id, width) in [("outlineFooterInfo", 1400.0), ("outlineRailInfo", 1000.0)] {
+        harness::resize(&tab, width, 900.0);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && !!document.getElementById('{id}') && document.getElementById('{id}').getBoundingClientRect().width > 0 && {VIEW_CAUGHT_UP}"),
+            &format!("{id} drawn in a {width}px window"),
+            Duration::from_secs(15),
+            "document.getElementById('sessionView').className",
+        );
+        for kind in ["touch", "mouse"] {
+            for (press_no, want) in [(1, true), (2, false)] {
+                let did = harness::eval(&tab, &press(id, kind));
+                assert_eq!(did, "ok", "{id}: pressed ({kind})");
+                // An open card must still be open past the peek's 140 ms close; a shut one may take
+                // that close to shut, so it is waited for.
+                let mut seen = serde_json::Value::Null;
+                let end = Instant::now() + Duration::from_millis(if want { 500 } else { 3000 });
+                while Instant::now() < end {
+                    seen = harness::eval(&tab, open);
+                    if !want && seen == false {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                if want {
+                    seen = harness::eval(&tab, open);
+                }
+                if seen != want {
+                    wrong.push(format!(
+                        "{id}, {kind} press {press_no}: the card is {} (wanted {})",
+                        if seen == true { "open" } else { "shut" },
+                        if want { "open" } else { "shut" }
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "a press on Info pins its card and a second press closes it: {wrong:#?}"
+    );
+}
+
+/// #s548, read from the Info block by #s545's review and measured here in Chrome: 1. the rail's
+/// Info had no `focusout`, so a keyboard peek there (focus onto it, then away) never closed: a
+/// press outside closes only a pinned card, and so does Escape; 2. `aria-expanded` was set on the
+/// footer's Info alone, never on the rail's; 3. desktop Chrome focuses a button on a mouse press,
+/// and the close kept an unpinned card open while the footer's Info held focus, so after a second
+/// REAL click unpinned it the card stayed open, the pointer gone or not, until focus moved. #s545's
+/// case clicks by script, which focuses nothing, so it could not see this. Keyboard focus comes
+/// from a key the case handles and prevents (a key the page leaves unhandled repeats in this
+/// Chrome, #270), whose handler moves focus as Tab would: Chrome then reads it as a keyboard focus
+/// (`:focus-visible`), which the case checks before it relies on it. The mouse is CDP's, so Chrome
+/// focuses the button it presses, which the case checks too.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn info_s_card_closes_after_a_keyboard_peek_and_a_second_real_click() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-info-focus", 3145);
+    let open = "document.getElementById('infoPopover').classList.contains('open')";
+    // A button outside the view to move focus to, and F8, which moves focus to `__focusNext`.
+    harness::eval(&tab, "(function(){ var b = document.createElement('button'); b.id = 'caseAway'; b.type = 'button'; b.textContent = 'away'; b.style.cssText = 'position:fixed;left:0;bottom:0;z-index:9999'; document.body.appendChild(b); window.__focusNext = null; document.addEventListener('keydown', function (e) { if (e.key !== 'F8') return; e.preventDefault(); e.stopImmediatePropagation(); var n = document.getElementById(window.__focusNext); if (n) n.focus(); }, true); return 'ok'; })()");
+    let key_focus = |id: &str| {
+        harness::eval(&tab, &format!("window.__focusNext = '{id}'; 'ok'"));
+        tab.press_key("F8").expect("F8");
+        harness::probe(&tab, &format!("(function(){{ var a = document.activeElement; return {{ on: a && a.id === '{id}', visible: !!a && a.matches(':focus-visible'), active: a ? a.id || a.tagName : null }}; }})()"))
+    };
+    let center = |id: &str| -> (f64, f64) {
+        let v = harness::probe(&tab, &format!("(function(){{ var r = document.getElementById('{id}').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"));
+        (v[0].as_f64().unwrap(), v[1].as_f64().unwrap())
+    };
+    let click = |id: &str| {
+        let (x, y) = center(id);
+        tab.click_point(headless_chrome::browser::tab::point::Point { x, y })
+            .expect("a real click");
+    };
+    // Whether the card is in the state wanted: an open one past the peek's 140 ms close, a shut one
+    // within three seconds.
+    let settles = |want: bool| -> bool {
+        let end = Instant::now() + Duration::from_millis(if want { 500 } else { 3000 });
+        loop {
+            let seen = harness::eval(&tab, open) == true;
+            if !want && !seen {
+                return true;
+            }
+            if Instant::now() >= end {
+                return seen == want;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    let expanded = |id: &str| {
+        harness::eval(
+            &tab,
+            &format!("document.getElementById('{id}').getAttribute('aria-expanded')"),
+        )
+    };
+    let at = |id: &str, width: f64| {
+        harness::resize(&tab, width, 900.0);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && !!document.getElementById('{id}') && document.getElementById('{id}').getBoundingClientRect().width > 0 && {VIEW_CAUGHT_UP}"),
+            &format!("{id} drawn in a {width}px window"),
+            Duration::from_secs(15),
+            "document.getElementById('sessionView').className",
+        );
+    };
+    let mut wrong = Vec::new();
+
+    // 1 and the footer's own keyboard peek: focus onto Info opens the card and keeps it open while
+    // Info holds the keyboard's focus; focus moving away closes it.
+    for (id, width) in [("outlineFooterInfo", 1400.0), ("outlineRailInfo", 1000.0)] {
+        at(id, width);
+        let on = key_focus(id);
+        assert!(
+            on["on"] == true && on["visible"] == true,
+            "{id}: the case's key gives a keyboard focus (:focus-visible): {on}"
+        );
+        if !settles(true) {
+            wrong.push(format!("{id}: a keyboard focus did not keep the card open"));
+        }
+        let away = key_focus("caseAway");
+        assert_eq!(away["on"], true, "focus moved away: {away}");
+        if !settles(false) {
+            wrong.push(format!(
+                "{id}: focus moved away by keyboard and the card stayed open"
+            ));
+        }
+    }
+
+    // 2 and 3: two real clicks on each Info. The first pins the card and leaves the button focused
+    // (Chrome's own), and its aria-expanded reads true; the second closes the card, which stays
+    // shut once the pointer leaves, and aria-expanded reads false.
+    for (id, width) in [("outlineFooterInfo", 1400.0), ("outlineRailInfo", 1000.0)] {
+        at(id, width);
+        click(id);
+        let focused = harness::eval(
+            &tab,
+            "document.activeElement ? document.activeElement.id : null",
+        );
+        assert_eq!(
+            focused, id,
+            "{id}: Chrome focuses the button a real click presses (3's premise)"
+        );
+        if !settles(true) {
+            wrong.push(format!("{id}: a real click did not pin the card"));
+        }
+        if expanded(id) != "true" {
+            wrong.push(format!(
+                "{id}: aria-expanded reads {} with the card open",
+                expanded(id)
+            ));
+        }
+        click(id);
+        if !settles(false) {
+            wrong.push(format!(
+                "{id}: a second real click left the card open (focus {})",
+                harness::eval(
+                    &tab,
+                    "document.activeElement ? document.activeElement.id : null"
+                )
+            ));
+        }
+        let (x, y) = center("caseAway");
+        tab.move_mouse_to_point(headless_chrome::browser::tab::point::Point { x, y })
+            .expect("the pointer leaves");
+        std::thread::sleep(Duration::from_millis(400));
+        if harness::eval(&tab, open) == true {
+            wrong.push(format!("{id}: the card was open after the pointer left"));
+        }
+        if expanded(id) != "false" {
+            wrong.push(format!(
+                "{id}: aria-expanded reads {} after the second click and the pointer leaving",
+                expanded(id)
+            ));
+        }
+        // Focus goes back outside, as a reader's next press would take it.
+        key_focus("caseAway");
+    }
+    assert!(
+        wrong.is_empty(),
+        "Info's card follows keyboard focus and real clicks on both Info buttons: {wrong:#?}"
+    );
+}
+
+/// #s556, from #s548's review: a keyboard reader could not close Info's card from Info. Enter on a
+/// focused Info pinned the card; a second Enter unpinned it, and the close then kept it open as a
+/// peek because Info held a keyboard focus (#s548), with aria-expanded still true. Escape closes
+/// only a pinned card, so only moving focus closed it. Here each Info gets a keyboard focus (as in
+/// #s548's case), then Enter four times: pinned, closed, pinned, closed, with aria-expanded
+/// following. An Enter the page leaves alone repeats in this Chrome (#270), so a window listener
+/// that runs after every page listener prevents it and clicks the focused button once, as Enter's
+/// own activation would. It counts the presses it saw, and those a page listener had already
+/// prevented, so a page that took the Enter for itself fails the case instead of hiding behind the
+/// stand-in.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn info_s_card_closes_on_a_second_enter_from_a_keyboard_focus() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-info-enter", 3146);
+    let open = "document.getElementById('infoPopover').classList.contains('open')";
+    harness::eval(&tab, "(function(){ var b = document.createElement('button'); b.id = 'caseAway'; b.type = 'button'; b.textContent = 'away'; b.style.cssText = 'position:fixed;left:0;bottom:0;z-index:9999'; document.body.appendChild(b); window.__focusNext = null; window.__enters = 0; window.__enterTaken = 0; document.addEventListener('keydown', function (e) { if (e.key !== 'F8') return; e.preventDefault(); e.stopImmediatePropagation(); var n = document.getElementById(window.__focusNext); if (n) n.focus(); }, true); addEventListener('keydown', function (e) { if (e.key !== 'Enter') return; if (e.defaultPrevented) { window.__enterTaken++; return; } e.preventDefault(); window.__enters++; if (document.activeElement) document.activeElement.click(); }); return 'ok'; })()");
+    let key_focus = |id: &str| {
+        harness::eval(&tab, &format!("window.__focusNext = '{id}'; 'ok'"));
+        tab.press_key("F8").expect("F8");
+        harness::probe(&tab, &format!("(function(){{ var a = document.activeElement; return {{ on: a && a.id === '{id}', visible: !!a && a.matches(':focus-visible'), active: a ? a.id || a.tagName : null }}; }})()"))
+    };
+    // As in #s548's case: an open card past the peek's 140 ms close, a shut one within three
+    // seconds.
+    let settles = |want: bool| -> bool {
+        let end = Instant::now() + Duration::from_millis(if want { 500 } else { 3000 });
+        loop {
+            let seen = harness::eval(&tab, open) == true;
+            if !want && !seen {
+                return true;
+            }
+            if Instant::now() >= end {
+                return seen == want;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    let expanded = |id: &str| {
+        harness::eval(
+            &tab,
+            &format!("document.getElementById('{id}').getAttribute('aria-expanded')"),
+        )
+    };
+    let at = |id: &str, width: f64| {
+        harness::resize(&tab, width, 900.0);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && !!document.getElementById('{id}') && document.getElementById('{id}').getBoundingClientRect().width > 0 && {VIEW_CAUGHT_UP}"),
+            &format!("{id} drawn in a {width}px window"),
+            Duration::from_secs(15),
+            "document.getElementById('sessionView').className",
+        );
+    };
+    let mut wrong = Vec::new();
+    let mut presses: i64 = 0;
+    for (id, width) in [("outlineFooterInfo", 1400.0), ("outlineRailInfo", 1000.0)] {
+        at(id, width);
+        let on = key_focus(id);
+        assert!(
+            on["on"] == true && on["visible"] == true,
+            "{id}: the case's key gives a keyboard focus (:focus-visible): {on}"
+        );
+        for (n, want) in [(1, true), (2, false), (3, true), (4, false)] {
+            tab.press_key("Enter").expect("Enter");
+            presses += 1;
+            let seen = harness::probe(
+                &tab,
+                "({ enters: window.__enters, taken: window.__enterTaken })",
+            );
+            assert!(
+                seen["enters"] == presses && seen["taken"] == 0,
+                "{id}: every Enter reaches the window unprevented, where the case activates the focused button: {seen} after {presses} presses"
+            );
+            let still = key_focus_held(&tab, id);
+            if !still {
+                wrong.push(format!("{id}: Enter {n} moved the keyboard focus off Info"));
+            }
+            if !settles(want) {
+                let (is, not) = if want {
+                    ("shut", "open")
+                } else {
+                    ("open", "shut")
+                };
+                wrong.push(format!("{id}: after Enter {n} the card is {is}, not {not}"));
+            }
+            let aria = expanded(id);
+            let want_aria = if want { "true" } else { "false" };
+            if aria != want_aria {
+                wrong.push(format!("{id}: aria-expanded reads {aria} after Enter {n}"));
+            }
+        }
+        key_focus("caseAway");
+    }
+    assert!(
+        wrong.is_empty(),
+        "Enter on a keyboard-focused Info pins its card and a second Enter closes it: {wrong:#?}"
+    );
+}
+
+/// Whether `id` still holds a keyboard focus (`:focus-visible`).
+fn key_focus_held(tab: &headless_chrome::Tab, id: &str) -> bool {
+    harness::eval(
+        tab,
+        &format!("(function(){{ var a = document.activeElement; return !!a && a.id === '{id}' && a.matches(':focus-visible'); }})()"),
+    ) == true
+}
+
+/// #s557, from #s556's review: Escape closed Info's card only while it was pinned, so a peek (the
+/// card a hover or a keyboard focus on Info opens) could not be dismissed without moving the
+/// pointer or the focus (WCAG 1.4.13). On each Info: a keyboard focus opens a peek, Escape closes
+/// it, and it stays shut with the focus still there; Enter pins it and Escape still closes it; a
+/// focus inside the card (on a fold of its groups) keeps a peek open, and Escape shuts it and gives
+/// the keyboard focus back to that Info rather than leaving it on a control the close hides; a
+/// hover opens a peek, Escape closes it, and it stays shut with the pointer still there.
+/// aria-expanded follows. An Escape or Enter the page leaves unprevented repeats in this Chrome
+/// (#270), so a window listener after every page listener prevents each one and, for Enter, clicks
+/// the focused button once, as #s556's case does. It counts every key it sees, so a page listener
+/// that stopped one fails the case.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn info_s_peek_closes_on_escape_from_a_keyboard_focus_or_a_hover() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-info-escape", 3147);
+    let open = "document.getElementById('infoPopover').classList.contains('open')";
+    harness::eval(&tab, "(function(){ var b = document.createElement('button'); b.id = 'caseAway'; b.type = 'button'; b.textContent = 'away'; b.style.cssText = 'position:fixed;left:0;bottom:0;z-index:9999'; document.body.appendChild(b); window.__focusNext = null; window.__keys = 0; document.addEventListener('keydown', function (e) { if (e.key !== 'F8') return; e.preventDefault(); e.stopImmediatePropagation(); var n = document.querySelector(window.__focusNext); if (n) n.focus(); }, true); addEventListener('keydown', function (e) { if (e.key !== 'Enter' && e.key !== 'Escape') return; window.__keys++; if (e.defaultPrevented) return; e.preventDefault(); if (e.key === 'Enter' && document.activeElement) document.activeElement.click(); }); return 'ok'; })()");
+    // A keyboard focus on the element `sel` names (a CSS selector).
+    let key_focus = |sel: &str| {
+        harness::eval(&tab, &format!("window.__focusNext = {sel:?}; 'ok'"));
+        tab.press_key("F8").expect("F8");
+        harness::probe(&tab, &format!("(function(){{ var a = document.activeElement; return {{ on: !!a && a === document.querySelector({sel:?}), visible: !!a && a.matches(':focus-visible'), active: a ? a.id || a.className || a.tagName : null }}; }})()"))
+    };
+    let point = |id: &str| {
+        let v = harness::probe(&tab, &format!("(function(){{ var r = document.getElementById('{id}').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"));
+        headless_chrome::browser::tab::point::Point {
+            x: v[0].as_f64().unwrap(),
+            y: v[1].as_f64().unwrap(),
+        }
+    };
+    // As in #s548's case: an open card past the peek's 140 ms close, a shut one within three
+    // seconds.
+    let settles = |want: bool| -> bool {
+        let end = Instant::now() + Duration::from_millis(if want { 500 } else { 3000 });
+        loop {
+            let seen = harness::eval(&tab, open) == true;
+            if !want && !seen {
+                return true;
+            }
+            if Instant::now() >= end {
+                return seen == want;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    // A card Escape closed stays shut: still shut half a second on.
+    let stays_shut = || {
+        std::thread::sleep(Duration::from_millis(500));
+        harness::eval(&tab, open) != true
+    };
+    let expanded = |id: &str| {
+        harness::eval(
+            &tab,
+            &format!("document.getElementById('{id}').getAttribute('aria-expanded')"),
+        )
+    };
+    let at = |id: &str, width: f64| {
+        harness::resize(&tab, width, 900.0);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && !!document.getElementById('{id}') && document.getElementById('{id}').getBoundingClientRect().width > 0 && {VIEW_CAUGHT_UP}"),
+            &format!("{id} drawn in a {width}px window"),
+            Duration::from_secs(15),
+            "document.getElementById('sessionView').className",
+        );
+    };
+    let mut presses: i64 = 0;
+    let mut press = |key: &str| {
+        tab.press_key(key).expect("a key");
+        presses += 1;
+        let seen = harness::eval(&tab, "window.__keys");
+        assert!(
+            seen == presses,
+            "every Enter and Escape reaches the window's last listener: {seen} of {presses}"
+        );
+    };
+    let mut wrong = Vec::new();
+    for (id, width) in [("outlineFooterInfo", 1400.0), ("outlineRailInfo", 1000.0)] {
+        at(id, width);
+        tab.move_mouse_to_point(point("caseAway"))
+            .expect("the pointer off Info");
+
+        // A keyboard peek, then Escape.
+        let on = key_focus(&format!("#{id}"));
+        assert!(
+            on["on"] == true && on["visible"] == true,
+            "{id}: the case's key gives a keyboard focus (:focus-visible): {on}"
+        );
+        if !settles(true) {
+            wrong.push(format!("{id}: a keyboard focus did not open the peek"));
+        }
+        press("Escape");
+        if !settles(false) {
+            wrong.push(format!("{id}: Escape left a keyboard peek open"));
+        } else if !stays_shut() {
+            wrong.push(format!(
+                "{id}: the peek came back after Escape, the focus still on Info"
+            ));
+        }
+        if !key_focus_held(&tab, id) {
+            wrong.push(format!("{id}: Escape moved the keyboard focus off Info"));
+        }
+        if expanded(id) != "false" {
+            wrong.push(format!(
+                "{id}: aria-expanded reads {} after Escape on a keyboard peek",
+                expanded(id)
+            ));
+        }
+
+        // A pinned card still closes on Escape.
+        press("Enter");
+        if !settles(true) || expanded(id) != "true" {
+            wrong.push(format!("{id}: Enter did not pin the card"));
+        }
+        press("Escape");
+        if !settles(false) {
+            wrong.push(format!("{id}: Escape left a pinned card open"));
+        }
+        if expanded(id) != "false" {
+            wrong.push(format!(
+                "{id}: aria-expanded reads {} after Escape on a pinned card",
+                expanded(id)
+            ));
+        }
+
+        // A keyboard peek with the focus moved inside the card, then Escape: the focus comes back.
+        let away = key_focus("#caseAway");
+        assert!(
+            away["on"] == true,
+            "{id}: the case's key moves the focus off Info: {away}"
+        );
+        key_focus(&format!("#{id}"));
+        let inside = key_focus("#infoPopover .session-info-label");
+        assert!(
+            inside["on"] == true,
+            "{id}: the case's key puts the focus on a fold inside the card: {inside}"
+        );
+        if !settles(true) {
+            wrong.push(format!(
+                "{id}: a focus inside the card did not keep the peek open"
+            ));
+        }
+        press("Escape");
+        if !settles(false) {
+            wrong.push(format!("{id}: Escape left a peek holding the focus open"));
+        } else if !stays_shut() {
+            wrong.push(format!(
+                "{id}: the peek came back after Escape gave the focus back to Info"
+            ));
+        }
+        if !key_focus_held(&tab, id) {
+            let held = harness::eval(&tab, "(function(){ var a = document.activeElement; return a ? (a.id || a.className || a.tagName) : null; })()");
+            wrong.push(format!(
+                "{id}: Escape did not give the keyboard focus back to Info: it is on {held}"
+            ));
+        }
+        if expanded(id) != "false" {
+            wrong.push(format!(
+                "{id}: aria-expanded reads {} after Escape on a peek holding the focus",
+                expanded(id)
+            ));
+        }
+
+        // A hover peek, the focus elsewhere, then Escape.
+        let away = key_focus("#caseAway");
+        assert!(
+            away["on"] == true,
+            "{id}: the case's key moves the focus off Info: {away}"
+        );
+        tab.move_mouse_to_point(point(id))
+            .expect("the pointer onto Info");
+        if !settles(true) {
+            wrong.push(format!("{id}: a hover did not open the peek"));
+        }
+        press("Escape");
+        if !settles(false) {
+            wrong.push(format!("{id}: Escape left a hover peek open"));
+        } else if !stays_shut() {
+            wrong.push(format!(
+                "{id}: the peek came back after Escape, the pointer still on Info"
+            ));
+        }
+        if expanded(id) != "false" {
+            wrong.push(format!(
+                "{id}: aria-expanded reads {} after Escape on a hover peek",
+                expanded(id)
+            ));
+        }
+        tab.move_mouse_to_point(point("caseAway"))
+            .expect("the pointer leaves");
+    }
+    assert!(
+        wrong.is_empty(),
+        "Escape closes Info's card, a peek by keyboard or hover as well as a pinned one: {wrong:#?}"
+    );
+}
+
+/// #s560, from #s535's third review: the Outline caption's panes menu opens on a hover or a focus
+/// of its caption, but Escape closed it only from the caption's own focus, so a menu a hover opened
+/// could not be dismissed without moving the pointer (WCAG 1.4.13, as #s557 made Info's peek), and
+/// one holding the focus on a row could not be dismissed at all. In the app shell: the real pointer
+/// on the caption opens it, and with the focus on the page Escape closes it, and it stays shut with
+/// the pointer still there; a focus on a row inside keeps it open, and Escape closes it and gives
+/// the focus back to the caption. In a host page (keyboard "engaged") with the focus on the host's
+/// button, a menu the pointer is on still closes on Escape; and a menu its caption's focus opened
+/// closes on an Escape at the caption after a press on the host that kept the focus there (the
+/// review: the caption's own Escape listener had gone with the fix). Keys are dispatched where the
+/// focus is (`PRESS`), so no CDP key is left repeating (#270).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_outline_panes_menu_closes_on_escape_from_a_hover_or_a_focus_inside_it() {
+    let _serial = serial();
+    let (monitor, _browser, tab) = shell_with_a_session("appshell-panes-escape", 3151);
+    let sid = "cccccccc-0000-4000-8000-000000000160";
+    let open = "document.getElementById('navigatorPanesMenu').classList.contains('open')";
+    let hover = |js: &str| {
+        let v = harness::probe(
+            &tab,
+            &format!("(function(){{ var r = ({js}).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"),
+        );
+        tab.move_mouse_to_point(headless_chrome::browser::tab::point::Point {
+            x: v[0].as_f64().unwrap(),
+            y: v[1].as_f64().unwrap(),
+        })
+        .expect("the pointer moves");
+    };
+    let state = |what: &str| -> serde_json::Value {
+        std::thread::sleep(Duration::from_millis(500));
+        harness::probe(
+            &tab,
+            &format!("(function(){{ var a = document.activeElement; return {{ open: {open}, active: a ? a.id || a.className || a.tagName : null, what: {what:?} }}; }})()"),
+        )
+    };
+    let trigger = "document.getElementById('navigatorPanesTrigger')";
+    let drawn = |where_: &str| {
+        harness::until(
+            &tab,
+            &format!("!!{trigger} && {trigger}.getBoundingClientRect().width > 0 && !!document.querySelector('.transcript')"),
+            &format!("the Outline caption drawn ({where_})"),
+            Duration::from_secs(20),
+            "document.getElementById('sessionView') ? document.getElementById('sessionView').className : 'no view'",
+        );
+    };
+    let mut seen = Vec::new();
+    harness::resize(&tab, 1400.0, 900.0);
+    drawn("the app shell");
+    // A hover opens it; the focus on the page, off the caption; Escape closes it, the pointer still
+    // there.
+    hover(trigger);
+    harness::eval(
+        &tab,
+        "if (document.activeElement) document.activeElement.blur(); 'ok'",
+    );
+    seen.push(state("app: hovered, the focus on the page"));
+    harness::probe(&tab, &format!("{PRESS}('Escape')"));
+    seen.push(state("app: Escape, the pointer still on the caption"));
+    // A focus on a row inside keeps it open; Escape closes it and gives the focus to the caption.
+    hover("document.querySelector('.transcript')");
+    harness::eval(&tab, &format!("{trigger}.focus(); 'ok'"));
+    harness::eval(&tab, "(function(){ var b = document.querySelector('#navigatorPanesMenu button'); if (b) b.focus(); return !!b; })()");
+    seen.push(state("app: the focus on a row inside"));
+    harness::probe(&tab, &format!("{PRESS}('Escape')"));
+    seen.push(state("app: Escape from the row"));
+    // A host page: the focus on the host's button, the pointer on the caption.
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}"));
+    drawn("the host page");
+    hover("document.getElementById('hostButton')");
+    harness::eval(&tab, "document.getElementById('hostButton').focus(); 'ok'");
+    hover(trigger);
+    seen.push(state("host: hovered, the focus on the host's button"));
+    harness::probe(&tab, &format!("{PRESS}('Escape')"));
+    seen.push(state("host: Escape, the pointer still on the caption"));
+    // A focus on the caption opens the menu and engages the view; a press on the host that keeps
+    // the focus there ends the engagement. The Escape goes to the caption itself, so it is the
+    // view's.
+    hover("document.getElementById('hostButton')");
+    harness::eval(&tab, &format!("{trigger}.focus(); 'ok'"));
+    harness::eval(
+        &tab,
+        "document.getElementById('hostButton').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true })); 'ok'",
+    );
+    seen.push(state(
+        "host: a focus on the caption, then a press on the host that kept it",
+    ));
+    harness::probe(&tab, &format!("{PRESS}('Escape')"));
+    seen.push(state(
+        "host: Escape on the caption, the last press the host's",
+    ));
+    drop(monitor);
+    let t = serde_json::json!(true);
+    let f = serde_json::json!(false);
+    assert_eq!(
+        (seen[0]["open"].clone(), seen[0]["active"].clone()),
+        (t.clone(), serde_json::json!("BODY")),
+        "app: a hover opens the menu, the focus on the page: {}",
+        seen[0]
+    );
+    assert_eq!(
+        seen[1]["open"], f,
+        "app: Escape closes a menu a hover opened, and it stays shut with the pointer there: {}",
+        seen[1]
+    );
+    assert_eq!(
+        seen[2]["open"], t,
+        "app: a focus on a row inside keeps the menu open: {}",
+        seen[2]
+    );
+    assert_eq!(
+        (seen[3]["open"].clone(), seen[3]["active"].clone()),
+        (f.clone(), serde_json::json!("navigatorPanesTrigger")),
+        "app: Escape from a row closes the menu and gives the focus to the caption: {}",
+        seen[3]
+    );
+    assert_eq!(
+        (seen[4]["open"].clone(), seen[4]["active"].clone()),
+        (t.clone(), serde_json::json!("hostButton")),
+        "host: a hover opens the menu, the focus on the host's button: {}",
+        seen[4]
+    );
+    assert_eq!(
+        seen[5]["open"], f,
+        "host: a menu the pointer is on closes on Escape, the focus in the host: {}",
+        seen[5]
+    );
+    assert_eq!(
+        (seen[6]["open"].clone(), seen[6]["active"].clone()),
+        (t.clone(), serde_json::json!("navigatorPanesTrigger")),
+        "host: a focus on the caption opens the menu and keeps the focus through the host's press: {}",
+        seen[6]
+    );
+    assert_eq!(
+        seen[7]["open"], f,
+        "host: an Escape the browser hands to the caption is the view's, whatever the last press was: {}",
+        seen[7]
     );
 }
 
@@ -19839,6 +21680,110 @@ fn a_phone_dock_keeps_one_row_with_a_query_and_a_chip() {
         "the ✕ circle to end the search and give the dock back to the toolbar pill",
         Duration::from_secs(5),
         "document.querySelector('.header-searchbox').className + ' ' + document.querySelectorAll('mark.search-mark').length",
+    );
+}
+
+/// #s516, seen on the iOS Simulator in #s509's walk: on the iPhone 17 Pro upright the OPEN search box,
+/// empty, sized its field to the placeholder ("Search this session  ( / )", 181px in a 178px strip,
+/// 158px with the keyboard down), and with the caret at the end the strip scrolled the hint's first
+/// letters away ("Search this session (" with the keyboard down). An empty field fills its room from
+/// the start and shows the first of the whole hint, "Search this session" and "Search" that fits it,
+/// with the field focused (the keyboard up, the magnifier gone) and blurred (the magnifier back), at
+/// the widths of the smallest phones (320px, 360px), the 17 Pro and the 17 Pro Max upright. Each
+/// read waits for the fit to have caught up with the strip's room, which changes after the focus
+/// moves (the magnifier) and is refitted by the strip's own resize observer.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_empty_search_box_shows_its_whole_placeholder() {
+    let _serial = serial();
+    let (_m, _b, tab) = phone_world(3145, "phone-search-empty", 402, 874);
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, gx, gy);
+    harness::until(
+        &tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')",
+        "a tap on the search to open it",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    // What the field shows, and the widths of the placeholder it shows and of each text it could
+    // show, in the field's own font (through the page's own measuring twin, which every fit sets
+    // again).
+    let read = "(function(){ var i = document.getElementById('transcriptSearchInput'), f = document.getElementById('searchField'), m = document.querySelector('.search-field-measure'), cs = getComputedStyle(i); var measure = function (t) { m.style.font = cs.font; m.style.letterSpacing = cs.letterSpacing; m.textContent = t; return Math.ceil(m.getBoundingClientRect().width); }; var ir = i.getBoundingClientRect(), fr = f.getBoundingClientRect(); return JSON.stringify({ placeholder: i.placeholder, hint: i.dataset.hint || '', input: Math.round(ir.width), field: f.clientWidth, scroll: Math.round(f.scrollLeft), left: Math.round(ir.left - fr.left), shown: measure(i.placeholder), whole: measure(i.dataset.hint || ''), short: measure('Search this session'), shortest: measure('Search'), focused: document.activeElement === i }); })()";
+    // The fit has caught up with the strip: the empty field is exactly the strip's room.
+    let caught_up = |focused: bool| {
+        format!(
+            "(function(){{ var i = document.getElementById('transcriptSearchInput'), f = document.getElementById('searchField'); return (document.activeElement === i) === {focused} && parseInt(i.style.width, 10) === Math.max(48, Math.floor(f.clientWidth)); }})()"
+        )
+    };
+    let mut fits = Vec::new();
+    for width in [402u32, 320, 360, 440] {
+        if width != 402 {
+            harness::phone(&tab, width, 874);
+            harness::until(
+                &tab,
+                &format!("innerWidth === {width}"),
+                "the window to take the new width",
+                Duration::from_secs(5),
+                "innerWidth",
+            );
+        }
+        for focused in [true, false] {
+            let js = if focused {
+                "document.getElementById('transcriptSearchInput').focus()"
+            } else {
+                "document.getElementById('transcriptSearchInput').blur()"
+            };
+            harness::eval(&tab, js);
+            harness::until(
+                &tab,
+                &caught_up(focused),
+                &format!("{width}px: the empty field fitted to its strip"),
+                Duration::from_secs(5),
+                read,
+            );
+            let raw = harness::eval(&tab, read);
+            let s: serde_json::Value = serde_json::from_str(raw.as_str().unwrap_or(""))
+                .unwrap_or_else(|_| panic!("{width}px: the field was not read: {raw}"));
+            let n = |k: &str| s[k].as_i64().unwrap_or(-1);
+            let state = if focused { "focused" } else { "blurred" };
+            assert_eq!(
+                s["focused"], focused,
+                "{width}px {state}: the field's focus: {s}"
+            );
+            assert!(
+                s["hint"].as_str().is_some_and(|h| h.contains("( / )")),
+                "{width}px {state}: the box's hint names / on a phone: {s}"
+            );
+            assert!(
+                n("input") <= n("field") + 1 && n("left") >= 0 && n("scroll") == 0,
+                "{width}px {state}: the empty field is inside its strip, from its start: {s}"
+            );
+            assert!(
+                n("shown") + 8 <= n("input"),
+                "{width}px {state}: the placeholder shows whole: {s}"
+            );
+            let whole_fits = n("whole") + 8 <= n("field");
+            let want = if whole_fits {
+                s["hint"].as_str().unwrap_or("").to_string()
+            } else if n("short") + 8 <= n("field") {
+                "Search this session".to_string()
+            } else {
+                "Search".to_string()
+            };
+            assert_eq!(
+                s["placeholder"].as_str(),
+                Some(want.as_str()),
+                "{width}px {state}: the first of the whole hint, \"Search this session\" and \"Search\" that fits: {s}"
+            );
+            fits.push(whole_fits);
+        }
+    }
+    // Chrome's fonts are not iOS's, so which width cuts the key is Chrome's own; the cases above hold
+    // whatever it is, and both ways are taken somewhere: the key is neither always kept nor always cut.
+    assert!(
+        fits.iter().any(|f| *f) && fits.iter().any(|f| !*f),
+        "the whole hint fits at some widths and not at others (focused, blurred per width): {fits:?}"
     );
 }
 

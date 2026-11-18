@@ -71,10 +71,10 @@
 .mdrev-host .doc a.mdv-wikilink {text-decoration-style:dotted}
 .mdrev-host .doc a.mdv-embed-link:before {content:"⧉ ";color:var(--ink-faint)}
 .mdrev-host .doc img.mdv-embed {display:block}
-.mdrev-host .doc code {font-family:var(--read-mono);font-variant-numeric:tabular-nums;background:var(--bg-inset);border-radius:4px;padding:.12em .34em;font-size:.855em}
+.mdrev-host .doc code {font-family:var(--read-mono);font-variant-numeric:tabular-nums;background:var(--bg-inset);overflow-wrap:anywhere;border-radius:4px;padding:.12em .34em;font-size:.855em}
 .mdrev-host .doc pre.mdv-wide-table, .mdrev-host .doc pre.mdv-wide-table code {font-family:var(--mdrev-wide-mono,var(--read-mono))}
-.mdrev-host .doc pre {font-family:var(--read-mono);background:var(--code-bg);border:1px solid var(--rule-soft);tab-size:2;border-radius:8px;padding:.85em 1em;font-size:.82em;line-height:1.55;overflow-x:auto}
-.mdrev-host .doc pre code {font-size:inherit;background:0 0;padding:0}
+.mdrev-host .doc pre {font-family:var(--read-mono);background:var(--code-bg);border:1px solid var(--rule-soft);--pre-pad-block:.85em;padding:var(--pre-pad-block) 1em;tab-size:2;border-radius:8px;font-size:.82em;line-height:1.55;overflow-x:auto}
+.mdrev-host .doc pre code {font-size:inherit;overflow-wrap:inherit;background:0 0;padding:0}
 .mdrev-host .doc.wrap pre {white-space:pre-wrap;overflow-wrap:anywhere;overflow-x:auto}
 .mdrev-host .doc.wrap pre code {white-space:inherit}
 .mdrev-host .doc.wrap pre .mdv-line {white-space:pre-wrap;overflow-wrap:anywhere;text-indent:-2ch;padding-left:2ch;display:block}
@@ -314,7 +314,7 @@
 .mdrev-host .app>.error {grid-area:2/2}
 .mdrev-host .app>.main {grid-area:3/2;min-height:0}
 .mdrev-host .main {flex:1;min-height:0;display:flex}
-.mdrev-host .scrollpane {overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--rule) transparent;flex:1;min-width:0;overflow-y:auto}
+.mdrev-host .scrollpane {scrollbar-gutter:stable;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--rule) transparent;flex:1;min-width:0;overflow-y:auto}
 .mdrev-host [data-mdv-lent]:focus {outline:none}
 .mdrev-host .app.is-hosted-scroll {height:auto}
 .mdrev-host .is-hosted-scroll .main {align-items:flex-start;min-height:0}
@@ -379,6 +379,7 @@
 .mdrev-host .acts, .mdrev-host .reading {flex-wrap:wrap;align-items:center;gap:8px;display:flex}
 .mdrev-host .file-name {letter-spacing:.01em;text-overflow:ellipsis;white-space:nowrap;min-width:0;font-size:14.5px;font-weight:650;overflow:hidden}
 .mdrev-host .file-dir {color:var(--ink-faint);font-weight:400}
+.mdrev-host .file-label {text-overflow:ellipsis;white-space:nowrap;min-width:2em;overflow:hidden}
 .mdrev-host .changes-pill {color:var(--ink);background:var(--bg-soft);border:1px solid var(--rule);white-space:nowrap;border-radius:999px;flex:none;padding:2px 10px;font-size:12px;font-weight:600}
 .mdrev-host .doc-time {color:var(--ink-faint);white-space:nowrap;font-size:11.5px}
 .mdrev-host .file-copy {color:var(--ink-faint);opacity:0;background:0 0;border:none;margin-left:3px;padding:0 2px;line-height:0;transition:opacity .12s,color .12s}
@@ -986,6 +987,13 @@
 .mdrev-host .ann-composer-row {gap:6px;display:flex}
 .mdrev-host .ann-composer-row .active {background:var(--bg-soft);color:var(--ink)}
 .mdrev-host .ann-composer-row .primary {color:var(--on-accent);background:var(--accent);border-color:var(--accent)}
+.mdrev-host .ann-composer-row button, .mdrev-host .ann-reply-box button {font:inherit;color:var(--ink-soft);background:var(--bg);border:1px solid var(--rule);border-radius:6px;margin:0;padding:3px 10px;font-size:12px;font-weight:500;line-height:1.35;transition:background-color .12s,color .12s,border-color .12s}
+.mdrev-host .ann-composer-row button:hover:not(:disabled), .mdrev-host .ann-reply-box button:hover:not(:disabled) {color:var(--ink);background:var(--bg-soft);border-color:var(--ink-faint)}
+.mdrev-host .ann-composer-row button.primary, .mdrev-host .ann-reply-box button.primary {color:var(--on-accent);background:var(--accent);border-color:var(--accent);font-weight:600}
+.mdrev-host .ann-composer-row button.primary:hover:not(:disabled), .mdrev-host .ann-reply-box button.primary:hover:not(:disabled) {color:var(--on-accent);background:color-mix(in srgb, var(--accent) 88%, #000);border-color:color-mix(in srgb, var(--accent) 88%, #000)}
+.mdrev-host .ann-composer-row {flex-wrap:wrap;align-items:center}
+.mdrev-host .ann-composer-row .agent-send>button, .mdrev-host .ann-reply-box .agent-send>button {padding:3px 10px;font-size:12px;font-weight:600;line-height:1.35}
+.mdrev-host .ann-composer-row .agent-send>.agent-send-more, .mdrev-host .ann-reply-box .agent-send>.agent-send-more {padding:3px 6px}
 .mdrev-host .mdv-source-readonly {border:1px solid var(--rule);max-width:46rem;color:var(--ink-soft);border-radius:8px;flex-wrap:wrap;align-items:baseline;gap:12px;margin:12px auto;padding:8px 16px;font-size:.92em;display:flex}
 .mdrev-host .mdv-source-readonly button {font:inherit;border:1px solid var(--rule);color:var(--ink);cursor:pointer;background:0 0;border-radius:6px;padding:2px 10px}
 .mdrev-host .error {border:1px solid var(--del-fg);max-width:46rem;color:var(--del-fg);background:var(--del-bg);border-radius:8px;margin:12px auto;padding:9px 16px;font-size:13.5px}
@@ -1100,7 +1108,9 @@
 .mdrev-host .switcher-wrap {min-width:0;display:inline-flex;position:relative}
 .mdrev-host button.file-name {color:inherit;background:0 0;border:1px solid #0000;border-radius:7px;align-items:baseline;gap:4px;padding:2px 8px;display:inline-flex}
 .mdrev-host button.file-name:hover {background:var(--bg-soft);border-color:var(--rule-soft)}
-.mdrev-host .switcher-caret {color:var(--ink-faint);font-size:10px}
+.mdrev-host button.file-name {position:relative}
+.mdrev-host .switcher-caret {color:var(--ink-faint);pointer-events:none;font-size:10px;line-height:1;position:absolute;top:50%;right:1px;transform:translateY(-50%)}
+.mdrev-host .switcher-caret.none {visibility:hidden}
 .mdrev-host .switcher {z-index:60;min-width:320px;max-width:520px;max-height:calc(var(--mdv-app-h,100vh) * .6);background:var(--bg);border:1px solid var(--rule);box-shadow:var(--shadow);border-radius:10px;padding:5px;position:absolute;top:calc(100% + 6px);left:0;overflow-y:auto}
 .mdrev-host .switcher-hint {text-transform:uppercase;letter-spacing:.07em;color:var(--ink-faint);padding:4px 8px 6px;font-size:11px}
 .mdrev-host .switcher-row {text-align:left;width:100%;color:var(--ink);background:0 0;border:none;border-radius:6px;align-items:baseline;gap:10px;padding:5px 8px;font-size:12.5px;display:flex}
@@ -1332,6 +1342,15 @@
 .mdrev-host .doc .mdv-src-list {margin:.6em 0;padding-left:1.35em}
 .mdrev-host .doc .mdv-src-table {font-family:var(--read-mono);font-size:.85em;line-height:1.7}
 .mdrev-host .doc pre.mdv-src, .mdrev-host .doc .mdv-src-code {white-space:pre-wrap}
+.mdrev-host .doc pre.mdv-src-fenced {z-index:0;top:calc(1lh - var(--pre-pad-block));margin-top:calc(2 * var(--pre-pad-block) - 2lh);background:0 0;border-color:#0000;padding-top:0;padding-bottom:0;position:relative;overflow:visible}
+.mdrev-host .doc pre.mdv-src-fenced:before {content:"";z-index:-1;inset:calc(max(0px, 1lh - var(--pre-pad-block) - var(--gap-above,1lh) + .5px) - 1px) -1px -1px;border:1px solid var(--rule-soft);background:var(--code-bg);pointer-events:none;border-radius:8px;position:absolute}
+.mdrev-host .doc h1+pre.mdv-src-fenced {--gap-above:calc(.55em * 1.6 / .82)}
+.mdrev-host .doc h2+pre.mdv-src-fenced {--gap-above:calc(.55em * 1.3 / .82)}
+.mdrev-host .doc h3+pre.mdv-src-fenced {--gap-above:calc(.55em * 1.1 / .82)}
+.mdrev-host .doc h4+pre.mdv-src-fenced {--gap-above:calc(.55em / .82)}
+.mdrev-host .doc h5+pre.mdv-src-fenced, .mdrev-host .doc h6+pre.mdv-src-fenced {--gap-above:calc(.55em * .92 / .82)}
+.mdrev-host .doc[data-mdv-editing]>[data-mdv-flush]+pre, .mdrev-host .doc[data-mdv-editing]>pre[data-mdv-after-flush] {margin-top:calc(1lh - var(--pre-pad-block))}
+.mdrev-host .doc[data-mdv-editing]>[data-mdv-flush]+pre.mdv-src-fenced {margin-top:calc(var(--pre-pad-block) - 1lh);--gap-above:calc(1lh - var(--pre-pad-block) - 1px)}
 .mdrev-host .doc .mdv-blank {-webkit-user-select:none;user-select:none}
 .mdrev-host .doc .mdv-blank-line {height:1lh;margin:0 0 var(--read-rhythm);cursor:text}
 .mdrev-host .doc .mdv-src .mdv-mk {color:var(--ink-soft);opacity:.55;font-style:normal;font-weight:400}
@@ -1353,6 +1372,179 @@
 .mdrev-host .doc li.mdv-src-li {list-style:none}
 .mdrev-host .doc .mdv-src-cell, .mdrev-host .doc .mdv-src-line {overflow-wrap:normal}
 .mdrev-host .doc .mdv-src-item {white-space:pre-wrap;overflow-wrap:anywhere}
+.mdrev-host .doc[data-discuss-live] .mdv-discuss {margin:.5em 0 1.2em;padding-left:32px;list-style:none}
+.mdrev-host .doc .mdv-discuss-item {padding:.12em 0;transition:color .12s}
+.mdrev-host .doc .mdv-discuss-item>p {margin:.2em 0}
+.mdrev-host .doc[data-discuss-live] .mdv-discuss-item>input[type=checkbox], .mdrev-host .doc[data-discuss-live] .mdv-discuss-item>p:first-child>input[type=checkbox] {display:none}
+.mdrev-host .doc .mdv-discuss-item.is-checked {color:var(--ink-faint)}
+.mdrev-host .doc[data-discuss-live] .mdv-discuss>li:not(.mdv-discuss-item):not(.task-list-item) {list-style:outside}
+.mdrev-host .discuss-check {z-index:6;left:calc(var(--pn-text,0px) + 6px);border:1.5px solid color-mix(in srgb, var(--ink) 32%, transparent);background:var(--bg);width:18px;height:18px;color:var(--on-accent);cursor:pointer;border-radius:5px;place-items:center;padding:0;transition:background .12s,border-color .12s;display:grid;position:absolute}
+.mdrev-host .discuss-check:before {content:"";border-radius:8px;position:absolute;inset:-6px}
+.mdrev-host .discuss-check:hover {border-color:var(--accent)}
+.mdrev-host .discuss-check:focus-visible {outline:2px solid var(--accent);outline-offset:2px}
+.mdrev-host .discuss-check[aria-checked=true] {background:var(--accent);border-color:var(--accent)}
+.mdrev-host .discuss-check svg {opacity:0;width:12px;height:12px;transition:opacity .12s,transform .12s;transform:scale(.6)}
+.mdrev-host .discuss-check[aria-checked=true] svg {opacity:1;transform:none}
+@media (prefers-reduced-motion:reduce) {
+.mdrev-host .discuss-check, .mdrev-host .discuss-check svg, .mdrev-host .doc .mdv-discuss-item {transition:none}
+}
+@media print {
+.mdrev-host .doc[data-discuss-live] .mdv-discuss {padding-left:1.35em;list-style:outside}
+.mdrev-host .doc .mdv-discuss-item.is-checked {color:inherit}
+.mdrev-host .doc[data-discuss-live] .mdv-discuss-item>input[type=checkbox], .mdrev-host .doc[data-discuss-live] .mdv-discuss-item>p:first-child>input[type=checkbox] {display:revert}
+}
+.mdrev-host .agent-c0, .mdrev-host .agent-c1, .mdrev-host .agent-c2, .mdrev-host .agent-c3, .mdrev-host .agent-c4, .mdrev-host .agent-c5, .mdrev-host .agent-c6, .mdrev-host .agent-c7 {--agent:var(--accent)}
+.mdrev-host .agent-chip-wrap {vertical-align:middle;display:inline-flex;position:relative}
+.mdrev-host .topbar-row>.agent-pair-wrap, .mdrev-host .topbar-row>.agent-chip-wrap {margin-left:auto}
+.mdrev-host .topbar-row>.agent-pair-wrap {flex:0 20 auto;min-width:0}
+.mdrev-host .agent-pair-wrap>.agent-pair-button {flex-shrink:0}
+.mdrev-host .topbar-row>.agent-chip-wrap {flex-shrink:20;min-width:0}
+.mdrev-host .agent-chip-wrap>.agent-chip {min-width:0;max-width:min(30rem,100%)}
+.mdrev-host .agent-chip-wrap .agent-chip-name, .mdrev-host .agent-chip-wrap .agent-chip-branch {text-overflow:ellipsis;white-space:nowrap;min-width:0;overflow:hidden}
+.mdrev-host .agent-chip-wrap .agent-chip-branch {flex-shrink:4}
+.mdrev-host .agent-chip-wrap .agent-chip-state, .mdrev-host .agent-chip-wrap .agent-dot {flex-shrink:0}
+.mdrev-host .topbar-row>.agent-pair-wrap~.bar-counter, .mdrev-host .topbar-row>.agent-chip-wrap~.bar-counter, .mdrev-host .topbar-row>.agent-pair-wrap~.build, .mdrev-host .topbar-row>.agent-chip-wrap~.build {margin-left:0}
+.mdrev-host .topbar.tier-1 .agent-pair-wrap, .mdrev-host .topbar.tier-1 .agent-chip-wrap {order:1;margin-left:auto}
+@container topbar (width<=599.98px) {
+.mdrev-host .topbar .agent-pair-wrap {display:none}
+}
+.mdrev-host .agent-pair-wrap>.agent-menu, .mdrev-host .agent-chip-wrap>.agent-panel {left:auto;right:0}
+.mdrev-host .agent-pair-wrap {vertical-align:middle;gap:4px;display:inline-flex;position:relative}
+.mdrev-host .agent-pair-button, .mdrev-host .agent-undo, .mdrev-host .agent-stop-waiting {font:inherit;font-size:12px;font-weight:600;line-height:inherit;color:var(--ink);background:var(--bg-soft);border:1px solid var(--rule);cursor:pointer;white-space:nowrap;border-radius:999px;padding:2px 10px}
+.mdrev-host .agent-undo, .mdrev-host .agent-stop-waiting {color:var(--ink-faint);margin-left:4px}
+.mdrev-host .agent-menu.agent-pair-menu {width:min(23rem, calc(var(--mdv-app-w,100vw) - 32px));border-radius:12px;max-width:none;padding:14px 14px 12px;box-shadow:0 12px 32px #00000029,0 2px 6px #0000000f}
+.mdrev-host .agent-pair-title {color:var(--ink);font-size:13.5px;font-weight:600}
+.mdrev-host .agent-pair-title:first-letter {text-transform:uppercase}
+.mdrev-host .agent-pair-doc {color:var(--ink-faint);white-space:nowrap;text-overflow:ellipsis;align-items:center;gap:6px;margin-top:2px;font-size:12px;display:flex;overflow:hidden}
+.mdrev-host .agent-pair-branch {border:1px solid var(--rule-soft);border-radius:999px;padding:0 6px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+.mdrev-host .agent-pair-label {letter-spacing:.04em;text-transform:uppercase;color:var(--ink-faint);margin:14px 0 6px;font-size:11px;font-weight:600}
+.mdrev-host .agent-pair-menu>.agent-pair-row {width:calc(100% + 16px);font:inherit;text-align:left;color:var(--ink);cursor:pointer;background:0 0;border:0;border-radius:8px;align-items:center;gap:10px;margin:0 -8px;padding:8px;display:flex}
+.mdrev-host .agent-pair-menu>.agent-pair-row:hover, .mdrev-host .agent-pair-menu>.agent-pair-row:focus-visible {background:var(--bg-soft)}
+.mdrev-host .agent-pair-avatar {width:28px;height:28px;color:var(--bg);background:var(--agent);border-radius:8px;flex:none;place-items:center;font-size:13px;font-weight:600;display:grid}
+.mdrev-host .agent-pair-who {flex-direction:column;flex:1;min-width:0;display:flex}
+.mdrev-host .agent-pair-name {white-space:nowrap;text-overflow:ellipsis;font-size:13px;font-weight:600;overflow:hidden}
+.mdrev-host .agent-pair-why {color:var(--ink-faint);white-space:nowrap;text-overflow:ellipsis;font-size:11.5px;overflow:hidden}
+.mdrev-host .agent-pair-go {color:var(--agent);border:1px solid color-mix(in srgb, var(--agent) 45%, var(--rule-soft));opacity:.75;border-radius:999px;flex:none;padding:2px 10px;font-size:12px}
+.mdrev-host .agent-pair-row:hover .agent-pair-go {opacity:1;background:color-mix(in srgb, var(--agent) 10%, var(--bg))}
+.mdrev-host .agent-pair-or {color:var(--ink-faint);align-items:center;gap:10px;margin:12px 0 0;font-size:11px;display:flex}
+.mdrev-host .agent-pair-or:before, .mdrev-host .agent-pair-or:after {content:"";border-top:1px solid var(--rule-soft);flex:1}
+.mdrev-host .agent-pair-field {border:1px solid var(--rule-soft);border-radius:8px;align-items:center;gap:6px;margin-top:0;padding:4px 4px 4px 10px;display:flex}
+.mdrev-host .agent-pair-field code {min-width:0;color:var(--ink-faint);white-space:nowrap;text-overflow:ellipsis;background:0 0;flex:1;font-size:12px;overflow:hidden}
+.mdrev-host .agent-pair-copy {font:inherit;color:var(--bg);background:var(--accent);cursor:pointer;border:0;border-radius:6px;flex:none;padding:4px 12px;font-size:12px;font-weight:600}
+.mdrev-host .agent-pair-copy:hover {opacity:.88}
+.mdrev-host .agent-pair-copy:disabled {opacity:.4;cursor:default}
+.mdrev-host .agent-pair-sentence {min-width:0;color:var(--ink);overflow-wrap:anywhere;-webkit-user-select:all;user-select:all;flex:1;font-size:12.5px;line-height:1.4}
+.mdrev-host .agent-pair-fallback {color:var(--ink-faint);text-align:center;margin-top:6px;font-size:11.5px}
+.mdrev-host .agent-pair-copy-command {font:inherit;color:var(--accent);cursor:pointer;background:0 0;border:0;padding:0;text-decoration:underline}
+.mdrev-host .agent-pair-copy-command:disabled {opacity:.4;cursor:default}
+.mdrev-host .agent-pair-note {color:var(--ink-faint);text-align:center;font-variant-numeric:tabular-nums;margin-top:8px;font-size:11.5px}
+.mdrev-host .agent-error {color:var(--warn,#b45309)}
+.mdrev-host .agent-past-hint {color:var(--ink-faint);margin-left:6px;font-size:12px}
+.mdrev-host .agent-left-hint {color:var(--ink-faint);white-space:nowrap;flex:0 auto;align-self:center;align-items:baseline;min-width:0;margin-right:6px;font-size:12px;display:inline-flex;overflow:hidden}
+.mdrev-host .agent-left-key, .mdrev-host .agent-left-more {text-overflow:ellipsis;min-width:0;overflow:hidden}
+.mdrev-host .agent-left-key {flex:0 auto}
+.mdrev-host .agent-left-more {flex:none}
+.mdrev-host .agent-left-hint[data-short]>.agent-left-more {display:none}
+.mdrev-host .agent-left-brief {text-overflow:ellipsis;min-width:0;display:none;overflow:hidden}
+.mdrev-host .agent-left-hint[data-brief]>.agent-left-key {display:none}
+.mdrev-host .agent-left-hint[data-brief]>.agent-left-brief {display:inline}
+.mdrev-host .agent-pair-short, .mdrev-host .agent-pair-wrap[data-gave-way], .mdrev-host .topbar[data-agent-out] .agent-pair-wrap, .mdrev-host .agent-pair-button[data-compact]>.agent-pair-full {display:none}
+.mdrev-host .agent-pair-button[data-compact]>.agent-pair-short {display:inline}
+.mdrev-host .agent-left-hint[data-tight] {display:none}
+.mdrev-host .agent-pair-left {border-bottom:1px solid var(--rule);margin:0 0 10px;padding:0 0 10px;font-size:12px}
+.mdrev-host .agent-pair-resume {border-bottom:0;margin-bottom:4px;padding-bottom:0}
+.mdrev-host .agent-pair-field code.agent-pair-command {white-space:nowrap;text-overflow:ellipsis;color:var(--ink);-webkit-user-select:all;user-select:all;background:0 0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;overflow:hidden}
+.mdrev-host .agent-pair-resume>.agent-pair-or {margin:12px 0 10px}
+.mdrev-host .agent-failed {color:var(--del-fg);margin-left:6px;font-size:12px}
+.mdrev-host p.agent-failed {margin:4px 0 0}
+.mdrev-host .agent-panel-asked {margin:0 0 8px}
+.mdrev-host .agent-chip {max-width:30rem;font:inherit;color:var(--ink);background:var(--bg-soft);border:1px solid var(--rule);cursor:pointer;white-space:nowrap;border-radius:999px;align-items:center;gap:6px;padding:2px 10px;font-size:12px;display:inline-flex}
+.mdrev-host .agent-chip-name {text-overflow:ellipsis;font-weight:600;overflow:hidden}
+.mdrev-host .agent-chip-branch {color:var(--ink-faint);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px}
+.mdrev-host .agent-chip-state {color:var(--ink-faint)}
+.mdrev-host .agent-dot {background:var(--rule);border-radius:50%;flex:none;width:7px;height:7px}
+.mdrev-host .agent-chip.is-live .agent-dot {background:var(--agent)}
+.mdrev-host .agent-chip.is-working .agent-dot {animation:1.4s ease-in-out infinite mdv-agent-pulse}
+.mdrev-host .agent-chip.arrived {animation:1.2s ease-out 2 mdv-agent-arrive}
+@keyframes mdv-agent-pulse {50%{opacity:.35;transform:scale(.8)}}
+@keyframes mdv-agent-arrive {0%{box-shadow:0 0 0 0 color-mix(in srgb, var(--agent) 60%, transparent)}to{box-shadow:0 0 0 8px #0000}}
+.mdrev-host .agent-panel {z-index:60;width:min(25rem, calc(var(--mdv-app-w,100vw) - 32px));color:var(--ink);background:var(--bg);border:1px solid var(--rule-soft);border-top:3px solid var(--agent);white-space:normal;text-align:left;border-radius:8px;padding:10px 12px;font-size:12.5px;line-height:1.45;position:absolute;top:calc(100% + 6px);left:0;box-shadow:0 6px 20px #00000024}
+.mdrev-host .agent-panel-lead {color:var(--ink-faint);margin:0 0 8px}
+.mdrev-host .agent-panel dl {grid-template-columns:auto 1fr;gap:3px 10px;margin:0 0 10px;display:grid}
+.mdrev-host .agent-panel dt {color:var(--ink-faint)}
+.mdrev-host .agent-panel dd {overflow-wrap:anywhere;margin:0}
+.mdrev-host .agent-session-id code {font-size:12px}
+.mdrev-host .agent-copy-id {font:inherit;border:1px solid var(--rule);color:var(--ink-faint);cursor:pointer;background:0 0;border-radius:4px;padding:0 6px;font-size:12px}
+.mdrev-host .agent-panel-actions {flex-direction:column;gap:8px;display:flex}
+.mdrev-host .agent-action {align-items:baseline;gap:10px;display:flex}
+.mdrev-host .agent-action button {flex:none}
+.mdrev-host .agent-action-hint {color:var(--ink-faint);font-size:12px}
+.mdrev-host .agent-unpair {font:inherit;color:var(--ink-faint);cursor:pointer;text-align:left;background:0 0;border:0;margin-top:10px;padding:0;font-size:12px;text-decoration:underline}
+.mdrev-host .agent-panel-actions button {font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--rule-soft);cursor:pointer;border-radius:6px;padding:3px 10px;font-size:12.5px}
+.mdrev-host .agent-panel-actions button:disabled {opacity:.5;cursor:default}
+.mdrev-host .ann-agent-line {color:var(--ink-faint);margin-top:6px;font-size:11.5px}
+.mdrev-host .ann-agent-line.tone-working {color:var(--accent)}
+.mdrev-host .ann-agent-line.tone-needs {color:#b45309;font-weight:600}
+.mdrev-host .ann-agent-line.tone-done {color:#15803d}
+.mdrev-host .ann-agent-line.tone-warn {color:#b45309}
+.mdrev-host .ann-marker.agent-waiting {border-color:var(--agent);animation:2.4s ease-in-out infinite mdv-agent-breathe}
+@keyframes mdv-agent-breathe {0%,to{box-shadow:0 0 0 0 color-mix(in srgb, var(--agent) 0%, transparent)}50%{box-shadow:0 0 0 5px color-mix(in srgb, var(--agent) 22%, transparent)}}
+.mdrev-host .ann-marker.agent-working {background:color-mix(in srgb, var(--agent) 16%, var(--bg));box-shadow:0 0 10px 1px color-mix(in srgb, var(--agent) 35%, transparent);border-color:#0000;animation:1.8s ease-in-out infinite mdv-agent-glow}
+.mdrev-host .ann-marker.agent-working:after {content:"";background:conic-gradient(from 0deg, transparent 0 55%, color-mix(in srgb, var(--agent) 35%, transparent) 75%, var(--agent) 100%);pointer-events:none;border-radius:50%;animation:1.1s linear infinite mdv-spin;position:absolute;inset:-4px;-webkit-mask:radial-gradient(farthest-side,#0000 calc(100% - 2.5px),#000 calc(100% - 2px));mask:radial-gradient(farthest-side,#0000 calc(100% - 2.5px),#000 calc(100% - 2px))}
+.mdrev-host .ann-marker.agent-unheard {border:1.5px dashed color-mix(in srgb, var(--agent) 55%, var(--ink-faint))}
+@keyframes mdv-agent-glow {50%{box-shadow:0 0 14px 3px color-mix(in srgb, var(--agent) 45%, transparent)}}
+@media (prefers-reduced-motion:reduce) {
+.mdrev-host .agent-chip.is-working .agent-dot, .mdrev-host .agent-chip.arrived, .mdrev-host .ann-marker.agent-working, .mdrev-host .ann-marker.agent-waiting {animation:none}
+.mdrev-host .ann-marker.agent-working:after {background:var(--agent);animation:none}
+}
+@media print {
+.mdrev-host .agent-panel, .mdrev-host .agent-chip-wrap {display:none!important}
+}
+.mdrev-host .agent-send {vertical-align:middle;align-items:stretch;display:inline-flex;position:relative}
+.mdrev-host .agent-send>button {font:inherit;cursor:pointer}
+.mdrev-host .agent-send[class*=agent-c]>button.primary {color:var(--bg);background:var(--agent);border-color:var(--agent)}
+.mdrev-host .agent-send>.agent-send-main {border-top-right-radius:0;border-bottom-right-radius:0}
+.mdrev-host .agent-send>.agent-send-more {border-left:1px solid color-mix(in srgb, #fff 45%, var(--agent));border-top-left-radius:0;border-bottom-left-radius:0;margin-left:0;padding-left:6px;padding-right:6px}
+.mdrev-host .agent-send.is-small>button {border:1px solid var(--rule-soft);background:var(--bg);color:var(--ink);border-radius:5px;padding:1px 8px;font-size:11.5px}
+.mdrev-host .agent-send.is-small>.agent-send-main {border-radius:5px 0 0 5px}
+.mdrev-host .agent-send.is-small>.agent-send-more {border-radius:0 5px 5px 0}
+.mdrev-host .agent-menu {z-index:70;min-width:15rem;max-width:min(24rem, calc(var(--mdv-app-w,100vw) - 32px));color:var(--ink);background:var(--bg);border:1px solid var(--rule-soft);text-align:left;white-space:normal;border-radius:8px;flex-direction:column;padding:4px;font-size:12.5px;display:flex;position:absolute;top:calc(100% + 4px);left:0;box-shadow:0 6px 20px #00000024}
+.mdrev-host .agent-menu.opens-up {top:auto;bottom:calc(100% + 4px)}
+.mdrev-host .agent-menu>button {width:100%;font:inherit;text-align:left;color:var(--ink);cursor:pointer;background:0 0;border:0;border-radius:5px;padding:5px 8px;display:block}
+.mdrev-host .agent-menu>button:hover, .mdrev-host .agent-menu>button:focus-visible {background:var(--bg-soft)}
+.mdrev-host .agent-menu-head {color:var(--ink-faint);border-top:1px solid var(--rule-soft);margin-top:3px;padding:6px 8px 2px;font-size:11px}
+.mdrev-host .agent-menu-empty {color:var(--ink-faint);padding:6px 8px}
+.mdrev-host .agent-menu>.agent-menu-session {grid-template-columns:auto 1fr;align-items:center;column-gap:7px;display:grid}
+.mdrev-host .agent-menu-session .agent-dot {background:var(--agent)}
+.mdrev-host .agent-menu-name {text-overflow:ellipsis;font-weight:600;overflow:hidden}
+.mdrev-host .agent-menu-tag {color:var(--ink-faint);margin-left:6px;font-size:11px;font-weight:400}
+.mdrev-host .agent-menu-where {color:var(--ink-faint);overflow-wrap:anywhere;grid-column:2;font-size:11px}
+.mdrev-host .agent-menu>.agent-menu-copy {border-top:1px solid var(--rule-soft);border-radius:0 0 5px 5px;margin-top:3px}
+.mdrev-host .agent-batch {z-index:44;max-width:min(34rem, calc(var(--mdv-app-w,100vw) - 32px));color:var(--ink);background:var(--bg-soft);border:1px solid var(--rule-soft);border-left:4px solid var(--agent);border-radius:8px;padding:8px 10px;font-size:13px;position:fixed;bottom:16px;right:16px;box-shadow:0 6px 22px #00000029}
+.mdrev-host .agent-batch-row {flex-wrap:wrap;align-items:center;gap:8px;display:flex}
+.mdrev-host .agent-batch .agent-dot {background:var(--agent)}
+.mdrev-host .agent-batch button {font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--rule-soft);cursor:pointer;border-radius:6px;padding:3px 10px;font-size:12.5px}
+.mdrev-host .agent-batch button.primary {color:var(--bg);background:var(--agent);border-color:var(--agent)}
+.mdrev-host .agent-batch button:disabled {opacity:.5;cursor:default}
+.mdrev-host .agent-batch .agent-batch-count {background:0 0;border-color:#0000;padding-left:0;font-weight:600}
+.mdrev-host .agent-batch-list {max-height:calc(var(--mdv-app-h,100vh) * .4);margin:8px 0 0;padding:0 0 0 20px;overflow:auto}
+.mdrev-host .agent-batch-list li {align-items:baseline;gap:8px;padding:2px 0;display:flex}
+.mdrev-host .agent-batch-words {min-width:0;color:var(--ink-soft,var(--ink));overflow-wrap:anywhere;flex:1}
+.mdrev-host .agent-batch-list button {padding:1px 7px;font-size:11.5px}
+.mdrev-host .ann-agent-actions {flex-wrap:wrap;align-items:center;gap:6px;margin-top:4px;display:flex}
+.mdrev-host .ann-agent-actions>button {font:inherit;color:var(--ink);background:var(--bg);border:1px solid var(--rule-soft);cursor:pointer;border-radius:5px;padding:1px 8px;font-size:11.5px}
+.mdrev-host .ann-agent-actions>.ann-agent-copy {color:var(--ink-faint);background:0 0;border-color:#0000;padding-left:2px}
+.mdrev-host .ann-agent-actions>.ann-agent-copy:hover {color:var(--ink);text-decoration:underline}
+@media print {
+.mdrev-host .agent-batch, .mdrev-host .agent-menu, .mdrev-host .agent-send, .mdrev-host .ann-agent-actions {display:none!important}
+}
+.mdrev-host .agent-panel-pages {color:var(--ink-faint);margin:0 0 8px;font-size:12px}
+.mdrev-host .agent-move-ask {z-index:61;width:min(20rem, calc(var(--mdv-app-w,100vw) - 32px));color:var(--ink);background:var(--bg);border:1px solid var(--rule-soft);border-top:3px solid var(--agent);white-space:normal;text-align:left;border-radius:8px;flex-direction:column;align-items:stretch;gap:6px;padding:10px 12px;font-size:12.5px;line-height:1.45;display:flex;position:absolute;top:calc(100% + 6px);right:14px;box-shadow:0 6px 20px #00000024}
+.mdrev-host .agent-move-ask-line {margin-bottom:2px;font-weight:600}
+.mdrev-host .agent-move-ask>.agent-undo {text-align:left;margin-left:0}
+@media print {
+.mdrev-host .agent-move-ask {display:none!important}
+}
 @font-face {font-display:block;font-family:mdvKaTeX_AMS;font-style:normal;font-weight:400;src:url(./assets/KaTeX_AMS-Regular-BQhdFMY1.woff2)format("woff2"),url(./assets/KaTeX_AMS-Regular-DMm9YOAa.woff)format("woff"),url(./assets/KaTeX_AMS-Regular-DRggAlZN.ttf)format("truetype")}
 @font-face {font-display:block;font-family:mdvKaTeX_Caligraphic;font-style:normal;font-weight:700;src:url(./assets/KaTeX_Caligraphic-Bold-Dq_IR9rO.woff2)format("woff2"),url(./assets/KaTeX_Caligraphic-Bold-BEiXGLvX.woff)format("woff"),url(./assets/KaTeX_Caligraphic-Bold-ATXxdsX0.ttf)format("truetype")}
 @font-face {font-display:block;font-family:mdvKaTeX_Caligraphic;font-style:normal;font-weight:400;src:url(./assets/KaTeX_Caligraphic-Regular-Di6jR-x-.woff2)format("woff2"),url(./assets/KaTeX_Caligraphic-Regular-CTRA-rTL.woff)format("woff"),url(./assets/KaTeX_Caligraphic-Regular-wX97UBjC.ttf)format("truetype")}

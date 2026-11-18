@@ -219,6 +219,10 @@ function historyWanted(search) {
  *  0.9px. */
 const PLACE_EPSILON = 0.5;
 
+/** The smallest change of width `remeasure` reads as one by its ratio alone (#132 step 4): 1%. Under
+ *  it a ratio is no evidence of a width change (#s513), and the caller's `widthOnly` decides. */
+const WIDTH_STEP = 0.01;
+
 /** The scroll correction that puts an anchored element back where it was: the page measures
  *  `currentTop` and remembers `wantTop`, both relative to the viewport. Below `epsilon` the
  *  correction is noise and scrolling by it would fight the reader. */
@@ -2126,7 +2130,8 @@ class VirtualWindow {
    * correction: `P` set to the destination, the window around it, the one write, and then what the
    * scroll event the own-write guard swallows would have done — the memory, and the follow decision
    * the classic page stated (#94, #103): keep the pin within the hold slack when it was held,
-   * acquire it only at the true end. Intent is the PAGE's to stamp (`intent: true` exactly where
+   * acquire it only at the true end — except a move passed `pin: "acquire"` (a turn step, #s487, the
+   * owner's #s502), which acquires or keeps it only at the true end. Intent is the PAGE's to stamp (`intent: true` exactly where
    * the old code stamped) and is never invented here: the rendering audit reaches the fold hold
    * and the sliver nudge by synthetic click, and v1.254.0 is what an invented stamp did there. The
    * two re-land loops and the classic page's 2s `holdLanding` timer are the hold `syncPosition`
@@ -2167,7 +2172,10 @@ class VirtualWindow {
         }
         const top = this.inFlight() ? this.wrote.to : this.frame.scrollTop();
         const gap = this.frame.scrollHeight() - this.frame.clientHeight() - top;
-        const following = wasFollowing ? gap <= this.slacks.hold : gap <= this.slacks.acquire;
+        // A turn step (`pin: "acquire"`, #s487, the owner's #s502) keeps the pin only where a jump
+        // to the end would take it, at the true end: a step back from the end can land within the
+        // hold slack, and a pin kept there let the tail's converge take the reader back to the end.
+        const following = wasFollowing && options.pin !== "acquire" ? gap <= this.slacks.hold : gap <= this.slacks.acquire;
         if (following !== this.following) this.following = following;
         if (following !== wasFollowing) this.followChanged();
         this.scheduleRemember();
@@ -2189,7 +2197,8 @@ class VirtualWindow {
 
   /** Land item `target.index` (or the item carrying `target.key`) — its row `target.block` when
    *  given — `target.top` px below the viewport's top. `options`: `intent`, `dirtyFrom`,
-   *  `smooth`, and `decide: false` for a landing another command refines in the same task. */
+   *  `smooth`, `decide: false` for a landing another command refines in the same task, and
+   *  `pin: "acquire"` for a move that keeps the pin only at the true end (a turn step, #s487). */
   jumpTo(target, options = {}) {
     const index = target.index != null ? target.index : this.indexOfIdentity(target.key);
     if (index < 0 || index >= this.count) return false;
@@ -2290,21 +2299,36 @@ class VirtualWindow {
    *  than throwing them away and falling back to per-kind floors, which shrinks the page under
    *  the reader until they have scrolled through it again. The mounted ones are corrected
    *  exactly by the observer a frame later; only the invisible groups keep the guess. A change
-   *  that is not a width change (a font) has no ratio to apply, and there the old rule stands. */
-  remeasure() {
+   *  that is not a width change (a font) has no ratio to apply, and there the old rule stands.
+   *
+   *  The ratio alone cannot tell the two apart under `WIDTH_STEP` (#s513): a font step at an
+   *  unchanged width reads 1, and so does a window resize that moved the column by a few pixels or
+   *  only its height. So the caller says which it is. With `widthOnly` (a window resize, a column's
+   *  own observer, a pane's layout) every ratio is a width change, and the heights are scaled by it
+   *  however small it is: an edge dragged slowly sends many steps each under 1%, and keeping the
+   *  heights at each would leave them stale by the whole drag. At a ratio of exactly 1 (the height
+   *  alone) they are kept as they are. The transaction runs either way: a taller window needs its
+   *  rows mounted, and a pinned view its tail. Without `widthOnly` (a filter that opens folds, a
+   *  text size) the heights are relearned under the step, as before. With no width to compare
+   *  (`ratio` 0), nothing says what the heights were measured at, and they are relearned either
+   *  way. The state says what was done (`did`: scale, width, clear). */
+  remeasure(options = {}) {
     // Hidden, there is no width to scale to (`laidOut`): the heights stay as measured, for the width
     // the view comes back at.
     if (!this.laidOut()) return;
     const width = this.mount.getBoundingClientRect().width;
     const ratio = this.lastWidth && width ? this.lastWidth / width : 0;
     this.lastWidth = width || this.lastWidth;
+    const did = !ratio ? "clear" : Math.abs(ratio - 1) > WIDTH_STEP || (options.widthOnly && ratio !== 1) ? "scale" : options.widthOnly ? "width" : "clear";
     this.transact("remeasure", {
       mutate: () => {
-        if (ratio && Math.abs(ratio - 1) > 0.01) { this.scaleHeights(ratio); this.scaleGuesses(ratio); } else { this.clearHeights(); this.resetGuesses(); }
+        if (did === "scale") { this.scaleHeights(ratio); this.scaleGuesses(ratio); } else if (did === "clear") { this.clearHeights(); this.resetGuesses(); }
       },
       range: p0 => this.rangeFor(p0),
       dirtyFrom: 0,
-      fields: { ratio: Math.round(ratio * 1000) / 1000 },
+      // Six places: a slow drag's ratios are each near 1 and multiply to the column's widths, so a
+      // product of ratios rounded to three would drift from them (#s513).
+      fields: { ratio: Math.round(ratio * 1e6) / 1e6, did },
     });
   }
 

@@ -381,6 +381,13 @@ fn contract(
         "documents" | "tree" | "changed" | "recents" | "recent-changes" => {
             return HttpResponse::not_found("not offered by this host");
         }
+        // mdrev 1.1.84's agent pairing (`pages/agent/*`): internal routes, which an embedding host
+        // need not offer. The guest's own client asks `seen` at the mount, on each focus and on a
+        // press every 20 s, and stops only at a 404 (#s532's review: the 400 a missing `root` drew
+        // kept it asking). Neither prefix offers them.
+        r if r.starts_with("pages/agent/") => {
+            return HttpResponse::not_found("agent pairing is not offered by this host");
+        }
         // #s6: mdrev 1.1.18's SHARED REVIEW — threads in a review store, pairing, a Push — is not
         // offered from the monitor's PANE: it reads, and takes the person's own notes, and no store
         // is reached from it. The contract's way to say so is 404 on every review route, after
@@ -2462,6 +2469,26 @@ esac
         );
         assert_eq!(
             call(&f, &held, "tree", &req("GET", "", b"", true)).code,
+            "404 Not Found"
+        );
+        // mdrev 1.1.84's agent pairing is not offered: `seen` (a JSON body, no query) is the 404
+        // after which the guest stops asking, with or without a document, paired or not.
+        let seen = br#"{"root":"/r","path":"docs/doc.md"}"#;
+        for (query, paired) in [("", true), (q.as_str(), true), ("", false)] {
+            assert_eq!(
+                call(
+                    &f,
+                    &held,
+                    "pages/agent/seen",
+                    &req("POST", query, seen, paired)
+                )
+                .code,
+                "404 Not Found",
+                "seen, query {query:?}, paired {paired}"
+            );
+        }
+        assert_eq!(
+            call(&f, &held, "pages/agent/pair", &req("GET", "", b"", true)).code,
             "404 Not Found"
         );
         // #s6: shared review (1.1.18+) is not offered from the pane — every review route is the
