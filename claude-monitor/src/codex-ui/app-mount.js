@@ -655,6 +655,11 @@ viewHandle = mountSessionView(viewRoot.element(), {
   grid: app,
   keyboard: "page",
   write: { on: () => controlState.write, confirm: confirmWrite },
+  // A tab of its own (#s433): the server's own pages, one page at three addresses that say what it
+  // shows (`/detached?session=…` for the transcript's ↗; `/markdown?…` and `/image?…` for the pane's,
+  // as before it). The native app turns every ↗ off with `detach` once the mount takes `show`
+  // (design/app-mount.md); until then it has the transcript's ↗ beside the pane's, as a browser does.
+  detachTo: ({ href }) => href,
   selectedId: () => listHandle.selected(),
   sessionRow: id => listHandle.row(id),
   sessionWorkers: id => listHandle.workers(id),

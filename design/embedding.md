@@ -168,6 +168,22 @@ A session's transcript, or one artifact, can open in a tab of its own:
 The standalone app already does this for Markdown and images (`/markdown`, `/image`). The kit
 makes it available to any host, for the transcript as well.
 
+**Built** (#s433, after the owner's choices on #s519 and #s528). The kit exports `mountDetached`
+(`detached.js`): it draws in one element (`#detachedView`, its rules in `detached.css`) what the
+address's query names, told apart in this order so every older address keeps working: `session=<id>`
+is the transcript, the session view mounted with no list (its index read every 5 s, its keys bound at
+the page, no writes and no ↗ of its own); `root=` is a Markdown document in mdrev's viewer;
+`path=`/`held=` is an image. It keeps the page's address and title current as the reader moves, on
+the page's own path, unless the host hands it a query of its own (`address`). The view's one new option, `detachTo`,
+says where a tab of its own opens (the host's page, or a function answering its address from
+`{kind, query, href}`, `href` being the server's own page); left
+out, nothing changes for a host: the pane's ↗ opens the server's `/markdown` and `/image`, and the
+transcript has no ↗. With it the top bar gains a ↗ for the transcript, hidden on a phone as the
+pane's is (the tab has no way back). The monitor is a host of the same entry: one static page serves it at `/detached`, with
+`/markdown` and `/image` the same page, and its app's `detachTo` opens the transcript at
+`/detached?session=…` and a document or an image at `/markdown?…` or `/image?…` as before. The
+browser case `a_host_serves_a_tab_of_its_own_from_the_kit` mounts it on a host's own route.
+
 ## The standalone app becomes a host
 
 The app shell is refactored to mount the session list and the session view. It keeps only what
@@ -207,10 +223,10 @@ by the native app (#s407). None can drift from the others.
 
 Each release publishes a kit beside its binaries, with its digest, as mdrev does. It holds:
 
-- the module: the two components, and the detached page from a later kit; from step 9, in a
-  second entry for the native app only (`native-app.js`, not declared, not in the guide and not in
+- the module: the two components, and the detached page (#s433); from step 9, in a second entry
+  for the native app only (`native-app.js`, not declared, not in the guide and not in
   `package.json`'s `exports`), the web app's mount with the markup of the app's shell;
-- its stylesheets (from step 9, the app shell's too);
+- its stylesheets (the detached page's, and from step 9 the app shell's too);
 - type declarations;
 - the contract and the guide;
 - the conformance check.
@@ -221,7 +237,7 @@ mdrev's viewer and the Mermaid runtime, which the session view uses for Markdown
 are not in the first kits: a host vendors its own, as the native app does with its own pinned
 mdrev. The kit takes them over if a second host needs them.
 
-The first kit ships without the detached page; a later kit adds it (steps 7 and 8 below).
+The first kit shipped without the detached page; a later kit added it (steps 7 and 8 below).
 
 **Built** (#s432, in mdrev's shape, the owner's choice on #s514). Each release's Release workflow
 runs `scripts/kit.sh` and publishes `agent-monitor-kit-<version>.tar.gz` and its
@@ -270,7 +286,7 @@ page of its own.
 5. **The session list as a component**, with the app shell mounting it.
 6. **Layout by device and pane size**, with the width tests.
 7. **The kit**, with its guide and conformance check, ready for the collaboration app.
-8. **Detached views**, in a later kit.
+8. **Detached views**, in a later kit (#s433, built).
 9. **The web app as one mount**, for the native app (#s551, `design/app-mount.md`): the app shell
    becomes `mountApp`, with the monitor's page its first host, then one list over several machines
    and the options only the native app is given.

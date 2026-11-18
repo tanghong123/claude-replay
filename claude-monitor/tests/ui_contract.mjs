@@ -24,6 +24,7 @@ import { displayName, toolHead, stateLabel, nextHeadStep, headStepState, headSte
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { COMMAND_KEY, KEYMAP, bindKeymap, hintFor, inGuest, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
 import { isMarkdownName, standaloneFacts, standaloneHref } from "../../claude-monitor/src/codex-ui/mdrev-pane.js";
+import { DETACHED_OPTIONS, detachedKind, mountDetached } from "../../claude-monitor/src/codex-ui/detached.js";
 import { agentRecordTargets, currentTurnIndex, peerHue, peerLabelRest, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget, taskDetails, artifactRoster, humanTokens, compactionTick } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
@@ -1656,6 +1657,26 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(trip({ ...local, range: { from: "abc123", to: "WORKTREE", since: "1w" } }), { ...local, range: { from: "abc123", since: "1w" } }, "a time window keeps its window");
   assert.deepEqual(trip({ ...local, range: { from: null, to: "def456" } }), { ...local, range: { from: null, to: "def456" } }, "a plain read AT a revision — what mdrev reports for a pick in clean mode — is still a range");
   assert.deepEqual(trip({ root: "held", path: "0123456789abcdef/NOTES.md", cap: "d".repeat(64), range: null }), { root: "held", path: "0123456789abcdef/NOTES.md", cap: "d".repeat(64), range: null }, "held text, by the path the store gave it");
+  // #s433: a tab of its own reads what to show from its address, the transcript first, then a
+  // document, then an image, so every address the monitor's `/markdown` and `/image` tabs were opened
+  // with still lands on the one page that serves them now.
+  assert.equal(detachedKind("?session=s1&root=held&path=a.md"), "session", "a session's address names its transcript");
+  assert.equal(detachedKind(standaloneHref({ root: "held", path: "0123/NOTES.md", cap: "d".repeat(64) }).split("?")[1]), "markdown", "a document's, as the pane writes it");
+  assert.equal(detachedKind("name=a.png&path=%2Fx%2Fa.png&sig=s"), "image", "an offered image file's");
+  assert.equal(detachedKind("?name=a.png&held=am-image%3Ak"), "image", "an embedded image's copy");
+  assert.equal(detachedKind("?root=&path=shot.png"), "markdown", "an empty root is still a document's address, whose tab says it names none");
+  assert.equal(detachedKind(""), "none", "an address that names nothing");
+  assert.deepEqual([...DETACHED_OPTIONS], ["backend", "theme", "address"]);
+  {
+    const element = { nodeType: 1, id: "", childNodes: [], dataset: {} };
+    assert.throws(() => mountDetached(element, { detachTo: "/x" }), /takes no option named detachTo/, "an option it does not take is refused");
+    assert.throws(() => mountDetached({ ...element, id: "pane" }, {}), /no id or the id detachedView/, "an element with another id is refused");
+    assert.throws(() => mountDetached(element, { theme: "blue" }), /theme/, "a theme it does not know is refused");
+  }
+  // The app opens the transcript's tab at `/detached` and a document's or an image's where it opened
+  // before (`/markdown`, `/image`), all one page: the server's own, the `href` the view hands it.
+  assert.match(appSource, /detachTo:\s*\(\s*\{\s*href\s*\}\s*\)\s*=>\s*href\s*,/, "the app opens each tab at the server's own page");
+  assert.match(viewSource, /return\s+backend\(\)\.url\(\s*`\/detached\?\$\{query\}`\s*\)/, "the server's own transcript tab is /detached");
   assert.deepEqual(standaloneFacts(""), { root: "", path: "", cap: "", range: null }, "an empty address names nothing");
   assert.equal(hintFor("hit-prev"), "N"); assert.equal(hintFor("page-up"), "⇧Space"); assert.equal(hintFor("nope"), "");
   assert.match(appSource, /bindKeymap\(document, /, "the shell binds the keymap once, at the document");

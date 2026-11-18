@@ -60,7 +60,8 @@ export interface SessionViewControls {
   reading?: boolean;
   /** The viewport history's Save, a row of the Reading menu. */
   history?: boolean;
-  /** The artifact pane's ↗, which opens a document or an image in a tab of its own. */
+  /** Every ↗ that opens something in a tab of its own: the artifact pane's (a document or an image)
+   *  and, where `detachTo` is given, the top bar's (the session's transcript). */
   detach?: boolean;
 }
 
@@ -84,6 +85,12 @@ export interface SessionViewOptions {
   show?: SessionViewControls;
   /** Left out, the view offers no writes. */
   write?: WriteOptions;
+  /** Where a tab of its own opens: the address of your page that runs `mountDetached`, to which each
+   *  ↗ adds its query (`?session=…`, `?root=…`, `?path=…`), or a function asked at each ↗ (`href` the
+   *  server's own page for it) that answers the address to open (anything else once it opened a
+   *  window itself). Left out, the artifact
+   *  pane's ↗ opens the server's own `/markdown` and `/image`, and the transcript has no ↗. */
+  detachTo?: string | ((tab: { kind: DetachedKind; query: string; href: string }) => unknown);
   /** The session the host has selected ("" or null for none). */
   selectedId(): string | null;
   sessionRow(id: string): SessionRow | null;
@@ -183,3 +190,31 @@ export function mountSessionList(element: HTMLElement, options?: SessionListOpti
 
 /** Remember the list's choices in this origin's storage: the `persist` the list's option takes. */
 export function persist(): void;
+
+// ------------------------------------------------------------------------------- a tab of its own
+
+/** What a detached tab's address shows: a session's transcript, a Markdown document, an image, or
+ *  nothing it can name. */
+export type DetachedKind = "session" | "markdown" | "image" | "none";
+
+export interface DetachedOptions {
+  /** The server to read; it becomes the page's (`useBackend`), the tab being the page's one part. */
+  backend?: BackendHandle;
+  theme?: Theme;
+  /** The query that says what to show. Left out, the page's own `location.search`, which the tab
+   *  then keeps current as the reader moves. */
+  address?: string;
+}
+
+export interface DetachedHandle {
+  /** What the address named. */
+  readonly kind: DetachedKind;
+  setTheme(theme: Theme): void;
+  /** Take the tab's content away and leave the element empty. */
+  unmount(): void;
+}
+
+/** Draw a tab of its own in `element` (no id, or the id "detachedView"; empty), from the address's
+ *  query: `session=<id>` a transcript, `root=…&path=…&cap=…` a Markdown document, `path=…&sig=…` or
+ *  `held=…` an image. */
+export function mountDetached(element: HTMLElement, options?: DetachedOptions): DetachedHandle;

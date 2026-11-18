@@ -19,7 +19,14 @@ pub fn app_page(version: &str, paired: bool) -> String {
 }
 
 pub fn page(version: &str, paired: bool) -> String {
-    let head = PAGE_HEAD
+    let head = fill(PAGE_HEAD, version, paired);
+    format!("{head}{APP_MOUNT}{PAGE_TAIL}")
+}
+
+/// A page's facts for the page to read (its body's `data-*` and the mermaid meta): the same for the
+/// app shell and the detached tab.
+fn fill(template: &str, version: &str, paired: bool) -> String {
+    template
         .replace("{{VERSION}}", version)
         .replace("{{MERMAID}}", claude_replay_html::mermaid_runtime_path())
         .replace("{{PAIRED}}", if paired { "true" } else { "false" })
@@ -32,28 +39,18 @@ pub fn page(version: &str, paired: bool) -> String {
         .replace(
             "{{MDREV}}",
             claude_replay_html::mdrev_version().unwrap_or(""),
-        );
-    format!("{head}{APP_MOUNT}{PAGE_TAIL}")
+        )
 }
 
-/// The page a Markdown document opens in when the preview pane sends it to a tab of its own (#271):
-/// mdrev's viewer as the whole page. STATIC but for the pinned version — `markdown-page.js` reads
-/// the document it names from its own address, so nothing a URL carries is ever written into HTML,
-/// and every request it makes goes to the same `api/mdrev/` routes, under the same guards, as the
-/// pane's.
-pub fn markdown_page() -> String {
-    include_str!("codex-ui/markdown-page.html").replace(
-        "{{MDREV}}",
-        claude_replay_html::mdrev_version().unwrap_or(""),
-    )
-}
-
-/// The page an image opens in when the preview pane sends it to a tab of its own (#s11): the image
-/// as the whole window, fit and zoomable. STATIC — `image-page.js` reads the image it names from its
-/// own address — and it reads only what the pane was offered: a file through `/file` with the
-/// stamp the page minted, or an embedded image handed over through sessionStorage.
-pub fn image_page() -> &'static str {
-    include_str!("codex-ui/image-page.html")
+/// The page a tab of its own opens at (#s433, the kit's `mountDetached`): a session's transcript, a
+/// Markdown document (#271) or an image (#s11), as the whole window. `/detached`, `/markdown` and
+/// `/image` all serve it, so every address the older tabs were opened with still lands. STATIC but
+/// for the page's facts — `detached-page.js` reads what to show from its own address, so nothing a
+/// URL carries is ever written into HTML, and every request it makes goes to the same routes, under
+/// the same guards, as the app's. Kept small: a page older than its monitor reads the mdrev version
+/// off `/markdown` (#s352).
+pub fn detached_page(version: &str, paired: bool) -> String {
+    fill(include_str!("codex-ui/detached-page.html"), version, paired)
 }
 
 /// The monitor's tab icon (#203): the green list mark, served here so the app shell — extracted
@@ -134,6 +131,10 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
         "monitor-ui/session-view.css" => (
             "text/css; charset=utf-8",
             include_bytes!("codex-ui/session-view.css").as_slice(),
+        ),
+        "monitor-ui/detached.css" => (
+            "text/css; charset=utf-8",
+            include_bytes!("codex-ui/detached.css").as_slice(),
         ),
         "monitor-ui/app.js" => (
             "text/javascript; charset=utf-8",
@@ -248,13 +249,14 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/mdrev-pane.js").as_slice(),
         ),
-        "monitor-ui/markdown-page.js" => (
+        // A tab of its own (#s433): the kit's entry and the monitor's page that runs it.
+        "monitor-ui/detached.js" => (
             "text/javascript; charset=utf-8",
-            include_bytes!("codex-ui/markdown-page.js").as_slice(),
+            include_bytes!("codex-ui/detached.js").as_slice(),
         ),
-        "monitor-ui/image-page.js" => (
+        "monitor-ui/detached-page.js" => (
             "text/javascript; charset=utf-8",
-            include_bytes!("codex-ui/image-page.js").as_slice(),
+            include_bytes!("codex-ui/detached-page.js").as_slice(),
         ),
         "monitor-ui/preview.js" => (
             "text/javascript; charset=utf-8",
@@ -378,8 +380,7 @@ mod tests {
         for (name, html) in [
             ("the app shell", page("test", false)),
             ("the paired app shell", page("test", true)),
-            ("the Markdown tab", markdown_page()),
-            ("the image tab", image_page().to_string()),
+            ("the detached tab", detached_page("test", false)),
         ] {
             for root in [r#"href="/"#, r#"src="/"#] {
                 assert!(!html.contains(root), "{name} writes {root}…");
@@ -391,8 +392,8 @@ mod tests {
     /// in through `view-root.js`, the session view's root or the app's page, never through
     /// `document` itself. In a shadow root a `document` lookup finds nothing the view drew, a
     /// popover on `document.body` takes none of its styles, and `document.activeElement` names the
-    /// host's element. Read from the directory, so a new module is held to it too. The tabs' own
-    /// pages (`/markdown`, `/image`) are pages, not the view.
+    /// host's element. Read from the directory, so a new module is held to it too. The detached
+    /// tab's page script (`detached-page.js`) is a page, not the view; the kit's `detached.js` is held.
     #[test]
     fn the_shell_reaches_the_page_only_through_its_root() {
         const PAGE_READS: &[&str] = &[
@@ -410,10 +411,7 @@ mod tests {
             let path = entry.unwrap().path();
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
             if !name.ends_with(".js")
-                || matches!(
-                    name.as_str(),
-                    "view-root.js" | "image-page.js" | "markdown-page.js"
-                )
+                || matches!(name.as_str(), "view-root.js" | "detached-page.js")
             {
                 continue;
             }
@@ -1149,11 +1147,11 @@ mod tests {
             ("preview.js", include_str!("codex-ui/preview.js")),
             ("jump-query.js", include_str!("codex-ui/jump-query.js")),
             ("mdrev-pane.js", include_str!("codex-ui/mdrev-pane.js")),
+            ("detached.js", include_str!("codex-ui/detached.js")),
             (
-                "markdown-page.js",
-                include_str!("codex-ui/markdown-page.js"),
+                "detached-page.js",
+                include_str!("codex-ui/detached-page.js"),
             ),
-            ("image-page.js", include_str!("codex-ui/image-page.js")),
             ("record-store.js", include_str!("codex-ui/record-store.js")),
             ("sandbox.js", include_str!("codex-ui/sandbox.js")),
             (

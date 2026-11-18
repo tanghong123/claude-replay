@@ -783,7 +783,7 @@ enter this repository. The bundle is served from memory at `/mdrev/<version>/` (
 names the version) and the page learns the version from `data-mdrev`. A page outlives its monitor
 (#s352, Hong saw a Markdown file as raw text): after an upgrade that moved the pin, a page loaded
 before it asks for a bundle the monitor answers 404, so the loader reads the version the monitor
-serves now off `/markdown` (about 700 bytes), loads that bundle, and the pane says once that a reload
+serves now off `/markdown` (the detached page, under 2 KiB), loads that bundle, and the pane says once that a reload
 brings the new page (`a_page_older_than_its_monitor_still_shows_markdown_in_mdrev`). The CLI is written into the
 monitor's scratch and run with node ≥ 20 (`MDREV_NODE`, final when set; else `PATH`; else the brew
 prefixes). node gates NOTES only: without it `open` declares `annotate: false` and history comes from
@@ -795,9 +795,19 @@ a transcript CARRIES is handed to the monitor (`POST hold`), kept content-addres
 `Cap::File` stamp as mdrev's `cap`, so the viewer reads nothing the page was not offered. Notes are
 `mdrev-cli notes …` behind `deny_mutation` (PATCH/DELETE included), one document at a time. The
 pane's ↗ opens the document in a tab of its own (#271): `/markdown` is a STATIC page
-(`ui::markdown_page` + `markdown-page.js`) that reads root, path, cap and the reader's range from its
-own address and goes through the same routes; held text reaches the tab through sessionStorage,
-which `window.open` copies into the tab it makes — so that control must never use `noopener`.
+(`ui::detached_page` + `detached-page.js`, below) that reads root, path, cap and the reader's range
+from its own address and goes through the same routes; held text reaches the tab through
+sessionStorage, which `window.open` copies into the tab it makes — so that control must never use
+`noopener`. **Every tab of its own is the kit's `mountDetached`** (#s433, `detached.js`, Hong's
+choices on #s519 and #s528): one page at `/detached` (`/markdown` and `/image` serve the same page,
+so an older tab still lands) reads what to show from its query, told apart by `session=` (the
+transcript: the session view with no list, its index polled, its keys bound at the page, no writes
+and no ↗ of its own), then `root=` (a document), then `path=`/`held=` (an image), and keeps the
+page's address and title current on its own path. The view's `detachTo` option says where a tab
+opens (the app's ↗s open `/detached?session=…`, `/markdown?…` and `/image?…`; left out, the pane's ↗ opens `/markdown` and `/image` and the
+transcript has no ↗); with it the top bar carries a ↗ for the transcript (`#sessionNewTab`), hidden
+on a phone as the pane's is. A host serves the same entry on a route of its own
+(`a_host_serves_a_tab_of_its_own_from_the_kit`).
 **An image opens in the pane on ONE click, as a delivered file's name does** (#s223, Hong: "if both
 are images, why not giving them a similar experience?"): the app shell draws each image as a small
 thumbnail (from `att_datauri` only — a path-only image shows its name, so Expand all still fetches
@@ -811,10 +821,10 @@ name). A multi-file `SendUserFile` carries Open all in its card's HEAD beside "f
 the card starts folded; its grid gives the state its own width there, or "4 lines" spilled over the
 chip in a narrow head and took its click.
 **An image gets a tab of its own too** (#s11, the owner, for the desktop): the pane's ↗ opens
-`/image` (`ui::image_page` + `image-page.js`), the image whole with the shared zoom
+`/image` (the detached page), the image whole with the shared zoom
 (`shared/image-view.js`); a FILE by the path and stamp it was offered under (`/file` reads it, under
 #s7's rules; a pasted image's saved original at full size), an EMBEDDED image by its bytes through
-sessionStorage (`imageTabHref` in `preview.js`), which is also the fallback where the file has gone.
+sessionStorage (`imageTabQuery` in `preview.js`), which is also the fallback where the file has gone.
 Hidden on a phone, as the Markdown ↗ is (#335); text and HTML pages have none yet.
 The pinned `mdrev-cli conform` against a live monitor is the definition of done
 (`mdrev_contract_passes_mdrev_cli_conform`); the mdrev browser cases need nothing installed and run in
@@ -859,7 +869,7 @@ by the monitor the contract's way when mdrev has a state directory and none is t
 `--viewer` on every call, so mdrev-cli takes the reader's own notes as theirs (filed, edited,
 closed, deleted; on a machine joined to a team's mdrev service too, where a keyless pane was refused
 every new note as an agent's, #s230) and turns away everything shared itself. `shares()` in
-`mdrev.rs` is the one test for shared review: the viewer key, never the notes key. The detached tab (`markdown-page.js` → `mountStandalone`) mounts it on
+`mdrev.rs` is the one test for shared review: the viewer key, never the notes key. The detached tab (`detached.js` → `mountStandalone`) mounts it on
 `api/mdrev-review/`, the same handler with mdrev's viewer key (`MDREV_STATE_DIR` or `~/.mdrev`, file
 `token`, read per request; without one the prefix is the pane's), which answers `review`,
 `review/fetch|push|pair`, `hide`, a body-only `PATCH` edit and Share (`POST annotations/{id}/share`,

@@ -9,7 +9,7 @@ import { page, viewRoot } from "./view-root.js";
 
 const byId = viewRoot.byId;
 
-/** An image in a tab of its own (#s11), from the pane: `/image`, reading a
+/** An image in a tab of its own (#s11), from the pane: the detached page (`/image` by default), reading a
  *  FILE by the path and stamp it was offered under (`/file` serves it there, under the same rules —
  *  a pasted image's saved original too, #324, larger than the copy the transcript carries), with
  *  the bytes the transcript EMBEDS handed over through sessionStorage — which `window.open` copies
@@ -17,7 +17,9 @@ const byId = viewRoot.byId;
  *  file has gone since. "" when there is nothing to hand over. */
 export const imageTabbable = (item, shown = "") => !!item && !!((item.path && item.fsig) || item.data || String(shown).startsWith("data:"));
 
-export function imageTabHref(item, shown = "") {
+/** What a tab's address carries for an image (#s433: the query alone; the page it goes after is the
+ *  host's to choose, the view's `detachTo`). "" when there is nothing to hand over. */
+export function imageTabQuery(item, shown = "") {
   if (!imageTabbable(item, shown)) return "";
   const query = [`name=${encodeURIComponent(item.name || "image")}`];
   if (item.path && item.fsig) query.push(`path=${encodeURIComponent(item.path)}`, `sig=${encodeURIComponent(item.fsig)}`);
@@ -26,7 +28,7 @@ export function imageTabHref(item, shown = "") {
     const key = `am-image:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     try { sessionStorage.setItem(key, bytes); query.push(`held=${encodeURIComponent(key)}`); } catch (_) { /* too large for sessionStorage: the file, if any, still opens */ }
   }
-  return query.length > 1 ? backend().url(`/image?${query.join("&")}`) : "";
+  return query.length > 1 ? query.join("&") : "";
 }
 const SESSION_CACHE_LIMIT = 6;
 const SESSION_TAB_LIMIT = 6;
@@ -47,12 +49,17 @@ export class Preview {
     // The Markdown document the pane shows, in a tab of its own (#271): production chrome beside
     // the demo's close button, there only while mdrev has a document mounted. NOT `noopener` — the
     // tab `window.open` makes inherits a copy of this page's sessionStorage, which is how held text
-    // reaches it (mdrev-pane.js `href`); the tab is this monitor's own page on this origin.
+    // reaches it (mdrev-pane.js `query`); the tab is the host's page on this origin, at the address
+    // the view's `detachTo` names (#s433), the monitor's `/markdown` and `/image` by default.
     this.newTab = Object.assign(document.createElement("button"), { type: "button", className: "iconbtn preview-newtab", textContent: "↗", title: "Open in a new tab", hidden: true });
     this.newTab.dataset.previewNewTab = "";
     this.newTab.setAttribute("aria-label", "Open this document in a new tab");
-    // #s11: an image the pane shows goes to a tab of its own too (`/image`, image-page.js).
-    this.newTab.onclick = () => { const href = this.markdown?.href() || this.imageHref(); if (href) window.open(href, "_blank"); };
+    // #s11: an image the pane shows goes to a tab of its own too.
+    this.newTab.onclick = () => {
+      if (this.markdown) { this.actions.openTab("markdown", this.markdown.query()); return; }
+      const query = this.imageQuery();
+      if (query) this.actions.openTab("image", query);
+    };
     // The file manager, for whatever the pane shows (#272). The pane is where every "show me the
     // file" click lands, so this one control gives each view — an image, a page, Markdown, text,
     // a download, an error — the other half the owner asked for ("offering both for now"). Only
@@ -437,11 +444,11 @@ export class Preview {
       state.handle = handle;
     }).catch(() => { close(); this.actions.toast?.("The review cannot be opened"); });
   }
-  /** The address of the image the pane shows, in a tab of its own (#s11). */
-  imageHref() {
-    const href = this.image ? imageTabHref(this.image.item, this.image.data) : "";
-    if (!href) this.actions.toast?.("This image cannot be handed to a tab");
-    return href;
+  /** What a tab's address carries for the image the pane shows (#s11). */
+  imageQuery() {
+    const query = this.image ? imageTabQuery(this.image.item, this.image.data) : "";
+    if (!query) this.actions.toast?.("This image cannot be handed to a tab");
+    return query;
   }
   show(item, text, data, note = "") {
     const body = byId("previewBody"); body.classList.remove("production-loading");

@@ -3,7 +3,7 @@
 
 mod harness;
 
-use harness::{base, serial, Answer, Kind, Monitor, Stores};
+use harness::{at, base, eval, serial, until, Answer, Kind, Monitor, Stores};
 use std::time::Duration;
 
 const SID: &str = "cccccccc-0000-4000-8000-000000000432";
@@ -32,14 +32,16 @@ const HOST: &str = r#"<!doctype html>
 <div class="host-sessions"><div id="sessionList"></div></div>
 <div class="host-pane" id="pane"><div id="sessionView"></div></div>
 <script type="module">
-const host = window.__host = { mounted: false, error: null, opened: [], titles: [], errors: [] };
+const host = window.__host = { mounted: false, error: null, opened: [], titles: [], errors: [], tabs: [] };
+// A tab the view opens is recorded, never opened: the case loads each address itself (#s433).
+window.open = url => { host.tabs.push(String(url)); return null; };
 addEventListener("error", event => host.errors.push(String(event.message)));
 addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
 try {
   const kit = await import("/kit/bundle/index.js");
   host.exports = Object.keys(kit).sort();
   const { backendHandle, mountSessionList, mountSessionView, persist, useBackend } = kit;
-  useBackend(backendHandle({ paired: true }));
+  useBackend(backendHandle({ paired: true, mdrevVersion: "{{MDREV}}" }));
   let view = null;
   const show = id => { list.select(id); view.select(id); view.open(id); };
   const list = window.__list = mountSessionList(document.getElementById("sessionList"), {
@@ -58,6 +60,7 @@ try {
     pauseIndex: () => list.stop(),
     resumeIndex: () => list.start(),
     onTitle: ({ title }) => host.titles.push(title),
+    {{VIEW_OPTIONS}}
   });
   list.start();
   host.mounted = true;
@@ -69,10 +72,44 @@ try {
 </html>
 "#;
 
+/// A host's page for a tab of its own (#s433), as the guide's section 7 writes one: the kit's
+/// `mountDetached` on the page's own address, at a route of the host's.
+const TAB: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>A kit tab</title>
+<meta name="mermaid-runtime" content="{{MERMAID}}">
+<link rel="stylesheet" href="/kit/bundle/session-view.css">
+<link rel="stylesheet" href="/kit/bundle/detached.css">
+<style>#detachedView { position: fixed; inset: 0; }</style>
+</head>
+<body>
+<div id="detachedView"></div>
+<script type="module">
+const tab = window.__tab = { mounted: false, error: null, errors: [] };
+addEventListener("error", event => tab.errors.push(String(event.message)));
+addEventListener("unhandledrejection", event => tab.errors.push(String(event.reason && event.reason.message || event.reason)));
+try {
+  const { backendHandle, mountDetached } = await import("/kit/bundle/index.js");
+  const shown = window.__detached = mountDetached(document.getElementById("detachedView"), {
+    backend: backendHandle({ paired: true, mdrevVersion: "{{MDREV}}" }),
+  });
+  tab.kind = shown.kind;
+  tab.mounted = true;
+} catch (error) {
+  tab.error = String(error && error.stack || error);
+}
+</script>
+</body>
+</html>
+"#;
+
 /// The kit as a host serves it: every file of its `bundle/` at `/kit/bundle/…` on the monitor's
 /// origin, answered by the browser itself from what `kit::files` lays out, so nothing the case loads
 /// comes from the monitor's own `/monitor-ui/`.
-fn kit_answers() -> Vec<Answer> {
+fn kit_answers(view_options: &str) -> Vec<Answer> {
     let files = claude_monitor::kit::files().expect("the kit is laid out");
     let mut answers: Vec<Answer> = files
         .into_iter()
@@ -95,7 +132,18 @@ fn kit_answers() -> Vec<Answer> {
         pattern: "*/kit-host*".into(),
         path: "/kit-host".into(),
         content_type: "text/html; charset=utf-8".into(),
-        body: HOST.replace("{{MERMAID}}", claude_replay_html::mermaid_runtime_path()),
+        body: HOST
+            .replace("{{MERMAID}}", claude_replay_html::mermaid_runtime_path())
+            .replace("{{MDREV}}", claude_monitor::kit::MDREV)
+            .replace("{{VIEW_OPTIONS}}", view_options),
+    });
+    answers.push(Answer {
+        pattern: "*/kit-tab*".into(),
+        path: "/kit-tab".into(),
+        content_type: "text/html; charset=utf-8".into(),
+        body: TAB
+            .replace("{{MERMAID}}", claude_replay_html::mermaid_runtime_path())
+            .replace("{{MDREV}}", claude_monitor::kit::MDREV),
     });
     answers
 }
@@ -124,7 +172,7 @@ fn a_page_mounts_both_components_from_the_kit_alone_and_reads_a_session() {
     let monitor = Monitor::spawn(Kind::V1, 3311, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    harness::answer_in_browser(&tab, kit_answers());
+    harness::answer_in_browser(&tab, kit_answers(""));
     tab.navigate_to(&monitor.url("kit-host")).unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(
@@ -167,7 +215,7 @@ fn a_page_mounts_both_components_from_the_kit_alone_and_reads_a_session() {
         mounted,
         serde_json::json!({
             "error": null,
-            "exports": ["backendHandle", "mountSessionList", "mountSessionView", "persist", "useBackend"],
+            "exports": ["backendHandle", "mountDetached", "mountSessionList", "mountSessionView", "persist", "useBackend"],
             "list": true,
             "view": true,
         }),
@@ -570,4 +618,327 @@ fn sessions_of(monitor: &Monitor) -> String {
         std::thread::sleep(Duration::from_millis(500));
     }
     panic!("the list's server never listed {SID_LISTED}");
+
+/// What a host page's tab of its own holds right now, for a failure message.
+const TAB_NOW: &str = "JSON.stringify({ href: location.href, tab: window.__tab || null, text: (document.getElementById('detachedView') || {}).innerText ? document.getElementById('detachedView').innerText.slice(0, 300) : '' })";
+
+/// #s433 (design/embedding.md, "Detached views"; Hong's choices on #s519 and #s528): a host serves
+/// a tab of its own on its own route, drawn by the kit. Its view names that page as `detachTo`, so
+/// the transcript's ↗ and the artifact pane's ↗ (a document the transcript carries, an image it
+/// embeds) open the host's page with the query that says what to show; that page mounts the kit's
+/// `mountDetached`, which reads the query and draws the transcript, the document in mdrev's viewer
+/// and the image, keeping the host's route in the address. The text and the image reach the tab in
+/// its sessionStorage, as `window.open` would copy them: the case loads each address in the tab the
+/// host page ran in. Nothing comes from the monitor's `/monitor-ui/`, and `unmount` leaves the
+/// host's element empty.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_host_serves_a_tab_of_its_own_from_the_kit() {
+    let _serial = serial();
+    let base = base("kit-tab");
+    let stores = Stores::new(&base);
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let notes_path = repo.join("NOTES.md").display().to_string();
+    let notes = "# Field notes\n\nThe terns came back on Tuesday.\n";
+    let attachment = format!(
+        "{{\"type\":\"attachment\",\"timestamp\":\"{ts}\",\"attachment\":{{\"type\":\"file\",\"filename\":\"{notes_path}\",\"displayPath\":\"NOTES.md\",\"content\":{{\"type\":\"text\",\"file\":{{\"filePath\":\"{notes_path}\",\"content\":\"{text}\",\"numLines\":3,\"startLine\":1,\"totalLines\":3}}}}}}}}\n",
+        ts = at("00:03"),
+        text = notes.replace('\n', "\\n"),
+    );
+    let jsonl = [
+        harness::pasted_image_sized(
+            "where do the terns nest this spring?",
+            &at("00:01"),
+            harness::WIDE_PNG_B64,
+        ),
+        harness::assistant_at("on the north spit, past the second dune", &at("00:02")),
+        attachment,
+    ]
+    .concat()
+    .replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(SID, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3315, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    // The host's page carries a query of its own, which every tab keeps, and a fragment, which
+    // stays last (the review of #s433).
+    harness::answer_in_browser(&tab, kit_answers(r#"detachTo: "/kit-tab?team=terns#top","#));
+    tab.navigate_to(&monitor.url("kit-host")).unwrap();
+    tab.wait_until_navigated().unwrap();
+    until(
+        &tab,
+        "!!(window.__host && (window.__host.mounted || window.__host.error))",
+        "the kit host to mount both parts",
+        Duration::from_secs(20),
+        "JSON.stringify(window.__host || null)",
+    );
+    let row = format!("#sessionList .tree-row.session[data-session=\"{SID}\"]");
+    until(
+        &tab,
+        &format!("!!document.querySelector('{}')", row.replace('\'', "\\'")),
+        "the session listed in the kit's list",
+        Duration::from_secs(30),
+        "JSON.stringify({ host: window.__host, list: (document.getElementById('sessionList') || {}).innerText })",
+    );
+    tab.find_element(&row).unwrap().click().unwrap();
+    until(
+        &tab,
+        "(document.getElementById('transcript') || {}).innerText.includes('past the second dune')",
+        "the kit's view to read the session",
+        Duration::from_secs(30),
+        "JSON.stringify({ host: window.__host, transcript: (document.getElementById('transcript') || {}).innerText.slice(0, 300) })",
+    );
+
+    // The transcript's ↗, which only a host that names its page (`detachTo`) gets.
+    until(
+        &tab,
+        "(function(){ var b = document.getElementById('sessionNewTab'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+        "the transcript's ↗ in the view's top bar",
+        Duration::from_secs(10),
+        "JSON.stringify({ button: !!document.getElementById('sessionNewTab'), hidden: (document.getElementById('sessionNewTab') || {}).hidden })",
+    );
+    harness::click_when_settled(
+        &tab,
+        "#sessionNewTab",
+        "the transcript's ↗ to hold still where a reader can press it",
+    );
+    // The document the transcript carries, in the pane, then the pane's ↗.
+    eval(
+        &tab,
+        "document.querySelector('[data-attachment-action=\"preview\"]').click(); 'ok'",
+    );
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1') && !!document.querySelector('#previewHead .preview-newtab:not([hidden])')",
+        "the notes in mdrev's viewer in the pane, with the pane's ↗",
+        Duration::from_secs(30),
+        "(document.getElementById('previewBody') || {}).innerText",
+    );
+    harness::click_when_settled(
+        &tab,
+        "#previewHead .preview-newtab",
+        "the pane's ↗ to hold still where a reader can press it",
+    );
+    // The image the prompt embeds, in the pane, then the pane's ↗.
+    eval(
+        &tab,
+        "document.querySelector('.prompt-image').click(); 'ok'",
+    );
+    until(
+        &tab,
+        "(function(){ var i = document.querySelector('#previewBody .artifact-stage img'); var b = document.querySelector('#previewHead .preview-newtab'); return !!i && i.naturalWidth > 1 && !!b && !b.hidden; })()",
+        "the pasted image in the pane, with the pane's ↗",
+        Duration::from_secs(20),
+        "(document.getElementById('previewBody') || {}).innerText",
+    );
+    harness::click_when_settled(
+        &tab,
+        "#previewHead .preview-newtab",
+        "the pane's ↗ to hold still where a reader can press it",
+    );
+    let tabs: Vec<String> =
+        serde_json::from_value(harness::probe(&tab, "window.__host.tabs")).unwrap();
+    assert_eq!(tabs.len(), 3, "three ↗s, three tabs: {tabs:?}");
+    assert_eq!(
+        tabs[0],
+        format!("/kit-tab?team=terns&session={SID}#top"),
+        "the transcript's tab is the host's page with the session"
+    );
+    assert!(
+        tabs[1].starts_with("/kit-tab?team=terns&root=")
+            && tabs[1].contains("NOTES.md")
+            && tabs[1].ends_with("#top"),
+        "the document's tab is the host's page with the held text's place: {tabs:?}"
+    );
+    assert!(
+        tabs[2].starts_with("/kit-tab?team=terns&")
+            && tabs[2].contains("held=am-image")
+            && tabs[2].ends_with("#top"),
+        "the image's tab is the host's page with the copy it was handed: {tabs:?}"
+    );
+
+    // Each address, loaded in this tab: its sessionStorage holds what the host page left there.
+    // Each loaded without the fragment, which the session view would read as a record to land on.
+    let load = |address: &str| {
+        let address = address.split('#').next().unwrap_or_default();
+        tab.navigate_to(&monitor.url(address.trim_start_matches('/')))
+            .unwrap();
+        tab.wait_until_navigated().unwrap();
+        until(
+            &tab,
+            "!!(window.__tab && (window.__tab.mounted || window.__tab.error))",
+            "the host's tab to mount",
+            Duration::from_secs(20),
+            TAB_NOW,
+        );
+    };
+    load(&tabs[0]);
+    until(
+        &tab,
+        "(document.querySelector('#detachedView > #sessionView #transcript') || {}).innerText.includes('past the second dune')",
+        "the transcript alone in the host's tab",
+        Duration::from_secs(30),
+        TAB_NOW,
+    );
+    let transcript = harness::probe(
+        &tab,
+        "({ kind: window.__tab.kind, error: window.__tab.error, errors: window.__tab.errors, path: location.pathname, team: new URLSearchParams(location.search).get('team'), session: new URLSearchParams(location.search).get('session'), list: !!document.getElementById('sessionList'), ownNewTab: !!document.getElementById('sessionNewTab'), title: document.title !== 'A kit tab' && document.title.length > 0, monitorUi: performance.getEntriesByType('resource').map(function (e) { return new URL(e.name).pathname; }).filter(function (p) { return p.indexOf('/monitor-ui/') >= 0; }) })",
+    );
+    load(&tabs[1]);
+    until(
+        &tab,
+        "!!document.querySelector('#detachedView > .detached-doc.mdrev-host h1')",
+        "the notes in mdrev's viewer in the host's tab",
+        Duration::from_secs(30),
+        TAB_NOW,
+    );
+    let document = harness::probe(
+        &tab,
+        "({ kind: window.__tab.kind, error: window.__tab.error, errors: window.__tab.errors, path: location.pathname, team: new URLSearchParams(location.search).get('team'), h1: document.querySelector('#detachedView > .detached-doc h1').textContent.trim(), title: document.title, monitorUi: performance.getEntriesByType('resource').map(function (e) { return new URL(e.name).pathname; }).filter(function (p) { return p.indexOf('/monitor-ui/') >= 0; }) })",
+    );
+    load(&tabs[2]);
+    until(
+        &tab,
+        "(function(){ var i = document.querySelector('#detachedView > .detached-stage img'); return !!i && i.complete && i.naturalWidth > 1 && i.getBoundingClientRect().width > 10; })()",
+        "the pasted image whole in the host's tab",
+        Duration::from_secs(20),
+        TAB_NOW,
+    );
+    let image = harness::probe(
+        &tab,
+        "({ kind: window.__tab.kind, error: window.__tab.error, errors: window.__tab.errors, path: location.pathname, team: new URLSearchParams(location.search).get('team'), title: document.title !== 'A kit tab' && document.title.length > 0, monitorUi: performance.getEntriesByType('resource').map(function (e) { return new URL(e.name).pathname; }).filter(function (p) { return p.indexOf('/monitor-ui/') >= 0; }) })",
+    );
+    // The handle takes the tab away and leaves the host's element as it gave it.
+    let unmounted = harness::probe(
+        &tab,
+        "(function () { window.__detached.unmount(); var el = document.getElementById('detachedView'); return { empty: !!el && el.childNodes.length === 0, theme: el ? el.dataset.theme || null : 'no element', kind: el ? el.dataset.kind || null : 'no element' }; })()",
+    );
+    drop(monitor);
+    assert_eq!(
+        transcript,
+        serde_json::json!({ "kind": "session", "error": null, "errors": [], "path": "/kit-tab", "team": "terns", "session": SID, "list": false, "ownNewTab": false, "title": true, "monitorUi": [] }),
+        "the transcript alone, no list and no ↗ of its own, on the host's route"
+    );
+    assert_eq!(
+        document,
+        serde_json::json!({ "kind": "markdown", "error": null, "errors": [], "path": "/kit-tab", "team": "terns", "h1": "Field notes", "title": "NOTES.md", "monitorUi": [] }),
+        "the document in mdrev's viewer, on the host's route"
+    );
+    assert_eq!(
+        image,
+        serde_json::json!({ "kind": "image", "error": null, "errors": [], "path": "/kit-tab", "team": "terns", "title": true, "monitorUi": [] }),
+        "the image, on the host's route"
+    );
+    assert_eq!(
+        unmounted,
+        serde_json::json!({ "empty": true, "theme": null, "kind": null }),
+        "unmount leaves the host's element empty"
+    );
+}
+
+/// #s433: the monitor is a host of the same tab. Its view names `/detached` for the transcript, so
+/// the top bar carries a ↗ that opens the session's transcript alone in a tab of its own (no list,
+/// no ↗ of its own), and that tab follows the app's theme when the reader changes it in another tab.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_monitor_opens_a_transcript_in_a_tab_of_its_own() {
+    let _serial = serial();
+    let base = base("kit-monitor-tab");
+    let stores = Stores::new(&base);
+    stores.claude_session(
+        SID,
+        &(harness::pasted_image_sized(
+            "where do the terns nest this spring?",
+            &harness::at("00:01"),
+            harness::WIDE_PNG_B64,
+        ) + &harness::assistant_at(
+            "on the north spit, past the second dune",
+            &harness::at("00:02"),
+        )),
+    );
+    let monitor = Monitor::spawn(Kind::V1, 3316, &base, Some(&stores), true);
+    let (browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?session={SID}"));
+    until(
+        &tab,
+        "(document.getElementById('transcript') || {}).innerText.includes('past the second dune')",
+        "the app to read the session",
+        Duration::from_secs(30),
+        "(document.getElementById('transcript') || {}).innerText",
+    );
+    until(
+        &tab,
+        "(function(){ var b = document.getElementById('sessionNewTab'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+        "the transcript's ↗ in the top bar",
+        Duration::from_secs(10),
+        "JSON.stringify({ button: !!document.getElementById('sessionNewTab') })",
+    );
+    harness::click_when_settled(
+        &tab,
+        "#sessionNewTab",
+        "the transcript's ↗ to hold still where a reader can press it",
+    );
+    let own = harness::opened_tab(&browser, "/detached?session=", Duration::from_secs(20));
+    until(
+        &own,
+        "(document.querySelector('#detachedView > #sessionView #transcript') || {}).innerText.includes('past the second dune')",
+        "the transcript alone in a tab of its own",
+        Duration::from_secs(30),
+        TAB_NOW,
+    );
+    // The image the prompt embeds, in the tab's own pane: no ↗ there either.
+    eval(
+        &own,
+        "document.querySelector('.prompt-image').click(); 'ok'",
+    );
+    until(
+        &own,
+        "(function(){ var i = document.querySelector('#previewBody .artifact-stage img'); return !!i && i.naturalWidth > 1; })()",
+        "the pasted image in the tab's pane",
+        Duration::from_secs(20),
+        "(document.getElementById('previewBody') || {}).innerText",
+    );
+    let shown = harness::probe(
+        &own,
+        "({ path: location.pathname, session: new URLSearchParams(location.search).get('session'), list: !!document.getElementById('sessionList'), ownNewTab: !!document.getElementById('sessionNewTab'), paneNewTab: (function () { var b = document.querySelector('#previewHead .preview-newtab'); return !!b && !b.hidden && b.offsetWidth > 0; })(), theme: document.getElementById('sessionView').dataset.theme || 'light' })",
+    );
+    // The address keeps what else it carries (a trace asked for, a host's own key) as the tab
+    // rewrites it with each title.
+    own.navigate_to(&monitor.url(&format!("detached?trace=viewport&session={SID}")))
+        .unwrap();
+    own.wait_until_navigated().unwrap();
+    until(
+        &own,
+        "(document.querySelector('#detachedView > #sessionView #transcript') || {}).innerText.includes('past the second dune') && document.title !== 'Agent Monitor'",
+        "the transcript and its title, again, from an address with a trace",
+        Duration::from_secs(30),
+        TAB_NOW,
+    );
+    let address = harness::probe(
+        &own,
+        "({ trace: new URLSearchParams(location.search).get('trace'), session: new URLSearchParams(location.search).get('session') })",
+    );
+    // The app's theme, changed in the app's tab, reaches the tab of its own.
+    eval(&tab, "localStorage.setItem('am-demo-theme', 'dark'); 'ok'");
+    until(
+        &own,
+        "document.getElementById('sessionView').dataset.theme === 'dark'",
+        "the tab of its own to follow the app's theme",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').dataset.theme",
+    );
+    eval(&tab, "localStorage.removeItem('am-demo-theme'); 'ok'");
+    drop(monitor);
+    assert_eq!(
+        shown,
+        serde_json::json!({ "path": "/detached", "session": SID, "list": false, "ownNewTab": false, "paneNewTab": false, "theme": "light" }),
+        "the session's transcript alone, at /detached"
+    );
+    assert_eq!(
+        address,
+        serde_json::json!({ "trace": "viewport", "session": SID }),
+        "the tab keeps the rest of its address"
+    );
 }

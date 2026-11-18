@@ -1908,6 +1908,8 @@
 :where(#sessionView) .mdrev-pane{flex:1;min-height:0;outline:none}
 :where(#sessionView) .preview-head .preview-newtab{width:32px;height:32px;flex:none;font-size:15px;line-height:1}
 :where(#sessionView) .preview-head .preview-newtab[hidden]{display:none}
+:where(#sessionView) .workspace>.topbar .session-newtab{font-size:15px;line-height:1}
+:where(#sessionView) .workspace>.topbar .session-newtab[hidden]{display:none}
 :where(#sessionView) .preview-head .preview-reveal{width:32px;height:32px;flex:none}
 :where(#sessionView) .preview-head .preview-reveal[hidden]{display:none}
 :where(#sessionView) .preview-head .preview-reveal .icon{width:15px;height:15px}
@@ -2095,7 +2097,7 @@
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox .find-nav .icon{width:18px;height:18px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .input-answer{flex-direction:column;align-items:flex-start;gap:2px;width:100%}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .input-answer span{overflow:visible;overflow-wrap:break-word}
-#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-newtab{display:none!important}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-newtab,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .session-newtab{display:none!important}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-tab-step{width:40px;height:44px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-head .preview-print,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-head .preview-download,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-head .preview-reveal{width:40px;height:44px}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) input:not([type=checkbox]):not([type=radio]):not([type=range]),:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) textarea,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) select{font-size:16px!important}
