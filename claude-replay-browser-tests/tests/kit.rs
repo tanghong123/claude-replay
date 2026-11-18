@@ -783,8 +783,9 @@ const SID_B: &str = "cccccccc-0000-4000-8000-000000005612";
 /// the list by activity naming its machine by the host name's first label; the box sits between Idle
 /// and Include hidden; ticked, a head per machine (its short name) holds that machine's own agents,
 /// projects and rows, which no longer name it, in the tree and the list by activity alike; the choice
-/// survives a reload; unticked, the project arrangement comes back. A list of one machine offers no
-/// box, whatever was chosen. Run on a desktop and on a phone.
+/// survives a reload; a machine that stops answering says so on its own head, its rows kept under it,
+/// with no heads over the list; unticked, the project arrangement comes back, with them. A list of
+/// one machine offers no box, whatever was chosen. Run on a desktop and on a phone.
 fn groups_by_machine_from_the_filter(phone: bool, here_port: u16, there_port: u16) {
     let _serial = serial();
     let base = base(if phone {
@@ -870,7 +871,7 @@ fn groups_by_machine_from_the_filter(phone: bool, here_port: u16, there_port: u1
     // The tree's children in order: a machine's head (its key and the name it shows), an agent's
     // head, a project's head and a session row, each under a machine's head checked to be that
     // machine's; the machine labels drawn; and the box's state.
-    let layout = "(function () { var tree = document.getElementById('tree'), machine = null, seq = [], wrong = []; Array.from(tree.children).forEach(function (el) { var c = el.classList; if (c.contains('tree-machine-group')) { machine = el.dataset.machine; seq.push('M:' + machine + ':' + el.querySelector('.tree-machine-name').textContent); } else if (c.contains('agent-label')) { seq.push('A'); if (machine && el.dataset.toggle.indexOf('a:' + machine + '/') !== 0) wrong.push(el.dataset.toggle); } else if (c.contains('project')) { seq.push('P'); if (machine && el.dataset.toggle.indexOf('p:' + machine + '/') !== 0) wrong.push(el.dataset.toggle); } else if (c.contains('session')) { seq.push('S'); if (machine && el.dataset.session.indexOf(machine + '/') !== 0) wrong.push(el.dataset.session); } else seq.push('?' + el.className); }); var box = document.querySelector('#sessionFilter [data-by-machine]'); return { seq: seq, wrong: wrong, tags: Array.from(tree.querySelectorAll('.tree-machine')).map(function (t) { return t.textContent; }).sort(), banner: !!tree.querySelector('.tree-machines'), box: box ? box.getAttribute('aria-checked') : null, errors: window.__host.errors }; })()";
+    let layout = "(function () { var tree = document.getElementById('tree'), machine = null, seq = [], wrong = []; Array.from(tree.children).forEach(function (el) { var c = el.classList; if (c.contains('tree-machine-group')) { machine = el.dataset.machine; seq.push('M:' + machine + ':' + el.querySelector('.tree-machine-name').textContent); } else if (c.contains('agent-label')) { seq.push('A'); if (machine && el.dataset.toggle.indexOf('a:' + machine + '/') !== 0) wrong.push(el.dataset.toggle); } else if (c.contains('project')) { seq.push('P'); if (machine && el.dataset.toggle.indexOf('p:' + machine + '/') !== 0) wrong.push(el.dataset.toggle); } else if (c.contains('session')) { seq.push('S'); if (machine && el.dataset.session.indexOf(machine + '/') !== 0) wrong.push(el.dataset.session); } else if (c.contains('tree-machine-empty')) seq.push('E'); else if (!c.contains('tree-machines')) seq.push('?' + el.className); }); var box = document.querySelector('#sessionFilter [data-by-machine]'); var stale = tree.querySelector('.tree-machine-group.tree-machine-group-stale'); return { seq: seq, wrong: wrong, staleHead: stale ? stale.dataset.machine + ':' + ((stale.querySelector('.tree-machine-note') || {}).textContent || '') : null, tags: Array.from(tree.querySelectorAll('.tree-machine')).map(function (t) { return t.textContent; }).sort(), banner: !!tree.querySelector('.tree-machines'), box: box ? box.getAttribute('aria-checked') : null, errors: window.__host.errors }; })()";
     let click = |selector: &str| {
         harness::probe(
             &tab,
@@ -1012,6 +1013,33 @@ fn groups_by_machine_from_the_filter(phone: bool, here_port: u16, there_port: u1
         "the box still ticked: {again}"
     );
 
+    // The other machine stops answering: its own head says so, over its last rows, and the heads
+    // over the list give way to it.
+    drop(there);
+    harness::until(
+        &tab,
+        "!!document.querySelector('#tree .tree-machine-group.tree-machine-group-stale[data-machine=\"b\"]')",
+        "the other machine's head to say it has stopped answering",
+        Duration::from_secs(30),
+        &format!("JSON.stringify({layout})"),
+    );
+    let stopped = harness::probe(&tab, layout);
+    assert_eq!(
+        (&stopped["seq"], &stopped["banner"], &stopped["tags"]),
+        (
+            &serde_json::json!(["M:a:tern-mini", "A", "P", "S", "M:b:skua-book", "A", "P", "S"]),
+            &serde_json::json!(false),
+            &serde_json::json!([])
+        ),
+        "the stopped machine's rows stay under its head, and nothing is drawn over the list: {stopped}"
+    );
+    assert!(
+        stopped["staleHead"]
+            .as_str()
+            .is_some_and(|head| head.starts_with("b:not answering since ")),
+        "its head says since when it has not answered: {stopped}"
+    );
+
     // Unticked: the project arrangement and the labels come back.
     click("#filterBtn");
     click("#sessionFilter [data-by-machine]");
@@ -1020,12 +1048,13 @@ fn groups_by_machine_from_the_filter(phone: bool, here_port: u16, there_port: u1
         "the list by agent and project again",
     );
     assert_eq!(
-        (&back["tags"], &back["box"]),
+        (&back["tags"], &back["box"], &back["banner"]),
         (
             &serde_json::json!(["skua-book", "tern-mini"]),
-            &serde_json::json!("false")
+            &serde_json::json!("false"),
+            &serde_json::json!(true)
         ),
-        "the labels back on the projects' heads: {back}"
+        "the labels back on the projects' heads, and the stopped machine's head over the list: {back}"
     );
 
     // A list of one machine offers no box, even with Group by machine chosen.
@@ -1043,13 +1072,12 @@ fn groups_by_machine_from_the_filter(phone: bool, here_port: u16, there_port: u1
     click("#filterBtn");
     let lone = harness::probe(
         &tab,
-        "(function () { var part = document.querySelector('#sessionFilter [data-machine-part]'); return { chosen: localStorage.getItem('am-prod-by-machine'), part: !!part, shown: !!part && part.getClientRects().length > 0, heads: document.querySelectorAll('#tree .tree-machine-group').length }; })()",
+        "(function () { var part = document.querySelector('#sessionFilter [data-machine-part]'), idle = document.querySelector('#sessionFilter [data-bucket=\"idle\"]'); return { chosen: localStorage.getItem('am-prod-by-machine'), sheetOpen: !!idle && idle.getClientRects().length > 0, part: !!part, hidden: !!part && part.hidden, shown: !!part && part.getClientRects().length > 0, heads: document.querySelectorAll('#tree .tree-machine-group').length }; })()",
     );
-    drop(there);
     drop(monitor);
     assert_eq!(
         lone,
-        serde_json::json!({ "chosen": "1", "part": true, "shown": false, "heads": 0 }),
+        serde_json::json!({ "chosen": "1", "sheetOpen": true, "part": true, "hidden": true, "shown": false, "heads": 0 }),
         "one machine: the box is not offered and the list has no machine heads, though the choice is kept"
     );
 }

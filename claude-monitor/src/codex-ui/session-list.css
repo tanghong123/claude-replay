@@ -187,7 +187,7 @@
 :where(#sessionList) .tree-machine-head.tree-machine-head-stale{color:var(--amber)}
 :where(#sessionList) .tree-machine-head.tree-machine-head-failed{color:var(--red)}
 :where(#sessionList) .agent-label.tree-machine-group{min-width:0;padding-top:14px;color:var(--sub);font-size:12px;font-weight:650;letter-spacing:0;text-transform:none}
-:where(#sessionList) .tree-machine-name{flex:none;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:where(#sessionList) .tree-machine-name{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 :where(#sessionList) .tree-machine-note{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:450}
 :where(#sessionList) .tree-machine-group.tree-machine-group-stale .tree-machine-note{color:var(--amber)}
 :where(#sessionList) .tree-machine-group.tree-machine-group-failed .tree-machine-note{color:var(--red)}

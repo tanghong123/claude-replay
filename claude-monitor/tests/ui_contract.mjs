@@ -1486,7 +1486,7 @@ assert.match(viewSource, /if \(target && turnsFollow\) revealInPane\(target\);/,
   console.log("#s209 agent mark cases passed");
 }
 assert.match(productionCss, /\n:is\(#collapseBtn,#expandBtn\)\[data-flat\]\{display:none\}/, "flat, the group controls go: the list marks the two it places, since the head is outside its element (#s430 stage 3)");
-assert.match(listSource, /for \(const control of \[collapseBtn, expandBtn\]\) control\.toggleAttribute\("data-flat", flat \|\| arranged\);/, "…with the same verdict as its own sessions-flat");
+assert.match(listSource, /for \(const control of \[collapseBtn, expandBtn\]\) control\.toggleAttribute\("data-flat", \(flat && !grouped\) \|\| arranged\);/, "…with the same verdict as its own sessions-flat, except that grouped by machine (#s561) the machines' heads still fold");
 assert.match(appSource, /indexState\.selectedWasRow && !selectedRow\(\)\) sessionGone\(\)/, "a sub-agent child, never a list row, is not declared gone by the index poll");
 assert.match(viewSource, /meta\?\.ancestors\?\.at\(-1\)/, "the parent control reads the last ancestor from the session's own meta");
 assert.match(productionCss, /\.session-parent\.is-live\{display:inline-flex;/, "the reference parent control is shown by a production state, not by editing the shell");
@@ -5455,7 +5455,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(storeSource, /indexState\.machines = Array\.isArray\(data\.machines\) \? data\.machines : \[\];/, "the index keeps how each machine answered");
   assert.match(storeSource, /grouped\(\) \{ return this\.group \? this\.group\(indexState\.groups, groupAcrossMachines\) : groupAcrossMachines\(indexState\.groups\); \}/, "and groups by machine");
   const listViewSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-list-view.js", import.meta.url), "utf8");
-  assert.match(listViewSource, /const treeHtml = machineHeadsHtml\(\) \+ \(html \|\|/, "the heads lead the list");
+  assert.match(listViewSource, /const treeHtml = machineHeadsHtml\(grouped\) \+ \(html \|\|/, "the heads lead the list");
   const mergedSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/merged-source.js", import.meta.url), "utf8");
   const sources = mergedSource.match(/const SOURCES = Object\.freeze\((\[[^\]]*\])\);/);
   assert.deepEqual(sources && JSON.parse(sources[1]), ARRANGE_SOURCES, "the merged source answers every app the list can follow");
@@ -5470,9 +5470,16 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // is running on (limit to the first dot component maybe)"): the list machine first, and a
   // machine's short name.
   const { machineSections, machineShortLabel } = await import("../../claude-monitor/src/codex-ui/session-list.js");
-  for (const [label, shown] of [["aries-black.tail1234.ts.net", "aries-black"], ["Studio Mac", "Studio Mac"], ["mac-mini", "mac-mini"], ["100.64.0.7", "100.64.0.7"], ["fd7a:115c::1", "fd7a:115c::1"], [".hidden", ".hidden"], [undefined, ""]]) {
+  for (const [label, shown] of [["aries-black.tail1234.ts.net", "aries-black"], ["Studio Mac", "Studio Mac"], ["mac-mini", "mac-mini"], ["100.64.0.7", "100.64.0.7"], ["fd7a:115c::1", "fd7a:115c::1"], [".hidden", ".hidden"], [undefined, ""], ["Hong's Mac v1.2", "Hong's Mac v1.2"], ["Mac (studio.local)", "Mac (studio.local)"], ["studio.local.", "studio"], ["10.0.0.1.", "10.0.0.1."]]) {
     assert.equal(machineShortLabel(label), shown, `${label} shows as ${shown}`);
   }
+  // Two machines that would read the same once cut keep their whole labels; one apart keeps its cut.
+  for (const [label, labels, shown] of [
+    ["mac.tail1.ts.net", ["mac.tail1.ts.net", "mac.tail2.ts.net"], "mac.tail1.ts.net"],
+    ["studio.home", ["studio.home", "laptop.home"], "studio"],
+    ["mac.ts.net", ["mac", "mac.ts.net"], "mac.ts.net"],
+    ["mac.ts.net", ["mac.ts.net", "mac.ts.net"], "mac"],
+  ]) assert.equal(machineShortLabel(label, labels), shown, `${label} beside ${labels.join(", ")} shows as ${shown}`);
   const sections = machineSections(tree, [...late.machines].reverse());
   assert.deepEqual(sections.map(section => [section.machine.machine, section.machine.state]), [["b", "stale"], ["a", "live"]], "a section per machine, in the order the machines are listed, each saying how it answers");
   assert.deepEqual(sections.map(section => section.agents.map(agent => [agent.id, agent.projects.map(project => project.id)])), [
@@ -5484,10 +5491,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(tree[0].projects.length, 4, "the tree it was handed is left as it was");
   // The view: the box between the states and Include hidden, shown for more than one machine, the
   // choice remembered; under a machine's head no project or row repeats its machine.
-  assert.match(listViewSource, /if \(shows\("filter"\)\) sheetParts\[0\] \+= `\n<div data-machine-part hidden>/, "the box comes right after the states, before Include hidden");
+  assert.match(listViewSource, /if \(shows\("filter"\)\) sheetParts\[0\] \+= `\n<div data-machine-part>/, "the box comes right after the states, before Include hidden, hidden by the code alone");
   assert.match(listViewSource, /machinePart\.hidden = machineCount\(\) < 2;/, "and is offered only over more than one machine");
   assert.match(listViewSource, /const groupedByMachine = \(\) => shows\("filter"\) && indexState\.byMachine && machineCount\(\) > 1;/);
   assert.match(listViewSource, /const entry = drawingMachine \? null : machineState\(key\);/, "under its head, a machine is not named again");
+  assert.match(listViewSource, /const was = drawingMachine;[\s\S]*?finally \{ drawingMachine = was; \}/, "and a draw inside a draw gives the mark back as it found it");
+  assert.match(listViewSource, /const grouped = !arranged && groupedByMachine\(\);[\s\S]*?machineHeadsHtml\(grouped\)/, "the heads over the list give way only when the grouped list is drawn");
   const stateSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
   assert.match(stateSource, /byMachine: localStorage\.getItem\("am-prod-by-machine"\) === "1",/, "remembered");
   assert.match(stateSource, /localStorage\.setItem\("am-prod-by-machine", indexState\.byMachine \? "1" : "0"\);/);

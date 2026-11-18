@@ -34,12 +34,17 @@ export function groupAcrossMachines(groups = [], build = groupSessions) {
 /**
  * The name a row and a head show for a machine (#s561, Hong: "show the host the agent is running
  * on (limit to the first dot component maybe)"): a host name's first label (`aries-black.tail…ts.net`
- * shows `aries-black`). A name with no dot, and an address written in numbers, are shown whole.
+ * shows `aries-black`). Only a label shaped like a host name is cut: one with no dot, an address
+ * written in numbers, and a name a person wrote (`Hong's Mac v1.2`) are shown whole. `labels`, the
+ * list's other machines' labels, keeps two machines apart: where another would read the same once
+ * cut (`mac.tail1.ts.net` beside `mac.tail2.ts.net`), the whole label is shown.
  */
-export function machineShortLabel(label) {
+export function machineShortLabel(label, labels = []) {
   const text = String(label ?? "").trim();
-  if (!text.includes(".") || /^[\d.]+$/.test(text) || text.includes(":")) return text;
-  return text.slice(0, text.indexOf(".")) || text;
+  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+\.?$/i.test(text) || /^[\d.]+\.?$/.test(text)) return text;
+  const short = text.slice(0, text.indexOf("."));
+  const clash = labels.some(other => { const name = String(other ?? "").trim(); return name && name !== text && (name === short || machineShortLabel(name) === short); });
+  return clash ? text : short;
 }
 
 /**

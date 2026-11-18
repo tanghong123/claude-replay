@@ -380,7 +380,8 @@ the one layout it reads today. These are additions to the kit's interface, the o
 The arrangement by machine is a box in the session list's filter, **Group by machine** (#s561,
 Hong on the iOS app, 2026-11-17: "No need to have a machine switch at the top, instead, extend the
 filter menu to have another check box to group agents by machine"), not an Arrange choice: it sits
-between Idle and Include hidden and is shown only while the rows carry more than one `machine`.
+between Idle and Include hidden and is shown only while the list holds more than one machine (one
+that has never answered counts).
 Ticked, the list is an outer head per machine, in the host's order of machines, saying how the
 machine answers while it does not (D6's heads over the list give way to it), each holding that
 machine's own sessions arranged as the reader chose for the rest of the list (by agent and project,

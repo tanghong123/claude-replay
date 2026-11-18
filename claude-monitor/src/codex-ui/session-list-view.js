@@ -453,7 +453,10 @@ function machineNote(entry) {
 }
 /** A machine and how it answers. It goes by its host name's first label (#s561, Hong: "limit to the
  *  first dot component maybe"); `name` gives the whole label instead, for a title. */
-function machineWords(entry, name = machineShortLabel(entry.label)) {
+/** The name a machine goes by in the list: its label, cut to the host name's first label where that
+ *  keeps it apart from the list's other machines (`machineShortLabel`). */
+const machineName = entry => machineShortLabel(entry.label, indexState.machines.map(other => other.label));
+function machineWords(entry, name = machineName(entry)) {
   const note = machineNote(entry);
   return note ? `${name}: ${note}` : name;
 }
@@ -461,7 +464,8 @@ const machineStale = key => machineState(key)?.state === "stale";
 /** #s561: how many machines the list holds; Group by machine is offered only for more than one. */
 const machineCount = () => new Set(indexState.machines.map(entry => entry.machine)).size;
 /** #s561: whether the list is arranged machine first: chosen, offered (the filter's sheet holds the
- *  box) and over more than one machine. */
+ *  box) and over more than one machine. An app's arrangement, where one is drawn, still comes first
+ *  (`renderTree`). */
 const groupedByMachine = () => shows("filter") && indexState.byMachine && machineCount() > 1;
 /** Set while the tree draws under a machine's head (#s561), whose head names the machine, so its
  *  project heads and rows do not repeat it. The rail's flyout, drawn by the same functions over
@@ -469,14 +473,14 @@ const groupedByMachine = () => shows("filter") && indexState.byMachine && machin
 let drawingMachine = false;
 function machineTag(key) {
   const entry = drawingMachine ? null : machineState(key);
-  return entry ? `<span class="tree-machine${machineStale(key) ? " tree-machine-stale" : ""}" title="${escapeText(machineWords(entry, entry.label))}">${escapeText(machineShortLabel(entry.label))}</span>` : "";
+  return entry ? `<span class="tree-machine${machineStale(key) ? " tree-machine-stale" : ""}" title="${escapeText(machineWords(entry, entry.label))}">${escapeText(machineName(entry))}</span>` : "";
 }
 /** The heads over the list, one for each machine of a merged source that is not answering, coloured
- *  by its state (prefixed names: a host's page may style `.stale` or `.failed` for itself). Grouped
- *  by machine, each machine's own head says it instead. */
+ *  by its state (prefixed names: a host's page may style `.stale` or `.failed` for itself). Drawn
+ *  grouped by machine (`grouped`), each machine's own head says it instead. */
 const HEAD_STATE = Object.freeze({ stale: " tree-machine-head-stale", failed: " tree-machine-head-failed" });
-function machineHeadsHtml() {
-  if (groupedByMachine()) return "";
+function machineHeadsHtml(grouped) {
+  if (grouped) return "";
   const heads = indexState.machines.filter(entry => entry.state !== "live");
   return heads.length ? `<div class="tree-machines" role="status">${heads.map(entry => `<div class="tree-machine-head${HEAD_STATE[entry.state] || ""}" data-machine="${escapeText(entry.machine)}">${escapeText(machineWords(entry))}</div>`).join("")}</div>` : "";
 }
@@ -654,12 +658,14 @@ function agentHeadHtml(agent, key, open) {
 const GROUP_STATE = Object.freeze({ stale: " tree-machine-group-stale", failed: " tree-machine-group-failed", waiting: " tree-machine-group-waiting" });
 function machineGroupsHtml(agents, flat, filtered) {
   let html = "";
+  // Restored, not cleared: a host's callback asked during the draw may draw the list again inside it.
+  const was = drawingMachine;
   drawingMachine = true;
   try {
     for (const { machine: entry, agents: own } of machineSections(agents, indexState.machines)) {
       const key = `m:${entry.machine}`, open = !indexState.collapsed.has(key);
       const note = machineNote(entry);
-      html += `<div class="agent-label tree-machine-group${GROUP_STATE[entry.state] || ""}" role="treeitem" tabindex="0" data-toggle="${escapeText(key)}" data-machine="${escapeText(entry.machine)}" aria-expanded="${open}" title="${escapeText(machineWords(entry, entry.label))}"><span class="tree-machine-name">${escapeText(machineShortLabel(entry.label))}</span>${note ? `<span class="tree-machine-note">${escapeText(note)}</span>` : ""}</div>`;
+      html += `<div class="agent-label tree-machine-group${GROUP_STATE[entry.state] || ""}" role="treeitem" tabindex="0" data-toggle="${escapeText(key)}" data-machine="${escapeText(entry.machine)}" aria-expanded="${open}" title="${escapeText(machineWords(entry, entry.label))}"><span class="tree-machine-name">${escapeText(machineName(entry))}</span>${note ? `<span class="tree-machine-note">${escapeText(note)}</span>` : ""}</div>`;
       if (!open) continue;
       if (!own.length) { html += `<div class="tree-machine-empty">${filtered ? "None in this filter" : "No sessions"}</div>`; continue; }
       if (flat) { html += flatSessionsHtml(own, `flat:${entry.machine}`); continue; }
@@ -669,7 +675,7 @@ function machineGroupsHtml(agents, flat, filtered) {
         if (openAgent) html += agentProjectsHtml(agent);
       }
     }
-  } finally { drawingMachine = false; }
+  } finally { drawingMachine = was; }
   return html;
 }
 function renderTree() {
@@ -702,9 +708,12 @@ function renderTree() {
   sessionList.classList.toggle("sessions-arranged", arranged);
   // The two group controls go with the heads; they are placed outside the list's element (stage 3), so
   // they carry the mark themselves.
-  for (const control of [collapseBtn, expandBtn]) control.toggleAttribute("data-flat", flat || arranged);
+  // Grouped by machine (#s561), the machines' heads fold in the list by activity too, so the two
+  // controls stay.
+  const grouped = !arranged && groupedByMachine();
+  for (const control of [collapseBtn, expandBtn]) control.toggleAttribute("data-flat", (flat && !grouped) || arranged);
   if (arranged) html = arrangedSessionsHtml(layout, agents, shownAgents);
-  else if (groupedByMachine()) html = machineGroupsHtml(shownAgents, flat, filtered);
+  else if (grouped) html = machineGroupsHtml(shownAgents, flat, filtered);
   else if (flat) html = flatSessionsHtml(shownAgents);
   else for (const agent of shownAgents) {
     const agentKey = `a:${agent.id}`, openAgent = !indexState.collapsed.has(agentKey);
@@ -716,7 +725,7 @@ function renderTree() {
   // usually reads the same; rewriting it anyway replaced every row under the reader, and a press
   // that straddled the write, down on a row and up on its replacement, made no click at all: the
   // session tapped just then was not chosen.
-  const treeHtml = machineHeadsHtml() + (html || `<div class="no-results">${filtered ? "No sessions in this filter — Everything, in the filter, shows them all" : "No sessions"}</div>`);
+  const treeHtml = machineHeadsHtml(grouped) + (html || `<div class="no-results">${filtered ? "No sessions in this filter — Everything, in the filter, shows them all" : "No sessions"}</div>`);
   // A rewrite drops the focus to <body>, where the next key is no longer the list's: a session row the
   // keyboard focused, a step's or Tab's, keeps it, across the host's select, the index's next read and a
   // fold (stage 4). A row a press focused does not: carried, it would keep every key of the page's in
@@ -799,9 +808,10 @@ ${ARRANGE_SOURCES.map(key => `<button class="scope-option arrange-app" type="but
 </div>`);
 // #s561 (Hong: "extend the filter menu to have another check box to group agents by machine (right
 // above include idle)"): Group by machine, after the states and before Include hidden, drawn with the
-// states and shown while the list holds more than one machine (`renderFilterControl`).
+// states and shown while the list holds more than one machine (`renderFilterControl`, which alone
+// hides it: the markup does not, so a list of one machine that showed it would be the code's doing).
 if (shows("filter")) sheetParts[0] += `
-<div data-machine-part hidden><div class="scope-menu-divider"></div><div class="scope-menu-list">
+<div data-machine-part><div class="scope-menu-divider"></div><div class="scope-menu-list">
 <button class="scope-option" type="button" role="checkbox" aria-checked="false" data-by-machine title="A head for each machine, holding its own agents and projects"><span class="scope-check"></span><span>Group by machine</span></button>
 </div></div>`;
 filterSheet.innerHTML = sheetParts.join(`\n<div class="scope-menu-divider"></div>\n`);
