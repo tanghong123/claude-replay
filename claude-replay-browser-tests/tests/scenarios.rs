@@ -1856,7 +1856,7 @@ fn echo_shim(surface: Surface) -> String {
                     if (!st.armed || !prev || Math.abs(prev.top - top) <= 1) return;
                     st.armed = false;
                     var echo = {{ from: Math.round(prev.top), to: Math.round(top), gap: Math.round(now - prev.at) }};
-                    var skip = function (why) {{ st.hold = false; echo.skipped = why; st.skips.push(echo); st.done++; }};
+                    var skip = function (why) {{ var held = st.hold; st.hold = false; echo.skipped = why; st.skips.push(echo); st.done++; if (held) {target}.dispatchEvent(new Event('scroll')); }};
                     if (now - prev.at > w) return skip('the writes came ' + echo.gap + 'ms apart');
                     var during = st.during; st.during = null;
                     if (during) st.hold = true;
@@ -2025,14 +2025,10 @@ fn scenario_an_echoed_write_keeps_the_jump(
         .into_iter()
         .filter(|v| v["t"].as_f64().is_some_and(|t| t >= t0.floor()))
         .collect();
-    if during {
-        assert!(
-            broken.is_empty(),
-            "the engine's checks hold through the echo ({echo}): {broken:?}"
-        );
-    } else if !broken.is_empty() {
-        eprintln!("the engine's checks after the echo ({echo}): {broken:?}");
-    }
+    assert!(
+        broken.is_empty(),
+        "the engine's checks hold through the echo ({echo}): {broken:?}"
+    );
 }
 
 #[test]
