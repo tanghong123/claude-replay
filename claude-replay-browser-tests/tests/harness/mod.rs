@@ -4248,7 +4248,12 @@ pub fn open_host_page_with(
     answer_in_browser(tab, answers);
     tab.navigate_to(&monitor.url(&format!("session-view-host?{query}")))
         .unwrap();
-    tab.wait_until_navigated().unwrap();
+    // train2's CI twice timed out here, after the case had used the app in the same tab: say which
+    // host page and where the tab was, so the next run shows where the load stopped.
+    if let Err(e) = tab.wait_until_navigated() {
+        let at = eval(tab, "JSON.stringify({ href: location.href, ready: document.readyState, host: window.__host || null })");
+        panic!("the host page (session-view-host?{query}) to finish loading: {e}; the tab: {at}");
+    }
     until(
         tab,
         "!!(window.__host && (window.__host.mounted || window.__host.error))",

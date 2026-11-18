@@ -15690,7 +15690,9 @@ fn app_shell_the_search_box_shows_its_own_query() {
         settle();
         for moment in ["focused", "clicked away"] {
             if moment == "clicked away" {
-                eval(tab, "(function(){ document.getElementById('transcriptSearchInput').blur(); var t = document.querySelector('.transcript'); if (t) t.dispatchEvent(new MouseEvent('mousedown', {bubbles: true})); return 'away'; })()");
+                // A mouse's press on the transcript, as a reader clicks away: the pointerdown is what
+                // releases the search (#s520), the mousedown and the blur follow it.
+                eval(tab, "(function(){ var t = document.querySelector('.transcript'); if (t) { t.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true, pointerType: 'mouse', isPrimary: true})); t.dispatchEvent(new MouseEvent('mousedown', {bubbles: true})); } document.getElementById('transcriptSearchInput').blur(); return 'away'; })()");
                 settle();
             }
             let seen: serde_json::Value =
