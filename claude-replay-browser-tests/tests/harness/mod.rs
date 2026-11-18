@@ -4245,6 +4245,12 @@ pub fn open_host_page_with(
         body: page.replace("<!--host-policy-->", policy),
     }];
     answers.extend(more);
+    // What the page before it left in this origin's storage, which the host page reads as it mounts:
+    // said if the load never finishes, since a case that used the app first is the one that hung.
+    let stored = eval(
+        tab,
+        "JSON.stringify(Object.keys(localStorage).filter(k => k.startsWith('am-')).sort().map(k => k + '=' + String(localStorage.getItem(k)).slice(0, 40)))",
+    );
     answer_in_browser(tab, answers);
     tab.navigate_to(&monitor.url(&format!("session-view-host?{query}")))
         .unwrap();
@@ -4263,7 +4269,30 @@ pub fn open_host_page_with(
             .is_some_and(|h| h.contains("session-view-host"))
             && seen["ready"] == "complete";
         if !loaded {
-            panic!("the host page (session-view-host?{query}) to finish loading: {e}; the tab answers a script: {alive}; the tab: {at}");
+            // A tab that answers no script is busy or stopped: the renderers' CPU says which.
+            let busy = std::process::Command::new("ps")
+                .args(["-axo", "pcpu=,etime=,command="])
+                .output()
+                .map(|o| {
+                    let mut rows: Vec<String> = String::from_utf8_lossy(&o.stdout)
+                        .lines()
+                        .filter(|l| l.contains("--type=renderer"))
+                        .map(|l| l.trim().chars().take(60).collect())
+                        .collect();
+                    rows.sort_by(|a, b| {
+                        let cpu = |r: &String| {
+                            r.split_whitespace()
+                                .next()
+                                .and_then(|c| c.parse::<f64>().ok())
+                                .unwrap_or(0.0)
+                        };
+                        cpu(b).total_cmp(&cpu(a))
+                    });
+                    rows.truncate(3);
+                    rows.join(" | ")
+                })
+                .unwrap_or_default();
+            panic!("the host page (session-view-host?{query}) to finish loading: {e}; the tab answers a script: {alive}; the tab: {at}; stored before it: {stored}; the busiest renderers: {busy}");
         }
         eprintln!(
             "the host page (session-view-host?{query}) loaded with no navigation event ({e}): {at}"
