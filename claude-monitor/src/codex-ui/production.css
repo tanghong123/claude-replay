@@ -1373,8 +1373,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    join, where the box in use fills the bar and a folded one is its glyph: there the floor pushed
    Info and the pane's control out of the session's column. With a query the floor is what the query
    needs, as the view measures it (`--search-floor`, `fitDeskSearch`), the title keeping 80px: 400px
-   still left `needle` 17px short at 1100px. */
-@media(min-width:901px) and (min-height:501px),(min-width:901px) and (pointer:fine){#sessionView:not(.pl-phone):not(.pl-outline-bar) .workspace>.topbar>.header-search-cluster:is(:focus-within,.search-held),#sessionView:not(.pl-phone):not(.pl-outline-bar) .workspace>.topbar>.header-search-cluster:has(>.header-searchbox.has-query){min-width:var(--search-floor,min(400px,calc(100% - 330px)))}}
+   still left `needle` 17px short at 1100px. What the title needs is 80px or its first word, whichever
+   is wider (`--title-word`, set on the bar): a 330px allowance made for 80 pushed the bar's last
+   controls past the session's column beside a long first word (train2's measure). */
+@media(min-width:901px) and (min-height:501px),(min-width:901px) and (pointer:fine){#sessionView:not(.pl-phone):not(.pl-outline-bar) .workspace>.topbar>.header-search-cluster:is(:focus-within,.search-held),#sessionView:not(.pl-phone):not(.pl-outline-bar) .workspace>.topbar>.header-search-cluster:has(>.header-searchbox.has-query){min-width:var(--search-floor,min(400px,calc(100% - 250px - max(80px,min(var(--title-word,0px),160px) + 10px))))}}
 @media(min-width:1181px) and (min-height:501px),(min-width:1181px) and (pointer:fine){.header-searchbox:focus-within,.header-searchbox:has(input:not(:placeholder-shown)),.header-searchbox:has(.search-chips.has-chips){width:min(460px,36vw)}}
 /* #303 widened this: the box may hold chips now (`scope:o`, `tool:Read`), and at 1100px a 400px box
    left the text 34px — "needle" needs 43. */

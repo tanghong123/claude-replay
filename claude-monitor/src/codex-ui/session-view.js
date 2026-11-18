@@ -887,7 +887,8 @@ function renderHeader() {
   sayTitle(sessionTitle.textContent);
 }
 // #s520: off the phone the title keeps at least its first word, whatever else the top bar holds:
-// the bar's rules give it that much room (`--title-word` on the heading, production.css) and let
+// the bar's rules give it that much room (`--title-word` on the bar, so the search box's floor beside
+// the heading reads it too, production.css) and let
 // the crumb, the status chip and the search box give way first. Measured with the title's own font
 // on a canvas, so nothing is laid out for it, and again only when the text or the font changed (a
 // host's stylesheet may arrive after the first header). `var`: a header can be drawn during module
@@ -906,7 +907,7 @@ function markTitleWord() {
   const word = text.split(/\s+/)[0] || "";
   titleRuler.font = font;
   const width = word ? titleRuler.measureText(word).width + (text.length > word.length ? titleRuler.measureText("…").width : 0) : 0;
-  heading.style.setProperty("--title-word", `${Math.ceil(width) + 1}px`);
+  (heading.parentElement || heading).style.setProperty("--title-word", `${Math.ceil(width) + 1}px`);
   // A new name gives the box held beside it a different room (`fitDeskSearch`); during module
   // evaluation the search is not built yet and this does nothing.
   fitSearchField();
@@ -2703,14 +2704,20 @@ function fitDeskSearch(input) {
   const short = Math.ceil(strip - searchField.clientWidth);
   if (short <= 0) return;
   const box = cluster.getBoundingClientRect().width, own = searchbox.getBoundingClientRect().width;
-  // The box's own width rule, read with its `max-width:100%` lifted for a moment.
-  const held = searchbox.style.maxWidth;
-  searchbox.style.maxWidth = "none";
+  // The box's own width rule, read with its `max-width:100%` and its shrinking as a flex item lifted
+  // for a moment (a squeezed item could read its content's least instead).
+  const held = [searchbox.style.maxWidth, searchbox.style.flexShrink];
+  searchbox.style.maxWidth = "none"; searchbox.style.flexShrink = "0";
   const widest = searchbox.getBoundingClientRect().width + (box - own);
-  searchbox.style.maxWidth = held;
-  const title = byId("sessionTitle");
+  [searchbox.style.maxWidth, searchbox.style.flexShrink] = held;
+  // What the title can give: down to what it keeps, and no more than its heading can, which keeps a
+  // floor of its own (the first word and what else it draws at its least): a title above its keep in
+  // a heading at that floor has nothing to give, and a floor counted on it pushed the bar's last
+  // controls out of the session's column (train2's measure, a long first word at 1100px).
+  const title = byId("sessionTitle"), heading = title?.parentElement;
   const keep = title ? Math.max(parseFloat(getComputedStyle(title).minWidth) || 0, Math.min(TITLE_GIVES_TO, title.scrollWidth)) : 0;
-  const give = title ? Math.max(0, title.getBoundingClientRect().width - keep) : 0;
+  const headingGives = heading ? heading.getBoundingClientRect().width - (parseFloat(getComputedStyle(heading).minWidth) || 0) : Infinity;
+  const give = title ? Math.max(0, Math.min(title.getBoundingClientRect().width - keep, headingGives)) : 0;
   const floor = Math.floor(Math.min(box + short + 2, box + give, widest));
   if (floor > box) cluster.style.setProperty("--search-floor", `${floor}px`);
 }
