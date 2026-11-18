@@ -2676,12 +2676,13 @@ function fitDeskSearch(input) {
   const cs = getComputedStyle(input);
   fieldMeasure.style.font = cs.font; fieldMeasure.style.letterSpacing = cs.letterSpacing;
   fieldMeasure.textContent = input.value;
-  const text = Math.ceil(fieldMeasure.getBoundingClientRect().width) + 8;
-  const gap = parseFloat(getComputedStyle(searchField).columnGap) || 0;
-  const chips = searchChips.classList.contains("has-chips") ? searchChips.scrollWidth + gap : 0;
+  // What each part lacks at the floor the rule gives: the text (measured, or the field's own scroll
+  // width where that is more) and the chips, which a narrow strip holds to 70% of it.
+  const text = Math.max(Math.ceil(fieldMeasure.getBoundingClientRect().width) + 8, input.scrollWidth);
+  const short = Math.max(0, text - input.clientWidth) + Math.max(0, searchChips.scrollWidth - searchChips.clientWidth);
   const box = cluster.getBoundingClientRect().width;
-  const need = Math.ceil(box - searchField.getBoundingClientRect().width + chips + text);
-  if (need <= box) return;
+  if (!short) return;
+  const need = Math.ceil(box + short + 2);
   const title = byId("sessionTitle");
   const give = title ? Math.max(0, title.getBoundingClientRect().width - Math.min(120, title.scrollWidth)) : 0;
   cluster.style.setProperty("--search-floor", `${Math.floor(Math.min(need, box + give))}px`);
