@@ -1306,6 +1306,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    host says where its tabs open (the view's `detachTo`) and while a session is open. */
 .workspace>.topbar .session-newtab{font-size:15px;line-height:1}
 .workspace>.topbar .session-newtab[hidden]{display:none}
+/* The ↗ gives the search box its room while the search is in use: typed in, held, or holding a
+   query. With it the box at 1100px left the field no width beside the title (train2's CI, the
+   search box case); a tab of the session is not what a reader searching it reaches for, and it
+   comes back as the query goes. `:has()` cannot nest, hence two selectors. */
+.workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held))>.session-newtab,.workspace>.topbar:has(>.header-search-cluster>.header-searchbox.has-query)>.session-newtab{display:none}
 /* #272 every file view offers the file manager beside showing or downloading: one control in the
    pane's head for whatever the pane shows, and a prompt card's own reveal beside its action. */
 .preview-head .preview-reveal{width:32px;height:32px;flex:none}

@@ -1910,6 +1910,7 @@
 :where(#sessionView) .preview-head .preview-newtab[hidden]{display:none}
 :where(#sessionView) .workspace>.topbar .session-newtab{font-size:15px;line-height:1}
 :where(#sessionView) .workspace>.topbar .session-newtab[hidden]{display:none}
+:where(#sessionView) .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held))>.session-newtab,:where(#sessionView) .workspace>.topbar:has(>.header-search-cluster>.header-searchbox.has-query)>.session-newtab{display:none}
 :where(#sessionView) .preview-head .preview-reveal{width:32px;height:32px;flex:none}
 :where(#sessionView) .preview-head .preview-reveal[hidden]{display:none}
 :where(#sessionView) .preview-head .preview-reveal .icon{width:15px;height:15px}
