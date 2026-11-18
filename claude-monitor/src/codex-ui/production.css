@@ -410,7 +410,9 @@ body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){displa
    a machine with nothing in view keeps its head over one quiet line. */
 .agent-label.tree-machine-group{min-width:0;padding-top:14px;color:var(--sub);font-size:12px;font-weight:650;letter-spacing:0;text-transform:none}
 .tree-machine-name{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.tree-machine-note{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:450}
+/* A head too narrow for both gives way in the note first, down to a few letters, so the machine keeps its name
+   and the colour still says how it answers (#s561 walk: an iPad's 320px list cut both). */
+.tree-machine-note{flex:0 1000 auto;min-width:3.5em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:450}
 .tree-machine-group.tree-machine-group-stale .tree-machine-note{color:var(--amber)}
 .tree-machine-group.tree-machine-group-failed .tree-machine-note{color:var(--red)}
 .tree-machine-empty{padding:2px 12px 6px;color:var(--faint);font-size:11px}
