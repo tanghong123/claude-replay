@@ -6593,7 +6593,21 @@ fn a_touch_host_page_keeps_the_offset_the_reader_scrolled_it_to_beside_a_phone_r
     .expect("a touch scroll gesture");
     harness::pause("any ride a scroll event starts", Duration::from_millis(300));
     harness::eval(&tab, TWO_FRAMES);
-    let scrolled = read();
+    let mut scrolled = read();
+    // Where Chrome's synthesized touch scroll moves nothing at all (Linux's headless Chrome, as its
+    // synthesized tap stops at touchend there, #366): no offset and no transform, so nothing was
+    // snapped either. The finger's offset is then given to the page as a plain scroll, which the ride
+    // reads the same way (a scroll on a touch screen with nothing focused): a ride that took it for
+    // iOS's lift snaps it back to 0, as it did the gesture's on c723f926.
+    if scrolled["scroll"] == 0 && scrolled["transforms"] == serde_json::json!([]) {
+        eprintln!(
+            "the touch scroll gesture moved nothing: the finger's offset goes in as a page scroll"
+        );
+        harness::eval(&tab, "(function(){ scrollBy(0, 400); return true; })()");
+        harness::pause("any ride a scroll event starts", Duration::from_millis(300));
+        harness::eval(&tab, TWO_FRAMES);
+        scrolled = read();
+    }
     let at = scrolled["scroll"].as_i64().unwrap_or(0);
     // The search field takes focus where the reader is: then iOS lifts the page 150px for it under a
     // keyboard 300px tall (the page really scrolled, the keyboard shadowed as the other ride cases do).
