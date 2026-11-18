@@ -35,16 +35,16 @@ pub(crate) struct MetricsAcc {
     /// with zero interleaved exceptions — so one key is enough state to collapse them,
     /// which keeps the resumable cursor small.
     last_usage_key: Option<String>,
-    /// The RECORDED model `last_usage_key` was credited under — the resolved name when the
-    /// line records none. Both must match before a line is treated as a repeat: after a
-    /// restore the single-model-per-message invariant can't be re-verified, and subtracting
-    /// against another model's figures would under-credit. Recorded rather than resolved so
-    /// a head rename between two lines of one API call still reads as that call and adds
-    /// only growth; the growth lands under the new pick once (0 of 255 heads across 23
-    /// sessions landed inside a call, 2026-11-18). A line recording none falls back to the
-    /// resolved name, so a call mixing recorded and absent lines reads the odd line as a
-    /// new call; no repeat group in 31,342 across three stores mixes them
-    /// (2026-11-18), and a test pins the fallback.
+    /// The RECORDED model `last_usage_key` was credited under — the last resolved name
+    /// (`self.model`) when the line records none, not the current head's pick. Both must
+    /// match before a line is treated as a repeat: after a restore the single-model-per-message
+    /// invariant can't be re-verified, and subtracting against another model's figures would
+    /// under-credit. Recorded rather than resolved so a head rename between two lines of one
+    /// API call still reads as that call and adds only growth; the growth lands under the new
+    /// pick once (0 of 255 heads across 23 sessions landed inside a call, 2026-11-18). A line
+    /// recording none falls back to the last resolved name, so a call mixing recorded and
+    /// absent lines reads the odd line as a new call; no repeat group in 31,342 across three
+    /// stores mixes them (2026-11-18), and a test pins the fallback.
     last_usage_model: Option<String>,
     /// What has already been credited for `last_usage_key`, so a repeat adds only the
     /// growth. Identical repeats add nothing; a streamed/retried group that grows
@@ -1731,6 +1731,8 @@ mod runtime_tests {
     /// fixed: 0 of 31,342 repeat groups across three stores mix recorded and absent
     /// (2026-11-18), and inheriting the last recorded name instead would trade that
     /// unobserved over-count for an unobserved under-count on the restore subtraction check.
+    /// Neither approach can verify the absent line's model; they differ only on calls that
+    /// record the router, where the resolved name is the pick rather than the recording.
     #[test]
     fn a_line_without_a_recorded_model_guards_on_the_resolved_name() {
         let head_p =
