@@ -14211,12 +14211,11 @@ fn the_app_shell_puts_a_turns_time_and_duration_below_its_bubble() {
         };
         let laid = |u: &serde_json::Value| {
             let (turn, bubble) = (&u["turn"], &u["bubble"]);
-            let Some(t) = u["times"].as_array() else {
+            let Some(t) = u["times"].as_array().filter(|t| !t.is_empty()) else {
                 return false;
             };
             let last = &t[t.len() - 1];
-            !t.is_empty()
-                && t.iter().all(|r| {
+            t.iter().all(|r| {
                     n(r, 1) >= n(bubble, 3)
                         && n(r, 3) <= n(turn, 3)
                         && (n(r, 1) - n(&t[0], 1)).abs() <= 1
