@@ -265,10 +265,14 @@ the sheet; with `app-frame:` alone WebKit stopped it first and the link went now
 delegate still lets a frame load nothing but its own page); `form-action 'none'`; `base-uri
 'none'`. Of the schemes a link out may take, only `http:` and `https:` reach the delegate from the
 frame today: the app's WebKit stops a sandboxed frame's move to `mailto:`, `tel:` or `sms:` before
-any delegate is asked, so such a link goes nowhere and nothing opens (walked, agent-monitor-app
-#s12). The three stay in `frame-src` because the policy is built from the one list of schemes the
-sheet asks for, and a WebKit that let such a move through would meet the sheet rather than open it
-unasked. An agent's page is not under the policy, being on its own scheme. The scripts the page
+any delegate is asked (walked, agent-monitor-app #s12). So for those three the reader's own tap on
+the link is the ask: the app's script, in a world the page cannot reach, hears the tap and, unless
+the page took the click for itself, the sheet names the address; the page's own `click()` is not a
+tap and asks nothing, and a frame's navigation to one is refused unasked, so the reader is asked
+once (walked, agent-monitor-app #s19). The three stay in `frame-src` because the policy is built
+from the one list of schemes the sheet asks for, and a WebKit that let such a move through would
+meet the delegate, which refuses it, rather than open it unasked. An agent's page is not under the
+policy, being on its own scheme. The scripts the page
 loads from a monitor today come from the app's bundle instead, under `/kit/`: mdrev's guest (D8)
 and the diagram runtime (`/mermaid/<version>.js`, found today through the page head's
 `mermaid-runtime` meta), which each host vendors until a second host needs them in the kit
