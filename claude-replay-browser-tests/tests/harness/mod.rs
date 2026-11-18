@@ -4283,7 +4283,7 @@ pub fn open_host_page_with(
             serde_json::from_str(at.as_str().unwrap_or("null")).unwrap_or_default();
         let loaded = seen["href"]
             .as_str()
-            .is_some_and(|h| h.contains("session-view-host"))
+            .is_some_and(|h| h.contains(&format!("session-view-host?{query}")))
             && seen["ready"] == "complete";
         if !loaded {
             let alive = match tab.evaluate("1 + 1", false) {

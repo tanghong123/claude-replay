@@ -13891,7 +13891,6 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     );
     fits(&at(&tab, 490, false, "the host"), "a host's 490px pane");
     // A host that switched Aa off keeps fold-all in the bar, in Aa's room (a browser of its own too).
-    harness::clear_metrics(&tab);
     drop(tab);
     drop(_browser);
     let (_browser, tab) = harness::fresh_tab(&monitor);
