@@ -68,7 +68,8 @@ pub struct RuntimeInfo {
     /// The model the person picked in the client, when the transcript's `runtime-config`
     /// head names it: the Qoder family writes its picker's key there (`qmodel_latest`,
     /// `qfmodel`, …) while its assistant records name the router ("auto") instead, so the
-    /// head is the only place the selection is written. Last value wins, like every field
+    /// head is the reliable place the selection is written (the per-turn
+    /// `businessModelKey` carries it too where present). Last value wins, like every field
     /// here; an empty or absent head model names nothing.
     #[serde(default)]
     pub model: Option<String>,

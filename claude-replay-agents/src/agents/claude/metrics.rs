@@ -38,9 +38,10 @@ pub(crate) struct MetricsAcc {
     /// The model `last_usage_key` was credited under. Both must match before a line is
     /// treated as a repeat: after a restore the single-model-per-message invariant can't
     /// be re-verified, and subtracting against another model's figures would under-credit.
-    /// The name stored is the resolved one: a head rewrite between two lines of one API call
-    /// renames the second, so the pair reads as two calls and credits twice — rare, heads
-    /// land at turn opens.
+    /// The name stored is the resolved one: a head between two lines of one API call
+    /// renames the second, so the pair reads as two calls and credits twice — unobserved
+    /// in 255 heads across 23 sessions (2026-11-18), where heads mostly arrive mid-turn
+    /// and name the pick for the calls after them.
     last_usage_model: Option<String>,
     /// What has already been credited for `last_usage_key`, so a repeat adds only the
     /// growth. Identical repeats add nothing; a streamed/retried group that grows
@@ -111,9 +112,12 @@ impl MetricsAcc {
         remember_string(&mut self.runtime.client_version, v.get("version"));
         if v.get("type").and_then(Value::as_str) == Some("runtime-config") {
             remember_string(&mut self.runtime.reasoning_effort, v.get("reasoningEffort"));
-            // The client rewrites the head on every picker change (three mid-session switch
-            // sessions measured 2026-11-18); the per-turn `businessModelKey` matches it where
-            // present but is absent on some turn-openers, so the head is the selection's source.
+            // The client writes a fresh head on every picker change (23 sessions, 255 heads
+            // measured 2026-11-18; 230 arrive mid-turn, naming the pick for the calls after
+            // them). The per-turn `businessModelKey` matches it where present but is absent
+            // on some turn-openers, so the head is the selection's source. No empty head and
+            // no switch back to the router was observed; a reset written as empty would keep
+            // the last pick — revisit if a client ever does.
             remember_string(&mut self.runtime.model, v.get("model"));
             if let Some(w) = v.get("contextWindow").and_then(Value::as_u64) {
                 self.runtime.context_window_tokens = Some(w);
@@ -340,7 +344,7 @@ impl MetricsAcc {
     }
 
     /// The Qoder family's assistant records name the ROUTER ("auto"), while the model the
-    /// person picked is written only in the `runtime-config` head — so a record naming the
+    /// person picked is written reliably in the `runtime-config` head — so a record naming the
     /// router buckets under the head's selection. A record naming a model of its own keeps
     /// it, and a head naming the router itself (or nothing) renames nothing.
     fn named_model(&self, recorded: &str) -> String {
@@ -1621,12 +1625,34 @@ mod runtime_tests {
         assert_eq!(m.per_model["auto"].output, 5);
         assert_eq!(m.per_model["qmodel_latest"].output, 7);
         assert_eq!(m.model, "qmodel_latest");
+        // Pick to pick, and pick back to the router: each turn's replies stay under the
+        // pick in force when they were written.
+        let head_fast = r#"{"type":"runtime-config","sessionId":"q","model":"fast","timestamp":3}"#;
+        let auto3 = r#"{"type":"assistant","requestId":"r3","message":{"role":"assistant","id":"m3","model":"auto","usage":{"output_tokens":2}},"timestamp":"2026-09-03T10:02:02.000Z"}"#;
+        let head_router =
+            r#"{"type":"runtime-config","sessionId":"q","model":"auto","timestamp":4}"#;
+        let auto4 = r#"{"type":"assistant","requestId":"r4","message":{"role":"assistant","id":"m4","model":"auto","usage":{"output_tokens":3}},"timestamp":"2026-09-03T10:03:02.000Z"}"#;
+        let m = fold(&[
+            head_auto,
+            auto1,
+            head_pick,
+            auto2,
+            head_fast,
+            auto3,
+            head_router,
+            auto4,
+        ])
+        .finish();
+        assert_eq!(m.per_model["qmodel_latest"].output, 7);
+        assert_eq!(m.per_model["fast"].output, 2);
+        assert_eq!(m.per_model["auto"].output, 8);
+        assert_eq!(m.model, "auto");
     }
 
-    /// A cursor parked without `runtime.model` restores to no pick: router-named replies
-    /// keep the router's row until a head names one again. (Cursors parked before v82 are
-    /// discarded by the version guard; this pins the restore semantics for a state whose
-    /// runtime simply never saw a head.)
+    /// A state whose runtime carries no `model` key — the shape a pre-v82 cursor had —
+    /// restores to no pick: router-named replies keep the router's row until a head names
+    /// one again. (The version guard discards pre-v82 cursors outright; this pins the
+    /// restore semantics itself, by deleting the key from a fresh state.)
     #[test]
     fn a_restore_without_runtime_model_keeps_the_router_row_until_a_head_names_one() {
         let head =
@@ -1680,7 +1706,7 @@ mod runtime_tests {
     }
 
     /// The Qoder family's assistant records name the ROUTER ("auto"); the model the
-    /// person picked is written only in the `runtime-config` head. The pick's tokens
+    /// person picked is written reliably in the `runtime-config` head. The pick's tokens
     /// belong on the pick's row, not the router's. A head naming the router itself,
     /// an empty head, or a client writing real model names stays untouched.
     #[test]

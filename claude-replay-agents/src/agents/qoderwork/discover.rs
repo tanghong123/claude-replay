@@ -34,7 +34,7 @@ pub(crate) struct Home {
 /// bookkeeping; `active-leaf` {leafUuid, explicit, timestamp, compactBoundaryUuid?} — names the live
 /// branch of a rewound conversation, which the page does not draw as branches (revisit if it ever
 /// does). `runtime-config.model` is read by the metrics fold: a reply naming the router buckets
-/// under the head's selection; the other fields carry nothing the page renders.
+/// under the head's selection; the other records carry nothing the page renders.
 pub(crate) const FAMILY_RECORD_TYPES: &[&str] = &[
     "active-leaf",
     "runtime-config",
