@@ -35,13 +35,13 @@ pub(crate) struct MetricsAcc {
     /// with zero interleaved exceptions — so one key is enough state to collapse them,
     /// which keeps the resumable cursor small.
     last_usage_key: Option<String>,
-    /// The model `last_usage_key` was credited under. Both must match before a line is
-    /// treated as a repeat: after a restore the single-model-per-message invariant can't
-    /// be re-verified, and subtracting against another model's figures would under-credit.
-    /// The name stored is the resolved one: a head between two lines of one API call
-    /// renames the second, so the pair reads as two calls and credits twice — unobserved
-    /// in 255 heads across 23 sessions (2026-11-18), where heads mostly arrive mid-turn
-    /// and name the pick for the calls after them.
+    /// The RECORDED model `last_usage_key` was credited under — the resolved name when the
+    /// line records none. Both must match before a line is treated as a repeat: after a
+    /// restore the single-model-per-message invariant can't be re-verified, and subtracting
+    /// against another model's figures would under-credit. Recorded rather than resolved so
+    /// a head rename between two lines of one API call still reads as that call and adds
+    /// only growth; the growth lands under the new pick once (0 of 255 heads across 23
+    /// sessions landed inside a call, 2026-11-18).
     last_usage_model: Option<String>,
     /// What has already been credited for `last_usage_key`, so a repeat adds only the
     /// growth. Identical repeats add nothing; a streamed/retried group that grows
@@ -167,11 +167,8 @@ impl MetricsAcc {
             }
         }
         // The model THIS message ran on — not `self.model`, which is only the last seen.
-        let m = self.named_model(
-            v.pointer("/message/model")
-                .and_then(|x| x.as_str())
-                .unwrap_or(&self.model),
-        );
+        let recorded = v.pointer("/message/model").and_then(|x| x.as_str());
+        let m = self.named_model(recorded.unwrap_or(&self.model));
         if let Some(u) = v.pointer("/message/usage") {
             // Three distinct buckets so the footer can tell them apart: new input,
             // cache writes (new content, cached on first sight), and cache reads
@@ -197,9 +194,13 @@ impl MetricsAcc {
                     None => id.to_string(),
                 }
             });
+            // The guard compares the RECORDED name, not the resolved one: a head rename
+            // between two lines of one call is still that call, so the second line adds
+            // only growth instead of re-crediting under the new pick.
+            let guard_model = recorded.unwrap_or(m.as_str());
             let repeat = key.is_some()
                 && self.last_usage_key == key
-                && self.last_usage_model.as_deref() == Some(m.as_str());
+                && self.last_usage_model.as_deref() == Some(guard_model);
             let credit = if repeat {
                 // Per-field growth. `saturating_sub` because a repeat is never expected to
                 // report LESS, and if one ever does, crediting zero beats underflowing.
@@ -235,7 +236,7 @@ impl MetricsAcc {
             };
             if !repeat {
                 self.last_usage_key = key;
-                self.last_usage_model = Some(m.clone());
+                self.last_usage_model = Some(guard_model.to_string());
                 self.credited_advisors = 0;
             }
             // A model priced by prompt length (#s47: Claude Haiku 5.5, 5x over 100,000) takes
@@ -1675,6 +1676,33 @@ mod runtime_tests {
         let m = resumed.finish();
         assert_eq!(m.per_model["qmodel_latest"].output, 12);
         assert_eq!(m.per_model.get("auto").map(|t| t.output).unwrap_or(0), 0);
+    }
+
+    /// A head rename between two lines of ONE API call must not re-credit the call: the
+    /// repeat guard compares the RECORDED model, so the second line adds only growth.
+    #[test]
+    fn a_head_rename_inside_one_call_credits_growth_only() {
+        let head_p =
+            r#"{"type":"runtime-config","sessionId":"q","model":"qmodel_latest","timestamp":1}"#;
+        let head_q = r#"{"type":"runtime-config","sessionId":"q","model":"fast","timestamp":2}"#;
+        let line1 = r#"{"type":"assistant","requestId":"r1","message":{"role":"assistant","id":"m1","model":"auto","usage":{"output_tokens":5}},"timestamp":"2026-09-03T10:00:02.000Z"}"#;
+        let line2 = r#"{"type":"assistant","requestId":"r1","message":{"role":"assistant","id":"m1","model":"auto","usage":{"output_tokens":5}},"timestamp":"2026-09-03T10:00:03.000Z"}"#;
+        let m = fold(&[head_p, line1, head_q, line2]).finish();
+        assert_eq!(m.per_model["qmodel_latest"].output, 5);
+        assert_eq!(m.per_model.get("fast").map(|t| t.output).unwrap_or(0), 0);
+        // Growth after the rename lands under the new pick, once.
+        let line3 = r#"{"type":"assistant","requestId":"r1","message":{"role":"assistant","id":"m1","model":"auto","usage":{"output_tokens":7}},"timestamp":"2026-09-03T10:00:04.000Z"}"#;
+        let m = fold(&[head_p, line1, head_q, line3]).finish();
+        assert_eq!(m.per_model["qmodel_latest"].output, 5);
+        assert_eq!(m.per_model["fast"].output, 2);
+        // The guard survives a resume cursor.
+        let acc = fold(&[head_p, line1, head_q]);
+        let mut resumed = MetricsAcc::recording(&["effort", "permission", "client"]);
+        resumed.restore(&acc.state());
+        resumed.push(&serde_json::from_str::<Value>(line2).unwrap());
+        let m = resumed.finish();
+        assert_eq!(m.per_model["qmodel_latest"].output, 5);
+        assert_eq!(m.per_model.get("fast").map(|t| t.output).unwrap_or(0), 0);
     }
 
     /// The resume cursor carries the snapshot; the declaration stays the adapter's.
