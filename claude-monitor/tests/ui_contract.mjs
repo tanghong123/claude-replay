@@ -2668,7 +2668,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(src, /syncPosition\(placed = null\) \{\n(?:    \/\/.*\n)*    if \(!this\.laidOut\(\)\) return;\n    if \(this\.following \|\| this\.dragging \|\| !this\.count\) \{ this\.position = null; return; \}\n(?:.*\n){0,6}?    const read = this\.captureDomAnchor\(\) \|\| this\.modelAnchor\(\);/, "…and every transaction re-reads it where it left the reader (a landing the reader asked for excepted, #196 stage 4)");
   // #s291: the remainder a whole-pixel placement leaves is the engine's, not the reader's — read back
   // as the new `P`, a run of fills walked a reader 1.3px.
-  assert.match(src, /const left = exact == null \? 0 : this\.frame\.scrollTop\(\) - exact;\n\s*if \(left && Math\.abs\(left\) <= 1\) \{/, "…less the remainder of the anchor it placed, never a clamp's (#s291)");
+  assert.match(src, /const left = exact == null \? 0 : this\.readTop\(\) - exact;\n\s*if \(left && Math\.abs\(left\) <= 1\) \{/, "…less the remainder of the anchor it placed, never a clamp's (#s291)");
   assert.match(src, /this\.syncPosition\(placed === "placed" && !drift && !smooth \? p0 : null\);/, "…and only for a placement with no drift of the reader's in it");
   assert.match(src, /const PLACE_EPSILON = 0\.5;/, "a placement writes any correction a whole-pixel offset can make (#s291)");
   assert.match(src, /if \(child\.top < viewportTop - 1 && this\.placeholderAt\(Number\(child\.element\.dataset\.unitIndex\)\)\) \{/, "a placeholder straddling the top is no anchor while the unit after it begins on screen (#s291)");
@@ -3959,8 +3959,23 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(engine, /forgetWrites\(\) \{\n\s*this\.wrote = null;\n\s*this\.recentWrites = \[\];\n\s*\}/, "forgetting the write forgets the writes it could echo (#s568)");
   assert.doesNotMatch(engine.replace(/forgetWrites\(\) \{\n\s*this\.wrote = null;/, "").replace(/^\s*this\.wrote = null;\n\s*\/\/ The instant writes made within/m, ""), /this\.wrote = null;/, "every reset of the write goes through forgetWrites (#s568)");
   assert.match(engine, /if \(this\.echoOf\(top, event && event\.timeStamp \? event\.timeStamp : performance\.now\(\)\)\) \{\n\s*this\.trace\("scroll:echo"/, "onScroll ignores an echo, stamped by the event's own time (#s568)");
-  for (const read of ["const startTop = this.readTop();", "this.position.at !== this.readTop() && !this.inFlight()", "held.at = this.inFlight() ? this.wrote.to : this.readTop();", "p.at !== this.readTop()) v(\"I1\""])
+  for (const read of ["const startTop = this.readTop();", "this.position.at !== this.readTop() && !this.inFlight()", "held.at = this.inFlight() ? this.wrote.to : this.readTop();", "p.at !== this.readTop()) v(\"I1\"", "correction(this.inFlight() ? this.wrote.to : this.readTop(), want, PLACE_EPSILON)"])
     assert.ok(engine.includes(read), `"did the reader move" reads past an echo: ${read} (#s568)`);
+  // …and what is read on screen during an echo describes the view at the latest write (the review of
+  // #s568): a capture there named the echo's offset, which the next placement wrote for real, and
+  // every transaction during an echo reported its distance as an I7 displacement.
+  for (const read of [
+    "const at = this.readTop(), lag = this.frame.scrollTop() - at;",
+    "top: child.top - viewportTop + lag, block: null, blockTop: 0, at, fallback: this.modelAnchor() };",
+    "anchor.blockTop = row.top - viewportTop + lag; }",
+    "const at = this.readTop(), y = at - this.contentTop();",
+    "next.getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop() - at",
+    "const y = this.readTop() - this.contentTop();\n    const first = this.indexAt(Math.max(0, y));",
+    "(row || item).getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop() - this.readTop();",
+    "if (this.position && Math.abs(this.position.at - this.wrote) <= 1 && this.echoOf(this.frame.scrollTop()))",
+    "performance.now() - latest.at > ECHO_MS",
+  ])
+    assert.ok(engine.includes(read), `a read on screen during an echo is moved to the latest write: ${read} (#s568)`);
   assert.match(engine, /const drift = p0 && p0\.at != null && !this\.inFlight\(\) && !returning \? startTop - p0\.at : 0;/, "no drift while a smooth write travels");
   assert.match(engine, /const smooth = !!options\.smooth \|\| this\.inFlight\(\);/, "…and a placement then is issued smooth again, toward the recomputed destination");
   // The commanded hold: kept while the anchor resolves at its index, released on the reader's signal.

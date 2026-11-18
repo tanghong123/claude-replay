@@ -256,7 +256,7 @@ const UNHEARD_MS = 2000;
 /** How long after an instant write the browser may still report an EARLIER one (#s568). iOS WebKit
  *  scrolls on a thread of its own and, given two writes close together, can hand the main thread the
  *  first again after the second: the offset and the layout at it, by every read (the getter, a scroll
- *  event, a frame), and then the second. Measured on the 11-inch iPad Simulator (probe568, 90 trials
+ *  event, a frame), and then the second. Measured on the 11-inch iPad Simulator (90 trials
  *  of two writes 0-50ms apart): the earlier offset read back up to 26ms after the later write, whose
  *  scroll event came by 55ms; never once that event had come; every trial rested at the later write.
  *  About twice that is the backstop, since a write the browser never reports (Chrome fires no event
@@ -600,6 +600,11 @@ class VirtualWindow {
    *  entirely (a dragged thumb does that) and the scroll offset places it. */
   captureDomAnchor() {
     const viewportTop = this.frame.viewportTop();
+    // While the browser echoes an earlier write (#s568) the layout is the echo's, and the reader is
+    // where the latest write put them: what is read on screen is moved by the difference (`lag`, 0
+    // otherwise), so the anchor describes the view at the write. Read as it stood, it named the
+    // echo's offset, and the next placement wrote that offset for real: the reader moved.
+    const at = this.readTop(), lag = this.frame.scrollTop() - at;
     const viewportBottom = viewportTop + this.frame.clientHeight();
     const rects = element => {
       const rect = element.getBoundingClientRect();
@@ -620,7 +625,7 @@ class VirtualWindow {
     // Alongside the anchor, the model form of the same position (#191), read from the same sums,
     // now — before any rewrite moves them. It is the fallback if the anchor's identity is gone or
     // names another record by the time it is placed (framework I12; #165).
-    const anchor = { source: "anchor", key: child.element.dataset.unitKey, index: Number(child.element.dataset.unitIndex), top: child.top - viewportTop, block: null, blockTop: 0, at: this.frame.scrollTop(), fallback: this.modelAnchor() };
+    const anchor = { source: "anchor", key: child.element.dataset.unitKey, index: Number(child.element.dataset.unitIndex), top: child.top - viewportTop + lag, block: null, blockTop: 0, at, fallback: this.modelAnchor() };
     const rowIn = element => firstVisible([...element.querySelectorAll("[data-block-index]")].map(rects), viewportTop, Infinity, 1, true);
     // ONE predicate, applied from the item down: refine only while the thing you are holding
     // STRADDLES the viewport edge. Whatever straddles is the only thing whose top the reader
@@ -647,7 +652,7 @@ class VirtualWindow {
       if (!inner) break;
       row = inner;
     }
-    if (row) { anchor.block = row.element.dataset.blockIndex; anchor.blockTop = row.top - viewportTop; }
+    if (row) { anchor.block = row.element.dataset.blockIndex; anchor.blockTop = row.top - viewportTop + lag; }
     return anchor;
   }
 
@@ -777,13 +782,15 @@ class VirtualWindow {
    *  the scroll offset falls in, and how far into it. Read BEFORE a mount changes the sums, so it
    *  describes the layout the reader actually scrolled through. */
   modelAnchor() {
-    const y = this.frame.scrollTop() - this.contentTop();
+    // At the latest write while the browser echoes an earlier one (#s568): `contentTop` is the same
+    // in either layout.
+    const at = this.readTop(), y = at - this.contentTop();
     const index = Math.max(0, Math.min(this.indexAt(y), this.count - 1));
     // The offset is SIGNED: above the first record (the page header, a jump to the very top) it is
     // how far above, and clamping it to zero would pull the reader down onto record 0 — measured
     // as the turn bar lighting up at the top of the page. Past the last record it is the bottom
     // padding. Either way the restore reproduces the offset the reader had.
-    return { source: "model", index, offset: y - (this.prefix[index] || 0), at: this.frame.scrollTop() };
+    return { source: "model", index, offset: y - (this.prefix[index] || 0), at };
   }
 
   /** One entry in the viewport trace (#192): what the engine decided, and the geometry it decided
@@ -864,12 +871,12 @@ class VirtualWindow {
     if (held && this.anchorResolves(held)) { held.at = this.inFlight() ? this.wrote.to : this.readTop(); return; }
     // The browser echoing an earlier write (#s568) shows a layout the reader never moved to: `P` stays
     // where the transaction placed it, at the write.
-    if (this.position && this.echoOf(this.frame.scrollTop())) { this.position.at = this.wrote; return; }
+    if (this.position && Math.abs(this.position.at - this.wrote) <= 1 && this.echoOf(this.frame.scrollTop())) { this.position.at = this.wrote; return; }
     const read = this.captureDomAnchor() || this.modelAnchor();
     const exact = placed && placed.source === "anchor" && this.anchorResolves(placed) ? this.offsetOf(placed) : null;
     // How much further down the view is than the placement asked; more than a pixel is a clamp, not
     // a remainder, and the view as read is the reader's.
-    const left = exact == null ? 0 : this.frame.scrollTop() - exact;
+    const left = exact == null ? 0 : this.readTop() - exact;
     if (left && Math.abs(left) <= 1) {
       if (read.source === "anchor") { read.top += left; read.blockTop += left; } else read.offset -= left;
     }
@@ -1010,7 +1017,8 @@ class VirtualWindow {
     const writes = this.recentWrites;
     const latest = writes[writes.length - 1];
     if (!latest || writes.length < 2 || Math.abs(latest.top - this.wrote) > 1) return false;
-    if (at - latest.at > ECHO_MS || Math.abs(top - latest.top) <= 1) return false;
+    // Both the event's own stamp and now: an event stamped in time but delivered late is no echo either.
+    if (at - latest.at > ECHO_MS || performance.now() - latest.at > ECHO_MS || Math.abs(top - latest.top) <= 1) return false;
     return writes.slice(0, -1).some(write => Math.abs(top - write.top) <= 1);
   }
 
@@ -1469,10 +1477,12 @@ class VirtualWindow {
     const slot = !p || p.index == null ? null
       : p.top != null ? p.top - marginTop([...this.mount.children].find(child => Number(child.dataset.unitIndex) === p.index))
       : p.offset != null ? -p.offset : null;
+    // At the latest write while the browser echoes an earlier one, as `captureDomAnchor` reads (#s568).
+    const at = this.readTop();
     const top = this.laidOut() || slot == null
-      ? next.getBoundingClientRect().top - this.frame.viewportTop()
+      ? next.getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop() - at
       : slot + (this.prefix[from + 1] || 0) - (this.prefix[p.index] || 0) + marginTop(next);
-    return { source: "anchor", key: next.dataset.unitKey, index: from + 1 + shift, top, block: null, blockTop: 0, at: this.frame.scrollTop(), fallback: null };
+    return { source: "anchor", key: next.dataset.unitKey, index: from + 1 + shift, top, block: null, blockTop: 0, at, fallback: null };
   }
 
   /** The focus, when it is inside a mounted unit: that unit's key, the child positions from the
@@ -1617,7 +1627,8 @@ class VirtualWindow {
   /** Does the mounted window cover what the viewport shows? The offset's first and last records,
    *  against `[lo, hi)`; the end of the page counts as covered when the last record is mounted. */
   viewportMounted() {
-    const y = this.frame.scrollTop() - this.contentTop();
+    // Where the reader is: the latest write while the browser echoes an earlier one (#s568).
+    const y = this.readTop() - this.contentTop();
     const first = this.indexAt(Math.max(0, y));
     const last = Math.min(this.indexAt(y + this.frame.clientHeight()), this.count - 1);
     return first >= this.lo && last < this.hi;
@@ -1874,7 +1885,9 @@ class VirtualWindow {
       const item = [...this.mount.children].find(child => child.dataset.unitKey === p0.key);
       if (item) {
         const row = p0.block != null ? item.querySelector(`[data-block-index="${p0.block}"]`) : null;
-        const top = (row || item).getBoundingClientRect().top - this.frame.viewportTop();
+        // In the layout at the write, while the browser echoes an earlier one (#s568): read as the
+        // echo shows it, every transaction in the echo reported its distance as a displacement.
+        const top = (row || item).getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop() - this.readTop();
         const want = (row ? p0.blockTop : p0.top) - drift;
         if (Math.abs(top - want) > 1.5) v("I7", { anchor: p0.key, block: row ? p0.block : null, top: Math.round(top), want: Math.round(want), drift: Math.round(drift) });
       }
