@@ -52,8 +52,8 @@ const KEYMAP = Object.freeze([
 // The full-width brackets, read as the bracket keys (#s576). A Chinese keyboard can give [ and ] as
 // 【 and 】 (U+3010, U+3011) even with nothing editable focused: the iPad Simulator under Pinyin gave
 // one [ as U+3010 (#s544); a Mac typing Chinese punctuation may do the same, which is not measured.
-// No binding uses them, so nothing else can fire. The keys are still read by `key`, never by `code`: on a layout
-// other than US the bracket keys sit elsewhere.
+// No binding uses them, so nothing else can fire. The keys are still read by `key`, never by `code`:
+// on a layout other than US the bracket keys sit elsewhere.
 const WIDE_KEYS = new Map([["\u3010", "["], ["\u3011", "]"]]);
 
 const isEditable = target => !!target && (/^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName || "") || target.isContentEditable === true);
