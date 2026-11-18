@@ -1793,7 +1793,8 @@ fn app_shell_pages_and_steps_around_a_deep_jump() {
 /// before it settles on the second (or on whatever the engine wrote since). Chrome never does, so the
 /// shim hooks the scroller's `scrollTop` setter: a write that follows another within 80ms puts the
 /// earlier one back on the next task with its scroll event, and 12ms later the latest, with its own.
-/// Once per arming, so it plays one echo and cannot feed on its own writes.
+/// Once per arming, so it plays one echo and cannot feed on its own writes. A case's `next`, set after
+/// arming, runs in the frame after the engine's first write: the growth that makes the second.
 fn echo_shim(surface: Surface) -> String {
     let (scroller, target) = match surface {
         Surface::Classic => ("document.scrollingElement", "window"),
@@ -1813,6 +1814,10 @@ fn echo_shim(surface: Surface) -> String {
                     desc.set.call(this, v);
                     var now = performance.now(), top = desc.get.call(this), prev = st.last;
                     st.last = {{ top: top, at: now }};
+                    // The case's second growth starts from the engine's first write, in the next frame,
+                    // so the two writes come a frame apart whatever the tab's frame rate (two growths
+                    // in consecutive frames could be measured in one transaction, or a lazy frame apart).
+                    if (st.armed && st.next) {{ var next = st.next; st.next = null; requestAnimationFrame(next); }}
                     if (!st.armed || !prev || now - prev.at > 80 || Math.abs(prev.top - top) <= 1) return;
                     st.armed = false;
                     var echo = {{ from: Math.round(prev.top), to: Math.round(top), gap: Math.round(now - prev.at) }};
@@ -1824,7 +1829,7 @@ fn echo_shim(surface: Surface) -> String {
                 }} }});
             s.__echoHooked = true;
         }}
-        window.__echo.armed = true; window.__echo.last = null;
+        window.__echo.armed = true; window.__echo.last = null; window.__echo.next = null;
         return true;
     }})()"#
     )
@@ -1877,7 +1882,7 @@ fn scenario_an_echoed_write_keeps_the_jump(
     let grown = eval(
         tab,
         &format!(
-            "(function(){{ var vt = {view_top}; var above = [...document.querySelectorAll('[data-unit-index]')].filter(function (u) {{ return u.getBoundingClientRect().bottom < vt - 4; }}).pop(); if (!above) return null; window.__s568t0 = performance.now(); above.style.paddingTop = '700px'; requestAnimationFrame(function () {{ requestAnimationFrame(function () {{ above.style.paddingTop = '3700px'; }}); }}); return above.dataset.unitKey; }})()"
+            "(function(){{ var vt = {view_top}; var above = [...document.querySelectorAll('[data-unit-index]')].filter(function (u) {{ return u.getBoundingClientRect().bottom < vt - 4; }}).pop(); if (!above) return null; window.__s568t0 = performance.now(); window.__echo.next = function () {{ above.style.paddingTop = '3700px'; }}; above.style.paddingTop = '700px'; return above.dataset.unitKey; }})()"
         ),
     );
     assert!(grown.is_string(), "a unit above the view to grow: {grown}");
