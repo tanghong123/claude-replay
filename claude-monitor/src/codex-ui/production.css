@@ -325,7 +325,7 @@ body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){displa
 .process-commentary-label { color: var(--sub); font-weight: 620; }
 .process-commentary-copy { color: var(--ink); font-size: 13.5px; }
 
-/* #167. Hidden at rest, revealed on the block the pointer is over — the owner asked for the chip, not for a column of them ("too many #s"). Because #162 gave each control a real SLOT, revealing costs NO reflow: the space is already held, so nothing moves when the pointer arrives. Both controls now follow one rule. */.spot-link{opacity:0;border-color:var(--line);background:var(--bg);color:var(--faint)}.turn:hover>.spot-link,.turn:focus-within>.spot-link,.spot-link:focus-visible{opacity:1}.spot-link:hover,.spot-link:focus-visible{border-color:color-mix(in srgb,var(--primary) 22%,var(--line));background:color-mix(in srgb,var(--primary-soft) 42%,var(--bg));color:var(--primary);transform:translateY(-1px)}.spot-link:focus-visible{outline:2px solid color-mix(in srgb,var(--primary) 48%,transparent);outline-offset:2px}.spot-link.copied{opacity:1;border-color:color-mix(in srgb,var(--success) 26%,var(--line));background:var(--success-soft);color:var(--success);transform:none}.turn.source-flash>.spot-link{opacity:1}@media(hover:none){.spot-link,.renderer>.renderer-spot{opacity:1}}@media(max-width:620px){.spot-link{right:0;--spot-top:-5px}.turn.user .spot-link{--spot-top:-12px}.turn.proposed-plan>.spot-link{right:7px;--spot-top:8px}}
+/* #167. Hidden at rest, revealed on the block the pointer is over — the owner asked for the chip, not for a column of them ("too many #s"). Because #162 gave each control a real SLOT, revealing costs NO reflow: the space is already held, so nothing moves when the pointer arrives. Both controls now follow one rule. */.spot-link{opacity:0;border-color:var(--line);background:var(--bg);color:var(--faint)}.turn:hover>.spot-link,.turn:focus-within>.spot-link,.spot-link:focus-visible{opacity:1}.spot-link:hover,.spot-link:focus-visible{border-color:color-mix(in srgb,var(--primary) 22%,var(--line));background:color-mix(in srgb,var(--primary-soft) 42%,var(--bg));color:var(--primary);transform:translateY(-1px)}.spot-link:focus-visible{outline:2px solid color-mix(in srgb,var(--primary) 48%,transparent);outline-offset:2px}.spot-link.copied{opacity:1;border-color:color-mix(in srgb,var(--success) 26%,var(--line));background:var(--success-soft);color:var(--success);transform:none}.turn.source-flash>.spot-link{opacity:1}@media(hover:none){.spot-link{opacity:1}}@media(max-width:620px){.spot-link{right:0;--spot-top:-5px}.turn.user .spot-link{--spot-top:-12px}.turn.proposed-plan>.spot-link{right:7px;--spot-top:8px}}
 @media(max-width:620px){.turn.user .user-prompt{max-width:90%}.prompt-attachments{grid-template-columns:1fr}.turn.proposed-plan>.body{padding:13px 12px 15px}}
 
 /* Hide / restore (parity #1). The action sits on the row and shows on hover or focus; a hidden
@@ -868,6 +868,12 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .renderer:has(>.renderer-children-toggle)>.renderer-children-toggle{right:32px}
 .renderer>.renderer-spot{position:absolute;top:3px;right:6px;opacity:0;border-color:var(--line);background:var(--bg);transition:opacity .12s,color .14s,background .14s,border-color .14s,transform .14s}
 .renderer:hover>.renderer-spot,.renderer:focus-within>.renderer-spot,.renderer>.renderer-spot:focus-visible,.renderer>.renderer-spot.copied{opacity:1}
+/* #s573: on a touch screen the # is drawn at rest, as a turn's is (#167's rule above), and this
+   override comes after the rule that hides it, which it once came before and so never beat. WebKit
+   counts an opacity of 0 as hidden, and a tap that reveals hidden content on hover is spent as the
+   hover: a sideways iPad, the desktop layout on a touch screen, took a second tap to open a lone
+   image in the pane, or to act on anything else inside a record. */
+@media(hover:none){.renderer>.renderer-spot{opacity:1}}
 /* #101: per-scope hit counts in the scope rows, and the whole-words row. */
 .scope-option .scope-count{margin-left:auto;font:11px/1.4 var(--mono,ui-monospace,monospace);color:var(--faint);min-width:2ch;text-align:right}
 .scope-option .scope-count:empty{display:none}

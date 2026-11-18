@@ -2198,7 +2198,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // drawn at rest.
   assert.match(navCss, /\.turn:hover>\.spot-link,\.turn:focus-within>\.spot-link,\.spot-link:focus-visible\{opacity:1\}/, "a turn reveals its own spot controls");
   assert.match(navCss, /\.renderer:hover>\.renderer-spot,\.renderer:focus-within>\.renderer-spot/, "…and so does a fold head");
-  assert.match(navCss, /@media\(hover:none\)\{\.spot-link,\.renderer>\.renderer-spot\{opacity:1\}/, "…while a device that cannot hover keeps both reachable");
+  assert.match(navCss, /@media\(hover:none\)\{\.spot-link\{opacity:1\}\}/, "…while a device that cannot hover keeps both reachable: a turn's,");
+  // #s573: …and a record's, whose override must come AFTER the rule that hides it at rest (the same
+  // specificity, so the later one wins): before it, a sideways iPad spent a tap revealing it.
+  const spotHidden = navCss.indexOf(".renderer>.renderer-spot{position:absolute;"), spotTouch = navCss.indexOf("@media(hover:none){.renderer>.renderer-spot{opacity:1}}");
+  assert.ok(spotHidden >= 0 && spotTouch > spotHidden, "a record's # is drawn at rest on a touch screen, its override after the rule that hides it");
   assert.doesNotMatch(shellSource, /uiState\.navigatorHidden/, "#148: no hidden flag is read anywhere");
   // The two affordances that remain have to BE there, since nothing else can reach the states.
   assert.match(viewSource, /byId\("navigatorClose"\)\.onclick = \(\) => toggleNavigator\(false\)/, "the caption collapses to the rail");
