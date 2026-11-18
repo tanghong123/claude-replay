@@ -377,7 +377,6 @@ dependencies = [
  "claude-replay-core",
  "claude-replay-present",
  "flate2",
- "libc",
  "pulldown-cmark",
  "regex-syntax",
  "rusqlite",

@@ -24,11 +24,6 @@ flate2 = "1"
 # (syntect's fancy-regex), so it adds no new third-party code.
 regex-syntax = "0.8"
 
-# TCP keepalive on accepted sockets (`serve.rs` `keepalive`). Already in this workspace's tree
-# (claude-monitor), so detecting a dead peer adds no new third-party code either.
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
 [features]
 # For a DEPENDENT's test build only (claude-monitor enables it in its dev-dependencies, #s321): the
 # fixed signing key and the default render and mask policies this crate's own tests get, never the

@@ -2273,36 +2273,64 @@ pub fn spawn_streaming_listener_gated(
     let listener = TcpListener::bind(("127.0.0.1", port)).context("bind loopback HTTP server")?;
     let port = listener.local_addr()?.port();
     let gate = std::sync::Arc::new(gate);
-    std::thread::spawn(move || {
-        // An accept error must not spin: at the fd ceiling every accept fails with EMFILE
-        // instantly, and a tight retry loop burns a core forever without ever recovering.
-        // Back off (50 ms doubling to 1 s) until an accept succeeds; say the first error of
-        // a streak once, so a full fd table is visible without flooding the log.
-        let mut backoff = std::time::Duration::from_millis(50);
-        let mut said = false;
-        loop {
-            match listener.accept() {
-                Ok((stream, _)) => {
-                    backoff = std::time::Duration::from_millis(50);
-                    said = false;
+    std::thread::Builder::new()
+        .spawn(move || {
+            accept_loop(
+                || listener.accept().map(|(stream, _)| stream),
+                move |stream| {
                     let handler = handler.clone();
                     let gate = gate.clone();
-                    std::thread::spawn(move || {
-                        let _ = serve_connection(stream, &*handler, &gate);
-                    });
-                }
-                Err(error) => {
-                    if !said {
-                        eprintln!("loopback listener accept failed: {error}");
-                        said = true;
-                    }
-                    std::thread::sleep(backoff);
-                    backoff = (backoff * 2).min(std::time::Duration::from_secs(1));
+                    // Builder, not thread::spawn: at the thread ceiling spawn returns Err
+                    // instead of panicking — a panic here would unwind the accept loop and
+                    // drop the listener, closing the port while the process lives on. On
+                    // Err the closure (and its stream) is dropped without running.
+                    std::thread::Builder::new()
+                        .spawn(move || {
+                            let _ = serve_connection(stream, &*handler, &gate);
+                        })
+                        .map(|_| ())
+                },
+            );
+        })
+        .context("spawn loopback listener thread")?;
+    Ok(port)
+}
+
+/// The accept loop behind injectable accept and handle, so a test can drive its error paths.
+/// Neither an accept error nor a refused thread may spin or kill the loop: at the fd/thread
+/// ceiling both fail instantly, and a tight retry burns a core forever without recovering.
+/// Back off (50 ms doubling to 1 s) until a connection is served. Say the first error of a
+/// streak once; the say resets only after a quiet second, since near the ceiling accepts and
+/// errors alternate and a per-success reset would log up to twenty lines a second.
+fn accept_loop(
+    mut accept: impl FnMut() -> std::io::Result<std::net::TcpStream>,
+    mut handle: impl FnMut(std::net::TcpStream) -> std::io::Result<()>,
+) {
+    use std::io::Write;
+    let mut backoff = std::time::Duration::from_millis(50);
+    let mut said = false;
+    let mut last_error = std::time::Instant::now();
+    loop {
+        match accept().and_then(&mut handle) {
+            Ok(()) => {
+                backoff = std::time::Duration::from_millis(50);
+                if said && last_error.elapsed() >= std::time::Duration::from_secs(1) {
+                    said = false;
                 }
             }
+            Err(error) => {
+                last_error = std::time::Instant::now();
+                if !said {
+                    // writeln, not eprintln: a closed stderr pipe (EPIPE) must not panic
+                    // this thread and take the listener down with it.
+                    let _ = writeln!(std::io::stderr(), "loopback listener: {error}");
+                    said = true;
+                }
+                std::thread::sleep(backoff);
+                backoff = (backoff * 2).min(std::time::Duration::from_secs(1));
+            }
         }
-    });
-    Ok(port)
+    }
 }
 
 /// Parse a `k=v&…` query string value for `key` (already past the `?`).
@@ -2387,9 +2415,10 @@ pub fn service_body_limit(route: &str) -> usize {
 /// the process, until the fd table is full and no child can spawn.
 const REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// How long one write of a buffered reply may block. A peer that stops reading (a suspended
-/// phone, a relay gone to a zero window) otherwise pins the writer thread AND the whole
-/// multi-MB body it holds. The SSE path keeps its own shorter bound.
+/// How long one write of a buffered reply held in RAM may block. A peer that stops reading
+/// (a suspended phone, a relay gone to a zero window) otherwise pins the writer thread AND
+/// the whole multi-MB body it holds. SSE keeps a shorter bound; a streamed disk download,
+/// which holds no body in RAM, waits unbounded (see the write-timeout match below).
 const RESPONSE_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The largest artifact `/file` will hand over. The route exists so a click can SHOW a file
@@ -2575,43 +2604,6 @@ fn artifact_refused(code: &'static str, why: &'static str) -> HttpResponse {
     }
 }
 
-/// TCP keepalive on an accepted socket, so a peer that vanished without a FIN (a suspended
-/// phone, a NAT drop) is detected by the kernel even while a thread waits on the socket.
-/// Best-effort: the read/write timeouts are the real bounds, and a platform that refuses
-/// the option still gets those. Idle 60 s, then 3 probes 10 s apart.
-#[cfg(unix)]
-fn keepalive(stream: &std::net::TcpStream) {
-    use std::os::unix::io::AsRawFd;
-    let fd = stream.as_raw_fd();
-    let set = |level, name, value: libc::c_int| unsafe {
-        libc::setsockopt(
-            fd,
-            level,
-            name,
-            std::ptr::addr_of!(value).cast(),
-            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
-        )
-    };
-    if set(libc::SOL_SOCKET, libc::SO_KEEPALIVE, 1) != 0 {
-        return;
-    }
-    // macOS names the idle timer TCP_KEEPALIVE; Linux names it TCP_KEEPIDLE. Elsewhere the
-    // system defaults apply — SO_KEEPALIVE alone is already better than none.
-    #[cfg(target_os = "macos")]
-    let idle = libc::TCP_KEEPALIVE;
-    #[cfg(target_os = "linux")]
-    let idle = libc::TCP_KEEPIDLE;
-    #[cfg(any(target_os = "macos", target_os = "linux"))]
-    {
-        let _ = set(libc::IPPROTO_TCP, idle, 60);
-        let _ = set(libc::IPPROTO_TCP, libc::TCP_KEEPINTVL, 10);
-        let _ = set(libc::IPPROTO_TCP, libc::TCP_KEEPCNT, 3);
-    }
-}
-
-#[cfg(not(unix))]
-fn keepalive(_stream: &std::net::TcpStream) {}
-
 fn serve_connection<R: Into<HttpReply>>(
     stream: std::net::TcpStream,
     handler: &(dyn Fn(&Request) -> R + Send + Sync),
@@ -2637,7 +2629,6 @@ fn serve_connection_timed<R: Into<HttpReply>>(
     write_timeout: std::time::Duration,
 ) -> std::io::Result<()> {
     use std::io::{BufRead, BufReader, Read, Write};
-    keepalive(&stream);
     // A timeout closes the connection: the read or write returns Err, this function ends,
     // the thread ends, and both descriptors drop. The clone shares the socket's options.
     stream.set_read_timeout(Some(read_timeout))?;
@@ -2901,9 +2892,18 @@ fn serve_connection_timed<R: Into<HttpReply>>(
     } else {
         reply_head(&r, &cookie)
     };
-    if matches!(r, HttpReply::Events(_)) {
-        // A suspended or slow phone must not retain a writer thread indefinitely.
-        stream.set_write_timeout(Some(std::time::Duration::from_secs(10)))?;
+    match &r {
+        HttpReply::Events(_) => {
+            // A suspended or slow phone must not retain a writer thread indefinitely.
+            stream.set_write_timeout(Some(std::time::Duration::from_secs(10)))?;
+        }
+        HttpReply::Buffered(response) if response.stream.is_some() => {
+            // A streamed download holds its body on DISK, not in RAM, and `/file` has no
+            // Range: a reader paused past a bound (a locked phone, Chrome's paused download)
+            // could only start over. Let it wait — the cost is one connection, not a body.
+            stream.set_write_timeout(None)?;
+        }
+        _ => {}
     }
     let written = write_reply(&mut stream, &head, &r);
     if let Some(check) = route_refusal {
@@ -3881,8 +3881,9 @@ mod tests {
             let (stream, _) = listener.accept().unwrap();
             let served = serve_connection_timed(
                 stream,
-                // Big enough to fill both loopback socket buffers even where they autotune.
-                &|_: &Request| HttpResponse::ok(TEXT_PLAIN, vec![b'x'; 16 * 1024 * 1024]),
+                // Big enough to fill both loopback socket buffers even where tcp_rmem/wmem
+                // are tuned large (a too-small body would false-red there, never false-green).
+                &|_: &Request| HttpResponse::ok(TEXT_PLAIN, vec![b'x'; 64 * 1024 * 1024]),
                 &AuthGate::same_user(),
                 REQUEST_READ_TIMEOUT,
                 std::time::Duration::from_millis(200),
@@ -3910,38 +3911,81 @@ mod tests {
         );
     }
 
-    /// Accepted sockets carry TCP keepalive, so a peer that vanished without a FIN is
-    /// detected by the kernel even while a thread waits on the socket.
-    #[cfg(unix)]
+    /// The accept loop must back off errors instead of spinning (the EMFILE busy-spin), and
+    /// a refused thread must be an error like any accept error — not a panic that unwinds
+    /// the loop and drops the listener. Three accept failures and one refused handle, then
+    /// two connections: the loop must have slept 50+100+200+400 ms and still be serving.
     #[test]
-    fn accepted_sockets_carry_tcp_keepalive() {
-        use std::os::unix::io::AsRawFd;
+    fn the_accept_loop_backs_off_errors_and_survives_a_refused_thread() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
-        let _client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
-        let (stream, _) = listener.accept().unwrap();
-        keepalive(&stream);
-        let get = |level, name| unsafe {
-            let mut value: libc::c_int = 0;
-            let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
-            assert_eq!(
-                libc::getsockopt(
-                    stream.as_raw_fd(),
-                    level,
-                    name,
-                    std::ptr::addr_of_mut!(value).cast(),
-                    &mut len
-                ),
-                0
+        let clients: Vec<std::net::TcpStream> = (0..2)
+            .map(|_| std::net::TcpStream::connect(("127.0.0.1", port)).unwrap())
+            .collect();
+        let mut streams = clients
+            .iter()
+            .map(|_| listener.accept().unwrap().0)
+            .collect::<Vec<_>>()
+            .into_iter();
+        let accepts = AtomicUsize::new(0);
+        let handles = std::sync::Arc::new(AtomicUsize::new(0));
+        let served = std::sync::Arc::new(AtomicUsize::new(0));
+        let handles_in = handles.clone();
+        let served_in = served.clone();
+        let started = std::time::Instant::now();
+        std::thread::spawn(move || {
+            accept_loop(
+                || match accepts.fetch_add(1, Ordering::SeqCst) {
+                    0..=2 => Err(std::io::Error::other("fd ceiling (test)")),
+                    3 | 4 => Ok(streams.next().unwrap()),
+                    // Park like a quiet listener: the loop under test stays alive.
+                    _ => loop {
+                        std::thread::park();
+                    },
+                },
+                |stream| {
+                    let n = handles_in.fetch_add(1, Ordering::SeqCst);
+                    if n == 0 {
+                        // The first connection's thread is refused; its stream must drop.
+                        drop(stream);
+                        return Err(std::io::Error::other("thread ceiling (test)"));
+                    }
+                    served_in.fetch_add(1, Ordering::SeqCst);
+                    drop(stream);
+                    Ok(())
+                },
             );
-            value
-        };
-        // macOS reports the internal flag value (8), not 1; any nonzero means enabled.
-        assert_ne!(get(libc::SOL_SOCKET, libc::SO_KEEPALIVE), 0);
-        #[cfg(target_os = "macos")]
-        assert_eq!(get(libc::IPPROTO_TCP, libc::TCP_KEEPALIVE), 60);
-        #[cfg(target_os = "linux")]
-        assert_eq!(get(libc::IPPROTO_TCP, libc::TCP_KEEPIDLE), 60);
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while served.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            served.load(Ordering::SeqCst),
+            1,
+            "the loop must serve past the errors"
+        );
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(700),
+            "four errors must have slept 50+100+200+400 ms, not spun: {:?}",
+            started.elapsed()
+        );
+        assert_eq!(handles.load(Ordering::SeqCst), 2);
+    }
+
+    /// The timeout tests drive the timed core directly with short bounds; only the source
+    /// holds the wiring that the listener's own wrapper passes the PRODUCTION bounds.
+    #[test]
+    fn the_listener_serves_with_the_production_socket_bounds() {
+        let source = include_str!("serve.rs");
+        let wrapper = source
+            .split("fn serve_connection<R: Into<HttpReply>>")
+            .nth(1)
+            .expect("the serve_connection wrapper");
+        let wrapper = &wrapper[..wrapper.find("fn serve_connection_timed").unwrap()];
+        assert!(wrapper.contains("REQUEST_READ_TIMEOUT"));
+        assert!(wrapper.contains("RESPONSE_WRITE_TIMEOUT"));
     }
 
     #[test]
