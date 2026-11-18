@@ -15741,7 +15741,8 @@ fn app_shell_the_search_box_shows_its_own_query() {
                 );
             }
             // The box grows into the spacer and never over the session's name, which stays
-            // readable: whole, or at least 120px, or what it had at rest if that was less. The
+            // readable: whole, or at least 80px (a word or two, what it gives way to while the box
+            // holds a query, `TITLE_GIVES_TO`), or what it had at rest if that was less. The
             // probe gives the title a long name, so this measures the squeeze, not the fixture.
             let title = &seen["title"];
             if narrow && moment == "focused" {
@@ -15754,7 +15755,7 @@ fn app_shell_the_search_box_shows_its_own_query() {
                 let wide = title[0].as_i64().unwrap_or(0);
                 let whole = title[3].as_i64() <= title[4].as_i64();
                 assert!(
-                    (whole || wide >= 120.min(rest_title - 1))
+                    (whole || wide >= 80.min(rest_title - 1))
                         && title[1].as_i64() <= title[2].as_i64(),
                     "at {width}px, {moment}: the session title stays readable (at rest it was \
                  {rest_title}px) and clear of the box: {seen}"

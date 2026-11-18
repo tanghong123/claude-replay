@@ -1372,7 +1372,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    while typed in, and a resting box keeps its resting width. Never in the bar the outline's glyphs
    join, where the box in use fills the bar and a folded one is its glyph: there the floor pushed
    Info and the pane's control out of the session's column. With a query the floor is what the query
-   needs, as the view measures it (`--search-floor`, `fitDeskSearch`), the title keeping 120px: 400px
+   needs, as the view measures it (`--search-floor`, `fitDeskSearch`), the title keeping 80px: 400px
    still left `needle` 17px short at 1100px. */
 @media(min-width:901px) and (min-height:501px),(min-width:901px) and (pointer:fine){#sessionView:not(.pl-phone):not(.pl-outline-bar) .workspace>.topbar>.header-search-cluster:is(:focus-within,.search-held),#sessionView:not(.pl-phone):not(.pl-outline-bar) .workspace>.topbar>.header-search-cluster:has(>.header-searchbox.has-query){min-width:var(--search-floor,min(400px,calc(100% - 330px)))}}
 @media(min-width:1181px) and (min-height:501px),(min-width:1181px) and (pointer:fine){.header-searchbox:focus-within,.header-searchbox:has(input:not(:placeholder-shown)),.header-searchbox:has(.search-chips.has-chips){width:min(460px,36vw)}}

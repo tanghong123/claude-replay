@@ -2661,9 +2661,15 @@ function fitSearchField() {
   input.style.width = `${Math.max(room, text)}px`;
   if (input.selectionStart === input.value.length) searchField.scrollLeft = searchField.scrollWidth;
 }
+/** How far the title gives way to a query being typed above a phone (#s520): a word or two. The
+ *  task's bar is the title's first word; 120px left a 1100px window with the pane open 8px short of
+ *  `uo(R): needle` on a Mac and more with Linux's wider glyphs, and the query is what the reader is
+ *  looking at while they type. */
+const TITLE_GIVES_TO = 80;
+
 /** Above a phone the box in use asks for the room its query needs (#s520): its chips and its text,
  *  measured as a phone's field is, beside the box's own controls. The title gives way first, down to
- *  120px (or its whole name, if shorter), and the box takes no more than that leaves. A fixed floor of
+ *  `TITLE_GIVES_TO` (or its whole name, if shorter), and the box takes no more than that leaves. A fixed floor of
  *  400px left `uo(R): needle` 17px short at a 1100px window on a Mac and short on Linux's wider fonts,
  *  since the count names the scope too ("2 hits in uo(R)"). Only the floor's rule reads
  *  `--search-floor` (production.css, #s520), so it means nothing on a phone or in the bar the outline's
@@ -2677,14 +2683,17 @@ function fitDeskSearch(input) {
   fieldMeasure.style.font = cs.font; fieldMeasure.style.letterSpacing = cs.letterSpacing;
   fieldMeasure.textContent = input.value;
   // What each part lacks at the floor the rule gives: the text (measured, or the field's own scroll
-  // width where that is more) and the chips, which a narrow strip holds to 70% of it.
+  // width where that is more) and the chips, whose values shrink to an ellipsis inside them (so the
+  // strip's own scroll width does not show it) and which a narrow strip holds to 70% of it.
   const text = Math.max(Math.ceil(fieldMeasure.getBoundingClientRect().width) + 8, input.scrollWidth);
-  const short = Math.max(0, text - input.clientWidth) + Math.max(0, searchChips.scrollWidth - searchChips.clientWidth);
+  let chips = Math.max(0, searchChips.scrollWidth - searchChips.clientWidth);
+  for (const value of searchChips.querySelectorAll(".search-chip-value")) chips += Math.max(0, value.scrollWidth - value.clientWidth);
+  const short = Math.max(0, text - input.clientWidth) + chips;
   const box = cluster.getBoundingClientRect().width;
   if (!short) return;
   const need = Math.ceil(box + short + 2);
   const title = byId("sessionTitle");
-  const give = title ? Math.max(0, title.getBoundingClientRect().width - Math.min(120, title.scrollWidth)) : 0;
+  const give = title ? Math.max(0, title.getBoundingClientRect().width - Math.min(TITLE_GIVES_TO, title.scrollWidth)) : 0;
   cluster.style.setProperty("--search-floor", `${Math.floor(Math.min(need, box + give))}px`);
 }
 addEventListener("resize", () => fitSearchField(), { signal });
