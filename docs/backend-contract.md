@@ -110,6 +110,12 @@ a session route asked for an id the server has not seen scans as this route does
 
 Reply: `{groups: Group[], ignoredCount: number}`.
 
+A server answers for its own machine. The kit's merged source (`mergedBackend`), which a host
+gives the list to show several machines' sessions in one, answers this route in the page from each
+machine's reply: it adds `machine` to each group and row, writes each id and key `<machine>/<the
+machine's own>`, and adds `machines`, how each machine answered. No server writes those, and
+nothing here changes for one.
+
 A `Group`:
 
 | Field | Type | Meaning |

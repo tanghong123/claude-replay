@@ -1405,8 +1405,9 @@ mod request_pricing_tests {
     }
     /// Ultrafast (the claude-replay queue's #5): a turn recorded with `service_tier` "ultrafast"
     /// on gpt-6-astra carries the tier — an estimate, as every client-set tier is until the
-    /// provider confirms it. The engine's `ultrafast_is_six_times_standard_where_the_page_lists_it`
-    /// pins what that tier prices at (6x Standard); before it was known, this request priced at
+    /// provider confirms it. The engine's
+    /// `ultrafast_is_the_pages_multiple_of_standard_where_it_lists_the_model` pins what that tier
+    /// prices at (6x Standard for gpt-6-astra); before it was known, this request priced at
     /// Standard with only the estimate flag.
     #[test]
     fn an_ultrafast_turn_carries_its_tier() {

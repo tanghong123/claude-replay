@@ -325,7 +325,7 @@ body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){displa
 .process-commentary-label { color: var(--sub); font-weight: 620; }
 .process-commentary-copy { color: var(--ink); font-size: 13.5px; }
 
-/* #167. Hidden at rest, revealed on the block the pointer is over — the owner asked for the chip, not for a column of them ("too many #s"). Because #162 gave each control a real SLOT, revealing costs NO reflow: the space is already held, so nothing moves when the pointer arrives. Both controls now follow one rule. */.spot-link{opacity:0;border-color:var(--line);background:var(--bg);color:var(--faint)}.turn:hover>.spot-link,.turn:focus-within>.spot-link,.spot-link:focus-visible{opacity:1}.spot-link:hover,.spot-link:focus-visible{border-color:color-mix(in srgb,var(--primary) 22%,var(--line));background:color-mix(in srgb,var(--primary-soft) 42%,var(--bg));color:var(--primary);transform:translateY(-1px)}.spot-link:focus-visible{outline:2px solid color-mix(in srgb,var(--primary) 48%,transparent);outline-offset:2px}.spot-link.copied{opacity:1;border-color:color-mix(in srgb,var(--success) 26%,var(--line));background:var(--success-soft);color:var(--success);transform:none}.turn.source-flash>.spot-link{opacity:1}@media(hover:none){.spot-link,.renderer>.renderer-spot{opacity:1}}@media(max-width:620px){.spot-link{right:0;--spot-top:-5px}.turn.user .spot-link{--spot-top:-12px}.turn.proposed-plan>.spot-link{right:7px;--spot-top:8px}}
+/* #167. Hidden at rest, revealed on the block the pointer is over — the owner asked for the chip, not for a column of them ("too many #s"). Because #162 gave each control a real SLOT, revealing costs NO reflow: the space is already held, so nothing moves when the pointer arrives. Both controls now follow one rule. */.spot-link{opacity:0;border-color:var(--line);background:var(--bg);color:var(--faint)}.turn:hover>.spot-link,.turn:focus-within>.spot-link,.spot-link:focus-visible{opacity:1}.spot-link:hover,.spot-link:focus-visible{border-color:color-mix(in srgb,var(--primary) 22%,var(--line));background:color-mix(in srgb,var(--primary-soft) 42%,var(--bg));color:var(--primary);transform:translateY(-1px)}.spot-link:focus-visible{outline:2px solid color-mix(in srgb,var(--primary) 48%,transparent);outline-offset:2px}.spot-link.copied{opacity:1;border-color:color-mix(in srgb,var(--success) 26%,var(--line));background:var(--success-soft);color:var(--success);transform:none}.turn.source-flash>.spot-link{opacity:1}@media(hover:none){.spot-link{opacity:1}}@media(max-width:620px){.spot-link{right:0;--spot-top:-5px}.turn.user .spot-link{--spot-top:-12px}.turn.proposed-plan>.spot-link{right:7px;--spot-top:8px}}
 @media(max-width:620px){.turn.user .user-prompt{max-width:90%}.prompt-attachments{grid-template-columns:1fr}.turn.proposed-plan>.body{padding:13px 12px 15px}}
 
 /* Hide / restore (parity #1). The action sits on the row and shows on hover or focus; a hidden
@@ -394,6 +394,30 @@ body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){displa
 .tree-agent .brand-icon{width:12px;height:12px;display:block}
 .tree-agent .agent-monogram text{fill:currentColor;stroke:none;font:700 12px var(--sans,system-ui)}
 .tree-project{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* #s541: a merged source's machine — a small label on a flat row and a project's head, a machine's rows
+   greyed while it does not answer, and a head over the list saying since when, or why it has none. The
+   label keeps to a share of the line, so the project's name, which gives way first, never goes to it. */
+.tree-machine{flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 5px;border-radius:4px;background:color-mix(in srgb,var(--faint) 14%,transparent);color:var(--sub);font:10px/14px var(--mono)}
+.tree-row.project .tree-machine{margin-left:6px}
+.tree-machine.tree-machine-stale{color:var(--amber)}
+.tree-row.machine-stale{opacity:.55}
+.tree-machines{display:flex;flex-direction:column;gap:4px;margin:4px 8px 6px}
+.tree-machine-head{padding:5px 8px;border-radius:7px;background:color-mix(in srgb,var(--faint) 12%,transparent);color:var(--sub);font-size:11px;line-height:15px}
+.tree-machine-head.tree-machine-head-stale{color:var(--amber)}
+.tree-machine-head.tree-machine-head-failed{color:var(--red)}
+/* #s561: Group by machine — a head per machine over its own tree, one step above the agents' heads (its
+   name in the list's text, not their small capitals), with how it answers beside it while it does not;
+   a machine with nothing in view keeps its head over one quiet line. */
+.agent-label.tree-machine-group{min-width:0;padding-top:14px;color:var(--sub);font-size:12px;font-weight:650;letter-spacing:0;text-transform:none}
+.tree-machine-name{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* The note takes the room the name leaves and is cut there, down to a few letters, so the machine keeps its whole
+   name and the colour still says how it answers (#s561 walk: an iPad's 320px list cut both). From a basis of 0 it
+   shrinks by nothing: the name gives way only once it and those letters no longer fit, and keeps its exact width
+   until then, where a shrink shared by weight still took a fraction of a pixel and an ellipsis with it. */
+.tree-machine-note{flex:1 1 0;min-width:3.5em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:450}
+.tree-machine-group.tree-machine-group-stale .tree-machine-note{color:var(--amber)}
+.tree-machine-group.tree-machine-group-failed .tree-machine-note{color:var(--red)}
+.tree-machine-empty{padding:2px 12px 6px;color:var(--faint);font-size:11px}
 #sessionList.sessions-flat .tree-row.session.is-member{padding-left:30px}
 #sessionList.sessions-flat .tree-row.session.is-side{padding-left:calc(16px + var(--side-depth,1) * 14px)}
 /* A list narrower than the app's minimum sidebar (#s431 stage 2, design/pane-layout.md; the list sets
@@ -844,6 +868,12 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .renderer:has(>.renderer-children-toggle)>.renderer-children-toggle{right:32px}
 .renderer>.renderer-spot{position:absolute;top:3px;right:6px;opacity:0;border-color:var(--line);background:var(--bg);transition:opacity .12s,color .14s,background .14s,border-color .14s,transform .14s}
 .renderer:hover>.renderer-spot,.renderer:focus-within>.renderer-spot,.renderer>.renderer-spot:focus-visible,.renderer>.renderer-spot.copied{opacity:1}
+/* #s573: on a touch screen the # is drawn at rest, as a turn's is (#167's rule above), and this
+   override comes after the rule that hides it, which it once came before and so never beat. WebKit
+   counts an opacity of 0 as hidden, and a tap that reveals hidden content on hover is spent as the
+   hover: a sideways iPad, the desktop layout on a touch screen, took a second tap to open a lone
+   image in the pane, or to act on anything else inside a record. */
+@media(hover:none){.renderer>.renderer-spot{opacity:1}}
 /* #101: per-scope hit counts in the scope rows, and the whole-words row. */
 .scope-option .scope-count{margin-left:auto;font:11px/1.4 var(--mono,ui-monospace,monospace);color:var(--faint);min-width:2ch;text-align:right}
 .scope-option .scope-count:empty{display:none}

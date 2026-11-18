@@ -50,8 +50,71 @@ export function useBackend(handle: BackendHandle): void;
 /** A row of `GET /api/sessions` (docs/backend-contract.md, "The session list"). */
 export interface SessionRow {
   id: string;
+  /** The machine of a merged source's row (`MergedMachine.machine`); no server writes it. */
+  machine?: string;
   [field: string]: unknown;
 }
+
+// ---------------------------------------------------------------- the session list over machines
+
+/** A machine a merged source reads. */
+export interface MergedMachine {
+  /** The host's key for it, with no "/" in it: the list's ids and keys for its sessions are
+   *  `<machine>/<its own id>`. */
+  machine: string;
+  /** The name a reader knows it by, shown on its rows. The key, when left out. */
+  label?: string;
+  /** Its server. */
+  handle: BackendHandle;
+}
+
+/** How a machine answered the merged source's last ask: `live`; `stale`, its last answer kept,
+ *  from `since`; `waiting`, no answer yet; `failed`, none, and `error` says why. */
+export interface MergedMachineState {
+  machine: string;
+  label: string;
+  state: "live" | "stale" | "waiting" | "failed";
+  since: string | null;
+  error: string | null;
+}
+
+/** Where a merged row's session is: its machine and that machine's own id and row. */
+export interface MergedLocation {
+  machine: string;
+  label: string;
+  handle: BackendHandle;
+  id: string;
+  row: SessionRow | null;
+}
+
+/** The view's row options for a view mounted on one machine's handle, in that machine's own ids,
+ *  and the list's id for one of them. */
+export interface MergedViewOptions {
+  listId(id: string): string;
+  selectedId(): string;
+  sessionRow(id: string): SessionRow | null;
+  sessionWorkers(id: string): SessionRow[];
+}
+
+/** The merged source: a handle the session list takes as its `backend`, answered in the page. */
+export interface MergedBackend extends BackendHandle {
+  machines(): MergedMachineState[];
+  locate(id: string): MergedLocation | null;
+  forView(list: SessionListHandle, machine: string): MergedViewOptions;
+}
+
+/** One session list over several machines' servers (design/monitor-hub.md D6): every machine's
+ *  rows, each naming its machine, its ids and keys `<machine>/<id>`, a hide sent to its machine;
+ *  a machine that stops answering keeps its last rows, greyed under a head saying since when.
+ *  `timeout` (ms, 4000 by default) is how long one ask waits for the machines that answered in time
+ *  before; a machine already late is not waited for again, and an ask still out after eight times
+ *  `timeout` is given up (its fetch aborted through `init.signal`). Its handle is the one you pass,
+ *  used as it is. Open a merged row's session on its machine: `locate(id)` names it, and the view is
+ *  mounted with that machine's handle. */
+export function mergedBackend(machines: MergedMachine[], options?: { timeout?: number }): MergedBackend;
+
+/** A merged id or key as its machine and that machine's own; null for one that names none. */
+export function splitMachineId(id: string): { machine: string; id: string } | null;
 
 // ------------------------------------------------------------------------------- the session view
 

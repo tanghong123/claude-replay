@@ -178,6 +178,20 @@
 :where(#sessionList) .tree-agent .brand-icon{width:12px;height:12px;display:block}
 :where(#sessionList) .tree-agent .agent-monogram text{fill:currentColor;stroke:none;font:700 12px var(--sans,system-ui)}
 :where(#sessionList) .tree-project{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:where(#sessionList) .tree-machine{flex:none;max-width:45%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:0 5px;border-radius:4px;background:color-mix(in srgb,var(--faint) 14%,transparent);color:var(--sub);font:10px/14px var(--mono)}
+:where(#sessionList) .tree-row.project .tree-machine{margin-left:6px}
+:where(#sessionList) .tree-machine.tree-machine-stale{color:var(--amber)}
+:where(#sessionList) .tree-row.machine-stale{opacity:.55}
+:where(#sessionList) .tree-machines{display:flex;flex-direction:column;gap:4px;margin:4px 8px 6px}
+:where(#sessionList) .tree-machine-head{padding:5px 8px;border-radius:7px;background:color-mix(in srgb,var(--faint) 12%,transparent);color:var(--sub);font-size:11px;line-height:15px}
+:where(#sessionList) .tree-machine-head.tree-machine-head-stale{color:var(--amber)}
+:where(#sessionList) .tree-machine-head.tree-machine-head-failed{color:var(--red)}
+:where(#sessionList) .agent-label.tree-machine-group{min-width:0;padding-top:14px;color:var(--sub);font-size:12px;font-weight:650;letter-spacing:0;text-transform:none}
+:where(#sessionList) .tree-machine-name{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:where(#sessionList) .tree-machine-note{flex:1 1 0;min-width:3.5em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:450}
+:where(#sessionList) .tree-machine-group.tree-machine-group-stale .tree-machine-note{color:var(--amber)}
+:where(#sessionList) .tree-machine-group.tree-machine-group-failed .tree-machine-note{color:var(--red)}
+:where(#sessionList) .tree-machine-empty{padding:2px 12px 6px;color:var(--faint);font-size:11px}
 #sessionList.sessions-flat .tree-row.session.is-member{padding-left:30px}
 #sessionList.sessions-flat .tree-row.session.is-side{padding-left:calc(16px + var(--side-depth,1) * 14px)}
 #sessionList.pl-max-w-231 .tree-context .tree-project{display:none}

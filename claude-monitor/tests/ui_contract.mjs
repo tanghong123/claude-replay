@@ -568,7 +568,7 @@ let droppedAttention = "";
     const listView = read("session-list-view.js");
     const fn = name => { const at = listView.indexOf(`function ${name}(`); assert.ok(at >= 0, `the list draws with ${name}`); return listView.slice(at, listView.indexOf("\n}\n", at)); };
     assert.match(fn("railFlyoutBody"), /flatSessionsHtml\(\[agent\][^)]*\) : agentProjectsHtml\(agent\)/, "the flyout draws an agent's rows as the tree draws them");
-    const flyoutText = ["railFlyoutBody", "agentProjectsHtml", "flatSessionsHtml", "familyRowsHtml", "sessionTreeRow", "treeAction", "agentGlyph"].map(fn).join("\n");
+    const flyoutText = ["railFlyoutBody", "agentProjectsHtml", "flatSessionsHtml", "familyRowsHtml", "sessionTreeRow", "treeAction", "agentGlyph", "machineTag"].map(fn).join("\n");
     const flyoutNames = new Set();
     for (const m of flyoutText.matchAll(/class=\\?["']((?:[^"'\\$]|\$\{[^}]*\})*)\\?["']/g)) for (const w of words(m[1])) flyoutNames.add(`.${w}`);
     const shown = [...flyoutNames].filter(n => styles.LIST_CHROME.includes(n)).sort();
@@ -1518,7 +1518,7 @@ assert.match(viewSource, /if \(target && turnsFollow\) revealInPane\(target\);/,
   console.log("#s209 agent mark cases passed");
 }
 assert.match(productionCss, /\n:is\(#collapseBtn,#expandBtn\)\[data-flat\]\{display:none\}/, "flat, the group controls go: the list marks the two it places, since the head is outside its element (#s430 stage 3)");
-assert.match(listSource, /for \(const control of \[collapseBtn, expandBtn\]\) control\.toggleAttribute\("data-flat", flat \|\| arranged\);/, "…with the same verdict as its own sessions-flat");
+assert.match(listSource, /for \(const control of \[collapseBtn, expandBtn\]\) control\.toggleAttribute\("data-flat", \(flat && !grouped\) \|\| arranged\);/, "…with the same verdict as its own sessions-flat, except that grouped by machine (#s561) the machines' heads still fold");
 assert.match(appSource, /indexState\.selectedWasRow && !selectedRow\(\)\) sessionGone\(\)/, "a sub-agent child, never a list row, is not declared gone by the index poll");
 assert.match(viewSource, /meta\?\.ancestors\?\.at\(-1\)/, "the parent control reads the last ancestor from the session's own meta");
 assert.match(productionCss, /\.session-parent\.is-live\{display:inline-flex;/, "the reference parent control is shown by a production state, not by editing the shell");
@@ -1573,6 +1573,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const ev = (key, extra = {}) => ({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...extra });
   assert.equal(resolveKey(ev("]"), "view").action, "turn-next");
   assert.equal(resolveKey(ev("]"), "list"), null, "view keys do not fire while the list has focus");
+  // #s576: a Chinese keyboard's full-width brackets are the bracket keys, under the same rules.
+  assert.equal(resolveKey(ev("\u3011"), "view").action, "turn-next", "】 steps to the next turn");
+  assert.equal(resolveKey(ev("\u3010"), "view").action, "turn-prev", "【 steps to the previous turn");
+  assert.equal(resolveKey(ev("\u3010"), "view", { tagName: "INPUT" }), null, "…never while typing");
+  assert.equal(resolveKey(ev("\u3011"), "list"), null, "…and not while the list has focus");
+  assert.equal(resolveKey(ev("\u3011"), "view", { tagName: "DIV", closest: sel => (sel === "[data-guest-keys]" ? {} : null) }), null, "…nor inside a guest");
+  for (const mod of ["metaKey", "ctrlKey", "altKey"]) assert.equal(resolveKey(ev("\u3011", { [mod]: true }), "view"), null, `…nor with ${mod} held`);
+  for (const b of KEYMAP) assert.ok(!["\u3010", "\u3011"].includes(b.key), "no binding names a full-width bracket itself");
+  assert.equal(hintFor("turn-next"), "]", "the hint still names the bracket key");
   assert.equal(resolveKey(ev("ArrowDown"), "list").action, "list-next");
   assert.equal(resolveKey(ev("ArrowDown"), "view"), null, "arrow keys are the list's alone");
   assert.equal(resolveKey(ev("/"), "list").action, "search", "search works from anywhere");
@@ -2198,7 +2207,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // drawn at rest.
   assert.match(navCss, /\.turn:hover>\.spot-link,\.turn:focus-within>\.spot-link,\.spot-link:focus-visible\{opacity:1\}/, "a turn reveals its own spot controls");
   assert.match(navCss, /\.renderer:hover>\.renderer-spot,\.renderer:focus-within>\.renderer-spot/, "…and so does a fold head");
-  assert.match(navCss, /@media\(hover:none\)\{\.spot-link,\.renderer>\.renderer-spot\{opacity:1\}/, "…while a device that cannot hover keeps both reachable");
+  assert.match(navCss, /@media\(hover:none\)\{\.spot-link\{opacity:1\}\}/, "…while a device that cannot hover keeps both reachable: a turn's,");
+  // #s573: …and a record's, whose override must come AFTER the rule that hides it at rest (the same
+  // specificity, so the later one wins): before it, a sideways iPad spent a tap revealing it.
+  const spotHidden = navCss.indexOf(".renderer>.renderer-spot{position:absolute;"), spotTouch = navCss.indexOf("@media(hover:none){.renderer>.renderer-spot{opacity:1}}");
+  assert.ok(spotHidden >= 0 && spotTouch > spotHidden, "a record's # is drawn at rest on a touch screen, its override after the rule that hides it");
   assert.doesNotMatch(shellSource, /uiState\.navigatorHidden/, "#148: no hidden flag is read anywhere");
   // The two affordances that remain have to BE there, since nothing else can reach the states.
   assert.match(viewSource, /byId\("navigatorClose"\)\.onclick = \(\) => toggleNavigator\(false\)/, "the caption collapses to the rail");
@@ -5483,4 +5496,192 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // The app remembers the view's choices whenever it remembers its own, as its one persist did.
   assert.match(appSource, /^function persist\(\) \{ persistIndex\(\); viewHandle\?\.persist\(\); \}$/m, "the app's persist asks the view to remember its own");
   console.log("#s429 unmount cases passed");
+}
+
+// #s541 (design/monitor-hub.md D6, Hong's choice on #s539): the merged source, one server answered in
+// the page over several machines' session lists, each through its own handle. Run over fake handles:
+// the rows of each machine named and keyed by it, the same path on two machines two projects and its
+// desktop agent two groups, a hide sent to its own machine with the machine taken off, a machine that
+// does not answer in time answered with its last rows, stale from when it last answered, and no other
+// app's arrangement over several machines.
+{
+  const { mergedBackend, splitMachineId } = await import("../../claude-monitor/src/codex-ui/merged-source.js");
+  const { ARRANGE_SOURCES, groupAcrossMachines } = await import("../../claude-monitor/src/codex-ui/session-list.js");
+  const { groupSessions } = await import("../../claude-replay-html/src/html/shared/session-visibility.js");
+  const reply = body => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  const index = sid => ({
+    groups: [
+      { kind: "project", label: "x", secondary: "~/code/x", ignoreKey: "p:~/code/x", hidden: false, rows: [
+        { id: sid, agent: "claude", name: `${sid} title`, family: sid, ignoreKey: `s:${sid}` },
+        { id: `${sid}-w`, agent: "claude", name: "worker", family: `${sid}-w`, startedBy: sid, ignoreKey: `s:${sid}-w` },
+        { id: `${sid}-side`, agent: "claude", name: "side", family: `${sid}-side`, sideOf: sid, ignoreKey: `s:${sid}-side` },
+      ] },
+      { kind: "agent", label: "Claude", secondary: "desktop agent · no workspace", ignoreKey: "a:Claude", hidden: false, rows: [
+        { id: `${sid}-desk`, agent: "claude", name: "desktop", family: `${sid}-desk`, ignoreKey: `s:${sid}-desk` },
+      ] },
+    ],
+    ignoredCount: 1,
+  });
+  const machine = (name, answer) => {
+    const asked = [];
+    return { asked, handle: { base: `/m/${name}`, paired: true, fetch: async (path, init) => { asked.push(path); return answer(path, init); } } };
+  };
+  let clock = 1_000_000;
+  const now = () => clock;
+  let bHangs = false, release = null;
+  const a = machine("a", path => path === "/api/sessions" ? reply(index("sa")) : reply({ ok: true, ignored: 2 }));
+  const b = machine("b", path => {
+    if (path !== "/api/sessions") return reply({ ok: true, ignored: 3 });
+    if (bHangs) return new Promise(resolve => { release = () => resolve(reply(index("sb"))); });
+    return reply(index("sb"));
+  });
+  const merged = mergedBackend([{ machine: "a", label: "Mac mini", handle: a.handle }, { machine: "b", handle: b.handle }], { timeout: 400, now });
+  const read = async () => (await merged.fetch("/api/sessions", { cache: "no-store" })).json();
+
+  const first = await read();
+  assert.deepEqual(first.machines, [
+    { machine: "a", label: "Mac mini", state: "live", since: new Date(clock).toISOString(), error: null },
+    { machine: "b", label: "b", state: "live", since: new Date(clock).toISOString(), error: null },
+  ], "each machine answered, named by its label (the key where it has none)");
+  assert.equal(first.ignoredCount, 2, "the machines' hidden counts summed");
+  const rows = first.groups.flatMap(group => group.rows);
+  const sa = rows.find(row => row.id === "a/sa");
+  assert.deepEqual([sa.machine, sa.family, sa.ignoreKey], ["a", "a/sa", "a/s:sa"], "a row names its machine, and its id, family and key are its machine's");
+  assert.equal(rows.find(row => row.id === "a/sa-w").startedBy, "a/sa", "a worker's starter is on its own machine");
+  assert.equal(rows.find(row => row.id === "b/sb-side").sideOf, "b/sb", "and a side session's");
+  assert.deepEqual(first.groups.map(group => [group.machine, group.ignoreKey]), [["a", "a/p:~/code/x"], ["a", "a/a:Claude"], ["b", "b/p:~/code/x"], ["b", "b/a:Claude"]], "every group names its machine and its key is its machine's");
+  assert.equal(rows.length, 8, "nothing dropped");
+
+  // One monitor's groups are grouped as they always were; a merged source's, by machine.
+  assert.deepEqual(groupAcrossMachines(index("sa").groups), groupSessions(index("sa").groups), "no machine: the one grouping");
+  const tree = groupAcrossMachines(first.groups);
+  assert.deepEqual(tree.map(agent => agent.id), ["claude"], "one agent across the machines");
+  assert.deepEqual(tree[0].projects.map(project => [project.id, project.machine, project.sessions.length]), [["a/p:~/code/x", "a", 3], ["a/claude:desktop", "a", 1], ["b/p:~/code/x", "b", 3], ["b/claude:desktop", "b", 1]], "the same path on two machines is two projects, and so is each machine's desktop agent");
+
+  // A hide goes to the row's machine, with the machine taken off its key.
+  const hid = await (await merged.fetch(`/api/ignore?add=${encodeURIComponent("b/s:sb")}`, { cache: "no-store" })).json();
+  assert.deepEqual(hid, { ok: true, ignored: 3 }, "the machine's own answer");
+  assert.equal(b.asked.at(-1), "/api/ignore?add=s%3Asb", "sent to b, as b keys it");
+  assert.ok(!a.asked.some(path => path.startsWith("/api/ignore")), "and never to a");
+  for (const [query, why] of [[`remove=${encodeURIComponent("c/s:x")}`, "a machine it does not know"], ["add=s%3Asb", "a key that names none"]]) {
+    const refused = await merged.fetch(`/api/ignore?${query}`);
+    assert.deepEqual([refused.status, (await refused.json()).ok], [404, false], `${why}: refused, so the list says the hide failed`);
+  }
+
+  // No other app's arrangement over several machines (D7: they come with the arrangement by machine).
+  const layouts = await (await merged.fetch("/api/layout")).json();
+  assert.deepEqual(layouts.sources.map(entry => [entry.source, entry.available]), ARRANGE_SOURCES.map(source => [source, false]), "every app the list can follow, each one that cannot be read, so it is offered disabled with the reason");
+  assert.match(layouts.sources[0].reason, /several machines/);
+  assert.equal((await merged.fetch("/api/layout?source=herdr")).status, 404, "a source is one it does not know");
+  assert.equal((await merged.fetch("/records?session=a%2Fsa")).status, 404, "and it answers the list's routes alone");
+  assert.throws(() => merged.url("/file?path=x"), /routes alone/, "it builds no URL");
+
+  // b stops answering: its last rows stay, stale since it last answered; a goes on.
+  const answeredAt = clock;
+  clock += 60_000; bHangs = true;
+  const started = Date.now();
+  const late = await read();
+  assert.ok(Date.now() - started < 2000, "an ask waits for a slow machine no longer than the timeout");
+  assert.deepEqual(late.machines.map(entry => [entry.machine, entry.state, entry.since]), [["a", "live", new Date(clock).toISOString()], ["b", "stale", new Date(answeredAt).toISOString()]], "b stale since it last answered");
+  assert.match(late.machines[1].error, /no answer in/, "saying why");
+  assert.ok(late.groups.flatMap(group => group.rows).some(row => row.id === "b/sb"), "b's last rows kept");
+  const asks = b.asked.filter(path => path === "/api/sessions").length;
+  const again = Date.now();
+  await read();
+  assert.equal(b.asked.filter(path => path === "/api/sessions").length, asks, "a machine still answering is not asked again");
+  assert.ok(Date.now() - again < 300, `nor waited for again: the machines on time answer at once, well inside the 400 ms timeout (${Date.now() - again} ms)`);
+  release(); bHangs = false;
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual((await read()).machines.map(entry => entry.state), ["live", "live"], "its late answer is kept, and it is live again");
+
+  // An ask still out after eight times the timeout is given up, and the machine asked afresh.
+  let hangs = 0;
+  const quiet = mergedBackend([{ machine: "q", handle: { fetch: (_path, init) => { hangs += 1; return new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(Object.assign(new Error("The operation was aborted."), { name: "AbortError" })))); } } }], { timeout: 20, now });
+  const quietRead = async () => (await quiet.fetch("/api/sessions")).json();
+  assert.deepEqual((await quietRead()).machines.map(entry => [entry.state, entry.error]), [["failed", "no answer in 20 ms"]], "overdue");
+  await new Promise(resolve => setTimeout(resolve, 260));
+  assert.deepEqual([quiet.machines()[0].error, hangs], ["no answer in 160 ms", 1], "given up after 160 ms, saying so");
+  assert.deepEqual([(await quietRead()).machines[0].error, hangs], ["no answer in 20 ms", 2], "then asked afresh, its state the new ask's");
+  assert.equal(mergedBackend([{ machine: "a", handle: a.handle }], { timeout: 1500 }).machines()[0].error, null);
+
+  // A machine that never answered: a head saying why, and no rows.
+  const never = mergedBackend([{ machine: "c", handle: { fetch: async () => { throw new Error("connection refused"); } } }], { timeout: 40, now });
+  const lone = await (await never.fetch("/api/sessions")).json();
+  assert.deepEqual([lone.groups, lone.machines[0].state, lone.machines[0].error, lone.machines[0].since], [[], "failed", "connection refused", null]);
+
+  // Where a merged row is, and the view's options for a view on its machine, in that machine's ids.
+  const where = merged.locate("b/sb");
+  assert.deepEqual([where.machine, where.label, where.id, where.row.id, where.row.machine, where.handle === b.handle], ["b", "b", "sb", "sb", undefined, true], "its machine's own id, row and handle");
+  assert.equal(merged.locate("sb"), null, "an id with no machine is none of them");
+  const listed = new Map(late.groups.flatMap(group => group.rows).map(row => [row.id, row]));
+  const list = { selected: () => "b/sb", workers: id => [...listed.values()].filter(row => row.startedBy === id) };
+  const onB = merged.forView(list, "b");
+  assert.deepEqual([onB.selectedId(), onB.sessionRow("sb")?.id, onB.sessionWorkers("sb").map(row => row.id), onB.listId("sb")], ["sb", "sb", ["sb-w"], "b/sb"]);
+  assert.deepEqual([onB.sessionRow("sb")._group.label, onB.sessionRow("sb")._group.secondary, onB.sessionRow("sb") === onB.sessionRow("sb")], ["x", "~/code/x", true], "a row the view reads carries its group (its head names the project, Info the directory), the same object until the machine answers again");
+  assert.equal(merged.forView(list, "a").selectedId(), "", "a session of another machine is not this view's");
+  assert.throws(() => merged.forView(list, "z"), /no machine named z/);
+
+  assert.deepEqual(splitMachineId("mac-mini/p:~/code/x"), { machine: "mac-mini", id: "p:~/code/x" }, "split at the first /");
+  assert.equal(splitMachineId("s:abc"), null);
+  assert.equal(splitMachineId("/abc"), null);
+  for (const [machines, why] of [[[], /machines it merges/], [[{ machine: "a/b", handle: a.handle }], /no "\/"/], [[{ machine: "a", handle: a.handle }, { machine: "a", handle: b.handle }], /two machines named a/], [[{ machine: "a" }], /backend handle/]]) {
+    assert.throws(() => mergedBackend(machines), why);
+  }
+  // The list keeps each machine's state, and draws it: the label, the greyed rows, the heads.
+  const storeSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-index-store.js", import.meta.url), "utf8");
+  assert.match(storeSource, /indexState\.machines = Array\.isArray\(data\.machines\) \? data\.machines : \[\];/, "the index keeps how each machine answered");
+  assert.match(storeSource, /grouped\(\) \{ return this\.group \? this\.group\(indexState\.groups, groupAcrossMachines\) : groupAcrossMachines\(indexState\.groups\); \}/, "and groups by machine");
+  const listViewSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-list-view.js", import.meta.url), "utf8");
+  assert.match(listViewSource, /const treeHtml = machineHeadsHtml\(grouped\) \+ \(html \|\|/, "the heads lead the list");
+  const mergedSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/merged-source.js", import.meta.url), "utf8");
+  const sources = mergedSource.match(/const SOURCES = Object\.freeze\((\[[^\]]*\])\);/);
+  assert.deepEqual(sources && JSON.parse(sources[1]), ARRANGE_SOURCES, "the merged source answers every app the list can follow");
+  // A machine's state is drawn under a prefixed name: a host may style .stale or .failed for itself.
+  assert.match(listViewSource, /const HEAD_STATE = Object\.freeze\(\{ stale: " tree-machine-head-stale", failed: " tree-machine-head-failed" \}\);/, "the heads' states, prefixed");
+  assert.match(listViewSource, /machineStale\(key\) \? " tree-machine-stale" : ""/, "and the label's");
+  const listRules = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.doesNotMatch(listRules, /\.tree-machine(?:-head)?\.(?:stale|failed|live|waiting)(?![\w-])/, "and no rule styles a bare state name on them");
+  console.log("#s541 merged source cases passed");
+
+  // #s561 (Hong, on the iOS app: "a check box to group agents by machine"; "show the host the agent
+  // is running on (limit to the first dot component maybe)"): the list machine first, and a
+  // machine's short name.
+  const { machineSections, machineShortLabel } = await import("../../claude-monitor/src/codex-ui/session-list.js");
+  for (const [label, shown] of [["aries-black.tail1234.ts.net", "aries-black"], ["Studio Mac", "Studio Mac"], ["mac-mini", "mac-mini"], ["100.64.0.7", "100.64.0.7"], ["fd7a:115c::1", "fd7a:115c::1"], [".hidden", ".hidden"], [undefined, ""], ["Hong's Mac v1.2", "Hong's Mac v1.2"], ["Mac (studio.local)", "Mac (studio.local)"], ["studio.local.", "studio"], ["10.0.0.1.", "10.0.0.1."]]) {
+    assert.equal(machineShortLabel(label), shown, `${label} shows as ${shown}`);
+  }
+  // Two machines that would read the same once cut keep their whole labels; one apart keeps its cut.
+  for (const [label, labels, shown] of [
+    ["mac.tail1.ts.net", ["mac.tail1.ts.net", "mac.tail2.ts.net"], "mac.tail1.ts.net"],
+    ["studio.home", ["studio.home", "laptop.home"], "studio"],
+    ["mac.ts.net", ["mac", "mac.ts.net"], "mac.ts.net"],
+    ["mac.ts.net", ["mac.ts.net", "mac.ts.net"], "mac"],
+    ["Mac.tail1.ts.net", ["Mac.tail1.ts.net", "mac.tail2.ts.net"], "Mac.tail1.ts.net"],
+  ]) assert.equal(machineShortLabel(label, labels), shown, `${label} beside ${labels.join(", ")} shows as ${shown}`);
+  const sections = machineSections(tree, [...late.machines].reverse());
+  assert.deepEqual(sections.map(section => [section.machine.machine, section.machine.state]), [["b", "stale"], ["a", "live"]], "a section per machine, in the order the machines are listed, each saying how it answers");
+  assert.deepEqual(sections.map(section => section.agents.map(agent => [agent.id, agent.projects.map(project => project.id)])), [
+    [["claude", ["b/p:~/code/x", "b/claude:desktop"]]],
+    [["claude", ["a/p:~/code/x", "a/claude:desktop"]]],
+  ], "each holding its own machine's agents and projects alone");
+  assert.deepEqual(machineSections(tree, [{ machine: "c", label: "c", state: "failed", since: null, error: "connection refused" }, ...late.machines]).map(section => [section.machine.machine, section.agents.length]), [["c", 0], ["a", 1], ["b", 1]], "a machine with no rows keeps its section");
+  assert.deepEqual(machineSections(tree, [late.machines[0]]).map(section => section.machine.machine), ["a", "b"], "a machine the rows name and the list does not comes after it");
+  assert.equal(tree[0].projects.length, 4, "the tree it was handed is left as it was");
+  // The view: the box between the states and Include hidden, shown for more than one machine, the
+  // choice remembered; under a machine's head no project or row repeats its machine.
+  assert.match(listViewSource, /if \(shows\("filter"\)\) sheetParts\[0\] \+= `\n<div data-machine-part>/, "the box comes right after the states, before Include hidden, hidden by the code alone");
+  assert.match(listViewSource, /machinePart\.hidden = machineCount\(\) < 2;/, "and is offered only over more than one machine");
+  assert.match(listViewSource, /filterSheet\.innerHTML = sheetParts\.join\([^\n]*\);\n(?:\/\/[^\n]*\n)*paintMachinePart\(\);/, "hidden from the mount on, before the first answer draws the list");
+  assert.match(listViewSource, /function toggleFilterSheet\(open\) \{\n(?:  [^\n]*\n){0,3}  if \(open\) paintMachinePart\(\);/, "and painted again as the sheet opens");
+  assert.match(listViewSource, /collapseBtn\.onclick = \(\) => \{\n  if \(drawnGroupedFlat\) \{ for \(const entry of indexState\.machines\) indexState\.collapsed\.add\(`m:\$\{entry\.machine\}`\); persist\(\); renderTree\(\); return; \}/, "in the list by activity grouped by machine, Collapse all folds the machines' heads alone");
+  assert.match(listViewSource, /const groupedByMachine = \(\) => shows\("filter"\) && indexState\.byMachine && machineCount\(\) > 1;/);
+  assert.match(listViewSource, /const entry = drawingMachine \? null : machineState\(key\);/, "under its head, a machine is not named again");
+  assert.match(listViewSource, /const was = drawingMachine;[\s\S]*?finally \{ drawingMachine = was; \}/, "and a draw inside a draw gives the mark back as it found it");
+  assert.match(listViewSource, /const grouped = !arranged && groupedByMachine\(\);[\s\S]*?machineHeadsHtml\(grouped\)/, "the heads over the list give way only when the grouped list is drawn");
+  const stateSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
+  assert.match(stateSource, /byMachine: localStorage\.getItem\("am-prod-by-machine"\) === "1",/, "remembered");
+  assert.match(stateSource, /localStorage\.setItem\("am-prod-by-machine", indexState\.byMachine \? "1" : "0"\);/);
+  assert.match(listViewSource, /const GROUP_STATE = Object\.freeze\(\{ stale: " tree-machine-group-stale", failed: " tree-machine-group-failed", waiting: " tree-machine-group-waiting" \}\);/, "a machine's head says its state under a prefixed name too");
+  assert.doesNotMatch(listRules, /\.tree-machine-group\.(?:stale|failed|live|waiting)(?![\w-])/, "and no rule styles a bare state name on it");
+  console.log("#s561 group by machine cases passed");
 }

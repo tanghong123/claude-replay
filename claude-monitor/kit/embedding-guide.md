@@ -14,7 +14,8 @@ agent-monitor-kit-{{version}}/
   package.json             the release's version, and the type that makes node read .js as modules
   bundle/                  what the reader's browser runs, served by you as static files
     index.js                 the entry: mountSessionView, mountSessionList, backendHandle,
-                             useBackend and persist
+                             useBackend, persist, and mergedBackend and splitMachineId for
+                             one list over several machines
     index.d.ts               what each takes and answers
     session-view.css         the view's stylesheet, every rule under #sessionView
     session-list.css         the list's, every rule under #sessionList
@@ -187,6 +188,85 @@ remembers the reader's folds, filter and read marks.
 
 The list hands you the reader's choice (`onOpen`) and moves its selection only when you call
 `select(id)`, so you can keep the reader where they are.
+
+### One list over several machines
+
+To show the sessions of several machines in one list (every Mac a reader has paired, say), give
+the list a merged source as its `backend`. It takes a handle on each machine's server, a key of
+yours for the machine (with no `/` in it) and the name a reader knows it by:
+
+```js
+import { backendHandle, mergedBackend, mountSessionList, mountSessionView } from "/static/agent-monitor/index.js";
+
+const merged = mergedBackend([
+  { machine: "studio", label: "Studio Mac", handle: backendHandle({ base: "/machines/studio", paired: true }) },
+  { machine: "laptop", label: "Laptop", handle: backendHandle({ base: "/machines/laptop", paired: true }) },
+]);
+const list = mountSessionList(document.getElementById("sessionList"), {
+  backend: merged,
+  onOpen: ({ id }) => show(id),
+});
+list.start();
+```
+
+What the list then shows:
+
+- Every machine's sessions. A project's head carries its machine's name, and so does a row in a
+  flat arrangement. The same folder on two machines is two projects. A `label` that is a host name
+  is shown by its first part (`studio.tail1234.ts.net` shows `studio`); give the whole name, and the
+  list keeps it for the label's title.
+- The filter offers **Group by machine** (between Idle and Include hidden, while the list holds more
+  than one machine): a head for each machine, in the order you listed them, holding that machine's
+  own agents, projects and sessions, and saying how the machine answers while it does not. The
+  reader's choice is remembered like the filter's others, through the `persist` you pass. It is
+  part of the `filter` control: with `show: { filter: false }` the list is not grouped.
+- The list's ids are `<machine>/<that machine's own id>`; `splitMachineId(id)` takes one apart.
+- A hide or a restore goes to the row's own machine.
+- Each read asks every machine that is not still answering the last one, and waits at most
+  `timeout` (4 seconds unless you pass `{ timeout }` in ms) for those that answered in time before.
+  A machine that does not answer in time, or fails, keeps its last rows, greyed, under a head over
+  the list saying since when, and is not waited for again until it answers; one that has never
+  answered gets a head saying why, and no rows. An ask still out after eight times `timeout` is
+  given up, and the machine is asked afresh.
+- Other apps' arrangements (the Arrange choices) are shown disabled, with the reason: they come
+  from one machine's apps, and make no one list over several.
+- The handle you pass for a machine is the one the merged source reads it through, and the one
+  `locate` gives back, used as it is.
+
+The view shows one machine's session at a time, read from that machine. `merged.locate(id)` names
+a listed session's machine, its handle and the session's own id, and `merged.forView(list,
+machine)` gives the view's row options in that machine's ids. When the reader opens a session of
+another machine, unmount the view and mount it again with that machine's handle:
+
+```js
+let view = null, on = "";
+function show(id) {
+  const where = merged.locate(id);
+  if (!where) return; // an id that names none of the machines
+  list.select(id);
+  if (where.machine !== on) {
+    if (view) view.unmount();
+    const rows = merged.forView(list, where.machine);
+    view = mountSessionView(document.getElementById("sessionView"), {
+      backend: where.handle,
+      grid: document.getElementById("pane"),
+      selectedId: rows.selectedId,
+      sessionRow: rows.sessionRow,
+      sessionWorkers: rows.sessionWorkers,
+      selectSession: own => show(rows.listId(own)),
+      renderList: () => list.redraw(),
+      refreshIndex: () => list.refresh(),
+      pauseIndex: () => list.stop(),
+      resumeIndex: () => list.start(),
+    });
+    on = where.machine;
+  }
+  view.select(where.id);
+  view.open(where.id);
+}
+```
+
+Each machine's server is relayed under a prefix of your page's origin, as section 2 says for one.
 
 With both parts mounted, give the view the list's answers: `selectedId: () => list.selected()`,
 `sessionRow: id => list.row(id)`, `sessionWorkers: id => list.workers(id)`, `renderList: () =>
