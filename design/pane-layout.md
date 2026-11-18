@@ -452,9 +452,9 @@ screen up to 760px):
   It never folds at the field's blur alone, since Safari and Firefox give a pressed button no focus. The box that takes the heading's place while it is in
   use below a 900px window keeps it by the same rule. At every desktop width the
   title keeps at least its first word (at most 160px), the crumb, the chip and the resting search
-  box (down to 150px) giving way first. While the search is in use above a 900px window the order
-  turns round: the title gives way first and the box keeps at least 400px, less where the bar cannot
-  spare it, so the query keeps a field to show in.
+  box (down to 150px) giving way first. While the search is in use or holds a query, above a 900px
+  window and outside that bar, the order turns round: the title gives way first and the box keeps
+  at least 400px, less where the bar cannot spare it, so the query keeps a field to show in.
 
 **Who decides what.** The view decides its own parts from its own box (#s461): whether it is the phone
 reader, the pane, the glyphs, the outline, and how the slack splits between the session and the pane
