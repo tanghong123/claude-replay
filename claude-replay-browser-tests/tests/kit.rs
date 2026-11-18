@@ -953,6 +953,34 @@ fn groups_by_machine_from_the_filter(phone: bool, here_port: u16, there_port: u1
         ),
         "each machine's rows under its own head, which alone names it: {flat_grouped}"
     );
+    // There the machines' heads fold, so Collapse all is offered, and folds them alone: the agents
+    // and projects the list by activity does not show stay as they were.
+    assert_eq!(
+        harness::probe(
+            &tab,
+            "document.getElementById('collapseBtn').hasAttribute('data-flat')"
+        ),
+        serde_json::json!(false),
+        "Collapse all is offered in the list by activity grouped by machine"
+    );
+    click("#collapseBtn");
+    until_seq(
+        serde_json::json!(["M:a:tern-mini", "M:b:skua-book"]),
+        "Collapse all to fold the machines' heads",
+    );
+    assert_eq!(
+        harness::probe(
+            &tab,
+            "JSON.parse(localStorage.getItem('am-demo-collapsed') || '[]').sort()"
+        ),
+        serde_json::json!(["m:a", "m:b"]),
+        "Collapse all folded the machines' heads and nothing else"
+    );
+    click("#expandBtn");
+    until_seq(
+        serde_json::json!(["M:a:tern-mini", "S", "M:b:skua-book", "S"]),
+        "Expand all to open them again",
+    );
     click("#sessionFilter [data-arrange=\"flat\"]");
     let grouped = until_seq(
         serde_json::json!([

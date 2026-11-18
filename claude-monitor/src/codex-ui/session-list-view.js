@@ -812,8 +812,9 @@ ${ARRANGE_SOURCES.map(key => `<button class="scope-option arrange-app" type="but
 </div>`);
 // #s561 (Hong: "extend the filter menu to have another check box to group agents by machine (right
 // above include idle)"): Group by machine, after the states and before Include hidden, drawn with the
-// states and shown while the list holds more than one machine (`renderFilterControl`, which alone
-// hides it: the markup does not, so a list of one machine that showed it would be the code's doing).
+// states and shown while the list holds more than one machine (`paintMachinePart`, at the mount, as
+// the sheet opens and at each draw: the markup does not hide it, so a list of one machine that showed
+// it would be the code's doing).
 if (shows("filter")) sheetParts[0] += `
 <div data-machine-part><div class="scope-menu-divider"></div><div class="scope-menu-list">
 <button class="scope-option" type="button" role="checkbox" aria-checked="false" data-by-machine title="A head for each machine, holding its own agents and projects"><span class="scope-check"></span><span>Group by machine</span></button>

@@ -5495,7 +5495,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listViewSource, /if \(shows\("filter"\)\) sheetParts\[0\] \+= `\n<div data-machine-part>/, "the box comes right after the states, before Include hidden, hidden by the code alone");
   assert.match(listViewSource, /machinePart\.hidden = machineCount\(\) < 2;/, "and is offered only over more than one machine");
   assert.match(listViewSource, /filterSheet\.innerHTML = sheetParts\.join\([^\n]*\);\n(?:\/\/[^\n]*\n)*paintMachinePart\(\);/, "hidden from the mount on, before the first answer draws the list");
-  assert.match(listViewSource, /if \(open\) paintMachinePart\(\);/, "and painted again as the sheet opens");
+  assert.match(listViewSource, /function toggleFilterSheet\(open\) \{\n(?:  [^\n]*\n){0,3}  if \(open\) paintMachinePart\(\);/, "and painted again as the sheet opens");
+  assert.match(listViewSource, /collapseBtn\.onclick = \(\) => \{\n  if \(drawnGroupedFlat\) \{ for \(const entry of indexState\.machines\) indexState\.collapsed\.add\(`m:\$\{entry\.machine\}`\); persist\(\); renderTree\(\); return; \}/, "in the list by activity grouped by machine, Collapse all folds the machines' heads alone");
   assert.match(listViewSource, /const groupedByMachine = \(\) => shows\("filter"\) && indexState\.byMachine && machineCount\(\) > 1;/);
   assert.match(listViewSource, /const entry = drawingMachine \? null : machineState\(key\);/, "under its head, a machine is not named again");
   assert.match(listViewSource, /const was = drawingMachine;[\s\S]*?finally \{ drawingMachine = was; \}/, "and a draw inside a draw gives the mark back as it found it");
