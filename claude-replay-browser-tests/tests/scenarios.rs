@@ -1765,6 +1765,34 @@ fn scenario_deep_jump_then_page_and_step(
         stepped - 1,
         "`[` steps back one turn: the spy named {stepped}, now {stepped_back}"
     );
+    // #s576: a Chinese keyboard can give the bracket keys as their full-width forms, 】 and 【
+    // (U+3011, U+3010); they step the same way.
+    key(tab, "\u{3011}", false);
+    settle();
+    let wide_top = turn_at_top(tab, surface);
+    let wide = named("after `】`");
+    assert!(
+        wide_top >= back && wide_top <= back + 3,
+        "`】` stays near where it was: {back} -> {wide_top}"
+    );
+    assert_eq!(
+        wide,
+        stepped_back + 1,
+        "`】` steps to the next turn: the spy named {stepped_back}, now {wide}"
+    );
+    key(tab, "\u{3010}", false);
+    settle();
+    let wide_back_top = turn_at_top(tab, surface);
+    let wide_back = named("after `【`");
+    assert!(
+        wide_back_top <= wide_top && wide_back_top + 3 >= wide_top,
+        "`【` stays near where it was: {wide_top} -> {wide_back_top}"
+    );
+    assert_eq!(
+        wide_back,
+        wide - 1,
+        "`【` steps back one turn: the spy named {wide}, now {wide_back}"
+    );
 }
 
 #[test]

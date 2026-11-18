@@ -1573,6 +1573,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const ev = (key, extra = {}) => ({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...extra });
   assert.equal(resolveKey(ev("]"), "view").action, "turn-next");
   assert.equal(resolveKey(ev("]"), "list"), null, "view keys do not fire while the list has focus");
+  // #s576: a Chinese keyboard's full-width brackets are the bracket keys, under the same rules.
+  assert.equal(resolveKey(ev("\u3011"), "view").action, "turn-next", "】 steps to the next turn");
+  assert.equal(resolveKey(ev("\u3010"), "view").action, "turn-prev", "【 steps to the previous turn");
+  assert.equal(resolveKey(ev("\u3010"), "view", { tagName: "INPUT" }), null, "…never while typing");
+  assert.equal(resolveKey(ev("\u3011"), "list"), null, "…and not while the list has focus");
+  assert.equal(resolveKey(ev("\u3011"), "view", { tagName: "DIV", closest: sel => (sel === "[data-guest-keys]" ? {} : null) }), null, "…nor inside a guest");
+  for (const mod of ["metaKey", "ctrlKey", "altKey"]) assert.equal(resolveKey(ev("\u3011", { [mod]: true }), "view"), null, `…nor with ${mod} held`);
+  for (const b of KEYMAP) assert.ok(!["\u3010", "\u3011"].includes(b.key), "no binding names a full-width bracket itself");
+  assert.equal(hintFor("turn-next"), "]", "the hint still names the bracket key");
   assert.equal(resolveKey(ev("ArrowDown"), "list").action, "list-next");
   assert.equal(resolveKey(ev("ArrowDown"), "view"), null, "arrow keys are the list's alone");
   assert.equal(resolveKey(ev("/"), "list").action, "search", "search works from anywhere");
