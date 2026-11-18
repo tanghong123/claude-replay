@@ -4248,11 +4248,26 @@ pub fn open_host_page_with(
     answer_in_browser(tab, answers);
     tab.navigate_to(&monitor.url(&format!("session-view-host?{query}")))
         .unwrap();
-    // train2's CI twice timed out here, after the case had used the app in the same tab: say which
-    // host page and where the tab was, so the next run shows where the load stopped.
+    // train2's CI timed out here three times, after the case had used the app in the same tab. The
+    // tab is read in plain values only: `window.__host` holds the mounted view, which JSON cannot
+    // carry, and a script that throws reads as null, which hid whether the page had loaded. A page
+    // that did load (the host page's address, its document complete) goes on to the mount wait
+    // below, which is what a case needs, with one stderr line saying the navigation event was missed.
     if let Err(e) = tab.wait_until_navigated() {
-        let at = eval(tab, "JSON.stringify({ href: location.href, ready: document.readyState, host: window.__host || null })");
-        panic!("the host page (session-view-host?{query}) to finish loading: {e}; the tab: {at}");
+        let alive = eval(tab, "1 + 1");
+        let at = eval(tab, "JSON.stringify({ href: location.href, ready: document.readyState, host: !!window.__host, mounted: !!(window.__host && window.__host.mounted), error: window.__host && window.__host.error ? String(window.__host.error) : null })");
+        let seen: serde_json::Value =
+            serde_json::from_str(at.as_str().unwrap_or("null")).unwrap_or_default();
+        let loaded = seen["href"]
+            .as_str()
+            .is_some_and(|h| h.contains("session-view-host"))
+            && seen["ready"] == "complete";
+        if !loaded {
+            panic!("the host page (session-view-host?{query}) to finish loading: {e}; the tab answers a script: {alive}; the tab: {at}");
+        }
+        eprintln!(
+            "the host page (session-view-host?{query}) loaded with no navigation event ({e}): {at}"
+        );
     }
     until(
         tab,
