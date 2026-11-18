@@ -8,7 +8,8 @@
 //!   which `package.json` does not export and no host is offered; every module the two import,
 //!   found by walking the imports from them, each exactly as this release's monitor serves it at
 //!   `/monitor-ui/` ([`ui::asset`]), so `shared/` is a directory where the source tree has a link;
-//!   the view's and the list's stylesheets, and the app's (`app-shell.css`, the mount's); and
+//!   the view's and the list's stylesheets, the app's (`app-shell.css`, the mount's) and a detached
+//!   tab's (`detached.css`, #s433); and
 //!   `index.d.ts`, what the two components take and answer;
 //! - `docs/`: the guide (`kit/embedding-guide.md`, this release's facts written in) and the
 //!   backend contract (`docs/backend-contract.md`);
@@ -245,7 +246,7 @@ mod tests {
     }
 
     /// The bundle is the two entries and their closure: every module the walk found, and nothing else
-    /// but the three stylesheets and the declarations. The walk starts at `kit/index.js` and
+    /// but the four stylesheets and the declarations. The walk starts at `kit/index.js` and
     /// `kit/native-app.js` and must reach both components, their backend, the list's store and the
     /// web app's mount with its shell (#s551).
     #[test]

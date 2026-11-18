@@ -316,7 +316,7 @@ fn the_web_app_mounts_from_the_kits_second_entry_with_its_own_server_and_version
     let monitor = Monitor::spawn(Kind::V1, 3314, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let mut answers = kit_answers();
+    let mut answers = kit_answers("");
     answers.push(Answer {
         pattern: "*/native-app-host*".into(),
         path: "/native-app-host".into(),
@@ -507,7 +507,7 @@ fn a_list_given_a_server_of_its_own_keeps_to_it_beside_a_view_on_another() {
     );
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let mut answers: Vec<Answer> = kit_answers()
+    let mut answers: Vec<Answer> = kit_answers("")
         .into_iter()
         .filter(|answer| answer.path != "/kit-host")
         .collect();
@@ -618,6 +618,7 @@ fn sessions_of(monitor: &Monitor) -> String {
         std::thread::sleep(Duration::from_millis(500));
     }
     panic!("the list's server never listed {SID_LISTED}");
+}
 
 /// What a host page's tab of its own holds right now, for a failure message.
 const TAB_NOW: &str = "JSON.stringify({ href: location.href, tab: window.__tab || null, text: (document.getElementById('detachedView') || {}).innerText ? document.getElementById('detachedView').innerText.slice(0, 300) : '' })";
