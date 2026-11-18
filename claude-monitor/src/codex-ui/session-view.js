@@ -95,6 +95,11 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    "page" is the app's mode: the view binds none, and the host owns the page's keyboard and calls
  *    `keys[action]`. A host that uses it gets the action names, not the key table (shared/keymap.js,
  *    which the app binds with its list's keys and contexts).
+ *    In either mode a mouse's click in the transcript focuses the transcript (#s488), which draws no
+ *    focus ring: WebKit sends a key from a pressed node a redraw has replaced to the page and scrolls
+ *    nothing. A click inside a box that scrolls on its own (a wide code block or table, a capped raw
+ *    record), a touch and a pen do not focus the transcript (the browser's own rule decides the rest);
+ *    nor does a press on the transcript's scrollbar, which leaves a focused transcript focused.
  *  - `write`: what writing to a session needs from the host, which owns write mode; left out, the
  *    view offers no writes (no compose button, no ✎ in a phone's dock, no notice that a session
  *    cannot be written to). An object of two functions:
@@ -412,6 +417,53 @@ let stepLanded = null;
 
 const byId = viewRoot.byId;
 const transcript = byId("transcript");
+// #s488: a mouse's press in the transcript gives the page's keys the transcript itself. With nothing
+// focused WebKit scrolls by a key the box holding the node the mouse last pressed, and the growth
+// redraws the units its rewritten records stand in (a turn committing rewrites the whole open turn),
+// so that node was often gone by the next key and Page Up, an arrow or Space scrolled nothing in
+// Safari. Focusable (`tabindex=-1`: never in the Tab order), the box takes the focus natively from a
+// press on its text, as the nearest focusable thing the press lands in, and keeps it through any
+// redraw; a press on a control the browser focuses still focuses the control. Only a MOUSE's press
+// does: a finger's or a pen's tap does not focus it (the attribute goes for the tap), since on a phone
+// or a tablet a tap on the text must not put the keyboard down nor take the focus from a field. No
+// ring is drawn for it (`production.css`). A browser sends no pointer events for a tap's
+// compatibility mouse events, so a mouse's pointerdown is a mouse's press, except one the browser
+// suite supplies: Linux's Chrome stops a synthesized tap at `touchend` and the harness sends the
+// press itself, up to half a second later and more on a loaded runner (#366), so a mouse press that
+// comes after a touch, at its point and within `TAP_MOUSE_MS` of it, is read as that tap's.
+const TAP_MOUSE_MS = 2000, TAP_MOUSE_PX = 24;
+let lastTouch = null;
+const touched = event => { if (event.pointerType !== "mouse") lastTouch = { at: event.timeStamp, x: event.clientX, y: event.clientY }; };
+const tapsMouse = event => !!lastTouch && event.timeStamp - lastTouch.at < TAP_MOUSE_MS && Math.hypot(event.clientX - lastTouch.x, event.clientY - lastTouch.y) < TAP_MOUSE_PX;
+// A press inside a box of the transcript's that scrolls on its own (a wide code block or table, a
+// capped raw record) leaves the box unfocusable too, as before: with nothing focused the browser
+// starts a key from the pressed node, so the arrows and Page Up/Down scroll that box, where the
+// transcript taking the focus would have sent them past it. What is left of the bug is there: in
+// Safari, after a click in a wide block of the open turn, a prompt arriving redraws that block and
+// Page Up scrolls nothing again, the original bug limited to wide blocks. Only a CAPPED box (one with
+// a max-height, as a raw record is) counts for scrolling down: a box that scrolls sideways computes
+// `overflow-y: auto` too, and a glyph or a child's margin can stand a pixel or two past an ordinary
+// code block's height, which would hand every such block the bug back.
+const scrollsInside = target => {
+  for (let node = target?.nodeType === 1 ? target : target?.parentElement; node && node !== transcript; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if ((/(auto|scroll)/.test(style.overflowX) && node.scrollWidth > node.clientWidth + 1) || (style.maxHeight !== "none" && /(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 1)) return true;
+  }
+  return false;
+};
+transcript.tabIndex = -1;
+transcript.addEventListener("pointerdown", event => {
+  // A press on the transcript's own scrollbar does not focus it: a browser moves the focus to a box
+  // it may focus on that press, so a draft's keys went to the transcript (with none, Chrome blurs the
+  // field as for a press anywhere else, measured, so the keys go to the page as before). With the
+  // transcript itself focused the box stays focusable, since one that stops being so is blurred.
+  const mouse = event.pointerType === "mouse" && !tapsMouse(event);
+  if (mouse && viewport.frame.isScrollbarTarget(event)) { if (viewRoot.active() !== transcript) transcript.removeAttribute("tabindex"); }
+  else if (mouse && !scrollsInside(event.target)) transcript.tabIndex = -1;
+  else transcript.removeAttribute("tabindex");
+  touched(event);
+}, { capture: true, passive: true, signal });
+transcript.addEventListener("pointerup", touched, { capture: true, passive: true, signal });
 const projection = new Projection();
 let landedHash = "";
 // #s277: a link waiting for its turn to arrive, and when it began to wait (`landOnHash`).
