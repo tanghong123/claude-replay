@@ -108,6 +108,7 @@ impl MetricsAcc {
         remember_string(&mut self.runtime.client_version, v.get("version"));
         if v.get("type").and_then(Value::as_str) == Some("runtime-config") {
             remember_string(&mut self.runtime.reasoning_effort, v.get("reasoningEffort"));
+            remember_string(&mut self.runtime.model, v.get("model"));
             if let Some(w) = v.get("contextWindow").and_then(Value::as_u64) {
                 self.runtime.context_window_tokens = Some(w);
             }
@@ -156,11 +157,11 @@ impl MetricsAcc {
             }
         }
         // The model THIS message ran on — not `self.model`, which is only the last seen.
-        let m = v
-            .pointer("/message/model")
-            .and_then(|x| x.as_str())
-            .unwrap_or(&self.model)
-            .to_string();
+        let m = self.named_model(
+            v.pointer("/message/model")
+                .and_then(|x| x.as_str())
+                .unwrap_or(&self.model),
+        );
         if let Some(u) = v.pointer("/message/usage") {
             // Three distinct buckets so the footer can tell them apart: new input,
             // cache writes (new content, cached on first sight), and cache reads
@@ -280,7 +281,7 @@ impl MetricsAcc {
                 None if fast_rule && credit != TokenCounts::default() => Some(class(None)),
                 None => None,
             };
-            let bucket = self.per_model.entry(m).or_default();
+            let bucket = self.per_model.entry(m.clone()).or_default();
             *bucket += credit;
             if let Some(long) = long {
                 bucket.long_prompt += long.into();
@@ -300,8 +301,11 @@ impl MetricsAcc {
                 }
             }
         }
-        if let Some(m) = v.pointer("/message/model").and_then(|x| x.as_str()) {
-            self.model = m.to_string();
+        if v.pointer("/message/model")
+            .and_then(|x| x.as_str())
+            .is_some()
+        {
+            self.model = m;
         }
         if let Some(ts) = v.get("timestamp").and_then(|x| x.as_str()) {
             if let Some(secs) = parse_ts(ts) {
@@ -324,20 +328,32 @@ impl MetricsAcc {
     /// same release throughout (179,405 lines on one box, 2026-11-01); every Qoder 1.1.69-1.1.80
     /// line beside credits held a real count. So a credited usage's output count is taken when it
     /// is above 0; a 0 beside credits is no count, never a false 0.
+    /// The Qoder family's assistant records name the ROUTER ("auto"), while the model the
+    /// person picked is written only in the `runtime-config` head — so a record naming the
+    /// router buckets under the head's selection. A record naming a model of its own keeps
+    /// it, and a head naming the router itself (or nothing) renames nothing.
+    fn named_model(&self, recorded: &str) -> String {
+        match self.runtime.model.as_deref() {
+            Some(pick) if recorded == "auto" && pick != "auto" => pick.to_string(),
+            _ => recorded.to_string(),
+        }
+    }
+
     fn time_answer(&mut self, v: &Value) {
         let ts = v
             .get("timestamp")
             .and_then(Value::as_str)
             .and_then(epoch_secs);
-        let model = v
-            .pointer("/message/model")
-            .and_then(Value::as_str)
-            .unwrap_or_default();
+        let model = self.named_model(
+            v.pointer("/message/model")
+                .and_then(Value::as_str)
+                .unwrap_or_default(),
+        );
         let id = v.pointer("/message/id").and_then(Value::as_str);
         let line = match (v.get("type").and_then(Value::as_str), id) {
             (Some("assistant"), Some(id)) if model != "<synthetic>" => AnswerLine::Part {
                 id: id.to_string(),
-                model: model.to_string(),
+                model,
                 output_tokens: v.pointer("/message/usage").and_then(|u| {
                     let n = u.get("output_tokens").and_then(Value::as_u64)?;
                     (n > 0 || u.get("credits").is_none()).then_some(n)
@@ -1529,6 +1545,68 @@ mod runtime_tests {
         assert_eq!(m.runtime.context_window_tokens, Some(128_000));
         let m = fold(&[r#"{"type":"runtime-config","sessionId":"q","model":"","reasoningEffort":null,"contextWindow":null,"timestamp":1}"#]).finish();
         assert!(m.runtime.reasoning_effort.is_none() && m.runtime.context_window_tokens.is_none());
+    }
+
+    /// The Qoder family's assistant records name the ROUTER ("auto"); the model the
+    /// person picked is written only in the `runtime-config` head. The pick's tokens
+    /// belong on the pick's row, not the router's. A head naming the router itself,
+    /// an empty head, or a client writing real model names stays untouched.
+    #[test]
+    fn auto_buckets_under_the_runtime_config_selection() {
+        let head = r#"{"type":"runtime-config","sessionId":"q","model":"qmodel_latest","reasoningEffort":null,"contextWindow":null,"timestamp":1784282861519}"#;
+        let auto = r#"{"type":"assistant","requestId":"r1","message":{"role":"assistant","id":"m1","model":"auto","usage":{"input_tokens":10,"output_tokens":5}},"timestamp":"2026-09-03T10:00:02.000Z"}"#;
+        let m = fold(&[head, auto]).finish();
+        assert_eq!(m.runtime.model.as_deref(), Some("qmodel_latest"));
+        assert_eq!(m.per_model["qmodel_latest"].output, 5);
+        assert_eq!(m.per_model["qmodel_latest"].input, 10);
+        assert!(
+            !m.per_model.contains_key("auto"),
+            "the router is not a model row: {:?}",
+            m.per_model.keys()
+        );
+        assert_eq!(m.model, "qmodel_latest");
+        // The answer clock names the pick too, so speed groups by it. An answer ends
+        // when the next begins, so a second answer closes the first.
+        let mut acc = fold(&[head, auto]);
+        acc.push(
+            &serde_json::from_str::<Value>(
+                r#"{"type":"user","message":{"role":"user","content":"hi"},"timestamp":"2026-09-03T10:00:04.000Z"}"#,
+            )
+            .unwrap(),
+        );
+        acc.push(
+            &serde_json::from_str::<Value>(
+                r#"{"type":"assistant","requestId":"r2","message":{"role":"assistant","id":"m2","model":"auto","usage":{"input_tokens":1,"output_tokens":1}},"timestamp":"2026-09-03T10:00:05.000Z"}"#,
+            )
+            .unwrap(),
+        );
+        assert_eq!(
+            acc.answer().map(|a| a.model),
+            Some("qmodel_latest".to_string())
+        );
+        // The selection crosses a resume cursor like every runtime fact.
+        let acc = fold(&[head]);
+        let mut resumed = MetricsAcc::recording(&["effort", "permission", "client"]);
+        resumed.restore(&acc.state());
+        resumed.push(&serde_json::from_str::<Value>(auto).unwrap());
+        let m = resumed.finish();
+        assert_eq!(m.per_model["qmodel_latest"].output, 5);
+        assert!(!m.per_model.contains_key("auto"));
+        // A head naming the router itself leaves the router's row as it was.
+        let router_head =
+            r#"{"type":"runtime-config","sessionId":"q","model":"auto","timestamp":1}"#;
+        let m = fold(&[router_head, auto]).finish();
+        assert_eq!(m.per_model["auto"].output, 5);
+        // An empty head names nothing; the router's row stays.
+        let empty_head = r#"{"type":"runtime-config","sessionId":"q","model":"","timestamp":1}"#;
+        let m = fold(&[empty_head, auto]).finish();
+        assert_eq!(m.per_model["auto"].output, 5);
+        // A client that writes real model names keeps them, head or no head.
+        let named = r#"{"type":"assistant","requestId":"r2","message":{"role":"assistant","id":"m2","model":"qwork-ultimate","usage":{"input_tokens":1,"output_tokens":7}},"timestamp":"2026-09-03T10:00:03.000Z"}"#;
+        let m = fold(&[head, named]).finish();
+        assert_eq!(m.per_model["qwork-ultimate"].output, 7);
+        assert!(!m.per_model.contains_key("qmodel_latest"));
+        assert_eq!(m.model, "qwork-ultimate");
     }
 }
 
