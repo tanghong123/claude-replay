@@ -1949,10 +1949,10 @@ fn consecutive_images_are_one_block_and_open_in_the_pane_one_by_one_or_all() {
     );
 }
 
-/// What `hidden_inside_the_view` reads: every element of the session view that is hidden by its own
-/// computed style (no box, `visibility: hidden` or an opacity of 0, the three WebKit's content-change
-/// observer counts as hidden), keyed by a number it gives each element once.
-const HIDDEN_IN_VIEW: &str = "JSON.stringify((function(){ var all = document.querySelectorAll('#sessionView *'); window.__hk = window.__hk || 0; var out = {}; for (var i = 0; i < all.length; i++) { var e = all[i]; if (e.__hk == null) e.__hk = ++window.__hk; var s = getComputedStyle(e); if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') out[e.__hk] = (e.id ? '#' + e.id : '') + '.' + String(e.className && e.className.baseVal != null ? e.className.baseVal : e.className).trim().split(/\\s+/).join('.'); } return out; })())";
+/// Every element of the session view by a number it is given once, with its label and whether its own
+/// computed style hides it (no box, `visibility: hidden` or an opacity of 0: the three WebKit's
+/// content-change observer counts as hidden).
+const VIEW_ELEMENTS: &str = "JSON.stringify((function(){ var all = document.querySelectorAll('#sessionView *'); window.__hk = window.__hk || 0; var out = {}; for (var i = 0; i < all.length; i++) { var e = all[i]; if (e.__hk == null) e.__hk = ++window.__hk; var s = getComputedStyle(e); out[e.__hk] = [(e.id ? '#' + e.id : '') + '.' + String(e.className && e.className.baseVal != null ? e.className.baseVal : e.className).trim().split(/\\s+/).join('.'), s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0']; } return out; })())";
 
 /// #s573: on a touch screen hover reveals nothing (#s41), in the desktop layout too. A sideways iPad
 /// is that layout on a touch screen (`hover: none`, `pointer: coarse`, 1210px), and there a tap on a
@@ -2034,15 +2034,17 @@ fn a_touch_screen_beside_the_list_reveals_nothing_on_a_hover_inside_a_record() {
             .unwrap();
         std::thread::sleep(Duration::from_millis(400));
         let before: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str(eval(&tab, HIDDEN_IN_VIEW).as_str().unwrap_or("{}")).unwrap();
+            serde_json::from_str(eval(&tab, VIEW_ELEMENTS).as_str().unwrap_or("{}")).unwrap();
         tab.move_mouse_to_point(centre(target)).unwrap();
         std::thread::sleep(Duration::from_millis(400));
         let after: serde_json::Map<String, serde_json::Value> =
-            serde_json::from_str(eval(&tab, HIDDEN_IN_VIEW).as_str().unwrap_or("{}")).unwrap();
+            serde_json::from_str(eval(&tab, VIEW_ELEMENTS).as_str().unwrap_or("{}")).unwrap();
+        // Hidden before and still there, shown now: an element the page drew or dropped meanwhile
+        // is not a hover's reveal.
         before
             .iter()
-            .filter(|(k, _)| !after.contains_key(*k))
-            .map(|(_, v)| v.as_str().unwrap_or("").to_string())
+            .filter(|(k, was)| was[1] == true && after.get(*k).is_some_and(|now| now[1] == false))
+            .map(|(_, was)| was[0].as_str().unwrap_or("").to_string())
             .collect()
     };
     let thumb = ".renderer-image .image-thumb";
