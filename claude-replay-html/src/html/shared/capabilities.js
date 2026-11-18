@@ -65,7 +65,7 @@ const canDownload = ({ path, fsig, data, text } = {}) => Boolean((path && fsig) 
  *  file manager for a reader at this machine, the file as a download for one elsewhere — each only
  *  where the server offered what it needs (the reveal stamp; a file stamp or the bytes). `null`
  *  when neither applies. */
-const besideAction = item => (revealHere() ? (canReveal(item) ? "reveal" : null) : canDownload(item) ? "download" : null);
+const besideAction = (item, reveal = revealHere()) => (reveal ? (canReveal(item) ? "reveal" : null) : canDownload(item) ? "download" : null);
 
 /** Whether the file manager is the reader's to see: the page was loaded from THIS machine — a
  *  loopback host, the same test the server applies for gzip and masking (#313, #365). A reveal

@@ -20,6 +20,9 @@
 // internals the released bundle does not export (the design says why). Either goes to a tab of its
 // own (#271): `/markdown` serves the viewer as the whole page, at the reader's document and range.
 
+import { backend } from "./backend.js";
+import { page, viewRoot } from "./view-root.js";
+
 const CONTRACT = "/api/mdrev";
 // #s10: the detached tab mounts the guest under a prefix of its own, which ALSO answers mdrev's
 // shared review (threads, pairing, a Push) — the owner: "maybe not in the main interface, but in the
@@ -33,7 +36,7 @@ const MARKDOWN = /\.(md|markdown|mdown|mkd)$/i;
 export const isMarkdownName = name => MARKDOWN.test(String(name || ""));
 
 /** The pinned mdrev release's version, or "" from a server that carries none. */
-export const mdrevVersion = () => document.body?.dataset.mdrev || "";
+export const mdrevVersion = () => backend().mdrevVersion();
 
 let loading = null;
 /** The version this page found the monitor serving in place of the one it was loaded with (#s352),
@@ -45,16 +48,16 @@ let updatedTo = "";
 function importBundle(version) {
   const link = document.createElement("link");
   link.rel = "stylesheet";
-  link.href = `/mdrev/${version}/mdrev.css`;
-  document.head.appendChild(link);
-  return import(`/mdrev/${version}/mdrev.js`).catch(error => { link.remove(); throw error; });
+  link.href = backend().mdrevUrl(`/mdrev/${version}/mdrev.css`);
+  viewRoot.sheets().appendChild(link);
+  return import(backend().mdrevUrl(`/mdrev/${version}/mdrev.js`)).catch(error => { link.remove(); throw error; });
 }
 
 /** The mdrev version the monitor serves NOW, read off its smallest page (`/markdown`, about 700
  *  bytes, which carries `data-mdrev` as this page does); "" when it cannot be read. */
 async function servedVersion() {
   try {
-    const response = await fetch("/markdown", { cache: "no-store" });
+    const response = await backend().mdrevFetch("/markdown", { cache: "no-store" });
     if (!response.ok) return "";
     return /data-mdrev="([^"]*)"/.exec(await response.text())?.[1] || "";
   } catch { return ""; }
@@ -76,7 +79,7 @@ function loadMdrev(version) {
       const now = await servedVersion();
       if (!now || now === version) throw error;
       const module = await importBundle(now);
-      document.body.dataset.mdrev = now;
+      backend().mdrevMoved(now);
       updatedTo = now;
       return module;
     }).catch(error => { loading = null; throw error; });
@@ -92,7 +95,7 @@ function takeUpdate() {
   return version;
 }
 
-const theme = () => (document.documentElement.dataset.theme === "dark" ? "dark" : "light");
+const theme = () => viewRoot.theme();
 
 /** The collection name for Markdown the transcript carries (the monitor's `held` store). */
 const HELD = "held";
@@ -105,7 +108,7 @@ async function answer(response) {
 /** Hand the monitor text to hold for mdrev's contract: content-addressed, so the same text always
  *  comes back under the same path and capability. */
 async function hold(name, text) {
-  return answer(await fetch(`${CONTRACT}/hold`, {
+  return answer(await backend().mdrevFetch(`${CONTRACT}/hold`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ name: name || "document.md", text }),
@@ -118,7 +121,7 @@ const reader = held => ({ root: held.root, path: held.path, cap: held.cap, isGit
 
 /** The mount's facts for a file on this machine, from the file's own `/file` stamp. */
 async function opened(path, sig) {
-  const open = await answer(await fetch(`${CONTRACT}/open?path=${encodeURIComponent(path)}&sig=${encodeURIComponent(sig || "")}`, { cache: "no-store" }));
+  const open = await answer(await backend().mdrevFetch(`${CONTRACT}/open?path=${encodeURIComponent(path)}&sig=${encodeURIComponent(sig || "")}`, { cache: "no-store" }));
   // The leave is the monitor's to give: history always (from git), notes only where it has a node
   // to run mdrev's CLI — mdrev's own format is written through nothing else.
   return { root: open.root, path: open.path, cap: open.cap, isGit: open.isGit, review: open.review, annotate: open.annotate, name: open.name };
@@ -145,7 +148,7 @@ async function factsFor(item) {
  *  mints for a link, asked in the name of the document the mount was given. "" when refused. */
 async function capFor(root, origin, target) {
   try {
-    const caps = await answer(await fetch(`${CONTRACT}/resolve?root=${encodeURIComponent(root)}`, {
+    const caps = await answer(await backend().mdrevFetch(`${CONTRACT}/resolve?root=${encodeURIComponent(root)}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ from: origin, targets: [target] }),
@@ -160,7 +163,7 @@ async function capFor(root, origin, target) {
  * mdrev's guide shapes, §10). A theme toggle remounts at that place, since mdrev cannot re-theme a
  * live mount; `moved` hears every move.
  */
-function mountAt(mountMdrev, el, facts, moved, contract = CONTRACT) {
+function mountAt(mountMdrev, el, facts, moved, contract = backend().mdrevUrl(CONTRACT)) {
   const origin = { path: facts.path, cap: facts.cap || "" };
   const place = { root: facts.root, path: facts.path, cap: origin.cap, range: facts.range || null };
   // A key pressed while the reader is engaged with it is mdrev's (shared/keymap.js tracks the same
@@ -192,7 +195,7 @@ function mountAt(mountMdrev, el, facts, moved, contract = CONTRACT) {
   show();
   mount();
   const watch = new MutationObserver(() => { mounted?.unmount(); mount(); });
-  watch.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  watch.observe(viewRoot.themeElement(), { attributes: true, attributeFilter: ["data-theme"] });
   return {
     place,
     unmount() { watch.disconnect(); mounted?.unmount(); mounted = null; },
@@ -214,7 +217,7 @@ export async function mountMarkdown(el, item, { review = false } = {}) {
   const [{ mountMdrev }, facts] = await Promise.all([loadMdrev(version), factsFor(item)]);
   // #s12: the phone's review sheet mounts on the review prefix (#s10); the pane never does.
   const { held, ...mount } = facts; // `held` is the pane's to know, not an option of mdrev's
-  const { place, unmount, print } = mountAt(mountMdrev, el, mount, undefined, review ? REVIEW_CONTRACT : CONTRACT);
+  const { place, unmount, print } = mountAt(mountMdrev, el, mount, undefined, backend().mdrevUrl(review ? REVIEW_CONTRACT : CONTRACT));
   const carried = held ? { name: item.name || "", text: item.text } : null;
   return {
     place,
@@ -245,7 +248,7 @@ export function standaloneHref({ root, path, cap, range }) {
   if (range?.from) query.set("from", range.from);
   if (range?.to && range.to !== "WORKTREE") query.set("to", range.to);
   if (range?.since) query.set("since", range.since);
-  return `/markdown?${query}`;
+  return backend().mdrevUrl(`/markdown?${query}`);
 }
 
 /** What a tab's address carries, as `standaloneHref` wrote it. */
@@ -281,7 +284,7 @@ async function standaloneMount(want) {
       const held = await hold(copy.name, copy.text);
       return { ...reader(held), name: copy.name || held.name };
     }
-    const probe = await fetch(`${CONTRACT}/text?root=${HELD}&path=${encodeURIComponent(want.path)}&cap=${encodeURIComponent(want.cap)}`, { cache: "no-store" });
+    const probe = await backend().mdrevFetch(`${CONTRACT}/text?root=${HELD}&path=${encodeURIComponent(want.path)}&cap=${encodeURIComponent(want.cap)}`, { cache: "no-store" });
     if (probe.status === 404) throw new Unavailable("This text is no longer held — the monitor has restarted or let it go. Open it again from its session.");
     if (!probe.ok) throw new Unavailable(`This document cannot be opened here (HTTP ${probe.status}).`);
     return { ...reader(want), name: want.path.split("/").pop() };
@@ -306,7 +309,7 @@ export async function mountStandalone(el, search = location.search) {
   const version = mdrevVersion();
   if (!version) throw new Unavailable("This server carries no Markdown viewer.");
   if (!want.root || !want.path) throw new Unavailable("This address names no document.");
-  const follow = () => { document.documentElement.dataset.theme = localStorage.getItem("am-demo-theme") === "dark" ? "dark" : ""; };
+  const follow = () => { page.html().dataset.theme = localStorage.getItem("am-demo-theme") === "dark" ? "dark" : ""; };
   follow();
   addEventListener("storage", event => { if (event.key === "am-demo-theme") follow(); });
   const [{ mountMdrev }, facts] = await Promise.all([loadMdrev(version), standaloneMount(want)]);
@@ -314,5 +317,5 @@ export async function mountStandalone(el, search = location.search) {
   return mountAt(mountMdrev, el, { ...facts, range: want.range }, place => {
     document.title = place.path.split("/").pop() || name;
     history.replaceState(null, "", standaloneHref(place));
-  }, REVIEW_CONTRACT);
+  }, backend().mdrevUrl(REVIEW_CONTRACT));
 }

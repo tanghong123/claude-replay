@@ -219,3 +219,125 @@ fn a_case_that_ends_takes_its_runners_leftover_browser_helpers_with_it() {
     assert!(gone, "this runner's leftover helper goes when a case ends");
     assert!(survived, "…and another run's is left alone");
 }
+
+/// #s495: a case's monitor serves on the case's port only while nothing else holds it, so an
+/// address a case writes itself must come from the handle (`Monitor::url`, `remote_url`, `port`),
+/// never from the number it asked for: one literal left in an address hands that case to whatever
+/// holds the port, and it fails as a page that never came. The scan reads every test file for a
+/// loopback or `phone.test` address with a port number in it, or a page asked for its literal
+/// port. Scratch names (`state-2933`) are the case's own and stay.
+#[test]
+fn no_case_writes_a_monitor_port_into_an_address() {
+    let tests = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    let mut files: Vec<_> = std::fs::read_dir(&tests)
+        .unwrap()
+        .chain(std::fs::read_dir(tests.join("harness")).unwrap())
+        .map(|e| e.unwrap().path())
+        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
+        .collect();
+    files.sort();
+    let mut found = Vec::new();
+    for file in &files {
+        let text = std::fs::read_to_string(file).unwrap();
+        for (n, line) in text.lines().enumerate() {
+            for needle in ["127.0.0.1:", "phone.test:", "location.port === '"] {
+                for (at, _) in line.match_indices(needle) {
+                    let digits: String = line[at + needle.len()..]
+                        .chars()
+                        .take_while(char::is_ascii_digit)
+                        .collect();
+                    // `:0` asks the kernel; `:9` is the discard port a case names as no service.
+                    if digits.len() >= 2 {
+                        found.push(format!(
+                            "{}:{}: {needle}{digits}",
+                            file.file_name().unwrap().to_string_lossy(),
+                            n + 1
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    assert!(
+        found.is_empty(),
+        "an address names a port the case asked for; read it from the monitor's handle:\n{}",
+        found.join("\n")
+    );
+}
+
+/// #s495: where there is no `lsof` (a Linux runner may lack it), a held port's holder is read off
+/// `ss -Hltnp`, in the same `command (pid N)` form the spawn's panic names.
+#[test]
+fn a_held_ports_holder_reads_the_same_from_ss() {
+    let line = "LISTEN 0      128        *:2728      *:*    users:((\"ssh\",pid=8913,fd=4),(\"sshd\",pid=77,fd=5))";
+    assert_eq!(
+        harness::ss_holders(line),
+        vec!["ssh (pid 8913)".to_string(), "sshd (pid 77)".to_string()]
+    );
+    assert!(harness::ss_holders("LISTEN 0 128 *:2728 *:*").is_empty());
+}
+
+/// #s495: the reaper of a monitor a killed run stranded reads a WHOLE `--port` argument, so a
+/// case's port (3276) never reaches a monitor another case was moved to (32761).
+#[test]
+fn the_stranded_monitor_reaper_matches_the_whole_port() {
+    let bin = "/w/target/release/agent-monitor";
+    let on = |args: &str| harness::names_port(&format!("{bin} {args}"), 3276);
+    assert!(on("--port 3276 --no-open"));
+    assert!(on("--no-open --port 3276"));
+    assert!(!on("--port 32761 --no-open"));
+    assert!(!on("--port 13276"));
+    assert!(!on("--no-open"));
+}
+
+/// #s525: a read of `~/Downloads` that never answers (a macOS privacy prompt nobody was there to
+/// answer held one in the kernel for two hours) is given up after its wait, and the guard checks
+/// nothing rather than holding the case.
+#[test]
+fn a_downloads_read_that_never_answers_is_given_up_after_its_wait() {
+    let (hold, held) = std::sync::mpsc::channel::<()>();
+    let wait = std::time::Duration::from_millis(300);
+    let start = std::time::Instant::now();
+    let names = harness::list_names_with(
+        std::path::Path::new("/nowhere/Downloads"),
+        wait,
+        move |_| {
+            let _ = held.recv();
+            Ok(Default::default())
+        },
+    );
+    let took = start.elapsed();
+    drop(hold);
+    assert!(
+        names.is_none(),
+        "a read that never answered checks nothing: {names:?}"
+    );
+    assert!(
+        took >= wait && took < wait + std::time::Duration::from_secs(10),
+        "given up after its wait, not before it or long after: {took:?}"
+    );
+}
+
+/// #s525: where the folder answers, the guard is what it was (#s254): a file the developer
+/// downloads meanwhile passes, and a file named like the case's fails the case.
+#[test]
+fn the_downloads_guard_still_fails_a_save_where_the_folder_answers() {
+    let dir = std::env::temp_dir().join(format!("cr-home-downloads-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("old.txt"), b"x").unwrap();
+    let guard = harness::HomeDownloads::of(Some(dir.clone()), harness::DOWNLOADS_READ_WAIT);
+    std::fs::write(dir.join("unrelated.pdf"), b"x").unwrap();
+    guard.assert_gained_nothing_like("tour");
+    std::fs::write(dir.join("tour.mp4"), b"x").unwrap();
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        guard.assert_gained_nothing_like("tour")
+    }));
+    std::fs::remove_dir_all(&dir).unwrap();
+    let panic = caught.expect_err("a save into the folder fails the case");
+    let text = panic.downcast_ref::<String>().cloned().unwrap_or_default();
+    assert!(
+        text.contains("tour.mp4"),
+        "the failure names the file: {text}"
+    );
+}

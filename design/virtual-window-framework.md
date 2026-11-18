@@ -190,12 +190,35 @@ can deliver that event most of a second after the wheel (measured at the wheel's
 lights, and the reader's scroll is then never classified at all — by the time the event arrives the
 gap is 0 and `classifyScroll` reads "already following". `confirmFollow` closes it: at the start of
 a transaction, if the offset is not where the engine last left it, the reader moved it, and the
-same `classifyScroll` runs on what is true now. The test is the engine's BELIEF rather than the gap,
+same `classifyScroll` runs on what is true now. That holds only while the reader is moving the view
+(input within the intent window, a held thumb, a touch glide; #s481). Otherwise the move may be the
+browser's: a clamp lands at the bottom of the layout it happened in, which need not be the layout the
+transaction reads. On an iPad the list's fold took the phone reader's foot pad a layout before the
+transcript's box shrank, the offset clamped 150px above the end that followed, and a follower was left
+191px above it. Nor does the order of input and transactions tell the two apart, since a move that
+started with the reader's input can land after transactions that ran since it. The late event does:
+its stamp is the move's (measured in Chrome, an event delivered 32ms late carried the time of the
+offset change). So the transaction leaves follow as it is and the tail waits for that event
+(`unheard`, at most two seconds), which the scroll handler classifies as it classifies any: the
+reader's move drops follow, the browser's is healed to the end. While it waits the window stays
+mounted at the end, so a move farther than the overscan with no input behind it (the browser's
+find) shows blank until its event arrives. The test is the engine's BELIEF rather than the gap,
 because a gap alone would unfollow on every growth — growth adds content below without moving the
 offset. It runs BEFORE `following0` is read, since it is the deferred half of the scroll handler
 rather than a decision the transaction makes; with the call inside that window the check fired
 exactly as it should have, one I13 `{from: true, to: false}` on a `records` transaction in two runs
-of three of the runaway replay.
+of three of the runaway replay. Where no write says where the offset is and no event is coming that will, the
+engine takes the offset as it is for its belief (`knowOffset`): a transaction that leaves the model
+empty (a session's records replaced, the browser clamping to what is left), and a wait that lapsed. Kept
+at the old belief, the new session's records read the clamp as a move nobody heard and its tail waited
+for the event (#s431), and the converge after a lapse read the same move as unheard again and waited
+again, every two seconds, for as long as no event came. While the tail waits for that event, the
+follower is held by what is on screen, as any reader is (`holdTail` in `transact`; never under a held
+thumb or a smooth write in flight, and a measure that heard nothing new stays quiet), and the tail is
+placed when the wait ends. Left as the tail, a prepend of
+the session's earlier turns landed under an offset that stayed in pixels, and the event, once it came,
+left the reader on turn 7 of 60 (#s431). The event awaited is then classified even at the offset the
+hold wrote, since it is still the move's (`unheard.held`).
 **By policy (timers/guards):** I1, I4, I7, I8, I11.
 **Only by tests:** I9, I12 (half).
 **Not held:** I2 — and this is the count to keep in view: 3 write sites in the engine, ~16 more in the two pages, every one of them a place where `scrollTop` moves without `P` knowing.
@@ -247,7 +270,7 @@ What a page implements (the contract), and what the engine owns outright.
 | `afterMount(fresh)` | the elements just mounted, attached, before measurement (the classic page clamps long turns here; a no-op elsewhere) |
 | `afterRender()` / `afterScroll()` / `afterTransaction()` / `followChanged()` / `remember()` | the page's hooks. **A spy that reads the DOM belongs in `afterTransaction`** (#209), not in the other two: a transaction mounts, measures, then PLACES, and both of those fire before the placement, so a spy that ran there can hold a reading from a window the place has since moved. Measured on the walk fixture — the sums swung ±15k px as estimates landed, the offset was corrected by ±5k to hold the reader's record still, and the app shell's turn bar sat three turns behind the engine's own belief until a one-pixel nudge repainted it. `afterTransaction` fires once, after the last of a queued run, and never while a smooth write travels — the arrival calls it instead. **What runs there must not read layout**: the app shell repaints its bar from the engine's own belief (the position's key), because forcing a rect read at the boundary moved the reader by 190px in the smooth-step case, and the classic page — whose spy has only rects to measure — keeps its spy on the scroll frame. |
 | `following` | a get/set pair over the page's own flag |
-| `frame` | `{scrollTop, scrollTo, clientHeight, scrollHeight, viewportTop, on, isScrollbarTarget}` — the element scroller or the document |
+| `frame` | `{scrollTop, scrollTo, clientHeight, scrollHeight, viewportTop, on, onKey, isScrollbarTarget, laidOut}` — the element scroller or the document. `onKey` is where the reader's keys are heard, and a frame without it hears them through `on`. The element frame hears them on the scroller, as every other input, and at the window for a key on the page's body: a click on the transcript's text leaves the focus there, and the browser still scrolls the box with a key from there (it scrolls the box the last press landed in), but that key never passes through the box. A follower's Page Up was read as the browser's move and undone (#s431). A key on the body is the reader's only when the browser scrolls with it (the arrows, Page Up and Down, Home, End, Space), the last press on the page landed in the scroller, and no handler took it (`defaultPrevented`, read in the bubble phase). Any other key there (the page's `+`, `\` folding the list), one after a press elsewhere (the browser scrolls that box, or nothing) and one a host's keymap took are no move of the reader's in this box. `laidOut()` says whether the scroller has a box (#s464: a host can hide the view, and a hidden scroller reads every item as its margins and its offset as 0); while it has none the engine measures nothing, reads no `P` and writes none, a transaction changes the model alone (a prepend's translation of `P` is kept as the new `P`, and an anchor on the item after the prepended run takes its top from the sums), a jump drops the pin (the end is `follow`, which reads no gap), a move from the raw offset (a page key) moves nothing, and what was mounted waits for the page's pass and its placeholder fit; the first transaction with the box back runs those, drops a smooth write the hide stopped and a wait for a late event, mounts the window for `P` at the viewport it came back with and places `P` with no drift. The document is always laid out; a frame without `laidOut` is read as laid out |
 | `mount` | `{top, window, bottom, content}` — the pads, the run, and what to watch for chrome growth |
 | parameters | `overscan`, `slacks {acquire, hold, heal}`, `userIntentMs`, `rememberMs`, `clampIndex`, `landing` |
 
@@ -418,8 +441,11 @@ cover (I11, I10) and placed again: the owner's export shows the turn under the r
 444 and 405, 25 violations in 46 seconds (`tests/fixtures/history/phone-jitter-app.json`). So a page
 that knows a touch glide is under way says so (`absorbCorrections`; the app shell from the finger's
 first `touchmove` until `whenStill` confirms a still view — never from `touchstart`, #s25: a TAP is
-not a glide, and a pane a tap had opened re-anchored the reader inside that window), and while it
-lasts:
+not a glide, and a pane a tap had opened re-anchored the reader inside that window; a finger is
+counted down until its touch ends, heard at the window, wherever the touch began, and on the
+element it began on too, since a touch's events go to that element wherever it is by then: the
+live turn redrawn under the finger took its touchend out of the page, the glide never ended and
+the tail waited for good, #s431), and while it lasts:
 - **a correction is absorbed, not written**: the top pad gives up (or takes) exactly the shift, and the
   model's origin moves with it (`padDebt`, carried by `contentTop`, so every offset ↔ record conversion
   stays exact); the reader's content stays where the screen shows it;

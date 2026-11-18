@@ -1,11 +1,13 @@
-//! **Qoder CLI's transcript discovery** — the qodercli half of the shared `discover`
+//! **The Qoder store's transcript discovery** — the qodercli half of the shared `discover`
 //! interface. Qoder CLI is a Claude-Code-format terminal agent whose store layout is
 //! identical (`~/.qoder/projects/<slug>/<id>.jsonl`, same slug convention), so this is a
 //! thin wrapper over `claude_discover`'s root-parameterized internals — only the root (and
 //! the agent tag on candidates) differ. Parsing likewise delegates to the Claude
 //! implementations (see the `QoderAdapter` in `adapters.rs`); the format-level tells are the
 //! `runtime-config` head line carrying `reasoningEffort`/`contextWindow` (detection) and
-//! `usage.credits` billing (metrics), both handled on the shared Claude paths.
+//! `usage.credits` billing (metrics), both handled on the shared Claude paths. The store now
+//! also holds the Qoder desktop app's sessions (#s468), written on the QoderWork family's engine
+//! line, which the adapter decodes with the family's lists.
 
 use claude_replay_engine::seam::{Agent, Candidate, CardMemo, CardOutcome};
 use std::path::{Path, PathBuf};
@@ -193,6 +195,53 @@ mod tests {
             qd.metrics.footer()
         );
         let _ = std::fs::remove_file(&f);
+    }
+
+    /// #s468: the Qoder store now also holds the Qoder desktop app's sessions, written on the
+    /// QoderWork family's engine line (1.1.86), so a session there carries the family's head rows,
+    /// record keys and Bash result shape, plus four bookkeeping shapes of its own. Parsed as Qoder
+    /// while the `--unknown` sweep asks, none of them is reported, and a key nobody writes still is.
+    ///
+    /// The report is process-global and keeps the FIRST sighting's locator, so this case reads
+    /// only its own session's rows (the made-up key proves the sweep was on for it). Two shapes
+    /// here are also met by other cases through Claude's own decoder (`runtime-config` in
+    /// `qoder_parse_is_byte_identical_to_claude_parse`, `requestTokenAnchor` in #s397's), so in a
+    /// whole-suite run either may be filed under that case's session and is held here only when
+    /// this case runs first, or alone; every other shape, and every #s468 entry, is this
+    /// fixture's alone.
+    #[test]
+    fn a_qoder_session_knows_the_family_bookkeeping() {
+        use claude_replay_engine::seam::{unknown_shapes, unknown_watch_keys};
+        let f = std::env::temp_dir().join(format!("qd-s468-{}.jsonl", std::process::id()));
+        // Hand-written from the shapes' keys and value types: made-up ids, digests and words.
+        let lines = [
+            r#"{"type":"runtime-config","sessionId":"s-s468","model":"auto","reasoningEffort":null,"contextWindow":null,"generation":1,"timestamp":1794470400000}"#,
+            r#"{"type":"workspace-directories","sessionId":"s-s468","directories":["/w/skua"],"timestamp":"2026-11-12T08:00:00.000Z"}"#,
+            r#"{"type":"attachment","version":"1.1.86","sessionId":"s-s468","uuid":"x1","timestamp":"2026-11-12T08:00:01.000Z","attachment":{"type":"mcp_lazy_tools_delta","content":"Tools you may load: ring_lookup","isInitial":true,"addedNames":["ring_lookup"],"removedNames":[]}}"#,
+            r#"{"type":"user","version":"1.1.86","sessionId":"s-s468","uuid":"u1","timestamp":"2026-11-12T08:00:02.000Z","humanInput":"count the skua nests","requestSetId":"rs-468","businessModelKey":"auto","businessIdentity":{"product":"app","type":"agent","id":"rs-468","model_key":"auto"},"message":{"role":"user","content":[{"type":"text","text":"count the skua nests"}]}}"#,
+            r#"{"type":"assistant","version":"1.1.86","sessionId":"s-s468","uuid":"a1","timestamp":"2026-11-12T08:00:03.000Z","requestId":"req-1","responseGroupId":"rg-1","requestTokenAnchor":{"request":"aa11","response":"bb22","requestId":"req-1"},"message":{"id":"m-1","role":"assistant","model":"auto","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"ls notes"}}]}}"#,
+            r#"{"type":"user","version":"1.1.86","sessionId":"s-s468","uuid":"u2","timestamp":"2026-11-12T08:00:04.000Z","toolUseResult":{"kind":"completed","stdout":"ridge.md","stderr":"","exitCode":0,"signal":null,"interrupted":false,"isImage":false,"noOutputExpected":false,"processStarted":true},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ridge.md"}]}}"#,
+            r#"{"type":"assistant","version":"1.1.86","sessionId":"s-s468","uuid":"a2","timestamp":"2026-11-12T08:00:05.000Z","requestId":"req-2","responseGroupId":"rg-2","requestTokenAnchor":{"request":"cc33","response":"dd44","requestId":"req-2"},"message":{"id":"m-2","role":"assistant","model":"auto","content":[{"type":"tool_use","id":"t2","name":"Bash","input":{"command":"cat cove.md"}}]}}"#,
+            r#"{"type":"user","version":"1.1.86","sessionId":"s-s468","uuid":"u3","timestamp":"2026-11-12T08:00:06.000Z","toolUseResult":{"kind":"completed","stdout":"","stderr":"cat: cove.md: No such file","exitCode":1,"signal":null,"interrupted":false,"isImage":false,"noOutputExpected":false,"isError":true,"processStarted":true},"message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t2","content":"cat: cove.md: No such file","is_error":true}]}}"#,
+            r#"{"type":"assistant","version":"1.1.86","sessionId":"s-s468","uuid":"a3","timestamp":"2026-11-12T08:00:07.000Z","requestId":"req-3","responseGroupId":"rg-3","aQoderKeyNobodyWrites468":1,"message":{"id":"m-3","role":"assistant","model":"auto","content":[{"type":"text","text":"Fourteen nests on the ridge."}]}}"#,
+            r#"{"type":"active-leaf","sessionId":"s-s468","leafUuid":"a3","explicit":false,"timestamp":"2026-11-12T08:00:08.000Z"}"#,
+        ];
+        std::fs::write(&f, lines.join("\n") + "\n").unwrap();
+        unknown_watch_keys(true);
+        let parsed = claude_replay_core::parse_session_as(Agent::QODER, &f).unwrap();
+        let _ = std::fs::remove_file(&f);
+        assert_eq!(parsed.agent, Agent::QODER);
+        let mut reported: Vec<String> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s468"))
+            .map(|s| format!("{} {}", s.at.as_str(), s.name))
+            .collect();
+        reported.sort();
+        assert_eq!(
+            reported,
+            vec!["record.key assistant.aQoderKeyNobodyWrites468".to_string()],
+            "the family's shapes and the four new ones are known; the made-up key is not"
+        );
     }
 
     /// The session card comes from the transcript's own title/prompt lines — Qoder writes

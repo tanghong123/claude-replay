@@ -322,6 +322,55 @@ fn mdrev_owns_a_key_pressed_while_the_reader_is_engaged_with_it() {
     );
 }
 
+/// #s509: ⌘F (Ctrl+F off a Mac), the session search's key since Hong's ruling on #s508, is mdrev's
+/// while the reader is engaged with it, as every other key is: the shell neither opens its search
+/// nor cancels the press for the browser. Outside the guest the same press is the shell's. The
+/// press is dispatched on the focused element, whose event says whether anything cancelled it;
+/// what mdrev itself does with it is mdrev's and is only reported.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn command_f_is_mdrevs_while_the_reader_is_engaged_with_it() {
+    let _serial = serial();
+    let (base, stores, repo) = fixture("mdrev-command-f");
+    let m = Monitor::spawn(Kind::V1, 3135, &base, Some(&stores), true);
+    let (_browser, tab) = chrome_tab();
+    open_shell(&m, &tab);
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1')",
+        "mdrev to render the guide",
+        Duration::from_secs(30),
+        PANE,
+    );
+    const PRESS: &str = "(function(){ var command = /Mac|iPhone|iPad|iPod/.test(navigator.platform) ? 'metaKey' : 'ctrlKey'; var init = {key: 'f', bubbles: true, cancelable: true}; init[command] = true; var e = new KeyboardEvent('keydown', init); (document.activeElement || document.body).dispatchEvent(e); return JSON.stringify({prevented: e.defaultPrevented, search: document.activeElement === document.getElementById('transcriptSearchInput')}); })()";
+    let press = || -> serde_json::Value {
+        let seen = eval(&tab, PRESS);
+        std::thread::sleep(Duration::from_millis(300));
+        serde_json::from_str(seen.as_str().unwrap()).unwrap()
+    };
+    // Engaged the way a reader is: a real click on mdrev's prose, which leaves the focus on <body>.
+    tab.find_element("#previewBody .mdrev-host h1")
+        .unwrap()
+        .click()
+        .unwrap();
+    let engaged = press();
+    eprintln!("s509: engaged with mdrev, ⌘F: {engaged}");
+    assert_eq!(
+        engaged["search"].as_bool(),
+        Some(false),
+        "engaged with mdrev, ⌘F does not open the session's search: {engaged}"
+    );
+    // The control: outside the guest the same press is the shell's.
+    tab.find_element(".transcript").unwrap().click().unwrap();
+    let outside = press();
+    assert_eq!(
+        outside,
+        serde_json::json!({"prevented": true, "search": true}),
+        "outside mdrev ⌘F opens the session's search and the browser's find does not open"
+    );
+}
+
 /// No node (#274): the pinned guest needs none, and neither does history — the contract makes the
 /// host's store the source of revisions, and the monitor reads them from git — but notes are
 /// mdrev's own format, written only through its CLI. So the local file keeps its toolbar and its
@@ -396,8 +445,8 @@ fn without_node_a_local_markdown_file_keeps_its_history_and_takes_no_notes() {
 fn mdrev_contract_passes_mdrev_cli_conform() {
     let _serial = serial();
     let (base, stores, repo) = fixture("mdrev-conform");
-    let port = 2825;
-    let m = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 2825, &base, Some(&stores), true);
+    let port = m.port;
     let (_browser, tab) = chrome_tab();
     open_shell(&m, &tab);
     open_guide(&tab, &repo);
@@ -468,10 +517,11 @@ fn open_in_a_tab(tab: &headless_chrome::Tab) {
         Duration::from_secs(10),
         PANE,
     );
-    tab.find_element("#previewHead .preview-newtab")
-        .unwrap()
-        .click()
-        .unwrap();
+    harness::click_when_settled(
+        tab,
+        "#previewHead .preview-newtab",
+        "the pane's open-in-a-tab control to hold still where a reader can press it",
+    );
 }
 
 /// The tab the pane opened, once it has its address.
@@ -684,8 +734,8 @@ fn a_tab_of_held_text_survives_a_monitor_restart() {
         OWN,
     );
 
-    drop(m); // the monitor goes, and the text it held with it
-    let m = Monitor::spawn(Kind::V1, 2828, &base, Some(&stores), false);
+    // The monitor goes, and the text it held with it; the new one serves where the tab is (#s495).
+    let m = Monitor::respawn(m, &base, Some(&stores), false);
     own.reload(false, None).unwrap();
     own.wait_until_navigated().unwrap();
     until(
@@ -698,8 +748,7 @@ fn a_tab_of_held_text_survives_a_monitor_restart() {
     assert_eq!(own_h1(&own), "Field notes");
 
     eval(&own, "sessionStorage.clear(); 'ok'");
-    drop(m);
-    let _m = Monitor::spawn(Kind::V1, 2828, &base, Some(&stores), false);
+    let _m = Monitor::respawn(m, &base, Some(&stores), false);
     own.reload(false, None).unwrap();
     own.wait_until_navigated().unwrap();
     until(
@@ -863,15 +912,15 @@ fn the_detached_tab_offers_shared_review_and_the_pane_does_not() {
     let _serial = serial();
     let (base, stores, repo, state) = shared_review_world("mdrev-shared");
 
-    let port = 2945;
     let m = Monitor::spawn_with(
         Kind::V1,
-        port,
+        2945,
         &base,
         Some(&stores),
         true,
         &[("MDREV_STATE_DIR", &state.display().to_string())],
     );
+    let port = m.port;
     let (browser, tab) = chrome_tab();
     open_shell(&m, &tab);
     open_guide(&tab, &repo);
@@ -1048,6 +1097,124 @@ fn the_reader_closes_a_note_the_person_has_answered() {
         "resolved",
         "{closed}"
     );
+}
+
+/// #s558: `snapshot` answers the text a note was taken on, and nothing else of the repository. The
+/// pane files a note through the pinned mdrev-cli, which makes the note's blob from the document's
+/// text; the listing names that blob and `snapshot` reads it, and still does once the document has
+/// moved on (the source the viewer places an older note from). The document's other revision,
+/// another file's blob and a commit, none named by a note, answer 404. The route used to read any
+/// object of the checkout by any id of four or more hex digits.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
+fn the_pane_reads_the_snapshot_a_note_names_and_nothing_else() {
+    let _serial = serial();
+    let (base, stores, repo) = fixture("mdrev-snapshot");
+    let m = Monitor::spawn_with(Kind::V1, 3139, &base, Some(&stores), true, &[]);
+    let (_browser, tab) = chrome_tab();
+    open_shell(&m, &tab);
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1')",
+        "the guide in the pane",
+        Duration::from_secs(30),
+        PANE,
+    );
+    // The pane's own routes, with its own document stamp: what its guest calls.
+    let route = |method: &str, tail: &str, extra: &str, body: &str| {
+        let js = format!(
+            "(async function(){{ var d = document.querySelector('.mdrev-pane').dataset; var q = 'root=' + encodeURIComponent(d.root) + '&path=' + encodeURIComponent(d.path) + '&cap=' + encodeURIComponent(d.cap) + {extra:?}; var o = {{method: {method:?}, headers: {{'Content-Type': 'application/json'}}}}; if ({body:?}) o.body = {body:?}; var r = await fetch(d.contract + {tail:?} + '?' + q, o); return JSON.stringify([r.status, await r.text()]); }})()"
+        );
+        let v: serde_json::Value =
+            serde_json::from_str(eval(&tab, &js).as_str().unwrap_or("[0,\"\"]")).unwrap();
+        (
+            v[0].as_u64().unwrap_or(0),
+            v[1].as_str().unwrap_or("").to_string(),
+        )
+    };
+    let git = |args: &[&str]| -> String {
+        let out = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}");
+        String::from_utf8(out.stdout).unwrap().trim().to_string()
+    };
+    let (code, filed) = route(
+        "POST",
+        "/annotations",
+        "",
+        r#"{"body":"tighten this","anchor":{"exact":"bold"}}"#,
+    );
+    assert_eq!(code, 201, "the pane files a note: {filed}");
+    let id = serde_json::from_str::<serde_json::Value>(&filed).unwrap()["id"]
+        .as_str()
+        .expect("the note's id")
+        .to_string();
+    let (code, listed) = route("GET", "/annotations", "", "");
+    assert_eq!(code, 200, "the pane lists its notes: {listed}");
+    let records: Vec<serde_json::Value> = serde_json::from_str(&listed).unwrap();
+    let blob = records
+        .iter()
+        .find(|r| r["id"] == id.as_str())
+        .and_then(|r| r["blob"].as_str())
+        .unwrap_or_else(|| panic!("the note names a blob: {listed}"))
+        .to_string();
+    assert_eq!(
+        blob,
+        git(&["rev-parse", "HEAD:docs/guide.md"]),
+        "the blob is the guide's own text"
+    );
+    let unnamed = [
+        (
+            "the guide's other revision",
+            git(&["rev-parse", "HEAD~1:docs/guide.md"]),
+        ),
+        (
+            "another file's blob",
+            git(&["rev-parse", "HEAD:docs/other.md"]),
+        ),
+        ("a commit", git(&["rev-parse", "HEAD"])),
+    ];
+    let snapshot = |id: &str| route("GET", "/snapshot", &format!("&blob={id}"), "");
+
+    let (code, text) = snapshot(&blob);
+    assert!(
+        code == 200 && text.contains("Some **bold** prose"),
+        "the text the note was taken on: {code} {text}"
+    );
+    // The document moves on; the note's text is still there to place it from, and a listing taken
+    // after the move still names it.
+    std::fs::write(repo.join("docs/guide.md"), "# The guide, rewritten\n").unwrap();
+    git(&["commit", "-qam", "third"]);
+    let (code, listed) = route("GET", "/annotations", "", "");
+    assert!(
+        code == 200 && listed.contains(&blob),
+        "the note still names its blob: {code} {listed}"
+    );
+    let (code, text) = snapshot(&blob);
+    assert!(
+        code == 200 && text.contains("Some **bold** prose"),
+        "after the document moved on: {code} {text}"
+    );
+    for (what, id) in &unnamed {
+        let (code, text) = snapshot(id);
+        assert!(
+            code == 404 && text.contains("no such blob"),
+            "{what} is not offered: {code} {text}"
+        );
+    }
 }
 
 /// #s231 (mdrev 1.1.61, Hong's choice on mdviewer #s235): on a machine joined to a team's mdrev
@@ -1231,7 +1398,9 @@ fn a_phone_pane_leaves_mdrevs_toolbar_its_own_layout() {
 /// is a FULL-SCREEN SHEET over the app. The pane's Markdown shows a Review control there; the sheet
 /// mounts the document on the review prefix (#s10), its guest asking for and fetching the store, and
 /// its close control returns the reader to the pane and the transcript exactly as they were — no
-/// navigation, no reload, the transcript's offset unchanged.
+/// navigation, no reload, the transcript's offset unchanged. The sheet is the open session's document,
+/// so a Back to another session closes it with the session (#s431 stage 2; red on f17bb8c4, where it
+/// stayed over the next session).
 #[test]
 #[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn a_phone_reviews_in_a_full_screen_sheet_and_closes_back_to_where_it_was() {
@@ -1327,6 +1496,29 @@ fn a_phone_reviews_in_a_full_screen_sheet_and_closes_back_to_where_it_was() {
         offset(),
         before,
         "the transcript is where the reader left it"
+    );
+    // Open again, then the browser's Back to another session (the app reads the address on popstate).
+    eval(
+        &tab,
+        "document.querySelector('.preview-review').click(); 'ok'",
+    );
+    until(
+        &tab,
+        "!!document.querySelector('.review-sheet .mdrev-host h1')",
+        "the review sheet open again",
+        Duration::from_secs(30),
+        PANE,
+    );
+    eval(
+        &tab,
+        "history.pushState({}, '', '?session=dddddddd-0000-4000-8000-000000000431'); dispatchEvent(new PopStateEvent('popstate')); 'ok'",
+    );
+    until(
+        &tab,
+        "!document.querySelector('.review-sheet')",
+        "a Back to another session to close the review sheet with its session",
+        Duration::from_secs(10),
+        "(function(){ var s = document.querySelector('.review-sheet'); return s ? 'the sheet is still open: ' + s.innerText.slice(0, 80) : 'no sheet'; })()",
     );
 }
 
@@ -2044,10 +2236,9 @@ fn the_detached_tab_reads_subscribes_and_notifies_through_draft_8() {
                 && id.is_none_or(|id| shown.contains(&format!("\"{id}\"")))
         })
     };
-    let port = 2756;
     let m = Monitor::spawn_with(
         Kind::V1,
-        port,
+        2756,
         &base,
         Some(&stores),
         true,
@@ -2367,8 +2558,20 @@ fn a_phone_prints_the_document_alone_and_keeps_mdrevs_menu_on_screen() {
         Duration::from_secs(30),
         PANE,
     );
-    eval(&tab, "(function(){ var a = [...document.querySelectorAll('#preview .mdrev-host a')].find(function (a) { return /decisions/.test(a.getAttribute('href') || ''); }); a.click(); return 1; })()");
-    until(&tab, "/Decisions/.test((document.querySelector('#preview .mdrev-host h1') || {}).textContent || '')", "the long-named document", Duration::from_secs(20), PANE);
+    // mdrev draws a link before it has finished preparing it, and a click that lands first follows
+    // nothing; since 1.1.79 (#s428) the guide takes longer to prepare its links, so the reader
+    // clicks again until the pane moves, as `mdrev_follows_the_reader_to_another_document…` does.
+    let moved = "/Decisions/.test((document.querySelector('#preview .mdrev-host h1') || {}).textContent || '')";
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while eval(&tab, moved).as_bool() != Some(true) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for the long-named document: {}",
+            eval(&tab, PANE)
+        );
+        eval(&tab, "(function(){ var a = [...document.querySelectorAll('#preview .mdrev-host a')].find(function (a) { return /decisions/.test(a.getAttribute('href') || ''); }); if (a) a.click(); return 1; })()");
+        std::thread::sleep(Duration::from_millis(1500));
+    }
 
     // The owner's document was a memory file outside any checkout: mdrev gave it its READER toolbar,
     // four controls in a row at the LEFT, and hung the menu from the Aa button, so it ran off the
@@ -2542,7 +2745,7 @@ fn probe_pane_print_pdf() {
         },
     )
     .unwrap();
-    println!("BG: {}", eval(&tab, "(function(){ var out = []; [document.documentElement, document.body, document.getElementById('app'), document.querySelector('#app>.workspace'), document.getElementById('preview'), document.querySelector('#preview .preview-body'), document.querySelector('#preview .mdrev-host')].forEach(function (e) { if (!e) return; var c = getComputedStyle(e); out.push((e.id || e.className || e.tagName).toString().slice(0, 30) + ' bg=' + c.backgroundColor + ' vis=' + c.visibility + ' pos=' + c.position + ' h=' + Math.round(e.getBoundingClientRect().height)); }); return out.join(' | '); })()"));
+    println!("BG: {}", eval(&tab, "(function(){ var out = []; [document.documentElement, document.body, document.getElementById('app'), document.querySelector('#sessionView>.workspace'), document.getElementById('preview'), document.querySelector('#preview .preview-body'), document.querySelector('#preview .mdrev-host')].forEach(function (e) { if (!e) return; var c = getComputedStyle(e); out.push((e.id || e.className || e.tagName).toString().slice(0, 30) + ' bg=' + c.backgroundColor + ' vis=' + c.visibility + ' pos=' + c.position + ' h=' + Math.round(e.getBoundingClientRect().height)); }); return out.join(' | '); })()"));
     tab.call_method(
         headless_chrome::protocol::cdp::Emulation::SetEmulatedMedia {
             media: Some(String::new()),

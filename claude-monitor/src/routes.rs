@@ -29,6 +29,79 @@ pub struct Backend {
     /// The Claude app's, the Codex app's and Herdr's session lists (#s387), for the app shell's
     /// Arrange choice: each read by a thread of its own while a page follows it, never by a request.
     pub layouts: crate::layout::Layouts,
+    /// The routes this table serves beyond reading (#s426): the monitor serves all of them, and a
+    /// host that mounts the table declares its own ceiling.
+    pub serves: Serves,
+}
+
+/// The routes a table serves beyond reading its sessions (#s426, `design/backend-mount.md`): a
+/// host declares them, and the declaration is a ceiling. One fact, "paired", used to open all of
+/// them at once, so a host that let its readers open files would also have let them start an
+/// agent turn on its own machine. A route outside the ceiling answers 404, as a route a host never
+/// serves does (`docs/backend-contract.md`'s optional tiers). Reading the sessions, their records,
+/// the turn index and search is always served.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Serves {
+    /// Reading a local file a transcript offers: `/file`, and mdrev's routes on a file rather than
+    /// on text the transcript carries.
+    pub files: bool,
+    /// Opening the file manager on the serving machine: `/__reveal`.
+    pub reveal: bool,
+    /// Sending a prompt, granting a pane, reading and answering a dialog, and filing, editing or
+    /// removing an mdrev note (which writes into a repository on the serving machine). A table
+    /// whose index leaves this machine's processes alone serves none of them: a write acts on a
+    /// session running here, and without the process probes every session reads as finished.
+    pub writes: bool,
+    /// mdrev's shared review: the detached Markdown tab's prefix, `/api/mdrev-review/`.
+    pub review: bool,
+}
+
+impl Serves {
+    /// Every route, as the monitor binary serves them.
+    pub const ALL: Self = Self {
+        files: true,
+        reveal: true,
+        writes: true,
+        review: true,
+    };
+
+    /// What a host's table serves unless it says otherwise: reading, and the files a transcript
+    /// offers. No writes, no reveal on the serving machine, no shared review.
+    pub const HOST_DEFAULT: Self = Self {
+        files: true,
+        reveal: false,
+        writes: false,
+        review: false,
+    };
+
+    /// Whether a `method` request for `name` with `query` is inside the ceiling. mdrev's routes
+    /// read a file unless their `root` is `held` (text the transcript carries), so with files off
+    /// only `hold` and held text are served there; and any of them but a GET, `hold` or `resolve`
+    /// files or changes a note, which is a write. So is anything but a GET or `resolve` under
+    /// shared review's prefix. `resolve` is a POST that only reads: the stamps of the documents a
+    /// document links to (#s434 found a reads-only host refusing it).
+    pub fn admits(&self, method: &str, name: &str, query: &str) -> bool {
+        let reads = |rest: &str| method == "GET" || rest == "resolve";
+        match name {
+            "api/send" | "api/consent" | "api/dialog" | "api/answer" => self.writes,
+            "file" => self.files,
+            "__reveal" => self.reveal,
+            _ if name.starts_with("api/mdrev-review/") => {
+                self.review && (reads(&name["api/mdrev-review/".len()..]) || self.writes)
+            }
+            _ => match name.strip_prefix("api/mdrev/") {
+                Some("hold") => true,
+                Some(rest) if !reads(rest) && !self.writes => false,
+                Some(_) if !self.files => {
+                    query_get(query, "root")
+                        .map(index::percent_decode)
+                        .as_deref()
+                        == Some("held")
+                }
+                _ => true,
+            },
+        }
+    }
 }
 
 /// How often an unknown id may trigger a rescan (#309).
@@ -57,6 +130,24 @@ fn ensure_known(backend: &Backend, id: &str) {
     });
 }
 
+/// The version of the backend contract this table answers (#s421, `docs/backend-contract.md`):
+/// the routes the session list and session view read, their replies and the record format. A
+/// change that only adds (a route, a field, a record kind, a value) keeps it; one that removes,
+/// renames, or changes what an answer means moves it. The app shell's page names it as
+/// `<body data-contract>`, and the document's own version line must agree: a test reads both.
+pub const CONTRACT_VERSION: u16 = 1;
+
+/// The largest body a request to this table's route may carry (#s426, `design/backend-mount.md`):
+/// a send with images 12 MiB, mdrev's `hold` a whole document, every other route 64 KiB. A host
+/// that mounts the table refuses a larger body with 413 before the route reads it, as the
+/// monitor's listener does (`main.rs` gives the listener the same numbers).
+pub fn body_limit(route: &str) -> usize {
+    match route {
+        "api/send" => control::SEND_BODY_LIMIT,
+        _ => claude_replay_html::service_body_limit(route),
+    }
+}
+
 /// What the app shell's page names: the build, and whether the monitor is paired.
 pub struct Frontend {
     pub version: &'static str,
@@ -67,18 +158,63 @@ pub struct Frontend {
 /// and where a relayed message's key is read (#s272), because this is the one constructor the
 /// monitor goes through.
 pub fn handler(backend: Arc<Backend>, front: Frontend) -> RouteHandler {
-    install_mdrev(&backend.scratch);
-    claude_replay_core::claude_inbox::install_key_source(
-        claude_replay_core::claude_inbox::key_from_state_dir,
-    );
+    mounted(backend, front, OtherTools::this_users())
+}
+
+/// The table over `backend`, reading `tools` of other tools' state on the machine (#s426). The
+/// monitor reads this user's ([`handler`]); a host passes its own or [`OtherTools::NONE`]. Both
+/// are installed once per process, as the file-stamp key and the render and mask policies are:
+/// the first table's hold, and a process mounts one table.
+pub fn mounted(backend: Arc<Backend>, front: Frontend, tools: OtherTools) -> RouteHandler {
+    static INSTALLED: std::sync::Once = std::sync::Once::new();
+    INSTALLED.call_once(|| {
+        install_mdrev(&backend.scratch, tools.mdrev_state);
+        claude_replay_core::claude_inbox::install_key_source(
+            tools.relay_key.unwrap_or(no_relay_key),
+        );
+    });
     Arc::new(move |req: &Request| dispatch(&backend, &front, req))
+}
+
+/// What a table reads of other tools' state on its machine, outside the state directory its
+/// index is given (#s426, `design/backend-mount.md`).
+pub struct OtherTools {
+    /// mdrev's state directory, where its viewer and notes keys are. `None`: no key is read or
+    /// made, so the shared-review prefix serves what the pane's does, and a note the pane files
+    /// goes without the notes key. Filing a note is a write, which only a ceiling with `writes`
+    /// serves ([`Serves`]); mdrev-cli itself runs in the host's environment either way.
+    pub mdrev_state: Option<PathBuf>,
+    /// Where a relayed message's signing key is read from (aries-inbox's, for the monitor).
+    /// `None`: nothing verifies, and a relayed message shows as the text it is.
+    pub relay_key: Option<claude_replay_core::claude_inbox::KeySource>,
+}
+
+impl OtherTools {
+    /// Neither: a host whose sessions are not this machine's user's.
+    pub const NONE: Self = Self {
+        mdrev_state: None,
+        relay_key: None,
+    };
+
+    /// This user's, as the monitor reads them: mdrev's `MDREV_STATE_DIR` or `~/.mdrev`, and
+    /// aries-inbox's key.
+    pub fn this_users() -> Self {
+        Self {
+            mdrev_state: claude_replay_html::mdrev_state_dir(),
+            relay_key: Some(claude_replay_core::claude_inbox::key_from_state_dir),
+        }
+    }
+}
+
+fn no_relay_key() -> Option<claude_replay_core::claude_inbox::InboxKey> {
+    None
 }
 
 /// mdrev's embedded viewer for the preview pane (#270), PINNED (#274): the release vendored at
 /// `vendor/mdrev`, built into this binary — no mdrev installed on the machine is looked for. Its
 /// bundle is served from memory; its CLI is written under `scratch` when a route first needs it,
 /// and run with node.
-pub fn install_mdrev(scratch: &Path) {
+pub fn install_mdrev(scratch: &Path, state: Option<PathBuf>) {
     claude_replay_html::install_mdrev(
         claude_replay_html::MdrevKit {
             version: mdrev::VERSION,
@@ -87,6 +223,7 @@ pub fn install_mdrev(scratch: &Path) {
             package_json: mdrev::PACKAGE_JSON,
         },
         scratch.join("mdrev"),
+        state,
     );
 }
 
@@ -95,6 +232,18 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
     let (name, query) = (req.name, req.query);
     if let Some(asset) = ui::asset(name) {
         return asset;
+    }
+    // An index that leaves this machine alone (#s426) serves no writes, whatever its ceiling says:
+    // a write acts on a session running here, which it cannot see. Nor does it read another app's
+    // session list: the Arrange choice's readers are the Claude and Codex apps' and herdr's.
+    let probes = backend.idx.probes();
+    let ceiling = Serves {
+        writes: backend.serves.writes && probes,
+        ..backend.serves
+    };
+    let arranges = name != "api/layout" || probes;
+    if !ceiling.admits(req.method, name, query) || !arranges {
+        return HttpResponse::not_found("not served by this host");
     }
     match name {
         // The app shell, whatever `?ui=` says: `?ui=classic` and a `ui.json` that remembered the
@@ -168,6 +317,12 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
     }
 }
 
+/// The route index of docs/backend-contract.md (#s421), shared with the integration tests and with
+/// `codex_workspace`'s test of the native rows.
+#[cfg(test)]
+#[path = "../tests/contract_index/mod.rs"]
+pub(crate) mod contract_index;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -175,6 +330,14 @@ mod tests {
     use claude_replay_present::cache::Presentation;
 
     fn make_backend(tag: &str) -> Arc<Backend> {
+        make_backend_serving(tag, Serves::ALL)
+    }
+
+    fn make_backend_serving(tag: &str, serves: Serves) -> Arc<Backend> {
+        make_backend_with(tag, serves, |idx| idx)
+    }
+
+    fn make_backend_with(tag: &str, serves: Serves, idx: fn(Index) -> Index) -> Arc<Backend> {
         let root = std::env::temp_dir().join(format!("cm-routes-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&root);
         std::fs::create_dir_all(&root).unwrap();
@@ -191,11 +354,16 @@ mod tests {
         );
         Arc::new(Backend {
             service,
-            idx: Arc::new(Index::new(root.clone(), root.join("state"), Vec::new())),
+            idx: Arc::new(idx(Index::new(
+                root.clone(),
+                root.join("state"),
+                Vec::new(),
+            ))),
             scratch,
             attempts: Mutex::new(Attempts::default()),
             rescanned: Mutex::new(None),
             layouts: Default::default(),
+            serves,
         })
     }
 
@@ -267,7 +435,7 @@ mod tests {
         assert_eq!(page.code, "200 OK");
         let html = body(&page);
         assert!(html.contains(&format!("data-mdrev=\"{}\"", mdrev::VERSION)));
-        assert!(html.contains(r#"src="/monitor-ui/markdown-page.js""#));
+        assert!(html.contains(r#"src="monitor-ui/markdown-page.js""#));
         for reflected in ["alert(1)", "<img", "%3Cscript", "src=x"] {
             assert!(
                 !html.contains(reflected),
@@ -314,7 +482,8 @@ mod tests {
         let backend = make_backend("table");
         for query in ["", "ui=app", "ui=classic", "ui=classic&session=s1"] {
             assert!(
-                body(&dispatch(&backend, &front, &get("", query))).contains("/monitor-ui/app.js"),
+                body(&dispatch(&backend, &front, &get("", query)))
+                    .contains(r#"src="monitor-ui/app.js""#),
                 "{query}"
             );
         }
@@ -323,7 +492,7 @@ mod tests {
             &front,
             &get("index.html", "ui=classic")
         ))
-        .contains("/monitor-ui/app.js"));
+        .contains(r#"src="monitor-ui/app.js""#));
         assert_eq!(
             dispatch(&backend, &front, &get("api/ui", "set=classic")).code,
             "404 Not Found",
@@ -406,5 +575,281 @@ mod tests {
             assert_eq!(r.code, "404 Not Found", "{query}");
             assert!(body(&r).contains("retired"), "and says why: {query}");
         }
+    }
+
+    use super::contract_index;
+
+    /// A reply the table gives for a path no route answers: the static fallback's.
+    fn unanswered(reply: &HttpResponse) -> bool {
+        let text = body(reply);
+        (reply.code == "403 Forbidden" && text == "forbidden")
+            || (reply.code == "404 Not Found" && text == "not found")
+    }
+
+    /// #s426: the ceiling a table serves under. The monitor serves everything; a host's default is
+    /// reading and files, with no writes, no reveal on the serving machine and no shared review;
+    /// with files off, mdrev serves only text the transcript carries.
+    #[test]
+    fn a_table_serves_only_the_routes_its_ceiling_admits() {
+        let host = Serves::HOST_DEFAULT;
+        for name in [
+            "api/send",
+            "api/consent",
+            "api/dialog",
+            "api/answer",
+            "__reveal",
+            "api/mdrev-review/review",
+        ] {
+            assert!(Serves::ALL.admits("POST", name, ""), "{name}");
+            assert!(
+                !host.admits("POST", name, ""),
+                "{name} is outside a host's default"
+            );
+        }
+        for name in [
+            "api/sessions",
+            "pull",
+            "records",
+            "turn-index",
+            "search",
+            "file",
+            "api/mdrev/open",
+        ] {
+            assert!(host.admits("GET", name, ""), "{name}");
+        }
+        // A note filed, edited or removed writes into a repository on the serving machine.
+        for (method, route) in [
+            ("POST", "api/mdrev/annotations"),
+            ("PATCH", "api/mdrev/annotations/n1"),
+            ("DELETE", "api/mdrev/annotations/n1"),
+            ("POST", "api/mdrev/annotations/n1/replies"),
+        ] {
+            assert!(Serves::ALL.admits(method, route, ""), "{method} {route}");
+            assert!(
+                !host.admits(method, route, ""),
+                "{method} {route} is a write"
+            );
+        }
+        let review_reads = Serves {
+            review: true,
+            ..host
+        };
+        assert!(review_reads.admits("GET", "api/mdrev-review/review", ""));
+        assert!(
+            !review_reads.admits("POST", "api/mdrev-review/review/push", ""),
+            "a push is a write"
+        );
+        assert!(
+            host.admits("GET", "api/mdrev/annotations", ""),
+            "reading notes"
+        );
+        assert!(
+            host.admits("POST", "api/mdrev/hold", ""),
+            "holding text writes nothing"
+        );
+        let reads = Serves {
+            files: false,
+            ..host
+        };
+        assert!(!reads.admits("GET", "file", "path=%2Fa&sig=x"));
+        assert!(!reads.admits("GET", "api/mdrev/open", "path=%2Fa&sig=x"));
+        assert!(!reads.admits("GET", "api/mdrev/text", "root=%2Frepo&path=a.md&cap=x"));
+        assert!(
+            !reads.admits("GET", "api/mdrev/stat", ""),
+            "no root is a file's, refused"
+        );
+        assert!(
+            reads.admits("POST", "api/mdrev/hold", ""),
+            "held text is not a file"
+        );
+        assert!(reads.admits("GET", "api/mdrev/text", "root=held&path=h%2Fa.md&cap=x"));
+        assert!(
+            reads.admits("POST", "api/mdrev/resolve", "root=held"),
+            "resolving held text's links only reads"
+        );
+        assert!(
+            !reads.admits("POST", "api/mdrev/resolve", "root=%2Frepo"),
+            "a file's are a file's"
+        );
+        assert!(
+            host.admits("POST", "api/mdrev/resolve", "root=%2Frepo"),
+            "with files, a file's links resolve though writes are off"
+        );
+        assert!(
+            review_reads.admits("POST", "api/mdrev-review/resolve", "root=%2Frepo"),
+            "so do they under shared review's prefix"
+        );
+        assert!(
+            reads.admits("GET", "mdrev/1.1.77/mdrev.js", ""),
+            "the bundle"
+        );
+
+        // Through the table: the writes answer 404 before the route runs, and a read is answered.
+        let state = std::env::temp_dir().join(format!("cm-routes-serves-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&state);
+        std::fs::create_dir_all(&state).unwrap();
+        let _env = crate::index::StateEnv::set(&state);
+        for var in [
+            "CLAUDE_PROJECTS_DIR",
+            "QODERWORK_PROJECTS_DIR",
+            "QWENWORK_PROJECTS_DIR",
+            "QODER_PROJECTS_DIR",
+            "CODEX_HOME",
+        ] {
+            std::env::set_var(var, state.join(var.to_ascii_lowercase()));
+        }
+        let backend = make_backend_serving("serves", host);
+        let front = Frontend {
+            version: "0.0.0-test",
+            paired: false,
+        };
+        let send = Request {
+            method: "POST",
+            body: b"hello",
+            authenticated: true,
+            ..get("api/send", "target=s1")
+        };
+        let refused = dispatch(&backend, &front, &send);
+        assert_eq!(
+            (refused.code, body(&refused).as_str()),
+            ("404 Not Found", "not served by this host")
+        );
+        assert!(body(&dispatch(&backend, &front, &get("api/sessions", ""))).contains("\"groups\""));
+        assert_eq!(
+            dispatch(&backend, &front, &get("api/layout", "")).code,
+            "200 OK",
+            "an index that reads this machine offers the Arrange choice"
+        );
+
+        // An index that leaves this machine alone reads no other app's list either.
+        let alone = make_backend_with("serves-alone", host, Index::without_process_probes);
+        for query in ["", "source=claude"] {
+            let layout = dispatch(&alone, &front, &get("api/layout", query));
+            assert_eq!(
+                (layout.code, body(&layout).as_str()),
+                ("404 Not Found", "not served by this host"),
+                "{query}"
+            );
+        }
+        assert!(body(&dispatch(&alone, &front, &get("api/sessions", ""))).contains("\"groups\""));
+
+        // Nor does it serve writes, even under a ceiling that says it does: without the probes
+        // every session reads as finished, and a send would resume one that is still running.
+        let blind = make_backend_with("serves-blind", Serves::ALL, Index::without_process_probes);
+        for (method, name) in [
+            ("POST", "api/send"),
+            ("POST", "api/consent"),
+            ("GET", "api/dialog"),
+            ("POST", "api/mdrev/annotations"),
+        ] {
+            let write = Request {
+                method,
+                body: b"{}",
+                authenticated: true,
+                ..get(name, "target=s1")
+            };
+            let refused = dispatch(&blind, &front, &write);
+            assert_eq!(
+                (refused.code, body(&refused).as_str()),
+                ("404 Not Found", "not served by this host"),
+                "{method} {name}"
+            );
+        }
+        let file = dispatch(&blind, &front, &get("file", "path=%2Fnone&sig=x"));
+        assert_ne!(
+            body(&file),
+            "not served by this host",
+            "its files are still served"
+        );
+    }
+
+    /// #s426: the body limits a host that mounts the table enforces, the contract's numbers.
+    #[test]
+    fn a_host_reads_each_routes_body_limit_from_the_table() {
+        assert_eq!(body_limit("api/send"), 12 * 1024 * 1024);
+        assert_eq!(body_limit("api/mdrev/hold"), 8 * 1024 * 1024 + 64 * 1024);
+        assert_eq!(body_limit("api/consent"), 64 * 1024);
+        assert_eq!(body_limit("api/answer"), 64 * 1024);
+    }
+
+    /// #s421: every route `docs/backend-contract.md` documents is one the table answers. Each row's
+    /// probe is asked as the listener would hand it on, unpaired and from a foreign origin, so no
+    /// route acts: a refusal proves the route is there, and only the static fallback's answer means
+    /// it is not. Codex native mode's rows are answered by its own handler
+    /// (`codex_workspace`'s test). And the document's version is the one the page carries.
+    #[test]
+    fn every_route_the_contract_documents_is_one_the_table_answers() {
+        let state = std::env::temp_dir().join(format!("cm-routes-contract-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&state);
+        std::fs::create_dir_all(&state).unwrap();
+        let _env = crate::index::StateEnv::set(&state);
+        // Hermetic, as the table's own test: `api/sessions` scans an empty world.
+        for var in [
+            "CLAUDE_PROJECTS_DIR",
+            "QODERWORK_PROJECTS_DIR",
+            "QWENWORK_PROJECTS_DIR",
+            "QODER_PROJECTS_DIR",
+            "CODEX_HOME",
+        ] {
+            std::env::set_var(var, state.join(var.to_ascii_lowercase()));
+        }
+        let front = Frontend {
+            version: "0.0.0-test",
+            paired: false,
+        };
+        let serve = handler(make_backend("contract"), front);
+        let ask = |method: &'static str, name: &str| {
+            serve(&Request {
+                method,
+                origin_ok: false,
+                ..get(name, "")
+            })
+        };
+        // The check tells the two apart: paths no route answers get the fallback.
+        for name in ["nonesuch", "api/nonesuch", "monitor-ui/nonesuch.js"] {
+            assert!(unanswered(&ask("GET", name)), "{name} is no route");
+        }
+        let doc = contract_index::read();
+        assert_eq!(
+            contract_index::version(&doc),
+            Some(CONTRACT_VERSION),
+            "the document's version line is CONTRACT_VERSION"
+        );
+        let page = body(&serve(&get("", "")));
+        assert!(
+            page.contains(&format!("data-contract=\"{CONTRACT_VERSION}\"")),
+            "the page carries the version its server speaks"
+        );
+        let rows = contract_index::rows(&doc);
+        assert!(rows.len() > 15, "read only {} rows", rows.len());
+        let mut asked = 0;
+        for row in rows.iter().filter(|row| row.tier != "native") {
+            let name = contract_index::probe(
+                row,
+                mdrev::VERSION,
+                claude_replay_html::mermaid_runtime_path(),
+            );
+            assert!(
+                row.covers(&format!("/{name}")),
+                "{}'s probe {name} is not under it",
+                row.path
+            );
+            let method = match contract_index::method(row) {
+                "GET" => "GET",
+                "POST" => "POST",
+                other => panic!("{}: a method the probe does not know: {other}", row.path),
+            };
+            let reply = ask(method, &name);
+            assert!(
+                !unanswered(&reply),
+                "the contract documents {} {}, and the table does not answer it ({}: {})",
+                row.method,
+                row.path,
+                reply.code,
+                body(&reply)
+            );
+            asked += 1;
+        }
+        assert!(asked > 15, "asked only {asked}");
     }
 }

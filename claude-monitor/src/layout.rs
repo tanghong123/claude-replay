@@ -1161,6 +1161,12 @@ struct AppDb {
 #[cfg(target_os = "macos")]
 impl AppDb {
     fn open(path: &Path) -> rusqlite::Result<AppDb> {
+        AppDb::open_with(path, &|| {})
+    }
+
+    /// `open`, calling `between` after the file's time is read and before its `-wal` is looked
+    /// for, which is where a test's writer arrives (#s403).
+    fn open_with(path: &Path, between: &dyn Fn()) -> rusqlite::Result<AppDb> {
         use rusqlite::{Connection, OpenFlags};
         let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
             | OpenFlags::SQLITE_OPEN_NO_MUTEX
@@ -1168,6 +1174,7 @@ impl AppDb {
         // The time first, then the `-wal`: a writer that arrives between the two then changes
         // either the `-wal` this sees or the time `moved` compares (the fourth review of #s387).
         let at = modified(path);
+        between();
         let immutable = !AppDb::wal(path).exists() && sqlite_wal_mode(path);
         let conn = if immutable {
             Connection::open_with_flags(immutable_uri(path), flags)?
@@ -1217,10 +1224,28 @@ fn sqlite_row_type(e: &rusqlite::Error) -> bool {
 /// 26.1103.31037, read on 2026-11-07, the fourth review of #s387): this machine's rows (`host_id`
 /// `local`; a remote host's threads are listed under that host) that the app's last scan still
 /// found. A thread a scan no longer finds is marked `missing_candidate` and hidden at once, and
-/// deleted later.
+/// deleted later. An older catalogue may lack either column (#s403): each condition is asked only
+/// of a column the table has, so one with neither is read whole, rather than failing the query
+/// and dropping the list to the monitor's guess.
 #[cfg(target_os = "macos")]
-const CODEX_CATALOGUE_SQL: &str =
-    "SELECT thread_id FROM local_thread_catalog WHERE host_id = 'local' AND missing_candidate = 0";
+fn codex_catalogue_sql(columns: &HashSet<String>) -> String {
+    let conditions: Vec<&str> = [
+        ("host_id", "host_id = 'local'"),
+        ("missing_candidate", "missing_candidate = 0"),
+    ]
+    .into_iter()
+    .filter(|(column, _)| columns.contains(*column))
+    .map(|(_, condition)| condition)
+    .collect();
+    if conditions.is_empty() {
+        "SELECT thread_id FROM local_thread_catalog".to_string()
+    } else {
+        format!(
+            "SELECT thread_id FROM local_thread_catalog WHERE {}",
+            conditions.join(" AND ")
+        )
+    }
+}
 
 #[cfg(target_os = "macos")]
 fn read_codex(db: &Path) -> Result<CodexData, String> {
@@ -1273,7 +1298,7 @@ fn read_codex_with(db: &Path, after_read: &dyn Fn(&Path)) -> Result<CodexData, S
     Ok(data)
 }
 
-/// The app's catalogue (`CODEX_CATALOGUE_SQL`). A writer that reached the file while it was read
+/// The app's catalogue (`codex_catalogue_sql`). A writer that reached the file while it was read
 /// immutable makes whatever the read gave, an error too, untrustworthy: it is then busy (the
 /// fourth review of #s387), and the next read tries again.
 #[cfg(target_os = "macos")]
@@ -1282,12 +1307,20 @@ fn read_codex_catalogue(
     after_read: &dyn Fn(&Path),
 ) -> rusqlite::Result<HashSet<String>> {
     let c = AppDb::open(path)?;
-    let ids = c.conn.prepare(CODEX_CATALOGUE_SQL).and_then(|mut stmt| {
+    let ids = (|| {
+        // One snapshot for the columns and the rows, as the thread database is read.
+        let _snapshot = c.conn.unchecked_transaction()?;
+        let columns = c
+            .conn
+            .prepare("SELECT name FROM pragma_table_info('local_thread_catalog')")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<HashSet<String>>>()?;
+        let mut stmt = c.conn.prepare(&codex_catalogue_sql(&columns))?;
         let ids = stmt
             .query_map([], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<HashSet<String>>>();
         ids
-    });
+    })();
     after_read(path);
     if c.moved() {
         return Err(rusqlite::Error::SqliteFailure(
@@ -1387,7 +1420,13 @@ fn read_codex_threads(conn: &rusqlite::Connection) -> Result<(CodexData, bool), 
                 archived: row.get::<_, i64>(7)? != 0,
                 recency: row.get(8)?,
                 created: row.get(9)?,
-                parent: parents.get(&id).cloned().or(row.get(11)?),
+                // The edge names the parent when it can; the attached-parent column is read only
+                // when it does not, so an unreadable value there never costs a row the edge named
+                // (#s403).
+                parent: match parents.get(&id) {
+                    Some(parent) => Some(parent.clone()),
+                    None => row.get(11)?,
+                },
                 headless: source.as_deref().is_some_and(codex_headless),
                 id,
             })
@@ -3322,6 +3361,180 @@ mod tests {
             rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
             None
         )));
+    }
+
+    /// A Codex thread database in the measured shape, holding `inserts`, in a scratch directory of
+    /// its own (#s403's cases).
+    #[cfg(target_os = "macos")]
+    fn codex_db(name: &str, inserts: &str) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("cm-layout-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("state_5.sqlite");
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute_batch(&format!(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, position INTEGER NOT NULL);
+                 CREATE TABLE thread_sections (id TEXT PRIMARY KEY, name TEXT NOT NULL);
+                 CREATE TABLE thread_spawn_edges (parent_thread_id TEXT NOT NULL, child_thread_id TEXT NOT NULL PRIMARY KEY, status TEXT NOT NULL);
+                 CREATE TABLE threads (id TEXT PRIMARY KEY, rollout_path TEXT NOT NULL, title TEXT NOT NULL, updated_at INTEGER NOT NULL, archived INTEGER NOT NULL DEFAULT 0, updated_at_ms INTEGER, recency_at_ms INTEGER NOT NULL DEFAULT 0, name TEXT, is_pinned INTEGER NOT NULL DEFAULT 0, thread_section_id TEXT, section_position INTEGER, project_id TEXT, created_at INTEGER NOT NULL DEFAULT 0, created_at_ms INTEGER, source TEXT NOT NULL, attached_thread_parent_id);
+                 {inserts}"
+            ))
+            .unwrap();
+        (root, db)
+    }
+
+    /// #s403: an older catalogue without `missing_candidate` still keeps this machine's rows by
+    /// `host_id`, and one with neither column is read whole; neither drops the list to the guess.
+    /// Asking for both columns outright turns this red.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_codex_catalogue_without_its_optional_columns_still_lists() {
+        let (root, db) = codex_db(
+            "catalogue-cols",
+            "INSERT INTO threads (id, rollout_path, title, updated_at, source) VALUES ('a', '/h/rollout-x-a.jsonl', 'a', 1, 'vscode'), ('b', '/h/rollout-x-b.jsonl', 'b', 1, 'vscode');",
+        );
+        std::fs::create_dir_all(root.join("sqlite")).unwrap();
+        let catalogue = root.join("sqlite/codex.db");
+        let make = |schema: &str| {
+            let _ = std::fs::remove_file(&catalogue);
+            rusqlite::Connection::open(&catalogue)
+                .unwrap()
+                .execute_batch(schema)
+                .unwrap();
+        };
+        make(
+            "CREATE TABLE local_thread_catalog (host_id TEXT NOT NULL, thread_id TEXT NOT NULL);
+             INSERT INTO local_thread_catalog VALUES ('local', 'a'), ('chatgpt:acct', 'b');",
+        );
+        let data = read_codex(&db).unwrap();
+        assert_eq!(
+            data.listed,
+            Some(HashSet::from(["a".to_string()])),
+            "no missing_candidate: still this machine's rows"
+        );
+        assert_eq!(data.note(), None, "{:?}", data.note());
+        make(
+            "CREATE TABLE local_thread_catalog (thread_id TEXT NOT NULL);
+             INSERT INTO local_thread_catalog VALUES ('a'), ('b');",
+        );
+        let data = read_codex(&db).unwrap();
+        assert_eq!(
+            data.listed,
+            Some(HashSet::from(["a".to_string(), "b".to_string()])),
+            "neither column: read whole"
+        );
+        assert_eq!(data.note(), None, "{:?}", data.note());
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// #s403: with no catalogue, a thread whose `source` says nothing of a parent is still left
+    /// out by its sub-agent edge alone; and an attached parent stored as an empty string is no
+    /// parent. Reading no edges, or the column without `NULLIF`, turns this red.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_codex_thread_is_left_out_by_its_edge_alone_and_an_empty_attached_parent_is_none() {
+        let (root, db) = codex_db(
+            "edge-alone",
+            "INSERT INTO threads (id, rollout_path, title, updated_at, source, attached_thread_parent_id) VALUES
+               ('a', '/h/rollout-x-a.jsonl', 'a', 1, 'vscode', NULL),
+               ('c', '/h/rollout-x-c.jsonl', 'c', 1, 'vscode', NULL),
+               ('e', '/h/rollout-x-e.jsonl', 'e', 1, 'vscode', '');
+             INSERT INTO thread_spawn_edges VALUES ('a', 'c', 'open');",
+        );
+        let data = read_codex(&db).unwrap();
+        let by = |id: &str| data.threads.iter().find(|t| t.id == id).unwrap();
+        assert!(data.lists(by("a")), "a thread with no parent is listed");
+        assert_eq!(by("c").parent.as_deref(), Some("a"));
+        assert!(
+            !data.lists(by("c")),
+            "left out by its edge, its source says nothing"
+        );
+        assert_eq!(by("e").parent, None, "an empty attached parent is none");
+        assert!(data.lists(by("e")));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// #s403: an attached-parent value that does not read never costs a row whose edge already
+    /// named its parent. Reading the column first turns this red.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_unreadable_attached_parent_never_costs_a_row_its_edge_named() {
+        let (root, db) = codex_db(
+            "attached-unreadable",
+            "INSERT INTO threads (id, rollout_path, title, updated_at, source, attached_thread_parent_id) VALUES
+               ('a', '/h/rollout-x-a.jsonl', 'a', 1, 'vscode', NULL),
+               ('c', '/h/rollout-x-c.jsonl', 'c', 1, 'vscode', 5);
+             INSERT INTO thread_spawn_edges VALUES ('a', 'c', 'open');",
+        );
+        let data = read_codex(&db).unwrap();
+        assert_eq!(data.unreadable, 0, "{:?}", data.note());
+        let c = data
+            .threads
+            .iter()
+            .find(|t| t.id == "c")
+            .expect("the row is read");
+        assert_eq!(c.parent.as_deref(), Some("a"));
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// #s403: a writer that reaches the thread database while it is read is busy even when the read
+    /// itself failed, since the writer may be why it failed. Answering the read's own error first
+    /// turns this red.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_codex_thread_read_a_writer_reached_before_an_error_is_busy() {
+        let root =
+            std::env::temp_dir().join(format!("cm-layout-reached-error-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("state_5.sqlite");
+        rusqlite::Connection::open(&db)
+            .unwrap()
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE projects (id TEXT, name TEXT, position INTEGER);
+                 CREATE TABLE thread_sections (id TEXT, name TEXT);",
+            )
+            .unwrap();
+        assert!(
+            read_codex(&db).unwrap_err().contains("does not know"),
+            "unreached, the read's own error"
+        );
+        let checkpoint = |at: &Path| {
+            if at == db.as_path() {
+                let then = modified(at).unwrap();
+                std::fs::File::options()
+                    .write(true)
+                    .open(at)
+                    .unwrap()
+                    .set_modified(then + Duration::from_secs(1))
+                    .unwrap();
+            }
+        };
+        assert_eq!(read_codex_with(&db, &checkpoint).unwrap_err(), CODEX_BUSY);
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// #s403: `AppDb::open` reads the file's time before it looks for a `-wal`, so a writer that
+    /// checkpoints between the two is seen by `moved`. Looking for the `-wal` first turns this red.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_codex_app_db_reads_its_time_before_its_wal() {
+        let (root, db) = codex_db("time-before-wal", "");
+        let between = || {
+            let then = modified(&db).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&db)
+                .unwrap()
+                .set_modified(then + Duration::from_secs(1))
+                .unwrap();
+        };
+        let app = AppDb::open_with(&db, &between).unwrap();
+        assert!(app.immutable_at.is_some(), "a WAL database with no -wal");
+        assert!(app.moved(), "the checkpoint between the two is seen");
+        drop(app);
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     /// The third review of #s387: a database with no `source` column still reads; with no

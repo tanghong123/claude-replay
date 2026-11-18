@@ -154,7 +154,9 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // wrote v27 caches without diagram hosts; these must rebuild along with v25-v26 caches.
     // v29: #s355 — a SendMessage card's head names who it went to ahead of its summary
     // (`→ skua-HD · …`).
-    const RECORD_SCHEMA: u16 = 29;
+    // v30: #s456 — a SendMessage that brought a resumed sub-agent's report back draws the report
+    // as an `md` part under the receipt's first sentence.
+    const RECORD_SCHEMA: u16 = 30;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);
@@ -1485,7 +1487,7 @@ pub struct HttpResponse {
     /// A file streamed from disk after the head, with its length (#374) — `body` is then empty.
     /// Only `/file` sets it, for a download over its 8 MB viewer cap: a viewer reads what it
     /// shows into memory, but a download is not viewing, and a phone has no other way to fetch a
-    /// 19 MB video an agent sent it. Never gzipped, and masked only by refusal (`mask_for`).
+    /// 19 MB video an agent sent it. Never gzipped, and masked only by refusal (`mask_when`).
     pub stream: Option<(PathBuf, u64)>,
 }
 
@@ -1639,8 +1641,8 @@ pub struct Request<'a> {
     /// `Origin`; a DNS-rebound one carries a foreign `Host`; both are refused here even if
     /// they somehow held a token.
     pub origin_ok: bool,
-    /// What this client is sent is masked (`mask_for`'s own question: the mask policy, and whether
-    /// the `Host` is the loopback). A route that answers from text it does not send — search on the
+    /// What this client is sent is masked (the mask policy, and whether the `Host` is the
+    /// loopback; `finish_reply` masks by it). A route that answers from text it does not send — search on the
     /// server (#s278) — asks it of what it reads, or its counts would see a secret the page cannot.
     pub masked: bool,
 }
@@ -1823,6 +1825,10 @@ fn header_value<'a>(headers: &'a str, name: &str) -> Option<&'a str> {
 /// and that name is as much its own as `127.0.0.1` is.
 pub type HostCheck = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
 
+/// Whether a relay on this machine reaches the server's port now (#s422): `tailscale serve`, which
+/// connects from the loopback, so a peer the gate cannot verify may be anyone on the tailnet.
+pub type RelayCheck = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
+
 /// Whether the request's `Host`/`Origin` are the server's own origin at `port`: the write verdict
 /// [`foreign_header`] gives, as a yes or no, for the cases that pin it.
 #[cfg(test)]
@@ -1875,7 +1881,8 @@ fn foreign_header(headers: &str, port: u16, trusted: Option<&HostCheck>) -> Opti
 ///
 /// Unpaired (no token), the gate is D3b exactly: Linux enforces same-user, macOS admits
 /// same-machine (the single-user-Mac assumption). Pairing is what closes the multi-user
-/// case. See `design/fleet-pairing.md` §4.2.
+/// case. See `design/fleet-pairing.md` §4.2. An unpaired gate that trusts tailnet names refuses
+/// a request a relay on this machine brought, whatever the peer (#s417).
 #[derive(Clone)]
 pub struct AuthGate {
     /// Our effective uid; a loopback peer with this uid is same-user (Linux). `None` when
@@ -1903,6 +1910,11 @@ pub struct AuthGate {
     /// admits a `Host`/`Origin` this says yes to. None unless
     /// [`with_trusted_hosts`](Self::with_trusted_hosts) gives one.
     trusted_hosts: Option<HostCheck>,
+    /// Whether a relay reaches this port (#s422). While one does, an UNPAIRED gate admits no
+    /// loopback peer it cannot verify (macOS: every one), since a raw TCP relay brings a
+    /// tailnet device's connection in from the loopback with nothing to tell it by. None unless
+    /// [`with_relay_check`](Self::with_relay_check) gives one: no relay.
+    relay: Option<RelayCheck>,
     /// A PAIRED gate that admits the token alone (#366): the same-user loopback leg is off, so
     /// the owner's own browser needs the cookie too — on Linux as on macOS, where the peer
     /// cannot be verified anyway. Set by `AGENT_MONITOR_TOKEN_ONLY` (any value but `0`) when the
@@ -1939,6 +1951,7 @@ impl AuthGate {
             pair_command: super::pairing::DEFAULT_PAIR_COMMAND,
             public: &[],
             trusted_hosts: None,
+            relay: None,
             token_only: false,
             body_limits: Vec::new(),
         }
@@ -1955,6 +1968,7 @@ impl AuthGate {
             pair_command: super::pairing::DEFAULT_PAIR_COMMAND,
             public: &[],
             trusted_hosts: None,
+            relay: None,
             token_only: std::env::var_os("AGENT_MONITOR_TOKEN_ONLY").is_some_and(|v| v != "0"),
             body_limits: Vec::new(),
         }
@@ -1999,6 +2013,33 @@ impl AuthGate {
         self
     }
 
+    /// Ask `check` whether a relay reaches this port (#s422, the owner's choice on #s419): while
+    /// one does, an unpaired gate refuses every loopback peer it cannot verify, so the monitor must
+    /// be paired to be read at all, the machine's own browser included.
+    pub fn with_relay_check(mut self, check: RelayCheck) -> Self {
+        self.relay = Some(check);
+        self
+    }
+
+    /// The unverifiable loopback leg of an unpaired gate: admitted only while no relay reaches
+    /// the port (#s422). A paired gate never admits it.
+    fn unverified_admits(&self) -> bool {
+        if self.token.is_some() {
+            return false;
+        }
+        let relayed = self.relay.as_ref().is_some_and(|relayed| relayed());
+        if relayed {
+            static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                eprintln!(
+                    "a relay reaches this unpaired server's port, so a connection it cannot \
+                     verify is refused until it is paired (#s422)"
+                );
+            }
+        }
+        !relayed
+    }
+
     /// The command the pairing page tells a person to run (#376), for a host other than the
     /// monitor. Plain words only (letters, digits, space and `. _ / -`), so the page needs no
     /// escaping; anything else is a programming error.
@@ -2031,6 +2072,7 @@ impl AuthGate {
             pair_command: super::pairing::DEFAULT_PAIR_COMMAND,
             public: &[],
             trusted_hosts: None,
+            relay: None,
             token_only: false,
             body_limits: Vec::new(),
         }
@@ -2083,14 +2125,15 @@ impl AuthGate {
             (std::net::SocketAddr::V4(p), std::net::SocketAddr::V4(l)) => {
                 match peer_uid_v4(*p.ip(), p.port(), *l.ip(), l.port()) {
                     Some(uid) => self.euid == Some(uid),
-                    // Unverifiable: same-machine ONLY when unpaired. A paired monitor on
-                    // macOS refuses an unverifiable peer that lacks the token — the whole
-                    // point of pairing a shared Mac.
-                    None => self.token.is_none(),
+                    // Unverifiable: same-machine ONLY when unpaired, and only while no relay
+                    // brings other machines' connections in from the loopback (#s422). A paired
+                    // monitor on macOS refuses an unverifiable peer that lacks the token — the
+                    // whole point of pairing a shared Mac.
+                    None => self.unverified_admits(),
                 }
             }
-            // v6 loopback: unverified; same-machine only when unpaired.
-            _ => self.token.is_none(),
+            // v6 loopback: unverified; same-machine only when unpaired and unrelayed (#s422).
+            _ => self.unverified_admits(),
         };
         if same_user {
             Access::Ok
@@ -2306,6 +2349,18 @@ fn set_cookie_line(token: &str) -> String {
 /// The largest POST body the server will read (#133): a prompt, not a payload.
 const MAX_BODY_BYTES: usize = 64 * 1024;
 
+/// The largest body a request to one of the session service's routes may carry (#s426): mdrev's
+/// `hold` takes a whole document, every other route 64 KiB. A body over it is refused with 413,
+/// never cut. A host that mounts the route table enforces it before the route reads the body, as
+/// the monitor's listener does; the monitor's own routes add theirs (`routes::body_limit`).
+pub fn service_body_limit(route: &str) -> usize {
+    if route == "api/mdrev/hold" {
+        super::mdrev::HOLD_BODY_LIMIT
+    } else {
+        MAX_BODY_BYTES
+    }
+}
+
 /// The largest artifact `/file` will hand over. The route exists so a click can SHOW a file
 /// the agent touched; anything bigger is a download, and the page falls back to revealing it
 /// Whether a candidate containment root is so broad that admitting it says nothing.
@@ -2501,13 +2556,43 @@ fn serve_connection<R: Into<HttpReply>>(
     let mut line = String::new();
     reader.read_line(&mut line)?;
     let mut headers = String::new();
+    // #s417: past the cap a header is not kept, but a relay writes its own headers after the
+    // client's (Go's proxy: `Host`, `User-Agent`, then the rest sorted by name), so a client could
+    // push them past the cap with one long header. The rest are read, to a second bound, for
+    // whether a relay's header is among them; more than that past the cap counts as relayed. (The
+    // line that crosses the cap is kept whole, so a long last header is no hiding place: every
+    // line after it is still read.)
+    let mut past_cap = 0usize;
+    let mut relayed_past_cap = false;
+    // Whether the header section ended with its blank line. One cut short (the peer closed its
+    // side, or the last line has no newline) may be missing a relay's headers, which come late: a
+    // client behind a relay that cancels mid-headers leaves exactly that (#s417).
+    let mut headers_whole = false;
     loop {
         let mut h = String::new();
         let n = reader.read_line(&mut h)?;
-        if n == 0 || h == "\r\n" || h == "\n" || headers.len() > 8192 {
+        if n == 0 {
             break;
         }
-        headers.push_str(&h);
+        if h == "\r\n" || h == "\n" {
+            headers_whole = true;
+            break;
+        }
+        // A last line with no newline is the peer closing mid-line: kept as before, and the end.
+        let cut = !h.ends_with('\n');
+        if headers.len() > 8192 {
+            past_cap += n;
+            relayed_past_cap |= came_through_a_relay(&h);
+            if past_cap > HEADERS_PAST_CAP {
+                relayed_past_cap = true;
+                break;
+            }
+        } else {
+            headers.push_str(&h);
+        }
+        if cut {
+            break;
+        }
     }
     // `METHOD /name?query HTTP/1.1`
     let method = line.split_whitespace().next().unwrap_or("GET").to_string();
@@ -2546,6 +2631,26 @@ fn serve_connection<R: Into<HttpReply>>(
             _ => Access::Denied,
         },
     };
+    // #s417: an unpaired gate that tailnet relays can reach (it trusts a tailnet name, #331)
+    // admits the same-machine leg only for a request that did not come through a relay.
+    // `tailscale serve` connects from the loopback, so the peer says nothing; what says it is the
+    // relay's own headers, which a client cannot remove (`X-Forwarded-For`, `X-Forwarded-Host`,
+    // `Forwarded`, `Tailscale-User-Login`), and a `Host` that is not a loopback name. Either is
+    // refused, and the refusal names pairing. A raw TCP relay (`tailscale serve --tcp`) sends no
+    // headers and is not caught here: the relay check is (#s422, `unverified_admits`).
+    let access = if gate.token.is_none()
+        && gate.trusted_hosts.is_some()
+        && !public
+        && !matches!(access, Access::Denied)
+        && (relayed_past_cap
+            || !headers_whole
+            || came_through_a_relay(&headers)
+            || !host_is_local(header_value(&headers, "host")))
+    {
+        Access::Denied
+    } else {
+        access
+    };
 
     // The request body, bounded — a write route (#133) reads its prompt/target from here, and
     // mdrev's `hold` (#270) a whole document. A body over its route's bound is REFUSED (413), never
@@ -2555,10 +2660,8 @@ fn serve_connection<R: Into<HttpReply>>(
     let limit = if let Some((_, limit)) = gate.body_limits.iter().find(|(route, _)| *route == name)
     {
         *limit
-    } else if name == "api/mdrev/hold" {
-        super::mdrev::HOLD_BODY_LIMIT
     } else {
-        MAX_BODY_BYTES
+        service_body_limit(name)
     };
     let declared = header_value(&headers, "content-length")
         .and_then(|v| v.parse::<usize>().ok())
@@ -2790,9 +2893,15 @@ const GZIP_MIN_BYTES: usize = 16 * 1024;
 /// at 5 MB/s level 3 saves ~0.6 s over level 1 for 0.13 s more CPU — so level 3.
 const GZIP_LEVEL: u32 = 3;
 
+/// [`identity_when`] as the listener read it from a request's headers.
+#[cfg(test)]
+fn identity_for(r: HttpResponse, headers: &str) -> HttpResponse {
+    identity_when(r, accepts_gzip(headers))
+}
+
 /// A route can keep immutable assets precompressed. Decode only when gzip is not accepted,
 /// before masking and normal network compression, so those adapters still see identity bytes.
-fn identity_for(mut r: HttpResponse, headers: &str) -> HttpResponse {
+fn identity_when(mut r: HttpResponse, accepts_gzip: bool) -> HttpResponse {
     use std::io::Read;
     let gzip = r.headers.iter().any(|header| {
         header.split_once(':').is_some_and(|(name, value)| {
@@ -2800,7 +2909,7 @@ fn identity_for(mut r: HttpResponse, headers: &str) -> HttpResponse {
                 && value.trim().eq_ignore_ascii_case("gzip")
         })
     });
-    if !gzip || accepts_gzip(headers) || r.stream.is_some() {
+    if !gzip || accepts_gzip || r.stream.is_some() {
         return r;
     }
     let mut body = Vec::new();
@@ -2823,6 +2932,17 @@ fn identity_for(mut r: HttpResponse, headers: &str) -> HttpResponse {
     r
 }
 
+/// [`gzip_when`] as the listener read it from a request's headers.
+#[cfg(test)]
+fn gzip_for(r: HttpResponse, method: &str, headers: &str) -> HttpResponse {
+    gzip_when(
+        r,
+        method,
+        accepts_gzip(headers),
+        !host_is_local(header_value(headers, "host")),
+    )
+}
+
 /// Gzip a reply for a client ACROSS A NETWORK (#313). Opening a session sends every record it
 /// has — 3 MB for an 8 MB transcript, 24 MB for 70 MB, 32 MB for 107 MB — and a phone reaching
 /// the monitor through `tailscale serve` paid for each byte; gzip makes them 25-43%, and the
@@ -2831,7 +2951,9 @@ fn identity_for(mut r: HttpResponse, headers: &str) -> HttpResponse {
 /// `Host` names the loopback — or names nothing — is answered as it always was. Only whole
 /// successful text bodies over [`GZIP_MIN_BYTES`] of a GET, to a client that accepts gzip, and
 /// never a body a route already encoded.
-fn gzip_for(mut r: HttpResponse, method: &str, headers: &str) -> HttpResponse {
+///
+/// The facts: the method, whether the client accepts gzip, and whether it is across a network.
+fn gzip_when(mut r: HttpResponse, method: &str, accepts_gzip: bool, remote: bool) -> HttpResponse {
     use std::io::Write;
     let text = r.content_type.starts_with("text/")
         || r.content_type.starts_with("application/json")
@@ -2846,8 +2968,8 @@ fn gzip_for(mut r: HttpResponse, method: &str, headers: &str) -> HttpResponse {
         || r.body.len() < GZIP_MIN_BYTES
         || !text
         || encoded
-        || !accepts_gzip(headers)
-        || host_is_local(header_value(headers, "host"))
+        || !accepts_gzip
+        || !remote
     {
         return r;
     }
@@ -2867,23 +2989,23 @@ fn gzip_for(mut r: HttpResponse, method: &str, headers: &str) -> HttpResponse {
     r
 }
 
-/// Mask the secrets in a response to a client the mask policy covers (#365, `mask-policy.json`):
-/// with `remote`, a phone over the tailnet — a `Host` that is not the loopback, as `gzip_for`
-/// tells it — and never the desktop. Before gzip, and only a whole, unencoded, successful body.
-fn mask_for(r: HttpResponse, headers: &str) -> HttpResponse {
-    mask_under(r, headers, super::mask::policy())
+/// [`mask_when`] as the listener reads it, from a request's `Host` under a mask policy.
+fn mask_under(r: HttpResponse, headers: &str, policy: super::mask::MaskPolicy) -> HttpResponse {
+    mask_when(
+        r,
+        policy.masks(host_is_local(header_value(headers, "host"))),
+    )
 }
 
-/// [`mask_for`] under a given policy — the policy is fixed to `off` in a test build.
-fn mask_under(mut r: HttpResponse, headers: &str, policy: super::mask::MaskPolicy) -> HttpResponse {
+/// Mask the secrets in a response to a client the mask policy covers (#365, `mask-policy.json`):
+/// with `remote`, a phone over the tailnet, and never the desktop; the caller has decided which
+/// (`masked`, the request's own fact). Before gzip, and only a whole, unencoded, successful body.
+fn mask_when(mut r: HttpResponse, masked: bool) -> HttpResponse {
     let encoded = r
         .headers
         .iter()
         .any(|h| h.to_ascii_lowercase().starts_with("content-encoding:"));
-    if !r.code.starts_with("200")
-        || encoded
-        || !policy.masks(host_is_local(header_value(headers, "host")))
-    {
+    if !r.code.starts_with("200") || encoded || !masked {
         return r;
     }
     // A streamed file cannot be masked, so one that may carry a secret is refused (#374). The
@@ -2945,7 +3067,8 @@ fn accepts_gzip(headers: &str) -> bool {
 }
 
 /// Whether a `Host` header names this machine's loopback (or is absent): such a client is on
-/// this machine, and the bytes never cross a network.
+/// this machine, and the bytes never cross a network. A name is `localhost` (or under it), or
+/// an address that parses as a loopback one: `127.evil.example` is a name, not an address.
 fn host_is_local(host: Option<&str>) -> bool {
     let Some(host) = host.map(str::trim).filter(|h| !h.is_empty()) else {
         return true;
@@ -2956,7 +3079,29 @@ fn host_is_local(host: Option<&str>) -> bool {
         host.rsplit_once(':').map_or(host, |(n, _)| n)
     };
     let name = name.to_ascii_lowercase();
-    name == "localhost" || name.ends_with(".localhost") || name == "::1" || name.starts_with("127.")
+    name == "localhost"
+        || name.ends_with(".localhost")
+        || name
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// How many bytes of header lines past the 8 KiB cap are read, unkept, for a relay's headers
+/// (#s417). More than this past the cap counts as relayed for an unpaired gate.
+const HEADERS_PAST_CAP: usize = 64 * 1024;
+
+/// Whether a request carries a header a relay adds (#s417): `tailscale serve`'s HTTP proxy sets
+/// `X-Forwarded-For` and `X-Forwarded-Host`, and `Tailscale-User-Login` for a known user, and a
+/// client cannot take them off; `Forwarded` is the standard form other proxies use.
+fn came_through_a_relay(headers: &str) -> bool {
+    [
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "forwarded",
+        "tailscale-user-login",
+    ]
+    .iter()
+    .any(|h| header_value(headers, h).is_some())
 }
 
 /// The status line and headers for a reply. `no-store` unless the route set its own
@@ -3012,12 +3157,64 @@ fn mask_reply_under(reply: HttpReply, headers: &str, policy: super::mask::MaskPo
     }
 }
 
+/// What finishing a reply needs to know about its client (#s426, `design/backend-mount.md`): the
+/// facts the monitor's listener reads off the request, which a host that mounts the route table
+/// in its own server gives from its own request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReplyClient<'a> {
+    /// The request's method. Only a GET's reply is compressed.
+    pub method: &'a str,
+    /// The client accepts gzip (`Accept-Encoding`).
+    pub accepts_gzip: bool,
+    /// The client is across a network, where compressing pays. The monitor counts a `Host` that is
+    /// not the loopback as remote.
+    pub remote: bool,
+    /// Secrets are masked in this client's replies: the request's `masked` fact.
+    pub masked: bool,
+}
+
+impl<'a> ReplyClient<'a> {
+    /// The monitor listener's reading of a request's headers, under a mask policy.
+    fn from_headers(method: &'a str, headers: &str, policy: super::mask::MaskPolicy) -> Self {
+        let local = host_is_local(header_value(headers, "host"));
+        Self {
+            method,
+            accepts_gzip: accepts_gzip(headers),
+            remote: !local,
+            masked: policy.masks(local),
+        }
+    }
+}
+
+/// Finish a route's reply for its client, as the monitor's listener does (#s426), so a host that
+/// mounts the route table in its own server sends what the monitor sends:
+/// - a body the route keeps gzipped is decoded for a client that does not accept gzip;
+/// - secrets are masked for a client the mask policy covers, and a large text file that would be
+///   streamed to one is refused, since a stream cannot be masked;
+/// - a GET's text reply to a client across a network is gzipped;
+/// - a reply that sets no `Cache-Control` gets `no-store`.
+///
+/// The host then writes the reply's status, content type, every header line, and its body, or the
+/// file it names in `stream`, from disk.
+pub fn finish_reply(response: HttpResponse, client: ReplyClient<'_>) -> HttpResponse {
+    let response = identity_when(response, client.accepts_gzip);
+    let response = mask_when(response, client.masked);
+    let mut response = gzip_when(response, client.method, client.accepts_gzip, client.remote);
+    let own_cache = response
+        .headers
+        .iter()
+        .any(|h| h.to_ascii_lowercase().starts_with("cache-control:"));
+    if !own_cache {
+        response.headers.push("Cache-Control: no-store".to_string());
+    }
+    response
+}
+
 fn prepare_reply(reply: HttpReply, headers: &str, method: &str) -> HttpReply {
     match reply {
-        HttpReply::Buffered(response) => gzip_for(
-            mask_for(identity_for(response, headers), headers),
-            method,
-            headers,
+        HttpReply::Buffered(response) => finish_reply(
+            response,
+            ReplyClient::from_headers(method, headers, super::mask::policy()),
         )
         .into(),
         events => mask_reply_under(events, headers, super::mask::policy()),
@@ -3854,6 +4051,49 @@ mod tests {
         // Here the matcher finds no /proc row → unverifiable → unpaired admits, paired denies.
         let unpaired = AuthGate::for_test(None);
         assert!(matches!(unpaired.decide(lo, srv, None, false), Access::Ok));
+    }
+
+    /// #s422 (the owner's choice on #s419): while a relay reaches the port, an unpaired gate
+    /// refuses a loopback peer it cannot verify, since a raw TCP relay (`tailscale serve --tcp`)
+    /// brings a tailnet device in from the loopback with no header or `Host` to tell it by; with
+    /// no relay it admits it, as before. A paired gate is unchanged: the token decides. The
+    /// relay is asked at each decision, so one set up or taken down is seen.
+    #[test]
+    fn an_unpaired_gate_refuses_an_unverified_peer_while_a_relay_reaches_its_port() {
+        let lo = std::net::SocketAddr::from(([127, 0, 0, 1], 5000));
+        let srv = std::net::SocketAddr::from(([127, 0, 0, 1], 2727));
+        let relayed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let check: RelayCheck = {
+            let relayed = relayed.clone();
+            std::sync::Arc::new(move || relayed.load(std::sync::atomic::Ordering::SeqCst))
+        };
+        let unpaired = AuthGate::for_test(None).with_relay_check(check.clone());
+        assert!(matches!(
+            unpaired.decide(lo, srv, None, false),
+            Access::Denied
+        ));
+        let v6 = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 5000));
+        let v6_srv = std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, 2727));
+        assert!(matches!(
+            unpaired.decide(v6, v6_srv, None, false),
+            Access::Denied
+        ));
+        relayed.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(matches!(unpaired.decide(lo, srv, None, false), Access::Ok));
+        assert!(matches!(
+            unpaired.decide(v6, v6_srv, None, false),
+            Access::Ok
+        ));
+        relayed.store(true, std::sync::atomic::Ordering::SeqCst);
+        let paired = AuthGate::for_test(Some("secret-422")).with_relay_check(check);
+        assert!(matches!(
+            paired.decide(lo, srv, None, false),
+            Access::Denied
+        ));
+        assert!(matches!(
+            paired.decide(lo, srv, Some("secret-422"), true),
+            Access::Ok
+        ));
     }
 
     /// #317: every plain-text reply names its charset — the refusal and the error texts carry an
@@ -4957,6 +5197,164 @@ mod tests {
             "same-user connection is admitted:\n{resp}"
         );
         assert!(resp.trim_end().ends_with("ok"));
+    }
+
+    /// #s417: an unpaired gate that trusts tailnet names (#331) admits the same-machine leg only
+    /// for a request no relay brought. `tailscale serve` connects from the loopback and passes
+    /// the client's `Host` on (by SNI over TLS, so a client may send `Host: localhost`), and adds
+    /// `X-Forwarded-For`/`X-Forwarded-Host`, which the client cannot take off; an unpaired monitor
+    /// behind it answered every device on the tailnet with no token. Driven end to end on a bound
+    /// listener, so the platform's real peer lookup runs: on macOS the peer is unverifiable, on
+    /// Linux it is verifiably this user, and both used to admit these requests.
+    #[test]
+    fn an_unpaired_gate_refuses_a_request_relayed_under_a_tailnet_name() {
+        use std::io::{Read, Write};
+        let handler: RouteHandler =
+            std::sync::Arc::new(|_req: &Request| HttpResponse::ok("text/plain", b"ok".to_vec()));
+        let trusted: HostCheck = std::sync::Arc::new(|h: &str| h == "box.tail0000.ts.net");
+        // A refusal the gate sends before the request has all arrived (past the second bound it
+        // stops reading) may reach the client as a reset: Linux resets a socket closed with bytes
+        // unread. Either way nothing was served, which is all these cases ask.
+        let get_at = |port: u16, path: &str, head: &str| {
+            let mut s = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, port)).unwrap();
+            if let Err(e) = write!(s, "GET {path} HTTP/1.0\r\n{head}Connection: close\r\n\r\n") {
+                return format!("not served: the write failed ({e})");
+            }
+            let mut resp = String::new();
+            match s.read_to_string(&mut resp) {
+                Ok(_) => resp,
+                Err(e) if e.kind() == std::io::ErrorKind::ConnectionReset => {
+                    format!("not served: reset after {} bytes", resp.len())
+                }
+                Err(e) => panic!("reading the reply: {e}"),
+            }
+        };
+        let get = |port: u16, host: &str, cookie: &str| {
+            get_at(port, "/api/x", &format!("Host: {host}\r\n{cookie}"))
+        };
+        let unpaired = spawn_listener_gated(
+            0,
+            handler.clone(),
+            AuthGate::same_user()
+                .with_trusted_hosts(trusted.clone())
+                .with_public(&["icon.png"]),
+        )
+        .unwrap();
+        let relayed = get(unpaired, "box.tail0000.ts.net", "");
+        assert!(
+            relayed.starts_with("HTTP/1.1 401"),
+            "an unpaired gate refuses a request relayed under its tailnet name:\n{relayed}"
+        );
+        assert!(!relayed.trim_end().ends_with("ok"), "{relayed}");
+        // A client behind the relay that names the loopback itself still carries the relay's
+        // headers; a name that only starts like an address is not the loopback.
+        for head in [
+            format!(
+                "Host: 127.0.0.1:{unpaired}\r\nX-Forwarded-Host: box.tail0000.ts.net\r\nX-Forwarded-For: 100.64.0.9\r\n"
+            ),
+            "Host: localhost\r\nX-Forwarded-For: 100.64.0.9\r\n".to_string(),
+            "Host: localhost\r\nX-Forwarded-Host: box.tail0000.ts.net\r\n".to_string(),
+            "Host: localhost\r\nForwarded: for=100.64.0.9\r\n".to_string(),
+            "Host: localhost\r\nTailscale-User-Login: someone\r\n".to_string(),
+            "Host: 127.evil.example\r\n".to_string(),
+        ] {
+            let refused = get_at(unpaired, "/api/x", &head);
+            assert!(refused.starts_with("HTTP/1.1 401"), "{head:?} is refused:\n{refused}");
+        }
+        // A long header before the relay's own cannot push them out of sight: past the 8 KiB cap
+        // they are still looked for, and a header section past the second bound counts as
+        // relayed. A long header with no relay's header behind it (a big cookie) stays admitted.
+        let long = |n: usize| "a".repeat(n);
+        for (head, ok) in [
+            (
+                format!(
+                    "Host: localhost\r\nUser-Agent: {}\r\nX-Forwarded-For: 100.64.0.9\r\n",
+                    long(9000)
+                ),
+                false,
+            ),
+            (
+                format!(
+                    "Host: localhost\r\nUser-Agent: {}\r\nA-Pad: {}\r\nX-Forwarded-For: 100.64.0.9\r\n",
+                    long(9000),
+                    long(70_000)
+                ),
+                false,
+            ),
+            (
+                format!("Host: localhost\r\nUser-Agent: {}\r\n", long(70_000)),
+                true,
+            ),
+            (
+                format!("Host: localhost\r\nCookie: c={}\r\n", long(9000)),
+                true,
+            ),
+        ] {
+            let resp = get_at(unpaired, "/api/x", &head);
+            assert_eq!(
+                resp.starts_with("HTTP/1.1 200 OK"),
+                ok,
+                "a {}-byte header section: {}",
+                head.len(),
+                resp.lines().next().unwrap_or("")
+            );
+        }
+        // The machine's own loopback names keep the same-machine leg, a tunnel's included, and so
+        // does a request with no `Host` (a raw relay sends none: pairing is what closes that).
+        for host in [
+            format!("127.0.0.1:{unpaired}"),
+            format!("localhost:{unpaired}"),
+            "127.0.0.1:2727".to_string(),
+            "[::1]:2727".to_string(),
+        ] {
+            let local = get(unpaired, &host, "");
+            assert!(
+                local.starts_with("HTTP/1.1 200 OK"),
+                "Host {host} stays admitted:\n{local}"
+            );
+        }
+        // A header section the peer cuts short (it closes its side before the blank line, as a
+        // relay does when its client cancels) is refused: the relay's headers may be what is
+        // missing.
+        {
+            let mut s = std::net::TcpStream::connect((Ipv4Addr::LOCALHOST, unpaired)).unwrap();
+            s.write_all(b"GET /api/x HTTP/1.0\r\nHost: localhost\r\nUser-Agent: aaaa")
+                .unwrap();
+            s.shutdown(std::net::Shutdown::Write).unwrap();
+            let mut resp = String::new();
+            s.read_to_string(&mut resp).unwrap();
+            assert!(
+                !resp.starts_with("HTTP/1.1 200"),
+                "a cut-short request:\n{resp}"
+            );
+        }
+        let no_host = get_at(unpaired, "/api/x", "");
+        assert!(no_host.starts_with("HTTP/1.1 200 OK"), "{no_host}");
+        // A public file needs no pairing, relayed or not (#320).
+        let icon = get_at(unpaired, "/icon.png", "Host: box.tail0000.ts.net\r\n");
+        assert!(icon.starts_with("HTTP/1.1 200 OK"), "{icon}");
+        // A gate that trusts no tailnet name (`agent-replay --html`) keeps its posture behind a
+        // relay of the reader's own (a codespace's forwarded port, say).
+        let plain = spawn_listener_gated(0, handler.clone(), AuthGate::same_user()).unwrap();
+        let forwarded = get_at(
+            plain,
+            "/api/x",
+            "Host: x.app.github.dev\r\nX-Forwarded-For: 10.0.0.9\r\n",
+        );
+        assert!(forwarded.starts_with("HTTP/1.1 200 OK"), "{forwarded}");
+        // A paired gate takes the relayed request with its token, as a paired phone's.
+        let paired = spawn_listener_gated(
+            0,
+            handler,
+            AuthGate::with_token("secret-s417").with_trusted_hosts(trusted),
+        )
+        .unwrap();
+        let cookie = format!("Cookie: {}=secret-s417\r\n", cookie_name("secret-s417"));
+        let with_token = get(paired, "box.tail0000.ts.net", &cookie);
+        assert!(
+            with_token.starts_with("HTTP/1.1 200 OK"),
+            "a paired gate admits the token under its tailnet name:\n{with_token}"
+        );
     }
 
     /// #366: a token-only gate refuses its OWN user's connection without the token — on Linux,
@@ -7186,5 +7584,154 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// #s426: `finish_reply` is what a host that mounts the route table runs on each reply, and
+    /// what the monitor's own listener runs: the same reply for the same client. A remote masked
+    /// client's JSON is masked, then gzipped, and gets `no-store`; the desktop's is sent as the
+    /// route wrote it; a route's own `Cache-Control` stands; a body the route kept gzipped is
+    /// decoded for a client that does not accept gzip; and a large text file to a masked client is
+    /// refused rather than streamed unmasked.
+    #[test]
+    fn a_reply_is_finished_for_its_client_as_the_listener_finishes_it() {
+        use std::io::Read;
+        let key = format!("sk-ant-api03-{}", "A".repeat(40));
+        let json = |pad: usize| {
+            HttpResponse::json(format!(
+                r#"{{"token":"{key}","pad":"{}"}}"#,
+                "p".repeat(pad)
+            ))
+        };
+        let phone = ReplyClient {
+            method: "GET",
+            accepts_gzip: true,
+            remote: true,
+            masked: true,
+        };
+        let desk = ReplyClient {
+            method: "GET",
+            accepts_gzip: true,
+            remote: false,
+            masked: false,
+        };
+
+        let r = finish_reply(json(GZIP_MIN_BYTES), phone);
+        assert!(
+            r.headers.iter().any(|h| h == "Content-Encoding: gzip"),
+            "{:?}",
+            r.headers
+        );
+        assert!(
+            r.headers.iter().any(|h| h == "Cache-Control: no-store"),
+            "{:?}",
+            r.headers
+        );
+        let mut text = String::new();
+        flate2::read::GzDecoder::new(r.body.as_slice())
+            .read_to_string(&mut text)
+            .unwrap();
+        assert!(!text.contains(&key), "the secret is masked before gzip");
+        assert!(
+            text.contains(&"*".repeat(key.len())),
+            "with `*` of the same length"
+        );
+
+        let r = finish_reply(json(10), desk);
+        assert!(
+            String::from_utf8_lossy(&r.body).contains(&key),
+            "the desktop gets it as it is"
+        );
+        assert!(!r.headers.iter().any(|h| h.starts_with("Content-Encoding")));
+        assert_eq!(
+            r.headers
+                .iter()
+                .filter(|h| h.starts_with("Cache-Control"))
+                .count(),
+            1
+        );
+
+        let mut cached = HttpResponse::ok("text/javascript", b"x".to_vec());
+        cached
+            .headers
+            .push("Cache-Control: public, max-age=31536000, immutable".into());
+        let r = finish_reply(cached, phone);
+        assert_eq!(
+            r.headers
+                .iter()
+                .filter(|h| h.starts_with("Cache-Control"))
+                .collect::<Vec<_>>(),
+            ["Cache-Control: public, max-age=31536000, immutable"],
+            "a route's own cache header stands"
+        );
+
+        let mut kept = HttpResponse::ok("text/javascript", Vec::new());
+        let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        std::io::Write::write_all(&mut enc, b"window.ran = 1;").unwrap();
+        kept.body = enc.finish().unwrap();
+        kept.headers.push("Content-Encoding: gzip".into());
+        let r = finish_reply(
+            kept,
+            ReplyClient {
+                accepts_gzip: false,
+                ..desk
+            },
+        );
+        assert_eq!(
+            r.body, b"window.ran = 1;",
+            "decoded for a client without gzip"
+        );
+        assert!(!r.headers.iter().any(|h| h.starts_with("Content-Encoding")));
+
+        let dir = std::env::temp_dir().join(format!("cr-finish-reply-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let big = dir.join("big.txt");
+        std::fs::write(&big, b"plain text").unwrap();
+        let mut streamed = HttpResponse::ok("application/octet-stream", Vec::new());
+        streamed.stream = Some((big.clone(), 10));
+        assert_eq!(
+            finish_reply(streamed, phone).code,
+            "413 Content Too Large",
+            "a stream cannot be masked"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #s426: the listener finishes every routed reply through `finish_reply`, reading the facts
+    /// off the request's headers as it always did, so the bytes it writes are what they were.
+    #[test]
+    fn the_listener_reads_a_reply_client_off_the_headers() {
+        use super::super::mask::MaskPolicy;
+        let remote = "Host: phone.example.ts.net\r\nAccept-Encoding: gzip, br\r\n";
+        assert_eq!(
+            ReplyClient::from_headers("GET", remote, MaskPolicy::Remote),
+            ReplyClient {
+                method: "GET",
+                accepts_gzip: true,
+                remote: true,
+                masked: true
+            }
+        );
+        let local = "Host: 127.0.0.1:2727\r\n";
+        assert_eq!(
+            ReplyClient::from_headers("POST", local, MaskPolicy::Remote),
+            ReplyClient {
+                method: "POST",
+                accepts_gzip: false,
+                remote: false,
+                masked: false
+            }
+        );
+        assert!(ReplyClient::from_headers("GET", local, MaskPolicy::Always).masked);
+        let r = HttpResponse::json("{}".into());
+        let head = response_head(
+            &finish_reply(r, ReplyClient::from_headers("GET", local, MaskPolicy::Off)),
+            "",
+        );
+        assert_eq!(
+            head.matches("Cache-Control: no-store\r\n").count(),
+            1,
+            "{head}"
+        );
     }
 }

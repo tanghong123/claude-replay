@@ -5,6 +5,7 @@
 // image the transcript embeds, handed over through sessionStorage (which `window.open` copies into
 // the tab it makes — the opener must never use `noopener`, as for Markdown, #271).
 import { createImageView } from "./shared/image-view.js";
+import { backend } from "./backend.js";
 
 const stage = document.getElementById("stage");
 const img = stage.querySelector("img");
@@ -38,7 +39,7 @@ async function source() {
 
 async function fromFile() {
   const path = params.get("path"), sig = params.get("sig");
-  const response = await fetch(`/file?path=${encodeURIComponent(path)}&sig=${encodeURIComponent(sig || "")}`, { cache: "no-store" });
+  const response = await backend().fetch(`/file?path=${encodeURIComponent(path)}&sig=${encodeURIComponent(sig || "")}`, { cache: "no-store" });
   // #s7: the route says which — gone, refused, unpaired — and the words are the server's.
   if (response.status === 410) throw Object.assign(new Error(`Nothing is at ${path} any more: it was moved or deleted after the session named it.`), { title: "This image is gone" });
   if (response.status === 401) throw Object.assign(new Error("Reading local files requires pairing — run `agent-monitor --pair`."), { title: "Not paired" });

@@ -678,7 +678,8 @@ impl RequestPricing {
     /// page's Ultrafast tab read raw, and
     /// <https://developers.openai.com/api/docs/guides/ultrafast-mode>): a request selects it with
     /// `service_tier` "ultrafast"; listed for gpt-6-astra and, since 2026-10-08, gpt-6.1-sol, 6x
-    /// Standard short and long.
+    /// Standard short and long, and since 2026-11-18 (#s572) for gpt-6.2-astra and gpt-6.2-sol, 3x
+    /// through 2027-02-28 and 6x from 2027-03-01 (the catalog carries the 3x until it is re-read).
     /// A 1-hour cache write costs 2x the input rate (#s359), taking the input's long factor and
     /// the tier's multiplier as the input does.
     /// The boolean marks an estimate with incomplete billing evidence, not a lower bound.
@@ -2018,6 +2019,8 @@ mod price_tests {
     #[test]
     fn prices_match_the_published_tables() {
         for (model, want) in [
+            ("claude-fable-5-2", p("8", "10", "0.2", "40")),
+            ("claude-mythos-5-2", p("8", "10", "0.2", "40")),
             ("claude-fable-5-1", p("10", "12.5", "0.25", "50")),
             ("claude-mythos-5", p("10", "12.5", "1", "50")),
             ("claude-opus-5-5", p("4", "5", "0.2", "20")),
@@ -2046,6 +2049,9 @@ mod price_tests {
             ("gpt-6.1-sol", p("2", "2.5", "0.1", "10")),
             ("gpt-6.1-terra", p("1", "1.25", "0.05", "5")),
             ("gpt-6-1-terra", p("1", "1.25", "0.05", "5")),
+            // Priced before first use (#s572, the page's props read raw 2026-11-18).
+            ("gpt-6.2-astra", p("8", "10", "0.4", "40")),
+            ("gpt-6-2-sol", p("2", "2.5", "0.1", "10")),
             ("gpt-6-luna", p("0.1", "0.125", "0.01", "0.5")),
             ("gpt-5.6-sol", p("4", "5", "0.4", "20")),
             ("gpt-5.6", p("4", "5", "0.4", "20")),
@@ -2056,7 +2062,10 @@ mod price_tests {
             ("gpt-6-cyber", p("20", "25", "2", "100")),
             ("gpt-5.6-cyber", p("12.5", "15.625", "1.25", "75")),
             ("gpt-daybreak-red-latest", p("12.5", "15.625", "1.25", "75")),
-            // Listed with no cache-write rate, so it no longer shares gpt-5.6-cyber's row.
+            // Listed with no cache-write rate, so it no longer shares gpt-5.6-cyber's row. The
+            // page prints it as gpt-5.5-cyber-preview since at least 2026-11-10 (#s453); the old
+            // name keeps its rates.
+            ("gpt-5.5-cyber-preview", p("12.5", "12.5", "1.25", "75")),
             ("gpt-5.5-cyber", p("12.5", "12.5", "1.25", "75")),
             // Delisted by 2026-09-25, kept at the rate listed when the catalog was built.
             ("gpt-5.1-codex-max", p("1.25", "1.25", "0.125", "10")),
@@ -2566,13 +2575,106 @@ mod request_pricing_tests {
         }
     }
 
+    /// #s572: gpt-6.2-astra and gpt-6.2-sol, priced before first use (the pricing page read raw
+    /// 2026-11-18T04:29Z): on every class, short and over 272K, Fast 2x, Batch half and Ultrafast 3x
+    /// (its promotion through 2027-02-28), and no Flex row, so a Flex request prices at Standard as
+    /// an estimate.
+    #[test]
+    fn the_gpt_6_2_models_price_each_tier_the_page_lists() {
+        let table = PriceTable::default();
+        let tokens = TokenCounts {
+            input: 1_000_000,
+            cache_creation: 1_000_000,
+            cache_read: 1_000_000,
+            output: 1_000_000,
+            ..Default::default()
+        };
+        // Standard, the four classes summed (input, 30m write, cached, output), short and long.
+        for (model, short, long) in [
+            (
+                "gpt-6.2-astra",
+                8.0 + 10.0 + 0.4 + 40.0,
+                16.0 + 20.0 + 0.8 + 60.0,
+            ),
+            (
+                "gpt-6.2-sol",
+                2.0 + 2.5 + 0.1 + 10.0,
+                4.0 + 5.0 + 0.2 + 15.0,
+            ),
+        ] {
+            for (is_long, standard) in [(false, short), (true, long)] {
+                for (tier, factor, estimate) in [
+                    (ServiceTier::Standard, 1.0, false),
+                    (ServiceTier::Fast, 2.0, false),
+                    (ServiceTier::Batch, 0.5, false),
+                    (ServiceTier::from_recorded("ultrafast"), 3.0, false),
+                    (ServiceTier::Flex, 1.0, true),
+                ] {
+                    let context = RequestPricing {
+                        tier,
+                        long_context: Some(is_long),
+                        tier_confirmed: true,
+                    };
+                    let (cost, estimated) = context.cost_with(&table, model, tokens);
+                    assert!(
+                        (cost.unwrap() - standard * factor).abs() < 1e-9,
+                        "{model} {tier:?} long={is_long}: {cost:?}"
+                    );
+                    assert_eq!(estimated, estimate, "{model} {tier:?} long={is_long}");
+                }
+            }
+        }
+    }
+
+    /// #s446: gpt-6-cyber's long-context row (the pricing page's Cyber table, read raw
+    /// 2026-11-10T04:26Z): over 272K input tokens $40 input, $4 cached, $150 output, against the
+    /// short $20 / $2 / $100, the rule every long-context OpenAI row follows. The page leaves its
+    /// long cache-write cells blank; the catalog prices a long 30m write at 2x as on every other
+    /// long row (1.25x the long input, $50). No tier table lists it, so a Fast, Flex or Batch
+    /// request prices at standard, as an estimate.
+    #[test]
+    fn gpt_6_cyber_prices_a_long_prompt_at_its_long_row() {
+        let table = PriceTable::default();
+        let tokens = TokenCounts {
+            input: 1_000_000,
+            cache_creation: 1_000_000,
+            cache_read: 1_000_000,
+            output: 1_000_000,
+            ..Default::default()
+        };
+        let class = |tier, long| RequestPricing {
+            tier,
+            long_context: Some(long),
+            tier_confirmed: true,
+        };
+        let (short, short_est) =
+            class(ServiceTier::Standard, false).cost_with(&table, "gpt-6-cyber", tokens);
+        assert!((short.unwrap() - (20.0 + 25.0 + 2.0 + 100.0)).abs() < 1e-10);
+        assert!(!short_est, "a short request is exact");
+        let (long, long_est) =
+            class(ServiceTier::Standard, true).cost_with(&table, "gpt-6-cyber", tokens);
+        assert!(
+            (long.unwrap() - (40.0 + 50.0 + 4.0 + 150.0)).abs() < 1e-10,
+            "{long:?}"
+        );
+        assert!(!long_est, "a long request is exact");
+        for tier in [ServiceTier::Fast, ServiceTier::Flex, ServiceTier::Batch] {
+            let (cost, estimated) = class(tier, true).cost_with(&table, "gpt-6-cyber", tokens);
+            assert!(
+                (cost.unwrap() - 244.0).abs() < 1e-10 && estimated,
+                "{tier:?}: no tier rule, long standard rates, an estimate"
+            );
+        }
+    }
+
     /// #s78, Anthropic fast mode (the pricing page's Fast mode pricing section, read raw
     /// 2026-10-10): Opus 5.5 at $8 / $40 against $4 / $20, Opus 5 and Opus 4.8 at $10 / $50
-    /// against $5 / $25, the caching multipliers on top — 2x on every class, across the whole
+    /// against $5 / $25, and since #s445 (read 2026-11-10) Fable 5.2 and Mythos 5.2 at $16 / $80
+    /// against $8 / $40, the caching multipliers on top — 2x on every class, across the whole
     /// context window. Opus 4.7, 4.6 and 4.5 share Opus 4.8's standard rates but no fast rule: a
     /// Fast request there prices at standard, as an estimate. `prices_fast` says which is which.
     #[test]
-    fn fast_mode_is_twice_standard_on_opus_5_5_5_and_4_8() {
+    fn fast_mode_is_twice_standard_where_the_page_offers_it() {
         let table = PriceTable::default();
         let tokens = TokenCounts {
             input: 1_000_000,
@@ -2591,6 +2693,8 @@ mod request_pricing_tests {
             ..fast
         };
         for (model, standard_usd) in [
+            ("claude-fable-5-2", 8.0 + 10.0 + 0.2 + 40.0),
+            ("claude-mythos-5-2", 8.0 + 10.0 + 0.2 + 40.0),
             ("claude-opus-5-5", 4.0 + 5.0 + 0.2 + 20.0),
             ("claude-opus-5", 5.0 + 6.25 + 0.5 + 25.0),
             ("claude-opus-4-8", 5.0 + 6.25 + 0.5 + 25.0),
@@ -2665,13 +2769,100 @@ mod request_pricing_tests {
         );
     }
 
+    /// #s471, the GPT-5 family before 5.3 (the pricing page read raw 2026-11-14T06:17Z, each row
+    /// marked deprecated): Fast is 2x Standard for gpt-5.2, gpt-5.1 and gpt-5 and 1.8x for
+    /// gpt-5-mini ($0.45 / $0.045 / $3.60 against $0.25 / $0.025 / $2); the Fast tab does not
+    /// list gpt-5-nano. Flex and Batch are half Standard for all five. None has a long-context
+    /// row. gpt-5-2025-08-07 is gpt-5's snapshot (gpt-5's model page) and takes its rule. The
+    /// retired Codex ids, which no page prices a tier for, have no rule: every request on them
+    /// is an estimate at Standard rates, as before.
+    #[test]
+    fn the_gpt_5_family_prices_fast_flex_and_batch_at_the_page_rates() {
+        let table = PriceTable::default();
+        let tokens = TokenCounts {
+            input: 1_000_000,
+            cache_creation: 1_000_000,
+            cache_read: 1_000_000,
+            output: 1_000_000,
+            ..Default::default()
+        };
+        let class = |tier| RequestPricing {
+            tier,
+            long_context: Some(false),
+            tier_confirmed: true,
+        };
+        let gpt_5_1 = 1.25 + 1.25 + 0.125 + 10.0;
+        for (model, standard, fast) in [
+            ("gpt-5.2", 1.75 + 1.75 + 0.175 + 14.0, Some(2.0)),
+            ("gpt-5.1", gpt_5_1, Some(2.0)),
+            ("gpt-5", gpt_5_1, Some(2.0)),
+            ("gpt-5-2025-08-07", gpt_5_1, Some(2.0)),
+            ("gpt-5-mini", 0.25 + 0.25 + 0.025 + 2.0, Some(1.8)),
+            ("gpt-5-nano", 0.05 + 0.05 + 0.005 + 0.4, None),
+        ] {
+            let (cost, estimated) = class(ServiceTier::Standard).cost_with(&table, model, tokens);
+            assert!(
+                (cost.unwrap() - standard).abs() < 1e-9 && !estimated,
+                "{model} Standard: {cost:?}, estimate {estimated}"
+            );
+            // No long-context row: a long prompt pays no surcharge, and one whose length is
+            // unknown is not an estimate for want of it.
+            for long in [Some(true), None] {
+                let context = RequestPricing {
+                    long_context: long,
+                    ..class(ServiceTier::Standard)
+                };
+                let (cost, estimated) = context.cost_with(&table, model, tokens);
+                assert!(
+                    (cost.unwrap() - standard).abs() < 1e-9 && !estimated,
+                    "{model} Standard, long {long:?}: {cost:?}, estimate {estimated}"
+                );
+            }
+            let (cost, estimated) = class(ServiceTier::Fast).cost_with(&table, model, tokens);
+            let (want, want_estimated) = fast.map_or((standard, true), |f| (f * standard, false));
+            assert!(
+                (cost.unwrap() - want).abs() < 1e-9 && estimated == want_estimated,
+                "{model} Fast: {cost:?}, estimate {estimated}"
+            );
+            for tier in [ServiceTier::Flex, ServiceTier::Batch] {
+                let (cost, estimated) = class(tier).cost_with(&table, model, tokens);
+                assert!(
+                    (cost.unwrap() - standard / 2.0).abs() < 1e-9 && !estimated,
+                    "{model} {tier:?}: {cost:?}, estimate {estimated}"
+                );
+            }
+        }
+        for (model, standard) in [
+            ("gpt-5-codex", gpt_5_1),
+            ("gpt-5.1-codex", gpt_5_1),
+            ("gpt-5.1-codex-max", gpt_5_1),
+            ("gpt-5.2-codex", 1.75 + 1.75 + 0.175 + 14.0),
+            ("gpt-5.1-codex-mini", 0.25 + 0.25 + 0.025 + 2.0),
+        ] {
+            for tier in [
+                ServiceTier::Standard,
+                ServiceTier::Fast,
+                ServiceTier::Flex,
+                ServiceTier::Batch,
+            ] {
+                let (cost, estimated) = class(tier).cost_with(&table, model, tokens);
+                assert!(
+                    (cost.unwrap() - standard).abs() < 1e-9 && estimated,
+                    "{model} {tier:?}: no request rule, Standard rates as an estimate"
+                );
+            }
+        }
+    }
+
     /// Ultrafast (the pricing page's Ultrafast tab, read raw 2026-10-04 and again 2026-10-09):
     /// gpt-6-astra and, since 2026-10-08, gpt-6.1-sol, each 6x Standard on every token class,
-    /// short and long. A model the tab does not list prices an
+    /// short and long; gpt-6.2-astra and gpt-6.2-sol (read raw 2026-11-18, #s572) 3x through
+    /// 2027-02-28, the promotion the page prints, and 6x from 2027-03-01, which the catalog will
+    /// take when the page is re-read after that date. A model the tab does not list prices an
     /// ultrafast request at Standard as an estimate, as Fast does without a long-context rate. The
     /// tier is reached through `from_recorded`, where the old code lost it (Unknown: 1x, estimate).
     #[test]
-    fn ultrafast_is_six_times_standard_where_the_page_lists_it() {
+    fn ultrafast_is_the_pages_multiple_of_standard_where_it_lists_the_model() {
         let table = PriceTable::default();
         let tokens = TokenCounts {
             input: 1_000_000,
@@ -2686,6 +2877,10 @@ mod request_pricing_tests {
             ("gpt-6-astra", true, 120.0, false),
             ("gpt-6.1-sol", false, 12.0, false),
             ("gpt-6.1-sol", true, 24.0, false),
+            ("gpt-6.2-astra", false, 24.0, false),
+            ("gpt-6.2-astra", true, 48.0, false),
+            ("gpt-6.2-sol", false, 6.0, false),
+            ("gpt-6.2-sol", true, 12.0, false),
             // Not on the Ultrafast tab (read raw 2026-10-27): Standard, as an estimate.
             ("gpt-6.1-terra", false, 1.0, true),
             ("gpt-6-sol", false, 2.0, true),
@@ -3020,6 +3215,7 @@ mod cache_1h_tests {
                 ][..],
                 20.0,
             ),
+            (&["claude-fable-5-2", "claude-mythos-5-2"], 16.0),
             (&["claude-opus-5-5"], 8.0),
             (
                 &[

@@ -21,10 +21,10 @@ impl Agent {
     /// QoderWork — a Claude-Code-format client with its own store (`~/.qoderwork/projects/`)
     /// and a `runtime-config` head line. Parsing delegates to the Claude implementations.
     pub const QODERWORK: Agent = Agent("qoderwork");
-    /// Qoder CLI (qodercli) — a Claude-Code-format terminal agent with its own store
-    /// (`~/.qoder/projects/`). Its `runtime-config` head carries `reasoningEffort`/
-    /// `contextWindow`, which is what tells it apart from QoderWork's. Parsing delegates
-    /// to the Claude implementations.
+    /// Qoder — the store `~/.qoder/projects/`, written by Qoder CLI (qodercli), a
+    /// Claude-Code-format terminal agent, and by the Qoder desktop app on the QoderWork family's
+    /// engine (#s468). Its `runtime-config` head is the same as QoderWork's (#20), so it is told
+    /// apart by WHERE a file lives. Parsing delegates to the Claude implementations.
     pub const QODER: Agent = Agent("qoder");
     /// Qwenwork (QwenWorkCN) — derived from QoderWork, with its own store
     /// (`~/.qwenworkcn/projects/`) and title database; the same Claude-shaped transcripts and the

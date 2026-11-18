@@ -1844,7 +1844,7 @@ fn send_tmux_checked(
     if !images.is_empty() && !matches!(target.addr, index::PaneAddr::Herdr { .. }) {
         return Ok(json!({"ok": false, "error": IMAGES_HERDR_ONLY}));
     }
-    if !granted(&target) {
+    if !granted(idx, &target) {
         return Ok(no_consent_body());
     }
     Ok(match &target.addr {
@@ -1911,8 +1911,8 @@ fn send_tmux_checked(
 
 /// The reader's standing grant covers this exact pane and process (#133; #s234: or a herdr
 /// restore of it). A send asks it, and so does reading or answering a dialog there (#s298).
-fn granted(target: &index::PaneTarget) -> bool {
-    crate::consent::ConsentStore::open().consents(
+fn granted(idx: &index::Index, target: &index::PaneTarget) -> bool {
+    idx.consent().consents(
         target.addr.consent_sock().as_deref(),
         target.addr.pane(),
         &target.sid,
@@ -2017,7 +2017,7 @@ fn dialog_pane(
     let target = idx
         .resolve_pane_send(&sid)
         .map_err(|reason| checked_send_refusal(idx, &sid, reason))?;
-    if !granted(&target) {
+    if !granted(idx, &target) {
         return Err(HttpResponse::json(no_consent_body().to_string()));
     }
     if !matches!(target.addr, index::PaneAddr::Herdr { .. }) {
@@ -2114,7 +2114,7 @@ pub fn consent_route(
     if let Some(deny) = req.deny_write() {
         return deny;
     }
-    let store = crate::consent::ConsentStore::open();
+    let store = idx.consent();
     let Some(sid) =
         claude_replay_html::query_get(req.query, "target").map(crate::index::percent_decode)
     else {
@@ -2134,7 +2134,7 @@ pub fn consent_route(
     };
     // The passcode gate (#133): when set, arming a pane requires it — the
     // "something you know" on top of the cookie's "something you have".
-    let pass = crate::consent::Passcode::open();
+    let pass = idx.passcode();
     if pass.is_set() {
         if let Some(refusal) = passcode_check(req, attempts, &pass) {
             return refusal;

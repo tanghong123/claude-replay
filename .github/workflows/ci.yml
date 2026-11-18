@@ -53,13 +53,33 @@ jobs:
   # the classic page as the reference. Visible on every PR; NOT yet a required check — it
   # becomes one once it has been stable for a while (CLAUDE.md, "Browser (real Chrome)").
   # `known_red_<task>` cases are queued bugs' repros and are skipped by the gate on purpose.
+  #
+  # The suite runs as LEGS on separate runners (#s448): every case takes `serial()`, so on one
+  # runner the job is the sum of every file, and it had grown to about 110 min (scenarios 49,
+  # browser_follow 23, the rest 34). The legs below are named by the `BROWSER_LEG_*` variables;
+  # the `rest` leg runs every test target none of them names, read from tests/*.rs at run time,
+  # so a new file always runs somewhere. The scenarios halves use one string as a filter and as a
+  # `--skip`, so they are exact complements. `browser (real Chrome)` below is the one result.
   browser:
-    name: browser (real Chrome)
+    name: browser leg (${{ matrix.leg }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: [scenarios-app, scenarios-rest, follow, misc, rest]
+    env:
+      BROWSER_LEG_SCENARIOS: scenarios
+      BROWSER_LEG_FOLLOW: browser_follow
+      BROWSER_LEG_MISC: sandbox records_by_turn quoted_replies mermaid
+      # The scenarios halves: the cases whose name holds this string, then every other one.
+      SCENARIOS_SPLIT: app_
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          # One leg saves the cache the others restore: the rest leg, which builds the most.
+          save-if: ${{ matrix.leg == 'rest' }}
       - name: Chrome
         run: google-chrome --version
       # The mdrev cases (#270) run the pinned mdrev's CLI (#274) — the monitor's notes, and
@@ -75,12 +95,49 @@ jobs:
       - name: Build the monitors
         run: cargo build --release -p claude-monitor --features claude-monitor/codex-native
       - name: Native runtime and monitor contracts
+        if: matrix.leg == 'rest'
         run: cargo test -p claude-monitor-codex -p claude-monitor --features claude-monitor/codex-native
-      - name: Browser suite
+      - name: Browser suite (${{ matrix.leg }})
         # headless_chrome honours $CHROME, then searches PATH for google-chrome-stable & co.
         env:
           CHROME: /usr/bin/google-chrome
-        run: cargo test -p claude-replay-browser-tests -- --ignored --skip known_red
+          LEG: ${{ matrix.leg }}
+        run: |
+          set -euo pipefail
+          targets() { for t in $1; do printf -- '--test %s ' "$t"; done; }
+          case "$LEG" in
+            scenarios-app)  args="$(targets "$BROWSER_LEG_SCENARIOS") -- --ignored --skip known_red $SCENARIOS_SPLIT" ;;
+            scenarios-rest) args="$(targets "$BROWSER_LEG_SCENARIOS") -- --ignored --skip known_red --skip $SCENARIOS_SPLIT" ;;
+            follow)         args="$(targets "$BROWSER_LEG_FOLLOW") -- --ignored --skip known_red" ;;
+            misc)           args="$(targets "$BROWSER_LEG_MISC") -- --ignored --skip known_red" ;;
+            rest)
+              named=" $(for v in $(compgen -v BROWSER_LEG_); do printf '%s ' "${!v}"; done)"
+              rest=""
+              for f in claude-replay-browser-tests/tests/*.rs; do
+                t="$(basename "$f" .rs)"
+                case "$named" in *" $t "*) ;; *) rest="$rest $t" ;; esac
+              done
+              echo "the rest leg runs:$rest"
+              args="--lib $(targets "$rest") -- --ignored --skip known_red" ;;
+            *) echo "unknown leg $LEG"; exit 1 ;;
+          esac
+          echo "cargo test -p claude-replay-browser-tests $args"
+          cargo test -p claude-replay-browser-tests $args
+
+  # The browser suite's one result, under the name the legs replaced: it passes only when every
+  # leg passed (a leg skipped or cancelled fails it too).
+  browser-result:
+    name: browser (real Chrome)
+    if: always()
+    needs: browser
+    runs-on: ubuntu-latest
+    steps:
+      - name: Every leg passed
+        env:
+          LEGS: ${{ needs.browser.result }}
+        run: |
+          echo "the legs: $LEGS"
+          test "$LEGS" = success
 
   version:
     name: version guard

@@ -5,6 +5,8 @@
 // the one shown (its fingerprint) and types the answer. A written answer goes from the box's own
 // field. A permission prompt offers Yes and No only; the server enforces the same.
 
+import { backend } from "./backend.js";
+
 const json = response => response.json().catch(() => ({ ok: false, error: `HTTP ${response.status}` }));
 const target = row => encodeURIComponent(row?.id || "");
 
@@ -36,6 +38,7 @@ export class DialogCard {
   // The open box's row (null when the box is shut or resumes an idle session): load its dialog when
   // the row says it holds one, and again when that wait is a new one.
   sync(row) {
+    if (this.ended) return;
     if (!row?.dialog) { this.clear(); return; }
     this.row = row;
     const key = `${row.id}|${row.dialog}|${row.stateSince || ""}`;
@@ -49,6 +52,9 @@ export class DialogCard {
     this.box.replaceChildren();
     this.box.dispatchEvent(new Event("compose-dialog", { bubbles: true }));
   }
+  // The view is unmounted (#s429 stage 7): a read or an answer still out does nothing when it comes
+  // back, nor does the read again after an answer.
+  destroy() { this.ended = true; this.clear(); }
   get active() { return !this.box.hidden && !!this.dialog; }
   get freeText() { return this.dialog?.choices.find(c => c.freeText) || null; }
   async load() {
@@ -56,8 +62,8 @@ export class DialogCard {
     if (!row) return;
     this.show([el("p", "dialog-wait", "Reading the session's dialog…")]);
     let d;
-    try { d = await fetch(`/api/dialog?target=${target(row)}`, { cache: "no-store" }).then(json); } catch (_) { d = { ok: false, error: "could not reach the monitor" }; }
-    if (load !== this.loads || this.row !== row) return;
+    try { d = await backend().fetch(`/api/dialog?target=${target(row)}`, { cache: "no-store" }).then(json); } catch (_) { d = { ok: false, error: "could not reach the monitor" }; }
+    if (this.ended || load !== this.loads || this.row !== row) return;
     this.dialog = null;
     if (d.code === "no-consent") { this.showGrant(); return; }
     if (!d.ok) { this.show([el("p", "dialog-wait", d.error || "The dialog could not be read: answer it in the session.")]); return; }
@@ -77,7 +83,7 @@ export class DialogCard {
     this.box.dispatchEvent(new Event("compose-dialog", { bubbles: true }));
   }
   showGrant() {
-    const allow = el("button", "dialog-choice primary", "Allow");
+    const allow = el("button", "dialog-choice sv-primary", "Allow");
     allow.type = "button";
     allow.onclick = () => this.actions.askGrant(() => { this.key = ""; this.sync(this.row); });
     const where = this.row?.target ? `herdr pane ${this.row.target}` : "its herdr pane";
@@ -116,7 +122,7 @@ export class DialogCard {
         label.append(box, words);
         choices.append(label);
       }
-      const next = el("button", "dialog-choice primary dialog-next", "Next");
+      const next = el("button", "dialog-choice sv-primary dialog-next", "Next");
       next.type = "button";
       next.onclick = () => this.answer({ choices: [...choices.querySelectorAll("input[data-choice]:checked")].map(i => Number(i.dataset.choice)) });
       choices.append(next);
@@ -152,15 +158,16 @@ export class DialogCard {
     const row = this.row;
     let d;
     try {
-      d = await fetch(`/api/answer?target=${target(row)}`, { method: "POST", body: JSON.stringify({ fingerprint: this.dialog.fingerprint, ...body }), cache: "no-store" }).then(json);
+      d = await backend().fetch(`/api/answer?target=${target(row)}`, { method: "POST", body: JSON.stringify({ fingerprint: this.dialog.fingerprint, ...body }), cache: "no-store" }).then(json);
     } catch (_) { d = { ok: false, error: "could not reach the monitor" }; }
     this.busy = false;
+    if (this.ended) return false;
     this.box.classList.remove("answering");
     if (d.code === "no-consent") { this.showGrant(); return false; }
     this.actions.toast(d.ok ? "Answered" : (d.error || "The answer did not go through"));
     // The next part of a question, or the dialog gone: read the pane again once it has redrawn.
     this.key = "";
-    setTimeout(() => { if (this.row === row) this.sync(row); this.actions.refreshIndex(); }, 600);
+    setTimeout(() => { if (this.ended) return; if (this.row === row) this.sync(row); this.actions.refreshIndex(); }, 600);
     return !!d.ok;
   }
   answerText(text) { return this.answer({ text }); }

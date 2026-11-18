@@ -22,7 +22,9 @@
 //! emits spawn facts and its `agent_id` — the child transcript is its own session,
 //! discoverable via `--paths --all`, not an inline sub-stream.
 
-use crate::model::{block_kind, AgentStatus, Block, EpochSeconds, ToolStatus};
+use crate::model::{
+    block_kind, coalesce_spans, joins_span, AgentStatus, Block, EpochSeconds, ToolStatus,
+};
 use crate::Session;
 use serde_json::{json, Map, Value};
 
@@ -43,17 +45,64 @@ pub fn write_blocks<'a, W: std::io::Write + ?Sized>(
     times: &[Option<EpochSeconds>],
     out: &mut W,
 ) -> std::io::Result<()> {
-    let mut turn: Option<usize> = None;
-    for (i, b) in blocks.enumerate() {
-        if b.opens_turn() {
-            turn = Some(turn.map_or(0, |t| t + 1));
+    let mut line = Line {
+        i: 0,
+        turn: None,
+        times,
+    };
+    // #s500: a reply the client withdrew is drawn folded under its mark, and stated where it
+    // stood: its blocks, then the note's line, as before the mark. The stream is public, and the
+    // mark is drawn, not stated (#s305). The fold takes only a reply of thinking and prose that
+    // runs straight up to the note, but it takes the reply's blocks as they were before the
+    // agent's shaping, and Claude's shaping merges thinking into the run before it
+    // (`coalesce_spans`): withdrawn thinking after a Bash or Read was part of that run's line.
+    // So the run the shaping made just before a mark (the blocks that join a span, since the last
+    // that does not) is held back, and merged with the reply when the mark comes. Anywhere else
+    // it goes out as it was, so every other stream, and every other agent's, is unchanged.
+    let mut run: Vec<&'a Block> = Vec::new();
+    for b in blocks {
+        match b {
+            Block::Withdrawn { reply, .. } => {
+                let parts = run.drain(..).chain(reply.iter()).cloned().collect();
+                for m in &coalesce_spans(parts) {
+                    line.write(m, out)?;
+                }
+                line.write(b, out)?;
+            }
+            _ if joins_span(b) => run.push(b),
+            _ => {
+                for r in run.drain(..) {
+                    line.write(r, out)?;
+                }
+                line.write(b, out)?;
+            }
         }
+    }
+    for r in run {
+        line.write(r, out)?;
+    }
+    Ok(())
+}
+
+/// The stream's envelope as it goes: the next line's index and the turn it is in.
+struct Line<'t> {
+    i: usize,
+    turn: Option<usize>,
+    times: &'t [Option<EpochSeconds>],
+}
+
+impl Line<'_> {
+    fn write<W: std::io::Write + ?Sized>(&mut self, b: &Block, out: &mut W) -> std::io::Result<()> {
+        if b.opens_turn() {
+            self.turn = Some(self.turn.map_or(0, |t| t + 1));
+        }
+        let turn = self.turn;
         let mut o = Map::new();
-        o.insert("i".into(), json!(i));
+        o.insert("i".into(), json!(self.i));
         o.insert("turn".into(), json!(turn));
         o.insert(
             "turn_ts".into(),
-            json!(turn.and_then(|t| times.get(t).copied().flatten())),
+            json!(turn.and_then(|t| self.times.get(t).copied().flatten())),
         );
         o.insert("kind".into(), json!(block_kind(b).html()));
         block_fields(b, &mut o);
@@ -65,10 +114,10 @@ pub fn write_blocks<'a, W: std::io::Write + ?Sized>(
         if let Block::UserInbox { inbox, .. } = b {
             o.insert("inbox".into(), json!(inbox));
         }
+        self.i += 1;
         out.write_all(Value::Object(o).to_string().as_bytes())?;
-        out.write_all(b"\n")?;
+        out.write_all(b"\n")
     }
-    Ok(())
 }
 
 /// The per-variant payload, appended to the envelope. Shared with the span's inner
@@ -85,6 +134,9 @@ fn block_fields(b: &Block, o: &mut Map<String, Value>) {
         | Block::AssistantCutOff(t)
         // #s378: the mark on a stopped reply is the note it holds here, as the note was before.
         | Block::SafetyStop { note: t, .. }
+        // #s500: so is the mark on a withdrawn reply; the reply it folds is stated before it
+        // (`write_blocks`).
+        | Block::Withdrawn { note: t, .. }
         | Block::ToolResult(t) => {
             o.insert("text".into(), json!(t));
         }
@@ -316,6 +368,64 @@ mod tests {
         let t1 = second["turn_ts"].as_f64().expect("turn 1 has a time");
         assert!(t1 > t0, "per-turn times are the turns' own: {t0} then {t1}");
         let _ = std::fs::remove_file(&p);
+    }
+
+    /// #s500: a reply the client withdrew folds under its mark on every page, and the stream
+    /// states it as before the mark: the same lines, byte for byte, as the same transcript read
+    /// as a client before 2.1.325 wrote it, with no `retractedMessageUuids` on its note.
+    #[test]
+    fn a_withdrawn_reply_is_in_the_stream_where_it_stood() {
+        let note = "The previous response failed to produce a valid tool call. Please retry the tool call now.";
+        let lines = |ids: bool| -> String {
+            let mut n = serde_json::json!({"type":"user","uuid":"n-1","timestamp":"2026-11-14T17:00:03.000Z",
+                "isMeta":true,"turnCompanion":true,"retractedMessageUuids":["w-think","w-text"],
+                "message":{"role":"user","content":note}});
+            if !ids {
+                n.as_object_mut().unwrap().remove("retractedMessageUuids");
+            }
+            [
+                json!({"type":"user","cwd":"/r","uuid":"u-1","timestamp":"2026-11-14T17:00:00.000Z","message":{"role":"user","content":"count the nests"}}),
+                json!({"type":"assistant","uuid":"w-think","timestamp":"2026-11-14T17:00:01.000Z","message":{"id":"msg-w","role":"assistant","stop_reason":"tool_use","content":[{"type":"thinking","thinking":"The count needs the file.","signature":"x"}]}}),
+                json!({"type":"assistant","uuid":"w-text","timestamp":"2026-11-14T17:00:02.000Z","message":{"id":"msg-w","role":"assistant","stop_reason":"tool_use","content":[{"type":"text","text":"Counting the nests now."}]}}),
+                n,
+                json!({"type":"assistant","uuid":"r-1","timestamp":"2026-11-14T17:00:04.000Z","message":{"id":"msg-r","role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_w1","name":"Bash","input":{"command":"wc -l nests.md"}}]}}),
+                json!({"type":"user","uuid":"t-1","timestamp":"2026-11-14T17:00:05.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_w1","content":"40 nests.md"}]}}),
+                json!({"type":"assistant","uuid":"e-1","timestamp":"2026-11-14T17:00:06.000Z","message":{"id":"msg-e","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Forty nests."}]}}),
+            ]
+            .iter()
+            .map(|v| v.to_string() + "\n")
+            .collect()
+        };
+        let stream = |name: &str, ids: bool| -> (String, usize) {
+            let p = tmp(name);
+            std::fs::write(&p, lines(ids)).unwrap();
+            let s = parse_session_as(Agent::CLAUDE, &p).unwrap();
+            let marks = s
+                .blocks()
+                .iter()
+                .filter(|b| matches!(b, Block::Withdrawn { .. }))
+                .count();
+            let mut buf = Vec::new();
+            write_block_stream(&s, &mut buf).unwrap();
+            let _ = std::fs::remove_file(&p);
+            (String::from_utf8(buf).unwrap(), marks)
+        };
+        let (marked, marks) = stream("withdrawn.jsonl", true);
+        let (plain, none) = stream("withdrawn-plain.jsonl", false);
+        assert_eq!(
+            (marks, none),
+            (1, 0),
+            "premise: the note naming the reply folds it under a mark, and only that one"
+        );
+        assert_eq!(
+            marked, plain,
+            "the stream states the withdrawn reply and the note as before the mark"
+        );
+        assert!(
+            marked.contains("Counting the nests now.")
+                && marked.contains("The count needs the file."),
+            "the reply's text and thinking are both in it: {marked}"
+        );
     }
 
     /// The execution facts: `status`/`exit`/`ms` from [`ToolExecution`], names stable and

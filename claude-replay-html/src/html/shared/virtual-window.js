@@ -244,6 +244,11 @@ function firstVisible(items, viewportTop, viewportBottom, epsilon, requireHeight
   return null;
 }
 
+/** How long the tail waits for the scroll event of a move a transaction met before it (#s481): the
+ *  event says whose the move was, and #213 measured it up to about a second late. Past this the
+ *  move is taken as displacement and the follower is put back at the end. */
+const UNHEARD_MS = 2000;
+
 /** Rule 7, the #103 hysteresis: what a scroll means. A scroll with the reader's input behind it
  *  DECIDES following — acquiring the pin needs the true end (`acquire`), keeping it only the old
  *  slack (`hold`); a scroll with no input behind it is displacement, and a followed view that
@@ -306,6 +311,32 @@ function itemHeight(element) {
 
 /** `P` when the reader follows: the end, whatever the end is (framework §1.7). */
 const TAIL = Object.freeze({ source: "tail" });
+
+/** An element's children as a unit is first drawn (#s504): without the `<mark>`s a page adds once it
+ *  is drawn (the app shell marks the search's hits in `afterRender`), so a place counted in the old
+ *  markup names the same element in the new one. */
+function unmarked(parent) {
+  return Array.prototype.filter.call(parent.children, child => child.tagName !== "MARK");
+}
+
+/** The record an element sits in (#s504): the row it sits in, or the unit where it sits in none (the
+ *  classic page's units are records; the app shell's group heads sit outside its rows), as
+ *  `anchorOn` holds an element. */
+function recordOf(element, unit) {
+  const row = element.closest("[data-block-index]");
+  return row && unit.contains(row) ? row : unit;
+}
+
+/** What tells one record from another a rewrite put in its place (#s504): all its text, whitespace
+ *  collapsed, and every link and image it holds by its address. A queued prompt picked up moves
+ *  every marker behind it up a slot (#165), so the same place in a unit can hold another record, and
+ *  two queued prompts may differ anywhere, or only in a link's or an image's address. Read only when a focus is to be given
+ *  back, and from both markups painted (`refocus` runs after the page's `afterRender`, which fills
+ *  a code box's bar, say). */
+function recordIdentity(record) {
+  const links = [...record.querySelectorAll("[href], [src]")].map(node => `${node.getAttribute("href") || ""} ${node.getAttribute("src") || ""}`);
+  return `${(record.textContent || "").replace(/\s+/g, " ").trim()}\n${links.join("\n")}`;
+}
 
 class VirtualWindow {
   constructor(options) {
@@ -385,6 +416,9 @@ class VirtualWindow {
     // reader moving, and unpin a fresh page (#89).
     this.lastUserInput = -1e9;
     this.lastInputStamp = -1e9;
+    // A move a transaction met before its scroll event while the reader was not moving the view
+    // (`confirmFollow`, #s481): `{at}` until the event arrives, which says whose it was.
+    this.unheard = null;
     // `P`, the reader's position (framework §1.7), stored: an anchor — a mounted record, the row
     // in it, where on screen that row sat — or the model form when nothing mounted is on screen,
     // each carrying the scroll offset it was read at (`at`). Between transactions the only thing
@@ -456,6 +490,10 @@ class VirtualWindow {
     // exists to make). The guard is what makes it safe: only a change in where the content
     // BEGINS counts, and a pad write never moves that.
     this.lastContentTop = null;
+    // Set while the scroller has had no box since the last transaction that had one (`laidOut`).
+    this.wasHidden = false;
+    // What was mounted while hidden, owed the page's pass over fresh elements (`cameBack`).
+    this.mountedHidden = [];
     this.outerObserver = new ResizeObserver(() => this.displaced());
     // BORDER-box, not the default content-box: what moves the run is often the chrome's own
     // padding — a header gaining a line of chips, a pane's inset — and a padding change leaves
@@ -468,7 +506,8 @@ class VirtualWindow {
       this.noteInput(event);
     };
     for (const type of ["pointerdown", "pointermove", "wheel", "touchstart", "touchmove", "keydown"]) {
-      frame.on(type, noteIntent, { passive: true, capture: true });
+      if (type === "keydown" && frame.onKey) frame.onKey(noteIntent, { passive: true, capture: true });
+      else frame.on(type, noteIntent, { passive: true, capture: true });
     }
     frame.on("scroll", event => this.onScroll(event), { passive: true });
     // The scrollbar thumb owns the position while the pointer holds it (#98).
@@ -771,6 +810,8 @@ class VirtualWindow {
     if (!this.count || this.dragging) return null;
     if (options.position) return options.position;
     if (options.spontaneous) return this.position;
+    // Hidden, or just shown again: the offset is not the reader's, and `P` stands (`laidOut`).
+    if (!this.laidOut() || this.wasHidden) return this.position;
     // While a smooth write is travelling the offset is moving because of the engine, not the
     // reader: `P` is the destination and is kept (§4.10).
     if (!this.position || (this.position.at !== this.frame.scrollTop() && !this.inFlight())) this.position = this.captureDomAnchor() || this.modelAnchor();
@@ -792,6 +833,8 @@ class VirtualWindow {
    *  run of fills, each moving the estimates above them by under a pixel, walked 1.3px over ten
    *  (I1: the engine's own noise never redefines `P`). */
   syncPosition(placed = null) {
+    // Hidden, there is nowhere to read `P` from, and it stands (`laidOut`).
+    if (!this.laidOut()) return;
     if (this.following || this.dragging || !this.count) { this.position = null; return; }
     const held = this.position && this.position.commanded ? this.position : null;
     if (held && this.anchorResolves(held)) { held.at = this.inFlight() ? this.wrote.to : this.frame.scrollTop(); return; }
@@ -880,20 +923,46 @@ class VirtualWindow {
    *
    *  The test is the ENGINE'S BELIEF, not the gap — a gap alone would unfollow on every growth,
    *  which adds content below without moving the offset. An offset that is not where the engine
-   *  left it was moved by the reader, and that is the one move the engine does not make. It is
-   *  then classified exactly as the late event would have been, so nothing decides differently
-   *  here than there; only sooner. The browser clamping the offset when content shrinks lands at
-   *  the bottom, where the verdict is "none" and follow stands. */
+   *  left it was moved by someone else. It is then classified as the late event will be, only
+   *  sooner, on the handler's clock where the scroll handler reads the event's: inside the intent
+   *  window the two read the same.
+   *
+   *  But only while the reader is moving the view (`readerOwnsPosition`: input within the intent
+   *  window, a held thumb, a touch glide; #s481). Otherwise the move may be the browser's: it clamps
+   *  the offset when the content shrinks, and the clamp lands at the bottom of the layout it
+   *  happened in, which need not be the layout the transaction reads. On an iPad the list's fold
+   *  took the phone reader's foot pad a layout before the transcript's box shrank, the offset
+   *  clamped 150px above the end that followed, and a follower read as the reader leaving the end
+   *  was left 191px above it. Nor can the order of input and transactions tell: a scroll the
+   *  browser animates, or one whose event is late, lands after transactions that ran since the
+   *  input. The late event can tell, since its stamp is the move's (measured in Chrome: an event
+   *  delivered 32ms late carried the time of the offset change), so the transaction leaves follow
+   *  as it is and the tail waits for it (`unheard`, `placeAfter`): the scroll handler classifies it
+   *  as it classifies any, the reader's move dropping follow and the browser's healed to the end. */
   confirmFollow(top) {
     if (!this.following || this.dragging || this.inFlight()) return;
     const belief = this.topBelief();
     if (belief == null || Math.abs(top - belief) <= 1) return;
     const gap = this.gapToBottom();
+    if (!this.readerOwnsPosition()) {
+      if (!this.unheard) this.unheard = { at: performance.now() };
+      this.trace("follow:unheard", { verdict: "wait", belief, top: Math.round(top), gap: Math.round(gap) });
+      return;
+    }
     const verdict = classifyScroll(true, true, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal);
     this.trace("follow:unheard", { verdict, belief, top: Math.round(top), gap: Math.round(gap) });
     if (verdict !== "unfollow") return;
     this.following = false;
     this.followChanged();
+  }
+
+  /** The offset as it is, taken as the engine's belief, with nothing left waiting on an event about
+   *  it: for where no write of the engine's says where the offset is and no event is coming that
+   *  will (a model emptied, a wait for a late event lapsed). */
+  knowOffset() {
+    this.wrote = null;
+    this.unheard = null;
+    this.topSeen = this.frame.scrollTop();
   }
 
   /** Is a scroll event at `top` the engine's own? An instant write is one offset; a smooth one is
@@ -927,6 +996,8 @@ class VirtualWindow {
    *  away and is converged back on. Reading: what they are looking at moved down by the growth
    *  above it, and the anchor puts it back. */
   displaced() {
+    // Hidden, the content's top reads 0; the last one seen stands until the box comes back (`laidOut`).
+    if (!this.laidOut()) return;
     const top = this.contentTop();
     if (this.lastContentTop !== null && Math.abs(top - this.lastContentTop) < 0.5) return;
     const first = this.lastContentTop === null;
@@ -959,6 +1030,18 @@ class VirtualWindow {
   rest() {
     if (this.dragging) return; // `endDrag` re-arms
     if (this.readerOwnsPosition()) { this.armRest(); return; }
+    // A move a transaction met unheard: its event decides first (`confirmFollow`), and the rest
+    // timer waits for it, bounded in case it never comes. Estimates waiting on the timer wait too.
+    if (this.unheard && this.following) {
+      const wait = UNHEARD_MS - (performance.now() - this.unheard.at);
+      if (wait > 0) { clearTimeout(this.restTimer); this.restTimer = setTimeout(() => this.rest(), wait + 1); return; }
+      this.trace("unheard:lapsed", {});
+      // The event never came: the offset is what the engine knows now. Kept at the old belief, the
+      // converge below read the same move as unheard again and waited again, every two seconds, for
+      // as long as no event came (the review of 68a629b3).
+      this.knowOffset();
+    }
+    this.unheard = null;
     if (!this.pendingTail && !this.estimatesPending) return;
     this.trace("rest", { tail: this.pendingTail, estimates: this.estimatesPending });
     if (this.estimatesPending) {
@@ -989,6 +1072,7 @@ class VirtualWindow {
     this.dragStarted = Math.round(performance.now());
     this.position = null;
     this.wrote = null;
+    this.unheard = null;
     this.lastUserInput = performance.now();
   }
 
@@ -1011,6 +1095,8 @@ class VirtualWindow {
    *  sums and the pads, and the transaction places `P` after it. The sums do not have to be exact
    *  for that: the placement reads the item's own rect. */
   measureMounted() {
+    // Hidden, an item reads as its margins alone (`laidOut`).
+    if (!this.laidOut()) return false;
     let changed = false;
     // What changed, for the trace (#192): the first eight [index, from, to] — which record moved
     // the sums is the whole question when a reader is displaced under growth.
@@ -1074,6 +1160,9 @@ class VirtualWindow {
       child.style.height = `${want}px`;
       fits.push([child, want]);
     }
+    // Hidden, a placeholder reads as its margins alone (`laidOut`): it keeps the height the sums give
+    // it, and the first transaction with the box back fits every mounted one again (`cameBack`).
+    if (!this.laidOut()) return;
     const margins = fits.map(([child, want]) => itemHeight(child) - want);
     fits.forEach(([child, want], k) => { if (Math.abs(margins[k]) > 0.25) child.style.height = `${Math.max(0, want - margins[k])}px`; });
   }
@@ -1180,7 +1269,31 @@ class VirtualWindow {
    *  transaction on a change that has ALREADY moved the DOM — `P` is not re-read (see
    *  `positionFor`), and the placement lands whatever the reader is doing (framework I7). */
   measureNow() {
+    // Hidden, every mounted item reports no height (`laidOut`): nothing is heard until the box comes
+    // back, when every item grows back and this measure places `P` where the reader left it.
+    if (!this.laidOut()) { this.wasHidden = true; return; }
     this.transact("measure", { spontaneous: true, measure: true });
+  }
+
+  /** Whether the scroller has a box (#s464). A host can hide the view, and a hidden scroller lays
+   *  nothing out: each item reads as its margins alone and the offset as 0. Measured, the sums would
+   *  learn margins for heights and `P` would be read at the top, so the reader shown the view again
+   *  lands turns from where they left it. While it has none the engine measures nothing, reads no
+   *  position and writes none; a transaction changes the model alone (records still arrive). The
+   *  first transaction with the box back (`wasHidden`) reads no move of the reader's either, since the
+   *  offset is whatever the browser gave the box it made again: it places `P` as it stood. */
+  laidOut() {
+    return !this.frame.laidOut || this.frame.laidOut();
+  }
+
+  /** The first transaction with the box back (`laidOut`), before it mounts and places: what could
+   *  not be read while hidden is read now — the page's pass over what was mounted then
+   *  (`afterMount`), and every mounted placeholder fitted to its height in the sums. */
+  cameBack() {
+    const owed = this.mountedHidden.filter(element => element.isConnected);
+    this.mountedHidden = [];
+    if (owed.length) this.afterMount(owed);
+    this.fitPlaceholders();
   }
 
   /** Where item `index` starts, in the scroller's own coordinate, from the MODEL: the content's
@@ -1274,7 +1387,7 @@ class VirtualWindow {
     // content under its new key, so the anchor resolves rather than falling back.
     const rename = key => (renamed && key && renamed[key]) || key;
     if (index <= from) {
-      const after = this.anchorAfter(from, shift);
+      const after = this.anchorAfter(from, shift, p);
       return after ? { ...after, key: rename(after.key) } : p;
     }
     const translated = { ...p, index: index + shift, key: rename(p.key) };
@@ -1284,10 +1397,59 @@ class VirtualWindow {
 
   /** An anchor on the mounted item that followed `from`, at the index it will have once `shift`
    *  items stand where `from` did — or null when it is not mounted. */
-  anchorAfter(from, shift) {
+  anchorAfter(from, shift, p = null) {
     const next = [...this.mount.children].find(child => Number(child.dataset.unitIndex) === from + 1);
     if (!next) return null;
-    return { source: "anchor", key: next.dataset.unitKey, index: from + 1 + shift, top: next.getBoundingClientRect().top - this.frame.viewportTop(), block: null, blockTop: 0, at: this.frame.scrollTop(), fallback: null };
+    // Hidden, no top can be read (`laidOut`): the item is where the sums put it below `P`'s item. A
+    // top is the border box's and a slot starts at the margin (`itemHeight`), so the two items' top
+    // margins are the difference between them; a computed margin reads with no box. `P`'s slot
+    // starts at its anchor's top less its margin, or, in the model form, `offset` above the
+    // viewport's top (`modelAt`).
+    const marginTop = element => (element ? parseFloat(getComputedStyle(element).marginTop) || 0 : 0);
+    const slot = !p || p.index == null ? null
+      : p.top != null ? p.top - marginTop([...this.mount.children].find(child => Number(child.dataset.unitIndex) === p.index))
+      : p.offset != null ? -p.offset : null;
+    const top = this.laidOut() || slot == null
+      ? next.getBoundingClientRect().top - this.frame.viewportTop()
+      : slot + (this.prefix[from + 1] || 0) - (this.prefix[p.index] || 0) + marginTop(next);
+    return { source: "anchor", key: next.dataset.unitKey, index: from + 1 + shift, top, block: null, blockTop: 0, at: this.frame.scrollTop(), fallback: null };
+  }
+
+  /** The focus, when it is inside a mounted unit: that unit's key, the child positions from the
+   *  unit down to the focused element (counting no `<mark>`), what kind of element it is, and the
+   *  record it sits in (#s504), whose text is read only if the focus is to be given back. */
+  focusInside() {
+    const active = this.mount.ownerDocument?.activeElement;
+    if (!active || active === this.mount || !this.mount.contains(active)) return null;
+    const path = [];
+    let node = active;
+    while (node.parentElement && node.parentElement !== this.mount) {
+      if (node.tagName === "MARK") return null;
+      path.unshift(unmarked(node.parentElement).indexOf(node));
+      node = node.parentElement;
+    }
+    if (!node.dataset.unitKey) return null;
+    return { element: active, key: node.dataset.unitKey, path, tag: active.tagName, role: active.classList[0] || "", record: recordOf(active, node) };
+  }
+
+  /** Gives the focus back to a unit drawn again (#s504): to the element at the same place in its
+   *  new markup, when it is the same kind of element (its tag and its first class) in a record that
+   *  reads as the old one did (`recordIdentity`), and nothing else has taken the focus meanwhile. A
+   *  unit that left the window, changed its shape or holds another record there gets none, as
+   *  before; so does a record whose text changed, a running call's output grown say: a focus left on
+   *  the body is the old behaviour, and a focus given to another element would be wrong. Any redraw
+   *  of a unit holding the focus gives it back, a fold's own re-render too. */
+  refocus(focused) {
+    if (!focused || focused.element.isConnected) return;
+    const doc = this.mount.ownerDocument, now = doc.activeElement;
+    if (now && now !== doc.body && now !== doc.documentElement) return;
+    const unit = [...this.mount.children].find(child => child.dataset.unitKey === focused.key);
+    let node = unit;
+    for (const at of focused.path) node = node ? unmarked(node)[at] : null;
+    if (!node || node.tagName !== focused.tag || (node.classList[0] || "") !== focused.role) return;
+    if (recordIdentity(recordOf(node, unit)) !== recordIdentity(focused.record)) return;
+    node.focus({ preventScroll: true });
+    if (doc.activeElement === node) this.trace("refocused", { key: focused.key, depth: focused.path.length });
   }
 
   /** Mount exactly `[lo, hi)`, reusing what is already right. `dirtyFrom` is the first index
@@ -1306,6 +1468,11 @@ class VirtualWindow {
     const dirty = ranged ? dirtyFrom : { from: dirtyFrom, to: Infinity };
     if ((dirty.from === Infinity || (ranged && (dirty.from >= hi || dirty.to <= lo))) && lo === this.lo && hi === this.hi) return null;
 
+    // A unit drawn again takes its old markup with it, and the browser hands the focus of anything
+    // inside it to the body: a fold head the reader stepped to with j/k lost it when the session grew,
+    // and the next j/k started over from the last head (#s504). Where the focus is goes in as a path
+    // in its unit, and comes back once the pads are written (`refocus`).
+    const focused = this.focusInside();
     this.observer.disconnect();
     for (const child of [...this.mount.children]) {
       const index = Number(child.dataset.unitIndex);
@@ -1372,11 +1539,17 @@ class VirtualWindow {
     this.updatePads();
     // A fresh placeholder is drawn at its height in the sums before anything measures (§6.2).
     this.fitPlaceholders(fresh);
-    this.afterMount(fresh);
+    // Hidden, the page's pass would read boxes with no size (a long prompt's lines counted as none,
+    // so none clamped): it runs for these once the box is back (`cameBack`).
+    if (this.laidOut()) this.afterMount(fresh);
+    else this.mountedHidden = [...this.mountedHidden.filter(element => element.isConnected), ...fresh];
     this.measureMounted();
     this.updatePads();
     for (const child of this.mount.children) this.observer.observe(child, { box: "border-box" });
     this.afterRender();
+    // After the page's own pass, so the new markup is painted as the old one was (a code box's bar,
+    // the search's marks) when the two records are compared.
+    this.refocus(focused);
     this.trace("reconciled", { dirtyFrom: dirtyFrom === Infinity ? null : dirtyFrom, anchor: p0 && p0.key ? p0.key : null, fresh: fresh.length, estimate: this.count ? Math.round(this.estimateAt(0)) : null });
     return { lo, hi, fresh: fresh.length };
   }
@@ -1432,15 +1605,37 @@ class VirtualWindow {
     // transaction began. I13 ("follow is dropped only by the reader") is exactly what this upholds:
     // the drop is theirs, and the engine is only hearing about it late.
     const startTop = this.frame.scrollTop();
-    this.confirmFollow(startTop);
+    // Hidden, the transaction changes the model alone; the first with the box back reads no move of
+    // the reader's in the offset the browser gave it (`laidOut`).
+    const shown = this.laidOut(), returning = shown && this.wasHidden;
+    if (!shown) this.wasHidden = true;
+    // A smooth write the hide stopped never arrives, nor the event of a move the hide took: both are
+    // over, and `P` is placed outright.
+    if (returning) { this.wrote = null; this.unheard = null; }
+    if (shown && !returning) this.confirmFollow(startTop);
+    // Shown again, the window is mounted for `P` at the viewport the box came back with, whatever the
+    // transaction: one mounted while hidden (records arriving) was sized for no viewport at all.
+    if (returning && !options.range) options = { ...options, range: p => this.rangeFor(p) };
     const following0 = this.following;
     try {
       let p0 = this.positionFor(options);
       // The reader's scroll since `P` was read — everything the offset moved between the last
       // transaction and this one's start (see `place`). Zero after a re-read, and for a page's own
       // capture; the reader's motion for a spontaneous change; zero while a smooth write is in
-      // flight, where the offset is moving because of the engine (§4.10).
-      const drift = p0 && p0.at != null && !this.inFlight() ? startTop - p0.at : 0;
+      // flight, where the offset is moving because of the engine (§4.10); zero as the view is shown
+      // again, where the browser moved it.
+      const drift = p0 && p0.at != null && !this.inFlight() && !returning ? startTop - p0.at : 0;
+      // A follower whose tail waits for the late event of a move (#s481) is held meanwhile by what
+      // is on screen, as any reader is; the tail is placed when the wait ends. Left as the tail, the
+      // transaction wrote nothing, and content changed above moved the view under them: a prepend
+      // of the session's earlier turns (#314) while a wheel's event was late left the reader on turn
+      // 7 of 60 once the event came (#s431). Never under a held thumb (I14) or a smooth write in
+      // flight (its destination is `P`, §4.10), and a measure that heard nothing new stays quiet
+      // (#127). A tail that waits for rest under the reader's hand is left as #165 left it.
+      const holdTail = !!p0 && p0.source === "tail" && shown && !returning && this.count > 0
+        && !!this.unheard && !options.commanded && !this.dragging && !this.inFlight();
+      // Read at the transaction's start, so the drift above (none, for the tail) stays right.
+      if (holdTail) p0 = this.captureDomAnchor() || this.modelAnchor();
       // A placement while a smooth write travels is issued smooth again, toward the recomputed
       // destination: growth above a target mid-flight re-targets the animation rather than
       // cancelling it with an instant write.
@@ -1449,6 +1644,8 @@ class VirtualWindow {
       // A mutation that moved the index space (a prepend, #314) translates `P0` to it — the same
       // item, the same place on screen, under its new index. Not a move: I1 holds.
       if (options.translate) p0 = options.translate(p0);
+      // Hidden, nothing re-reads `P` after the mutation (`laidOut`): it takes the translation here.
+      if (!shown && p0 && p0.source !== "tail") this.position = p0;
       // What the mount rebuilds from: given, or a function of what the mutation returned (§4.11).
       const dirtyFrom = typeof options.dirtyFrom === "function" ? options.dirtyFrom(changed) : options.dirtyFrom;
       this.rebuildPrefix();
@@ -1461,9 +1658,12 @@ class VirtualWindow {
       if (options.mutate) this.updatePads();
       let mounted = null;
       let quiet = false;
+      if (returning) this.cameBack();
       if (options.range) {
         const range = typeof options.range === "function" ? options.range(p0) : options.range;
         mounted = this.mountRange(range.lo, range.hi, dirtyFrom, p0);
+        // Back from hidden with the window as it was: what was mounted while hidden is measured now.
+        if (returning && !mounted) this.measureMounted();
       } else if (options.measure) {
         // An observer that heard nothing new — the notification every freshly observed element
         // sends — changes nothing, and a tail that is placed anyway snaps back a following reader
@@ -1471,7 +1671,16 @@ class VirtualWindow {
         // when it ran on `changed` alone.
         quiet = !this.measureMounted();
       }
-      let placed = quiet && p0 && p0.source === "tail" ? "quiet" : this.placeAfter(p0, options, drift, smooth);
+      // Hidden, nothing is placed. Shown again, the tail is placed even where nothing was measured: the
+      // browser may have moved the offset off it.
+      let placed = !shown ? "hidden" : quiet && p0 && (p0.source === "tail" || holdTail) && !returning ? "quiet" : this.placeAfter(p0, options, drift, smooth);
+      if (holdTail && placed !== "quiet") {
+        this.defer("tail");
+        this.trace("tail:deferred", { held: true });
+        // The hold may have written the offset the late event will report: that event is still the
+        // move's, to classify, not the engine's own write (`onScroll`).
+        this.unheard.held = true;
+      }
       if (options.range && p0 && p0.source !== "tail" && placed === "placed" && !this.viewportMounted()) {
         // The window was chosen from the sums before the mutation; the placement moved the offset
         // by their shift, and the viewport now shows territory the window does not cover (#191).
@@ -1502,8 +1711,16 @@ class VirtualWindow {
       }
       // A position the reader asked for (§4.10) is `P` from here on; `syncPosition` keeps it.
       if (p0 && p0.commanded) this.position = p0;
+      // An empty model holds nothing a reader could be on: the engine has just taken the content away
+      // (a session's records replaced), the browser has clamped the offset to what is left, and no
+      // write says so. That offset is the engine's belief from here, and a wait for an event about
+      // the old content is over, as is a smooth write toward it. Kept at the old session's, the next
+      // transaction read the clamp as a move nobody heard and held the new session's tail for an
+      // event that came a second later on a lazy tab (`confirmFollow`, #s431).
+      if (shown && !this.count) this.knowOffset();
       this.syncPosition(placed === "placed" && !drift && !smooth ? p0 : null);
-      this.check(cause, p0, placed, mounted, drift, following0);
+      if (shown) this.check(cause, p0, placed, mounted, drift, following0);
+      if (returning) this.wasHidden = false;
       summary = Object.assign({ p0: p0 ? p0.source : null, anchor: p0 && p0.key ? p0.key : null, placed }, mounted ? { range: [mounted.lo, mounted.hi], fresh: mounted.fresh } : {}, options.fields || {});
       // Trace only: is the viewport inside the window it left, and how the window was chosen.
       if (this.tracing) { summary.covered = this.viewportMounted(); summary.choice = this.lastRangeChoice || null; this.lastRangeChoice = null; }
@@ -1759,17 +1976,25 @@ class VirtualWindow {
   /** The placement a transaction ends with. An anchor or a model position is written now; the
    *  tail waits for rest unless the reader asked for it (#165: the pin does not outrank a hand on
    *  the wheel — a tail rewrite once a second slammed a reader crawling up inside the hold slack
-   *  back to the end, seven times). */
+   *  back to the end, seven times), and for the event of a move the transaction met unheard
+   *  (#s481), which says whether the reader left the end. */
   placeAfter(p0, options, drift, smooth = false) {
     if (!p0) return null;
     if (p0.source === "tail") {
-      if (!options.commanded && this.readerOwnsPosition()) { this.defer("tail"); this.trace("tail:deferred", {}); return "deferred"; }
+      if (this.tailWaits(options)) { this.defer("tail"); this.trace("tail:deferred", {}); return "deferred"; }
       this.pendingTail = false;
       return this.place(p0) ? "tail" : "none";
     }
     const placed = this.place(p0, drift, smooth);
     if (this.yielded) { this.yielded = false; return "yielded"; }
     return placed ? "placed" : "unmounted";
+  }
+
+  /** Whether the tail waits rather than being placed now: for rest while the reader's hand is on
+   *  the view (#165), and for the event of a move a transaction met unheard (#s481). A placement
+   *  the reader asked for never waits. */
+  tailWaits(options) {
+    return !options.commanded && (this.readerOwnsPosition() || !!this.unheard);
   }
 
   /** The window for where the reader is: the scroll batch's own update (#180 — the correction it
@@ -1825,6 +2050,7 @@ class VirtualWindow {
     // A tail placement waiting for rest is void; `P` is re-read because from here the reader's own
     // position is the reference.
     this.pendingTail = false;
+    this.unheard = null;
     this.syncPosition();
   }
 
@@ -1848,14 +2074,22 @@ class VirtualWindow {
    *  created before the gesture that followed it. `dragging` still answers for a held thumb,
    *  which produces no input event of its own. */
   onScroll(event) {
+    // Hidden, an offset the box lost is no move of the reader's (`laidOut`).
+    if (!this.laidOut()) return;
     // One read, for the classification, kept as the engine's belief of the offset for the history
     // (`topBelief`): the reader's own scroll is the one move the engine does not make.
     const top = this.frame.scrollTop();
     this.topSeen = top;
+    // The event a transaction's unheard move waited for (`confirmFollow`): whatever wrote since,
+    // what it says is classified below, and what waited for it may run.
+    const waited = this.unheard;
+    if (this.unheard) { this.unheard = null; if (this.pendingTail || this.estimatesPending) this.armRest(); }
     // The engine's own write (framework §4.1): `place` recorded what it wrote, and an event at that
     // offset is neither the reader's nor displacement — nothing to classify, nothing to re-read,
-    // no window to update (the transaction that placed already mounted around `P`).
-    if (this.ownScroll(top)) {
+    // no window to update (the transaction that placed already mounted around `P`). Except the
+    // event a held follower waited for (`transact`): the hold wrote the offset it reports, and the
+    // event is the move's all the same.
+    if (!(waited && waited.held) && this.ownScroll(top)) {
       this.trace("scroll:own", { top: Math.round(top) });
       this.afterScroll();
       return;
@@ -1909,6 +2143,7 @@ class VirtualWindow {
     // A jump is the reader choosing a place (I1); `positionFor` would answer the tail otherwise.
     if (wasFollowing) this.following = false;
     this.pendingTail = false;
+    this.unheard = null;
     this.transact(cause, {
       position,
       commanded: true,
@@ -1923,6 +2158,13 @@ class VirtualWindow {
         // A landing a further command refines in the same task (the search walk's, §4.11) does
         // not decide: the pin is what it was, and the refining command decides once.
         if (options.decide === false) { if (this.following !== wasFollowing) this.following = wasFollowing; this.scheduleRemember(); return; }
+        // Hidden, there is no gap to read (`laidOut`, every size 0): the jump is the reader choosing
+        // a place, and the pin stays dropped. The end is `follow`, which reads no gap.
+        if (!this.laidOut()) {
+          if (wasFollowing) this.followChanged();
+          this.scheduleRemember();
+          return;
+        }
         const top = this.inFlight() ? this.wrote.to : this.frame.scrollTop();
         const gap = this.frame.scrollHeight() - this.frame.clientHeight() - top;
         const following = wasFollowing ? gap <= this.slacks.hold : gap <= this.slacks.acquire;
@@ -1989,6 +2231,8 @@ class VirtualWindow {
   }
 
   scrollBy(dy, options = {}) {
+    // Hidden, the offset and the viewport's height read 0 (`laidOut`): there is nothing to move from.
+    if (!this.laidOut()) return false;
     return this.scrollTo(this.frame.scrollTop() + dy, options);
   }
 
@@ -2021,6 +2265,7 @@ class VirtualWindow {
     // unpinned): the first records that arrive find it set and converge.
     this.following = true;
     this.pendingTail = false;
+    this.unheard = null;
     this.followChanged();
     this.convergeBottom(true);
     this.remember();
@@ -2047,6 +2292,9 @@ class VirtualWindow {
    *  exactly by the observer a frame later; only the invisible groups keep the guess. A change
    *  that is not a width change (a font) has no ratio to apply, and there the old rule stands. */
   remeasure() {
+    // Hidden, there is no width to scale to (`laidOut`): the heights stay as measured, for the width
+    // the view comes back at.
+    if (!this.laidOut()) return;
     const width = this.mount.getBoundingClientRect().width;
     const ratio = this.lastWidth && width ? this.lastWidth / width : 0;
     this.lastWidth = width || this.lastWidth;
@@ -2083,6 +2331,8 @@ function documentFrame() {
     clientHeight: () => el().clientHeight,
     scrollHeight: () => el().scrollHeight,
     viewportTop: () => 0,
+    // The document is always laid out.
+    laidOut: () => true,
     on: (type, fn, options) => window.addEventListener(type, fn, options),
     // A pointer on the DOCUMENT's scrollbar lands on the scrolling element itself. It must NOT
     // also accept `body`: the classic page centres `.layout` at max-width 1160px (export.css:338),
@@ -2096,6 +2346,9 @@ function documentFrame() {
   };
 }
 
+/** The keys a browser scrolls a box with, natively, when no control has the focus. */
+const NATIVE_SCROLL_KEYS = new Set(["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "]);
+
 function elementFrame(scroller) {
   return {
     scrollTop: () => scroller.scrollTop,
@@ -2103,7 +2356,32 @@ function elementFrame(scroller) {
     clientHeight: () => scroller.clientHeight,
     scrollHeight: () => scroller.scrollHeight,
     viewportTop: () => scroller.getBoundingClientRect().top,
+    // A box inside a page can be hidden (its host's `hidden`, #s464, or a hidden ancestor): it then
+    // has no box at all, and every size in it reads 0.
+    laidOut: () => scroller.clientWidth > 0 || scroller.clientHeight > 0,
     on: (type, fn, options) => scroller.addEventListener(type, fn, options),
+    // A key is the reader's input where the browser sends it. With the focus inside the box it
+    // passes through the box, and is heard there as every other input is. A click on the
+    // transcript's text leaves the focus on the page's body, and the browser still scrolls the box
+    // with a key from there, since it scrolls the box the last press landed in (WebKit and Chrome),
+    // but that key never passes through the box: a follower's Page Up was read as the browser's move
+    // and undone (#s431, the iOS Simulator walk). So a key on the body is heard at the window too,
+    // as the reader's only when the browser scrolls with it, the last press on the page landed in
+    // the box, and no handler took it (`defaultPrevented`, read in the bubble phase, after the
+    // page's own). Any other key there (the page's `+`, `\` folding the list), one after a press
+    // elsewhere (the browser scrolls that box, or nothing), and one a host's keymap took are no move
+    // of the reader's in this box (the review of 500ae62b).
+    onKey: (fn, options) => {
+      scroller.addEventListener("keydown", fn, options);
+      const doc = scroller.ownerDocument, win = doc?.defaultView;
+      if (!win) return;
+      let pressedInside = false;
+      win.addEventListener("pointerdown", event => { pressedInside = !!event.target?.nodeType && scroller.contains(event.target); }, { passive: true, capture: true });
+      win.addEventListener("keydown", event => {
+        const target = event.target;
+        if (pressedInside && !event.defaultPrevented && (target === doc.body || target === doc.documentElement) && NATIVE_SCROLL_KEYS.has(event.key)) fn(event);
+      }, { passive: true });
+    },
     // A pointer that lands on the scroller ITSELF is on its scrollbar OR in a GUTTER: content
     // lands on a descendant, but a centred child leaves the scroller's own background exposed on
     // both sides, and `.transcript-inner` is `margin: 0 auto` inside `min(880px, 100% - 76px)`.

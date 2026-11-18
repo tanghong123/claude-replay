@@ -14,6 +14,10 @@ export const escapeText = value => String(value ?? "").replace(/[&<>"']/g, ch =>
 // Character references preserve CR through HTML parser newline normalization.
 export const literalText = value => escapeText(value).replace(/\r/g, "&#13;");
 
+/** An agent's name as the shell writes it: the session list's heads and the session view's top bar
+ *  and runtime rows read the same one. */
+export const agentName = id => ({ claude: "Claude Code", codex: "Codex", qoder: "Qoder", qoderwork: "QoderWork", qwenwork: "Qwenwork" })[id] || id;
+
 /** The hue (0–359) another session's messages are drawn in (#s138): FNV-1a over the sender's
  *  name, so a sender keeps its colour in every session and on every machine, and two senders are
  *  told apart at a glance. The card and its Turns pane row take the same one. */

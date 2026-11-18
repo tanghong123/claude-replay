@@ -764,6 +764,10 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
                     for l in receipt.lines() {
                         out.push(Line::styled(format!("     {l}"), theme::dim()));
                     }
+                    // #s456: the resumed sub-agent's report the send brought back, under it.
+                    for l in crate::present::send_reply(o).unwrap_or("").lines() {
+                        out.push(Line::styled(format!("     {l}"), theme::result()));
+                    }
                 }
                 return out;
             }
@@ -946,6 +950,18 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
         // the model under it, on the result tier as the note was drawn before.
         Block::SafetyStop { category, note } => {
             out.push(safety_stop_header(category.as_deref()));
+            let base = theme::result().bg(theme::shell_expanded_bg());
+            for line in note.lines() {
+                out.push(Line::from(Span::styled(format!("    {line}"), base)));
+            }
+        }
+        // #s500: the mark on a reply the client withdrew for a broken tool call, then the
+        // withdrawn reply as it was drawn before, then the client's note to the model.
+        Block::Withdrawn { note, reply } => {
+            out.push(withdrawn_header());
+            for c in reply {
+                out.extend(render_one(c, width, hl));
+            }
             let base = theme::result().bg(theme::shell_expanded_bg());
             for line in note.lines() {
                 out.push(Line::from(Span::styled(format!("    {line}"), base)));
@@ -1322,6 +1338,7 @@ fn render_header(b: &Block) -> Line<'static> {
             theme::result(),
         ),
         Block::SafetyStop { category, .. } => safety_stop_header(category.as_deref()),
+        Block::Withdrawn { .. } => withdrawn_header(),
         Block::Command { name, args, .. } => command_header(name, args),
         Block::Compaction { .. } => compaction_rule(b),
     }
@@ -1336,6 +1353,17 @@ fn safety_stop_header(category: Option<&str>) -> Line<'static> {
     ))
 }
 
+/// The one dim line that marks a reply the client withdrew for a broken tool call (#s500).
+fn withdrawn_header() -> Line<'static> {
+    Line::from(Span::styled(
+        format!("  ⎿ \u{a0}{}", crate::model::WITHDRAWN_LINE),
+        theme::dim(),
+    ))
+}
+
+/// A width no drawn line reaches, for a count that has none (`body_len`'s withdrawn reply).
+const UNWRAPPED: usize = 10_000;
+
 /// How many lines `render_one` emits *after* the header — computed cheaply (no
 /// `Line` allocation) so a collapsed block's `⋯ N folded` count is exact without
 /// building the body. Must agree with `render_one`'s output length.
@@ -1347,6 +1375,17 @@ fn body_len(b: &Block) -> usize {
         | Block::QueueEvent { text: t } => t.lines().count().saturating_sub(1),
         // #s378: the line is the header; the whole note is the body.
         Block::SafetyStop { note, .. } => note.lines().count(),
+        // #s500: the withdrawn reply as `render_one` draws it (markdown's own lines, a cut-off
+        // reply's line), then the note. This count has no width, so the reply is drawn on a line
+        // wide enough not to wrap: a narrow terminal may draw its prose in more. It is drawn only
+        // for this count, and a withdrawn reply is rare and short.
+        Block::Withdrawn { note, reply } => {
+            let reply: usize = reply
+                .iter()
+                .map(|c| render_one(c, UNWRAPPED, Hl::Styled).len())
+                .sum();
+            reply + note.lines().count()
+        }
         Block::UserInbox { text, inbox } => inbox_lines(text, inbox).len() - 1,
         Block::Attachment(_) => 0, // one-line marker; not foldable
         Block::SubAgent(sa) => {
@@ -1378,7 +1417,10 @@ fn body_len(b: &Block) -> usize {
                 + output
                     .as_deref()
                     .filter(|o| !o.trim().is_empty())
-                    .map_or(0, |o| crate::present::send_receipt(o).lines().count())
+                    .map_or(0, |o| {
+                        crate::present::send_receipt(o).lines().count()
+                            + crate::present::send_reply(o).map_or(0, |r| r.lines().count())
+                    })
         }
         Block::ToolUse {
             name,
@@ -1734,6 +1776,39 @@ mod tests {
                 && folded[1].contains("3 folded"),
             "folded, the same head and the true count: {folded:?}"
         );
+    }
+
+    /// #s456: a message that resumed a sub-agent shows the receipt's first sentence, then the
+    /// report it brought back; `body_len` counts both, so the folded count is honest.
+    #[test]
+    fn a_message_that_resumed_an_agent_shows_the_report_it_brought_back() {
+        let b = Block::ToolUse {
+            name: "SendMessage".into(),
+            target: "Ask the explorer".into(),
+            diffs: vec![],
+            output: Some(
+                "{\"success\":true,\"message\":\"Resumed agent. Its final report follows this \
+                 JSON, framed by the harness.\"}\n## Index\n\nRebuilt nightly."
+                    .into(),
+            ),
+            patch: None,
+            read_lines: None,
+            cwd: String::new(),
+            execution: None,
+            published: None,
+            asked: None,
+            delivered: Vec::new(),
+            sent: Some("When is the index rebuilt?".into()),
+            sent_to: None,
+            saved_output: None,
+        };
+        let t = texts(&render_one(&b, 120, Hl::Styled));
+        assert!(t[1].contains("When is the index rebuilt?"), "{t:?}");
+        assert_eq!(t[2].trim(), "Resumed agent.", "{t:?}");
+        assert_eq!(t[3].trim(), "## Index", "{t:?}");
+        assert_eq!(t[5].trim(), "Rebuilt nightly.", "{t:?}");
+        assert_eq!(t.len(), 6, "{t:?}");
+        assert_eq!(body_len(&b), 5, "the lines under the header");
     }
 
     /// A multi-line shell command keeps its line breaks in the `⏺ Bash(...)`
@@ -2735,6 +2810,27 @@ mod tests {
         );
         assert_eq!(texts(&[render_header(&b)]), [line]);
         assert_eq!(body_len(&b), lines.len() - 1, "the body is the note");
+    }
+
+    /// #s500: the folded count of a withdrawn reply is what expanding it draws: markdown's own
+    /// lines (a list, a paragraph break), a cut-off reply's line, the thinking, and the note.
+    #[test]
+    fn a_withdrawn_reply_s_folded_count_is_what_it_draws() {
+        let b = Block::Withdrawn {
+            note: "The previous response failed to produce a valid tool call.\nPlease retry."
+                .into(),
+            reply: vec![
+                Block::Thinking {
+                    text: "First the file.\nThen the count.".into(),
+                    duration_secs: None,
+                    tools: Vec::new(),
+                },
+                Block::AssistantText("Counting:\n\n- one\n- two".into()),
+                Block::AssistantCutOff("And then".into()),
+            ],
+        };
+        let lines = render_one(&b, 200, Hl::Styled);
+        assert_eq!(body_len(&b), lines.len() - 1, "{:?}", texts(&lines));
     }
 
     /// A Command block renders `❯ /compact` + a dim `⎿`-prefixed stdout line.

@@ -4,7 +4,7 @@ import vm from "node:vm";
 import { test } from "node:test";
 
 // Execute the production layout callback with ordinary/shared DOM dependencies, including a keyboard.
-const source = await readFile(new URL("../src/codex-ui/app.js", import.meta.url), "utf8");
+const source = await readFile(new URL("../src/codex-ui/session-view.js", import.meta.url), "utf8");
 const match = source.match(/  const paintCompose = \(\) => \{([\s\S]*?)\n  \};\n  new MutationObserver\(paintCompose\)/);
 assert(match, "Production phone layout callback discovered");
 const callback = `const paintCompose = () => {${match[1]}\n}; paintCompose();`;
@@ -20,6 +20,9 @@ for (const shared of [false, true]) test(`${shared ? "shared" : "ordinary"} phon
       composeFab: { classList: { contains: () => false } },
       dockCompose: { classList: { toggle() {} }, setAttribute() {} },
       app: { classList: { toggle: (name, value) => calls.push([name, value]) } },
+      // #s429: the view's state is on its own element, and its focus is read through its root.
+      sessionView: { classList: { toggle: (name, value) => calls.push([name, value]) } },
+      viewRoot: { active: () => active }, page: { body: () => ({ dataset: {} }) },
       byId: () => ({ textContent: "Session" }), composeNote: {}, fitCompose: () => calls.push("ordinary-fit"),
       placeDeskCompose: () => calls.push("desk-place"),
     };

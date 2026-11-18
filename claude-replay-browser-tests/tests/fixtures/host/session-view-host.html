@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Session view host</title>
+<!--host-policy-->
+<!-- A test host (#s429 stage 6): a page of the case's own that mounts the session view alone, as a
+     host app would, on the monitor's origin. The case answers this page itself through the browser
+     (harness::answer_in_browser); the monitor serves only its own modules and routes. Its options
+     come from the address: `hide=` names the optional controls switched off (comma-separated, each
+     `show: {name: false}`), `theme=dark` the dark theme (left out: light), `keyboard=` the key mode (left out: the view's default), `frame=` the
+     native app's frame (below), `write=on` writes switched on (below), `mount=0` leaves the mount to
+     the case (`__host.mount()`), and `session=` a session to open, read from the monitor's own session
+     list. The page carries nothing of the view's or the app's beyond the element it mounts the view
+     in (stage 7). A case may put a content policy where `host-policy` stands; the script carries the
+     nonce `host` for one. -->
+<link rel="stylesheet" href="/monitor-ui/session-view.css">
+<style>
+/* The host's own rules keep to its own elements, as the owner's terms say (#s438). */
+.host-bar { position: fixed; top: 0; left: 0; right: 0; height: 40px; display: flex; gap: 8px; align-items: center; padding: 0 12px; }
+.host-pane { position: fixed; top: 40px; left: 0; right: 0; bottom: 0; }
+/* The view lays out its own parts (#s431 stage 1): the host gives it a box and nothing more. */
+.host-view { position: absolute; inset: 0; overflow: hidden; }
+</style>
+</head>
+<body>
+<header class="host-bar"><button type="button" id="hostButton">The host's own button</button><span id="hostLabel">A host</span></header>
+<div class="host-pane" id="hostPane"><div class="host-view"></div></div>
+<script type="module" nonce="host">
+const host = window.__host = { mounted: false, error: null, events: [], keys: [], framed: [], messages: [], errors: [], requests: [] };
+// What a frame inside the view says to its parent: how a case sees an agent page's script run.
+addEventListener("message", event => host.messages.push(String(event.data)));
+// What the page throws, and every request it makes, with when: how a case sees that an unmounted view
+// stopped (stage 7).
+addEventListener("error", event => host.errors.push(String(event.message)));
+const fetched = window.fetch;
+window.fetch = (input, init) => { host.requests.push({ url: String(input && input.url || input), at: performance.now() }); return fetched(input, init); };
+// The host's own keyboard, bound BEFORE the view mounts, as a host's page would be: what reaches it,
+// and whether the view (which listens in the capture phase) had already taken it.
+document.addEventListener("keydown", event => host.keys.push({ key: event.key, prevented: event.defaultPrevented }));
+try {
+  const { backendHandle } = await import("/monitor-ui/backend.js");
+  const { mountSessionView } = await import("/monitor-ui/session-view.js");
+  const params = new URLSearchParams(location.search);
+  const off = (params.get("hide") || "").split(",").filter(Boolean);
+  const backend = backendHandle({ paired: true });
+  // A session to open: its row from the monitor's own list, which a first scan may not have yet.
+  const session = params.get("session") || "";
+  const rows = new Map();
+  for (let tries = 0; session && !rows.has(session) && tries < 40; tries++) {
+    const data = await backend.fetch("/api/sessions", { cache: "no-store" }).then(response => response.json());
+    for (const group of data.groups || []) for (const row of group.rows || []) { row._group = group; rows.set(row.id, row); }
+    if (!rows.has(session)) await new Promise(done => setTimeout(done, 250));
+  }
+  const options = {
+    theme: params.get("theme") === "dark" ? "dark" : "light",
+    backend,
+    grid: document.getElementById("hostPane"),
+    selectedId: () => session,
+    sessionRow: id => rows.get(id) || null,
+    sessionWorkers: () => [],
+    selectSession: () => {},
+    renderList: () => {},
+    refreshIndex: () => {},
+    pauseIndex: () => {},
+    resumeIndex: () => {},
+  };
+  if (off.length) options.show = Object.fromEntries(off.map(name => [name, false]));
+  if (params.get("keyboard")) options.keyboard = params.get("keyboard");
+  // Writes (stage 7): the page carries none of the app's write controls or its confirm layer, and
+  // offers no writes unless `write=on`, which passes write mode switched on and a confirm that
+  // records each ask and cancels it.
+  if (params.get("write") === "on") options.write = { on: () => true, confirm: ask => { host.asks = [...(host.asks || []), ask]; return null; } };
+  // The native app's frame (stage 7): `frame=<address>` answers that address for every page, after
+  // keeping the HTML it was handed; `frame=reject` refuses, `frame=empty` answers "".
+  const frame = params.get("frame");
+  if (frame) options.frame = async html => {
+    host.framed.push(html);
+    if (frame === "reject") throw new Error("the host made no frame");
+    return frame === "empty" ? "" : frame;
+  };
+  for (const name of ["onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast", "onOutline"]) options[name] = (...args) => host.events.push({ name, args });
+  // Mounting is a function the case can call again after an unmount (stage 7, `mount=0` leaves it to
+  // the case), with the same options in the same element.
+  host.mount = () => {
+    const view = window.__view = mountSessionView(document.querySelector(".host-view"), options);
+    if (session) { view.select(session); view.open(session); }
+    return "mounted";
+  };
+  if (params.get("mount") !== "0") host.mount();
+  host.mounted = true;
+} catch (error) {
+  host.error = String(error && error.stack || error);
+}
+</script>
+</body>
+</html>

@@ -9,7 +9,7 @@ You will serve some static files, add one script to a page, implement six small 
 ## 1. What is in the box
 
 ```text
-mdrev-embed-1.1.76/
+mdrev-embed-1.1.81/
   README.md
   bundle/              the guest — what the reader's browser runs
     mdrev.js             the entry: an ES module exporting mountMdrev   (~510 KB)
@@ -180,14 +180,14 @@ $(brew --prefix mdrev)/bin/mdrev-v2
 
 `brew pin mdrev` holds a version while you qualify the next one; `brew info tanghong123/tap/mdrev` says which is current.
 
-**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.76`, with two tarballs: `mdrev-1.1.76-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.76.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
+**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.81`, with two tarballs: `mdrev-1.1.81-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.81.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
 
 ```bash
-curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.76/mdrev-embed-1.1.76.tar.gz
-tar xzf mdrev-embed-1.1.76.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.76
+curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.81/mdrev-embed-1.1.81.tar.gz
+tar xzf mdrev-embed-1.1.81.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.81
 ```
 
-Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.76/mdrev-cli` — with node on the path. The releases page lists the current version.
+Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.81/mdrev-cli` — with node on the path. The releases page lists the current version.
 
 **From source** — `bash scripts/build-release.sh` in a checkout of the repository emits both tarballs into `dist-release/public/`.
 
@@ -196,8 +196,8 @@ Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.76/mdrev-cli` — 
 Run the sample host against a git checkout that has Markdown in it:
 
 ```bash
-tar xzf mdrev-embed-1.1.76.tar.gz
-cd mdrev-embed-1.1.76
+tar xzf mdrev-embed-1.1.81.tar.gz
+cd mdrev-embed-1.1.81
 ./mdrev-v2 ~/src/your-docs/README.md --last 3   # or --root ~/src/your-docs for the whole checkout
 # mdrev-v2: README.md @ /Users/you/src/your-docs
 #   http://127.0.0.1:4600/?path=README.md&from=…&code=…
@@ -207,7 +207,7 @@ It starts **one** background host and reuses it: every later `mdrev-v2 <file>`, 
 
 What bounds it is the `allow` list in that same `roots.json`: entries a reader put there themselves, which no automatically-added folder can widen. Set one and a document outside it is refused however it is spelled; leave it empty and the boundary is the folders the reader has opened. That is the sample standing in for the permissions your own application already has — §8.
 
-Open the address it printed — it carries a **one-time code**, good for ten minutes, which becomes a cookie; the address without it works from then on (the sample has no sessions, so this key is how it knows its user; §8). The page is the host's and it is bare: mdrev fills it, because on this host mdrev *is* the application. You get the newest change to the document as a redline, a range picker at the top to widen it, change bars in the margin, and a rail of the other files the range touched. **Your host is the one that will have a header and a navigation of its own** — this one deliberately has none left, so that anything you see on the page came from the guest and you can tell at a glance which side any bug is on. §10 says which parts of the sample to copy and which exist only because the sample became the product. Select a sentence, press `a` (or click the pen that appears beside the selection), type a note, save it with ⌘↩. The chip that appears is a note in mdrev's own store:
+Open the address it printed — it carries a **one-time code**, good for ten minutes, which becomes a cookie; the address without it works from then on (the sample has no sessions, so this key is how it knows its user; §8). The page is the host's and it is bare: mdrev fills it, because on this host mdrev *is* the application. You get the document's last three changes as a redline (with no range it opens as it stands), a range picker at the top to widen it, change bars in the margin, and a rail of the other files the range touched. **Your host is the one that will have a header and a navigation of its own** — this one deliberately has none left, so that anything you see on the page came from the guest and you can tell at a glance which side any bug is on. §10 says which parts of the sample to copy and which exist only because the sample became the product. Select a sentence, press `a` (or click the pen that appears beside the selection), type a note, save it with ⌘↩. The chip that appears is a note in mdrev's own store:
 
 ```bash
 ./mdrev-cli notes list --root ~/src/your-docs
@@ -293,6 +293,9 @@ mounted.open('guides/deploy.md');
 // the same page. The reader keeps the tree they opened and the notes they
 // left; only the document changes. `cap` is the capability the row carried,
 // and `isGit` — if you know it — spares the viewer a round trip to find out.
+// The range on screen belongs to the history being left, so with none given
+// this opens the document as a plain mount would: as it stands, or as this
+// reader last read it.
 mounted.open('README.md', undefined, {root: otherRoot, cap, isGit: true});
 
 // print the document, from your own menu or shortcut:
@@ -325,7 +328,7 @@ The options, all of them:
 |---|---|---|
 | `contract` | the prefix your routes answer under; every fetch the viewer makes goes to `{contract}/…` on the same origin | required |
 | `path` | the document, in whatever form your `/text` route accepts | required |
-| `range` | what to show first: `{last: N}` — from the Nth most recent revision to the document as it stands; or `{from, to}` with revision ids from your `/revisions`; `from: null` reads the document plainly; `to` left out means "as it stands" | a plain read |
+| `range` | what to show first: `{last: N}` — from the Nth most recent revision to the document as it stands; or `{from, to}` with revision ids from your `/revisions`; `from: null` reads the document plainly; `to` left out means "as it stands" | a plain read, unless this reader last read the document in redline: then that, at the range they last picked there, or its newest change; with a `note` or `hash` named, ending at the document as it stands, so what the link points at is there |
 | `rangeAsked` | the reader asked for `range` **just now**, in so many words — a command line, a "what changed since Tuesday" control. mdrev remembers the mode each document was last read in, and that memory outranks the range a page opens with: right for a reload, a bookmark or a shared link, wrong for a range a reader named a second ago, which came up clean and read as "nothing changed". The viewer cannot tell those apart — both arrive as nothing but a range — so this is you saying which you have. Leave it out for a page that is merely showing a range it was holding. Read once, at mount: a move to another document goes back to that document's own preference. Setting it also makes the viewer call your `onNavigate` once at mount, with the very path and range you passed — that is how the claim is spent, so the address you keep no longer carries it into a reload | `false` |
 | `note` | the comment to open at — a shared record's `shr-` id, or a note's `ann-` id — when your address names one (a link from an unread list or a notification). The viewer scrolls to it, opens its card and marks read what that draws. Read once, at mount, never written back: the next move leaves it, so keep it out of the address you write after `onNavigate` | none |
 | `onNavigate(path, range)` | the reader chose another range or document. `range` is `{from, to}`; `to === 'WORKTREE'` is "as it stands", `from === 'EMPTY'` is "before the first revision", `from === null` a plain read. The viewer never touches your URL — this is how you keep it in step | — |
@@ -405,9 +408,9 @@ isolates the mount for the duration so your application does not come out on
 the paper with the document. Pass `onPrint` and none of that happens: you print,
 and you decide what belongs on the sheet.
 
-**Keyboard.** The viewer's shortcuts (`a` annotate, `n`/`p` next and previous change, `j`/`k` next and previous open note, `[` `]` widen a redline's range, `Escape`) act only while the reader is engaged with the mount — a click or focus inside it — so they do not collide with yours. One of them is a browser key: while the reader is engaged with the mount, ⌘A / Ctrl+A is taken from your page and selects the document alone, not your page around it. Outside the mount and in any text field the key stays the browser's; while the viewer's own modal (its key list, an enlarged picture) is open, it selects nothing. And in the source view, a copy of the selection ⌘A made writes the document's newer text as a file, without the line numbers, change markers or removed lines the pane draws; the copy listener is on your page's `document`, but it acts only on that selection, so every other copy on your page is the browser's.
+**Keyboard.** The viewer's shortcuts (`a` annotate, `n`/`p` next and previous change, `j`/`k` next and previous open note, `[` `]` widen a redline's range, `Escape`) act only while the reader is engaged with the mount — a click or focus inside it — so they do not collide with yours. Some browser keys are taken too. While the reader is engaged with the mount, ⌘A / Ctrl+A is taken from your page and selects the document alone, not your page around it. Outside the mount and in any text field the key stays the browser's; while the viewer's own modal (its key list, an enlarged picture) is open, it selects nothing. ⌘F / Ctrl+F, while the reader is engaged with the mount, opens the viewer's own find instead of the browser's, which cannot see text the viewer has folded away; pressed again it brings the cursor back to that box, and pressed in the box's field it closes it. Outside the mount it stays the browser's, and so does Ctrl+F in a text field on a Mac, where it moves the cursor, and ⌘F / Ctrl+F in the field that names a new branch, which keeps every key but `Escape` to itself; while the viewer's own modal is open, it does nothing. And the zoom keys: while the reader is engaged with the mount, ⌘= / ⌘+, ⌘− and ⌘0 (or Ctrl with the same keys) size the document's text a step larger, a step smaller or back to its default, instead of zooming your page, in a note being written and in the find box as well; outside the mount they stay the browser's, and so do they in the field that names a new branch, which keeps every key but `Escape` to itself. The viewer's own modal also quiets the letter shortcuts: while the key list, an enlarged picture or the notice that a document is no longer available is open, `n`, `j`, `[` and the rest do nothing, so a letter pressed then does not move the document behind it. `Escape`, which closes it, still acts, and the other ⌘ / Ctrl keys are not held back by this. And in the source view, a copy of the selection ⌘A made writes the document's newer text as a file, without the line numbers, change markers or removed lines the pane draws; the copy listener is on your page's `document`, but it acts only on that selection, so every other copy on your page is the browser's.
 
-**Pinch.** Over a diagram or an image the viewer takes the pinch gesture and sizes THAT PICTURE, rather than letting the browser zoom your whole page to inspect one flowchart. It is taken nowhere else: a pinch over the prose, your header or anything outside a picture is left alone, so page zoom stays the reader's. (A pinch reaches a page as a `wheel` event with `ctrlKey`, which is also what ctrl+wheel sends from a mouse; both do the same thing here.)
+**Pinch.** Over a diagram or an image the viewer takes the pinch gesture and sizes THAT PICTURE, rather than letting the browser zoom your whole page to inspect one flowchart. It is taken nowhere else: a pinch over the prose, your header or anything outside a picture is left alone, so pinching there zooms your page as it always does. The zoom keys are another matter; see Keyboard. (A pinch reaches a page as a `wheel` event with `ctrlKey`, which is also what ctrl+wheel sends from a mouse; both do the same thing here.)
 
 **Theme.** Every colour is a token with a fallback: set any of these on the element or an ancestor and the viewer follows. It picks light or dark from `prefers-color-scheme` on its own; a host with its own dark switch sets the tokens under its own selector.
 
@@ -426,6 +429,8 @@ and you decide what belongs on the sheet.
 ```
 
 Set only what you want to change; the rest keeps mdrev's own look. The stylesheet is scoped under `.mdrev-host` — none of its rules reach your page, and yours reach the viewer only through the tokens.
+
+**A font for tables drawn in text.** A table or box drawn in a code block with Chinese in it lines up only in a font whose Han is exactly twice its Latin. Set `--mdrev-wide-mono` to such a font stack and the viewer uses it on those blocks alone. Without it they stay in the reader's own monospace, and a reader whose font cannot line them up is told how to get one. The bundle does not carry a font.
 
 **Rendering without mounting.** The same module exports the engine, for a preview or a static page rendered with the same code the viewer uses:
 
@@ -457,7 +462,7 @@ What is fixed, and is worth a moment if you are fitting this to a framework that
 |---|---|---|
 | `GET /text?path=&rev=` | the file's text — a document's Markdown, or source code (below) — `text/plain; charset=utf-8` | `rev` is an id from `/revisions`, or `current` for the document as it stands. Send an `ETag`; the viewer polls with `If-None-Match` when you have no push, and a 304 is free. Refuse `..` |
 | `GET /revisions?path=` | `[{rev, date, author, subject, body?}]`, **newest first** | `rev` must be the **git commit id** if notes are to be shared with the mdrev application, because a note records the revision it was taken on. `[]` means no history: the viewer is then a reader with notes. **With no `path`** — optional — the COLLECTION's own revisions, which is how the viewer tells "this folder has no history" from "this document has none yet" |
-| `GET /asset?path=` | the file, with its media type | images a document refers to; same root and refusals as `/text` |
+| `GET /asset?path=` | the file, with its media type, `X-Content-Type-Options: nosniff` and, but for video and audio, `Content-Security-Policy: sandbox` | images a document refers to, and files it links to; same root and refusals as `/text`. The sandbox keeps an SVG or HTML file opened in a tab from running script as your site (§8) |
 | `GET /annotations?path=` | `[note]` | `mdrev-cli notes list --path P --all --records --root R`, returned as it is (§6) |
 | `POST /annotations?path=` | the note as stored, **201** | `mdrev-cli notes add --path P --root R` with the request body on stdin |
 | `PATCH /annotations/{id}?path=` `POST /annotations/{id}/replies?path=` `DELETE /annotations/{id}?path=` | the note as it now is; 204 for delete | `notes resolve\|wontfix\|reopen ID --note "…"`, `notes reply ID --body "…"`, `notes delete ID`. A read-and-file-only host may answer 501 |
@@ -578,7 +583,7 @@ Start with 204. Add the stream when you have a change signal to hand.
 
 ## 8. Security
 
-Your documents are other people's. Three lines of defence, in the order they matter:
+Your documents are other people's. Five lines of defence, in the order they matter:
 
 1. **Filtered HTML, on by default.** A document's raw HTML renders — `<details>`, `<kbd>`, `<img width>`, `<div align>` — and everything in it that executes does not: `<script>`, `<style>`, `<iframe>` and their contents are gone, every `on*` handler is stripped, and link and image URLs are held to `http`, `https`, `mailto` and relative paths (`javascript:` and `data:` are dropped). The parse is the platform's — `template.innerHTML` in a browser — because a hand-written tag stripper is where mutation XSS lives. A host whose authors it trusts sets `trustHtml: true`; don't unless you have a reason.
 2. **A Content-Security-Policy on the page**, so that anything that slipped through could not run. This is the whole header the guest needs:
@@ -589,8 +594,23 @@ Your documents are other people's. Three lines of defence, in the order they mat
    ```
 
    `script-src 'self'` is why the mount script in §4 is a file: no inline script runs under it. `style-src 'unsafe-inline'` is the one allowance — diagrams, formulas and highlighted code all write inline styles. `img-src` admits `https:` and `http:` because a document's pictures are often not on the host that serves the document, and refusing them shows the reader an empty box rather than a picture; `connect-src 'self'` still stands, so an image URL is the only outbound channel this page has. A host that would rather not fetch from anywhere sends a narrower `img-src` of its own — this policy is the sample host's, not the guest's requirement. `mdrev-v2` sends exactly this and renders diagrams, math and code under it with no violation. If you send a CSP today, merge these sources into it; if you send none, the guest needs nothing.
-3. **Your session, on every request.** The viewer fetches with `credentials: 'same-origin'`, so a cookie your page already has is sent without being told, including on the event stream. It puts nothing in a URL beyond `path`, `rev`, `blob`, `cap`, `root`, `node`, `from`, `to`, `since` and note ids — no token of yours can leak through a request it makes. If your session arrives as a key in the page URL, rewrite it into a cookie *before* serving the page that mounts the viewer, so the first fetch already carries it.
-4. **Capabilities, if a path is not the same as permission.** A session says the reader may ask. It says nothing about what they may NAME, and your `path` parameter is a name they choose. If that gap matters — and it does the moment one reader's documents are not every reader's — mint a capability per document and require it:
+3. **A sandbox on every file `/asset` sends, but video and audio.** A document's pictures, and the files it links to, come from your origin, where your session lives, and a file in a repository is not always one its reader wrote. Drawn in the page through an `<img>`, an SVG runs nothing. Opened in a tab of its own — a link to it, or *Open image in new tab* — an SVG or an HTML file runs its scripts as your site, and can call every route your page can. Send every asset except a video or an audio file (below) with
+
+   ```text
+   Content-Security-Policy: sandbox
+   ```
+
+   and an opened file gets an origin of its own and no scripts, while an `<img>` draws exactly as before. Keep it on PDFs as well: Chrome's own PDF viewer opens a PDF sent with it, from the address bar and from a document's link alike. If you already send a policy with files, add `sandbox` to it.
+
+   Leave it off video and audio (`video/*`, `audio/*`). The browser's player in that tab fetches the file again, and from a sandboxed page that fetch comes from another site: a `SameSite=Strict` session cookie stays behind, your route refuses the request, and the clip never plays. A player renders no markup, so nothing runs there. Send every asset with
+
+   ```text
+   X-Content-Type-Options: nosniff
+   ```
+
+   so a file is only ever what its type says: an HTML file named `.mp4` is a video the browser cannot play, never a page. `mdrev-v2` sends both from one function, `sendAsset()`.
+4. **Your session, on every request.** The viewer fetches with `credentials: 'same-origin'`, so a cookie your page already has is sent without being told, including on the event stream. It puts nothing in a URL beyond `path`, `rev`, `blob`, `cap`, `root`, `node`, `from`, `to`, `since` and note ids — no token of yours can leak through a request it makes. If your session arrives as a key in the page URL, rewrite it into a cookie *before* serving the page that mounts the viewer, so the first fetch already carries it.
+5. **Capabilities, if a path is not the same as permission.** A session says the reader may ask. It says nothing about what they may NAME, and your `path` parameter is a name they choose. If that gap matters — and it does the moment one reader's documents are not every reader's — mint a capability per document and require it:
 
    ```js
    mountMdrev(el, {contract: '/docs/api/mdrev', path, cap: capabilityFor(user, path)});
@@ -656,7 +676,7 @@ Optional parts you lack are reported as skipped (`–`), never as failures; `--j
 
 `example/` is `mdrev-v2` as source, deliberately small, and organised the way this guide is:
 
-- `server.ts` — `createHost()`: the static files, then the contract route by route. `inside()` is the path guard; `mdrev()` is how a command line is run and its exit code read; the `annotations` block is §6 in forty lines; `subscribe()` is the push half of §7; `CSP` is §8.
+- `server.ts` — `createHost()`: the static files, then the contract route by route. `inside()` is the path guard; `mdrev()` is how a command line is run and its exit code read; the `annotations` block is §6 in forty lines; `subscribe()` is the push half of §7; `CSP` and `sendAsset()` are §8.
 - `page.ts` — the page, and `HOST_SCRIPT`, the mount of §4 as the file the policy requires. **Do not copy this one's layout.** It had a header, a file list and a column, which is what a host looks like and what this guide showed you; then `mdrev` began dispatching to this host by default, and chrome announcing itself as a sample became a lie about what the reader was looking at. So it is now the mount and nothing else. What to take from it is the *mount*: the element that carries `data-path`, `data-cap` and `data-contract`, the range read from the address rather than hardcoded, and `onNavigate` writing it back so a reload and a shared link land where the reader was. Put those inside whatever chrome your application already has.
 - `bin.ts` — the command line. Note `defaultCli()`: the sample runs the `mdrev-cli` beside it, which is the layout this release ships.
 - `roots.ts` — which folders this host will serve, and the file it keeps them in. This is the sample standing in for the permissions your application already has (§8): `allow` is a ceiling a reader sets, `opened` is the working set that grows as they open documents, and a path is servable only when it is inside both.

@@ -27,6 +27,15 @@ pub const PUBLIC_ASSETS: &[&str] = &[
     "codex-workspace/icon-180.png",
 ];
 
+/// The largest body a request to a native build's route may carry (#s426): native mode's send 12
+/// MiB, and the rest as the route table says (`routes::body_limit`).
+pub fn body_limit(route: &str) -> usize {
+    match route {
+        "api/codex/send" => SEND_BODY_LIMIT,
+        _ => crate::routes::body_limit(route),
+    }
+}
+
 /// Compose inert native support with the unchanged reader routes.
 /// No runtime is activated by construction, assets, status or session reading.
 pub fn handler(
@@ -152,7 +161,7 @@ pub fn handler(
         let mut reply = legacy(request);
         if reply.content_type.starts_with("text/html") && reply.stream.is_none() {
             if let Ok(html) = String::from_utf8(reply.body.clone()) {
-                if html.contains("src=\"/monitor-ui/app.js\"") {
+                if html.contains("src=\"monitor-ui/app.js\"") {
                     reply.body = native_reader_page(html).into_bytes();
                 }
             }
@@ -250,7 +259,7 @@ fn render_route(request: &Request<'_>) -> HttpResponse {
 
 /// The extension advertises capability; the browser still starts in ordinary reader mode.
 fn native_reader_page(page: String) -> String {
-    page.replace("</head>", "<link rel=\"stylesheet\" href=\"/monitor-ui/native-entry.css\"><script type=\"module\" src=\"/monitor-ui/native-entry.js\"></script></head>")
+    page.replace("</head>", "<link rel=\"stylesheet\" href=\"monitor-ui/native-entry.css\"><script type=\"module\" src=\"monitor-ui/native-entry.js\"></script></head>")
 }
 
 fn monitor_page() -> String {
@@ -388,6 +397,7 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::routes::contract_index;
 
     #[cfg(unix)]
     #[test]
@@ -486,13 +496,15 @@ mod tests {
             "A reader starts with ordinary viewport behavior"
         );
         assert!(!crate::ui::page(env!("CARGO_PKG_VERSION"), true).contains("maximum-scale=1"));
+        // The session view builds its own markup into `#sessionView` (#s429 stage 4), and the session
+        // list into `#sessionList` (#s430 stage 3), so the page carries the app's shell and the places
+        // the two draw in.
         for marker in [
-            "id=\"transcript\"",
-            "id=\"composeInput\"",
-            "id=\"navigatorTurns\"",
-            "src=\"/monitor-ui/app.js\"",
-            "src=\"/monitor-ui/native-entry.js\"",
-            "href=\"/monitor-ui/native-entry.css\"",
+            "id=\"sessionView\"",
+            "id=\"sessionList\"",
+            "src=\"monitor-ui/app.js\"",
+            "src=\"monitor-ui/native-entry.js\"",
+            "href=\"monitor-ui/native-entry.css\"",
         ] {
             assert!(
                 page.contains(marker),
@@ -544,7 +556,11 @@ mod tests {
             assert!(asset(name).is_some());
             assert!(!PUBLIC_ASSETS.contains(&name));
         }
-        for name in ["monitor-ui/reference.css", "monitor-ui/production.css"] {
+        for name in [
+            "monitor-ui/app-shell.css",
+            "monitor-ui/session-list.css",
+            "monitor-ui/session-view.css",
+        ] {
             assert!(!PUBLIC_ASSETS.contains(&name));
         }
         assert!(asset("codex-workspace/sw.js")
@@ -606,5 +622,90 @@ mod tests {
         assert_eq!(render_route(&request).code, "400 Bad Request");
         request.origin_ok = false;
         assert_eq!(render_route(&request).code, "403 Forbidden");
+    }
+
+    /// #s426: a native build's body limits: its send, and the table's for the rest.
+    #[test]
+    fn a_native_build_reads_its_body_limits_from_the_table() {
+        assert_eq!(body_limit("api/codex/send"), 12 * 1024 * 1024);
+        assert_eq!(
+            body_limit("api/send"),
+            crate::routes::body_limit("api/send")
+        );
+        assert_eq!(body_limit("api/codex/start"), 64 * 1024);
+    }
+
+    /// #s421: Codex native mode's rows of docs/backend-contract.md are answered by the handler a
+    /// native build serves, with its runtime inert (nothing is started). Beneath it is the
+    /// session service's own static fallback, so a row native mode does not answer reads as that
+    /// fallback's answer, as `routes`' test reads the rest of the index.
+    #[test]
+    fn the_contract_s_native_rows_are_answered_by_a_native_build() {
+        let root = std::env::temp_dir().join(format!("cm-native-contract-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("static")).unwrap();
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let runtime = NativeRuntime::new(RuntimeConfig {
+            gateway: Config {
+                endpoint: format!("ws://127.0.0.1:{port}"),
+                allowed_roots: vec![root.clone()],
+                state_path: root.join("receipts.sqlite3"),
+            },
+            binary: root.join("missing-codex"),
+            home: root.join("codex-home"),
+            log_path: root.join("native.log"),
+        })
+        .unwrap();
+        let index = Arc::new(Index::new(root.clone(), root.join("state"), Vec::new()));
+        let fallback = root.join("static");
+        let legacy: RouteHandler = Arc::new(move |request: &Request| {
+            claude_replay_html::service_routes(None, &fallback, request)
+        });
+        let serve = handler(legacy, runtime, index);
+        let ask = |name: &str| -> Option<HttpResponse> {
+            match serve(&Request {
+                method: "GET",
+                name,
+                query: "",
+                body: b"",
+                authenticated: false,
+                origin_ok: false,
+                masked: false,
+            }) {
+                HttpReply::Buffered(reply) => Some(reply),
+                HttpReply::Events(_) => None,
+            }
+        };
+        let unanswered = |reply: &Option<HttpResponse>| {
+            reply.as_ref().is_some_and(|r| {
+                let text = String::from_utf8_lossy(&r.body);
+                (r.code == "403 Forbidden" && text == "forbidden")
+                    || (r.code == "404 Not Found" && text == "not found")
+            })
+        };
+        assert!(
+            unanswered(&ask("api/nonesuch")),
+            "the check sees the fallback"
+        );
+        let rows = contract_index::rows(&contract_index::read());
+        let native: Vec<_> = rows.iter().filter(|row| row.tier == "native").collect();
+        assert!(native.len() >= 2, "the index lists native mode's prefixes");
+        for row in native {
+            let name = contract_index::probe(row, "", "");
+            assert!(
+                row.covers(&format!("/{name}")),
+                "{}'s probe {name}",
+                row.path
+            );
+            let reply = ask(&name);
+            assert!(
+                !unanswered(&reply),
+                "the contract documents {}, and a native build does not answer it",
+                row.path
+            );
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

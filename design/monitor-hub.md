@@ -1,0 +1,688 @@
+# Design: one Agent Monitor over many machines — a native app (#s407)
+
+> **DRAFT 3 — the shape is decided, nothing built.** Draft 1 proposed a hub, one server that relays
+> to every monitor. The owner chose a native app instead (#s411, 2026-11-07): "I have devices spread
+> across the globe, and having a remote aggregation point will add more constraints." He then set
+> Agent Monitor's direction as an embeddable module and a standalone app built from two components
+> (`design/embedding.md`, #s408), and said yes to this app being one more host of those components
+> with its own chrome (#s415). On 2026-11-17 he revised that (#s551): the app is the web app itself,
+> mounted whole from the kit, with its native integration as options the kit names for it
+> (`design/app-mount.md`, D2). Its code lives in a private repository,
+> `tanghong123/agent-monitor-app`, installed through TestFlight on his own account (#s413, #s414).
+> This draft designs that app. The monitor stays a single-machine service
+> (`design/claude-monitor.md`, "What this is not"); what spans machines is an app on the reader's
+> own device, talking to each monitor as a phone already does. It supersedes the fleet's page of
+> tabs (`design/monitor-fleet.md`) and builds on what `design/fleet-pairing.md` shipped (the gate,
+> the token, the one-time pairing code).
+
+**What it is for.** A person with agents on machines around the world wants one Agent Monitor: pair
+it once with each machine, then see every session in ONE session list, each row saying where it
+runs, with a new way to arrange the list by device first. Everything else reads and behaves as the
+monitor does today: the session view, search, the panes, the compose box and dialogs, files and
+mdrev. On a phone, and on a Mac.
+
+**Two words.** A *machine* is a computer whose monitor the app reaches. The reader's *device* is the
+phone, iPad or Mac the app runs on. (The owner's "by device" arrangement groups by machine; its label
+keeps his word.)
+
+**The design, in short.** A native app, for iPhone, iPad and Mac from one codebase. It pairs with
+each machine directly, by the QR code `--pair-phone` already shows, and keeps each token in the
+Keychain. In a web view it mounts the web app itself, the session list and the session view in the
+monitor page's own chrome, from the kit it bundles (`design/app-mount.md`). Their requests go to a custom URL scheme whose handler
+is a relay on the device itself: it sends each request to the machine it is for, over the tailnet,
+with that machine's token. A merged source lets the session list read every machine at once, and a
+chosen session opens on its own machine. The app needs no change to any monitor.
+
+---
+
+## 1. Requirements
+
+| | |
+|---|---|
+| **R1** | One session list over N machines' monitors; each row says which machine it runs on. |
+| **R2** | An Arrange choice "By device", then each machine arranged as the reader already chose. |
+| **R3** | Otherwise the same look and feel: the session view, search, panes, files, mdrev, compose and dialogs, for a session on any paired machine. |
+| **R4** | Pairing is once per machine on each of the reader's devices, from the app; a machine can be forgotten. |
+| **R5** | Works on a phone and on a Mac, with no server of its own anywhere: each request goes from the reader's device straight to the machine it is for. |
+| **R6** | A machine that is offline or slow costs its own rows only: the list still answers. |
+| **R7** | Nothing new is exposed: each monitor is reached exactly as a reader already reaches it today, a paired phone over the tailnet, the reader's own browser on This Mac, the fleet's tabs through a tunnel. |
+| **R8** | No monitor is made multi-machine: its routes, its gate and its exposure rule (`design/claude-monitor.md`, "Exposure") are unchanged. |
+
+## 2. What exists, and the facts the design rests on
+
+- **The fleet** (`agent-monitor-fleet`, built) reads its topology from a config file, probes each
+  machine over ssh for the monitor's port and a machine id, and keeps one `ssh -L` tunnel per
+  machine alive, each on a local port the kernel picks. Its page is a strip of iframe tabs pointing
+  at `127.0.0.1`, so it never worked from a phone. It knows nothing about sessions.
+- **Pairing** (built): one 32-byte token per monitor, 0600 at `<state>/auth-token`, minted by
+  `--pair` (a monitor paired before the move to the state directory still has it at
+  `<cache root>/auth-token`, which is read too). `--pair-phone` shows a QR for
+  `<address>/pair#code=<code>`, a single-use five-minute code; `POST /api/pair`, answered ahead of
+  the gate, swaps it for a cookie whose value is the token itself. The gate also takes
+  `Authorization: Bearer`, and answers a request that presents the token that way with the same
+  cookie, which lasts (it has a `Max-Age`). A paired gate never lets a request through
+  `tailscale serve` in without the token. An unpaired one on macOS does: it admits a loopback peer it
+  cannot verify, and `tailscale serve` connects from the loopback (#s417).
+- **The write and file bar**: the gate's `Host` and `Origin` check (`foreign_header`) asks that each
+  be the loopback or a trusted host (the names `tailscale serve` relays privately to this port), and
+  a request with no `Origin` passes. There is no CORS anywhere.
+- **So a native client needs no monitor change**: it sends no `Origin`, sends `Host` as the monitor's
+  tailnet name, carries the token as the gate's own cookie (D3), and reads that token from the
+  pairing answer's `Set-Cookie`, which native code can see and page script cannot. CORS does not
+  apply to it.
+- **The app shell is bound to its own origin**: 22 distinct root-absolute routes at 74 places in 17
+  files (`/file` alone 18 times; `/records`, `/pull`, `/search`, `/turn-index`, `/api/*`,
+  `/markdown`, `/image`, `/__reveal`, `/mdrev/<version>/`, `/codex-workspace/*`). Whether the reader
+  is at this machine (reveal or download, windowed reading) is read from the page's own origin. The
+  request layer (D5, #s416) is what removes both assumptions.
+- **The session list's shape**: groups of rows, `cwd` on the group, nothing naming the machine.
+  Session ids are UUIDs, but **project keys collide**: the same `~/code/x` on two machines gives the
+  same group key. `/file`, `/__reveal` and mdrev's routes carry no session id, and their stamps are
+  signed by a per-machine key: a stamp is good only at the machine that minted it.
+- **Arrange** (#s387) offers "like the Claude app", "like the Codex app" and "like Herdr", each read
+  from that machine's own app (`/api/layout`).
+
+## 3. Decisions
+
+### D1 — Where the merged view runs: on the reader's device
+
+| | (a) **Native app** (the owner's choice) | (b) Hub (draft 1) | (c) A page calling N monitors with CORS | (d) The fleet's tabs |
+|---|---|---|---|---|
+| Aggregates at | the reader's device | one server | the reader's browser | nowhere |
+| Machines around the world | each reached directly | every request via the hub's location | each reached directly | per tab |
+| A point that must be up | none | the hub | none | the fleet's machine |
+| Credentials | Keychain on the device | N tokens on the hub | N tokens in browser storage | per tab |
+| Monitors change | no | no | CORS and token hand-off on every one | no |
+| Phone | a native app | a web app | a web app, N pairings | dead tabs |
+
+The owner chose (a): with machines spread around the world, an aggregation point in one place adds
+latency and a dependency on one machine, and holds every token in one place. (c) changes every
+monitor's gate and keeps N full credentials where any injected script can read them. (d) is not one
+list and does not work from a phone.
+
+### D2 — The app hosts the web app (decided, #s415; revised by #s551)
+
+**Revised on 2026-11-17** (#s551, Hong: *"I want the same experience as the current web app on
+desktop and mobile, but need the native integration on ios devices"*). The app mounts the web app
+whole, the list and the view in the chrome the monitor's page draws around them, from one kit mount
+(`mountApp`, `design/app-mount.md`). The layout, the top bar and where the list goes are the
+mount's, as in a browser. The app keeps pairing and the Keychain, the relay (D3), the share sheet,
+the sheet before a link leaves the app, and running only bundled code. Its native integration goes
+through options the kit names for it alone. The text below is the decision as #s415 made it, kept
+for its reasoning, which still holds: one list and one view, never a second renderer.
+
+The app is one more host of the components `design/embedding.md` builds ("The pieces", 2 and 3):
+the **session list**, with its filter and arrangements, and the **session view**, with its turn bar,
+search, outline panes, artifact pane and compose box. It mounts them in a `WKWebView`, and a
+`WKURLSchemeHandler` answers every request they make (D3). Its own chrome is native, and is all it
+adds:
+
+- the machine list and pairing (a QR scanner, D4), and the Keychain;
+- the relay (D3);
+- placing the two components: the list in a drawer over the view on a phone, side by side on an
+  iPad or a Mac, as the standalone app places them ("The standalone app becomes a host");
+- on a phone, the one-row top bar, which the standalone app keeps as a host too. What it shows
+  belongs to the session (its title, the current turn, Info), so the session view has to tell its
+  host those and take an "open Info" from it, as embedding's "Customizing" now has it for step 4;
+- on a Mac, a session or an artifact in a window of its own (D8).
+
+Each component lays itself out from the device and the size of the pane the app gives it ("Layout
+decides itself"), and takes the app's theme and its handlers for events ("Customizing"). So there is
+one session list and one session view, the same the monitor's own page and the collaboration app
+use, and none can drift. A fully native UI was the alternative, a second renderer to keep in step
+forever, which `design/claude-monitor.md` ruled out ("Not a second renderer").
+
+**Versions.** The app bundles one kit, pinned and upgraded on purpose ("Delivery"), while each
+paired machine answers the backend contract in its own version. The kit says which contract
+versions it reads ("1. The backend contract"), so a machine whose monitor is outside them is listed
+with a note to upgrade it rather than read wrongly. How the app learns a monitor's contract version
+is for embedding's step 2 to settle (section 5).
+
+### D3 — The relay on the device: the scheme handler
+
+Everything the web view loads comes from one origin, `app://monitor`:
+
+- `app://monitor/kit/…` is the app's own page, the kit and the mdrev the app pins, served from the
+  app's bundle;
+- `app://monitor/k/<key>/m/<machine>/<path>` is relayed to that machine, where `<key>` is a secret
+  the app makes at each launch and gives only its own page (below);
+- an agent's HTML page, which the session view shows in a frame, comes from a scheme of its own
+  (`app-frame://`, below).
+
+One origin means one `localStorage` for the reader's preferences on every machine, which is what a
+reader expects. What the session list keeps per session is keyed by the namespaced id (D6); the
+session view keys by the session's own id, a UUID, which no two machines share.
+
+The handler, for a relayed request:
+
+- maps `<machine>`, the name of the machine's entry in the app, to its address (its
+  `tailscale serve` name and port) and token;
+- sends the request there natively, with `Host` set to that name, no `Origin`, and the page's own
+  body. It forwards only the request headers on a short list (`Accept`, `Content-Type`, `Range`,
+  `Last-Event-ID`, `If-None-Match` and the like), so an `Authorization`, `Cookie` or `Origin` the
+  page sets never reaches the gate, and it drops a `token` query parameter, which the gate would
+  read before its cookie. The token rides as the gate's own cookie, set by hand (`Cookie: cmauth-<8
+  hex>=<token>`, the name the gate derives from its token), on a session with no cookie store at
+  all. A bearer would be answered with a lasting `Set-Cookie` holding the token, and a bearer on `/`
+  with a redirect every time; the gate's own cookie gets neither;
+- relays the answer's status and body back to the page, streaming large ones, and its headers less
+  any `Set-Cookie`, and less `Content-Encoding` and `Content-Length` where `URLSession` has already
+  decoded a gzipped body (a monitor gzips for a tailnet `Host`);
+- relays only to machines with an entry in the app, by that entry, never to an address a request
+  names, with the path normalized first, so the page cannot reach anything that was not added. It
+  follows no redirect: a redirect is handed back to the page as an answer. An entry usually holds a
+  token; one for an unpaired monitor holds none (D8, D10);
+- until the app mounts the web app (agent-monitor-app #s13), passes only what read-only allows: the
+  contract's reads (mdrev's `resolve` among them, a POST that only reads, which the guest asks for
+  every link and image in a document), a session's hiding (`/api/ignore`), mdrev's held text
+  (`hold`) and the reader's own notes. Everything else is refused by the relay itself, among it
+  `/api/send`, `/api/answer`, `/api/dialog` (which reads only to answer), `/api/consent`, Codex
+  native mode's `/api/codex/*` (start, stop, send and the rest) and shared review's writes under
+  `api/mdrev-review/`. From that mount on it also passes the writes Hong chose (D9: the compose box,
+  dialog answers, pane grants and shared review's prefix), and still refuses Codex native mode's,
+  so neither stage rests on the page hiding its controls;
+- answers only the contract's data routes, never the monitor's own page, scripts or stylesheets
+  (`/`, its UI modules, its mdrev bundle), so the app's main frame never runs code a machine sent;
+- never relays `/__reveal`, which opens the file manager on the machine that serves it, a side effect
+  on that machine's desktop, except to this Mac's own monitor (D8).
+
+So the monitor's gate passes the request as it passes a paired phone's, writes included. The token
+never enters the web view: the page cannot read it and no script in it can leak it.
+
+**Only the app's own page may use the relay.** The relay answers nothing outside `/k/<key>/` for
+the current key, and takes the key off before it forwards a request. The key is part of each
+handle's base (D5), so every request the page makes carries it: a fetch, an event stream, an
+`<img>`, an `<a download>`, and mdrev's guest, which takes no header of its own. Nothing else knows
+it:
+
+- **How the page gets the key**: by a script the app injects into the main frame only, at document
+  start, which writes it into the request layer's handles. No message handler the app adds ever
+  returns the key, and every handler checks that its caller is the main frame
+  (`frameInfo.isMainFrame`) on `app://monitor`, since WebKit offers the app's handlers to every
+  frame, sandboxed ones included.
+
+- **An agent's page cannot reach the relay.** The session view shows an HTML page an agent wrote in
+  a frame, sandboxed without its origin, its scripts running, as today. Today that frame is a
+  `srcdoc` of the page, and a `srcdoc` document takes its parent's content policy, so under the
+  app's strict policy (below) its scripts would stop. So in the app the frame loads from
+  `app-frame://`, a scheme the relay is not on: the app answers it from the HTML the page hands it
+  (through a handler that takes HTML and returns only the frame's address), once, under today's
+  frame policy (`connect-src 'none'`, `img-src data: blob:`, `form-action 'none'`) as its header.
+  The session view asks once per tab while its text is the same, uses that address for the tab's
+  whole life (across session switches too), and never says one is released, so the app keeps every
+  page it was handed for the life of the page that asked (the view's `frame` option, #s429 stage 7).
+  The frame never sees the key. The navigation delegate refuses any frame's navigation to `app://`.
+  A script in an agent's page must not open Safari or another app's URL with no tap, and the
+  navigation delegate cannot tell a tap from a script's `click()`: both reach it as
+  `.linkActivated`, by the user (#s418, measured). So no navigation out of a frame goes ahead by
+  itself. A move a script makes by setting the frame's address is refused, as the main frame's is.
+  A link out is asked about, in a sheet naming the address, only when the reader clicked it, and
+  opened in the browser only on their yes. The app hears the reader's clicks with a script in a
+  content world of its own, which the agent's page cannot reach: it reports each click the engine
+  marks trusted, never a script's `click()` or `dispatchEvent`, with the address of the link, and
+  a frame's navigation is asked about only when such a click on that address came within a second
+  of it (agent-monitor-app #s12). A finger's tap was walked and is trusted; a key's click (Enter on
+  a focused link) and an assistive device's should be marked trusted too, and were not walked. A
+  page clicking its own link, once or in a loop, raises no sheet. The session view lets its host
+  supply that frame ("Customizing", frames, step 4).
+- **The main frame never loads a page under `/k/`**: the navigation delegate refuses it. A file the
+  page saves is never a WebKit download of an `app://` address: WebKit's download path does not use
+  the scheme handler, and such a download fails at once with an unsupported URL (#s418, measured,
+  `NSURLErrorDomain` -1002). So when the page asks to save `/file` (a file over 64 MB is saved
+  through an `<a download>` link to it), the delegate cancels the navigation and the app fetches the
+  file itself through the relay's session, under the relay's own checks (the key, a paired machine,
+  read-only's rules), to a file on disk rather than memory, then hands it to the share sheet (a save
+  panel on a Mac).
+  A `blob:` download, which the page makes of a smaller file, is WebKit's own and works. A
+  main-frame navigation out of the app's schemes that a link starts is asked first, as for a frame;
+  one a script makes by setting the address is refused, and said above the page. A machine's answer
+  can ask the page to navigate (the record store follows a `/pull` reply of `{"t":"redirect"}` with
+  `location.assign`), so the request layer also refuses such an answer from a relayed machine.
+- **The key stays out of what is kept**: the web view keeps no history across launches, and the
+  page loads nothing from outside the app, which its policy enforces (below).
+
+Phase 0a measured these on the iOS Simulator (#s418, the app repository's `docs/phase-0a.md`): the
+frame on its own scheme runs its scripts with its header's policy present (that the policy's limits
+hold there is not yet measured); a frame's navigation to `app://` reaches the delegate and is
+cancelled; a sandboxed frame's fetch of `app://` fails, and no request from an opaque origin reached
+the handler; the key script is in the main frame and not in a frame, and the handler measured sees
+`isMainFrame` false for a frame, an opaque one included; and a page request outside the key's prefix
+(a root path) does reach the handler, so the relay must refuse it, as above.
+
+**The app's own page is the boundary that is new.** Each monitor exposes nothing more than today,
+but one page now holds the key and draws records from every paired machine. A rendering bug that
+one machine's records could trigger, or a machine paired from a bad QR code, would reach every
+machine through the relay, writes included, where today the same bug reaches one monitor. So the
+page at `app://monitor/kit/` runs under a strict content security policy: `script-src` of
+`app://monitor/kit/` only (not the whole origin, which relayed answers share) and none inline;
+`default-src 'none'`; `style-src app://monitor/kit/ 'unsafe-inline'` (the components set inline
+styles, and the diagram runtime writes a `<style>` into its drawings); `font-src app://monitor/kit/
+data:`; `connect-src` and `img-src` the app's own origin plus `data:` and `blob:` (an embedded
+image is downloaded by fetching its `data:` address); `frame-src app-frame: http: https: mailto:
+tel: sms:` (an agent's page is framed from `app-frame:`, and the other sources are where a link out
+of it may go, so that its navigation reaches the navigation delegate, which cancels it and asks in
+the sheet; with `app-frame:` alone WebKit stopped it first and the link went nowhere, and the
+delegate still lets a frame load nothing but its own page); `form-action 'none'`; `base-uri
+'none'`. Of the schemes a link out may take, only `http:` and `https:` reach the delegate from the
+frame today: the app's WebKit stops a sandboxed frame's move to `mailto:`, `tel:` or `sms:` before
+any delegate is asked (walked, agent-monitor-app #s12). So for those three the reader's own tap on
+the link is the ask: the app's script, in a world the page cannot reach, hears the tap and, unless
+the page took the click for itself, the sheet names the address; the page's own `click()` is not a
+tap and asks nothing, and a frame's navigation to one is refused unasked, so the reader is asked
+once (walked, agent-monitor-app #s19). The three stay in `frame-src` because the policy is built
+from the one list of schemes the sheet asks for, and a WebKit that let such a move through would
+meet the delegate, which refuses it, rather than open it unasked. An agent's page is not under the
+policy, being on its own scheme. The scripts the page
+loads from a monitor today come from the app's bundle instead, under `/kit/`: mdrev's guest (D8)
+and the diagram runtime (`/mermaid/<version>.js`, found today through the page head's
+`mermaid-runtime` meta), which each host vendors until a second host needs them in the kit
+("Delivery").
+
+### D4 — Pairing and revoking
+
+**Add a machine**: on that machine, `agent-monitor --pair-phone` shows its QR as today. The app
+scans it, or takes the pairing link or code typed or pasted (a Mac has no camera pointed at its own
+screen), reads the address and the code, redeems the code with `POST /api/pair` on the relay's
+session with no cookie store (the answer's lasting `Set-Cookie` would otherwise be saved to disk),
+takes the token from that header, and keeps it in the Keychain with the machine's name, address and
+identity. Nothing is added to the monitor. The Keychain entry is kept on this device only, so each
+of the reader's devices pairs each machine once. `--pair-phone` can hand out an `http://` address,
+and App Transport Security refuses plain http to a tailnet machine: `NSAllowsLocalNetworking` does
+not cover the tailnet's `100.x` addresses (#s418, measured, -1022). The app declares an
+`NSExceptionDomains` entry for `ts.net`, with its subdomains and insecure loads, which lets plain
+http to a MagicDNS name through; an address cannot be named in such an exception. So a plain-http
+pairing address across the tailnet must be the machine's `*.ts.net` name, and the app refuses a
+plain-http tailnet address given by number, saying to pair by name (or by the `https://` address
+`tailscale serve` gives by default). A loopback address (This Mac, D8; a tunnel's local end, D10) is
+not refused: on a Mac the sandboxed app reached `http://127.0.0.1` with no ATS exception declared
+at all (#s418, measured).
+**Forget a machine**: delete it in the app.
+
+**A lost device**: every device paired with a monitor holds that monitor's token. The quickest step
+is to remove the device from the tailnet, which cuts it off from every machine reached over the
+tailnet at once, though not from a monitor someone also serves through Funnel. A lost Mac also holds
+the ssh keys D10's machines are reached by, and an unpaired monitor needs no token: revoke those
+keys too. Replacing each token finishes the job, and works today, with no change, on that machine:
+stop the monitor and whatever restarts it; delete `<state>/auth-token` and, if it is there,
+`<cache root>/auth-token`; start it with `--pair`, which mints a new one; then every reader of that
+machine pairs again. The order matters. `--pair` beside a running monitor writes the file and hands
+off to it, and the running gate keeps the old token; a supervisor that restarts it without `--pair`
+in between leaves it unpaired, which on macOS lets every tailnet device in (#s417). A
+`--pair --rotate` flag would make it one step, and is optional (section 5).
+
+**Identity**: the address a machine was paired at, its tailnet name (one per machine on a tailnet,
+and stable). No monitor route says who a monitor is, so the same machine paired under two names
+lists twice. A route that names the machine would be a monitor change (section 5).
+
+### D5 — What the app builds on: the request layer and the backend contract
+
+Both come from `design/embedding.md`'s order of the work, and are built there:
+
+- **One request layer** (its step 1, #s416, the first thing phase 0b builds): every request the
+  components make goes through one module that holds a *backend handle* per backend. A handle has a
+  *base* (a prefix, an absolute origin, or the app's `app://monitor/k/<key>/m/<machine>/`); how
+  credentials ride (the ambient cookie, the app's relay, or a bearer); whether the reader is *local*
+  to that backend (reveal or download; windowed reading); where its mdrev bundle loads from; and
+  what the page reads today from its own head for the one monitor it has (`data-paired`, which gates
+  the HTML preview, `data-version` and `data-mdrev`). All of them are per handle, never page-wide. A
+  handle's backend can also be in the page itself, as the merged source is (D6).
+  `design/embedding.md`'s step 1 now describes the handle this way, decided by its author within
+  the owner's direction (#s408, #s415), and #s416 builds it: any number of handles, each with any
+  base (so `app://monitor/k/<key>/m/<machine>/` works as is), credentials as a fetch option rather
+  than a header, the mdrev base per handle, and a handle that code in the page may answer. What the
+  page reads from its head moves to the handle in embedding's step 4. Step 1 is the first step of
+  phase 0b here.
+- **The backend contract** ("1. The backend contract", its step 2): the routes the components read,
+  written down and versioned. Each paired machine's monitor already answers it. The app needs nothing
+  of its step 3 (a backend a host mounts): it reaches monitors that already serve the contract.
+
+### D6 — The session list over every machine: the merged source
+
+The session list component reads one backend. In the monitor's own page that backend is one
+monitor; in the app it is the **merged source**, which answers the same session-list routes from N
+handles:
+
+- It polls each machine's session list through that machine's handle, as often as the list refreshes
+  today, with a per-machine timeout, and keeps each machine's last good answer, marked stale. One
+  slow machine never holds the list (R6).
+- It names each row's machine in an optional `machine` field on the row, and namespaces by machine
+  (`<machine>/<id>`) every field the merged list itself matches on: the session's id, its group,
+  its `ignoreKey`, and the ids that nest one session under another (`startedBy`, `sideOf`,
+  `continuedIn`, a fork's family). So the same `~/code/x` on two machines stays two groups, and
+  nothing nests across machines. No monitor's answer gains a field: only the merged source writes
+  `machine`.
+- It leaves each machine's layout answers and the rows' pane fields (`target`, `herdrSession`) as
+  that machine wrote them, and hands both answers on per machine: which apps that machine can follow
+  (plain `/api/layout`), and each app's layout (`/api/layout?source=<app>`), keyed by machine and
+  app. A layout is matched only against its own machine's
+  rows, by the ids and pane keys that machine uses (the Herdr arrangement finds a row by
+  `<herdrSession or default>|<target>`, a key two machines can share), so a layout never reaches a
+  row of another machine.
+- The list's own writes go to the row's machine with the prefix taken off: hiding a session and
+  showing it again (`/api/ignore`).
+- The session filter's buckets and counts sum across machines. Recency compares each machine's
+  activity times with the reader's device's clock; tailnet machines keep time well enough for "the
+  last six hours".
+- A machine that does not answer keeps its last rows, greyed, under a head saying since when. One
+  that never answered is a head saying why.
+- Cost: one list answer per machine per poll (about 13 KB gzipped). The app polls only while it is
+  open, as iOS suspends it otherwise.
+
+It is page code in the kit, beside the session list, built in phase 1 once embedding's step 5 has
+made the list a component: any host that lists sessions from more than one backend needs the same
+thing, and the kit's own tests hold it. The component itself then gains the optional `machine`
+field, read for the row's label and for D7, and layouts per machine, matched as above, beside
+the one layout it reads today. These are additions to the kit's interface, the owner's to approve
+(section 5).
+
+### D7 — The by-device arrangement
+
+A new Arrange choice in the session list, "By device", offered only when rows carry a `machine`: an
+outer head per machine, its sessions under it, arranged as the reader chose for the rest of the
+list. An app arrangement (like the Claude app, the Codex app, Herdr) is read per machine from that
+machine's `/api/layout` (D6), since each machine has its own app, and applied to that machine's rows
+alone, so with more than one machine it is offered only under By device: N apps' layouts have no one
+merged order. Which app arrangements a machine offers comes from its plain `/api/layout` answer.
+Every other choice (by agent and project, by activity) shows one merged list, each row wearing its
+machine as a small label.
+
+### D8 — A session opens on its own machine
+
+Choosing a row is an event the session list sends its host ("Customizing", events out), naming the
+machine and the session. The app mounts the session view with THAT machine's handle, so every call
+the view makes (records, growth, the turn index, search, the panes' lists, files, mdrev, writes) goes
+to the machine the session runs on, and nothing in the view has to know there are others. A file's
+stamp, signed by that machine's key, goes back to the machine that minted it by construction.
+
+**mdrev comes from the app.** The view's mdrev guest is the one the app pins and bundles, never a
+machine's (D3: no code from a machine runs in the page), and it reads each machine's mdrev routes
+through the handle. mdrev's guest already works with hosts that answer less (a route a host lacks
+turns its feature off), so a machine whose monitor pins an older mdrev should lose only what it
+lacks. That is checked, not assumed: the app's guest against the oldest monitor version the kit
+reads, by mdrev's own conformance check. mdrev's guest makes its own requests with no header of the
+host's, which is why the key rides in the base (D3) rather than in a header; under the key, its
+bundle, every chunk it imports and its contract calls all reached the relay prefixed, and held text
+rendered (#s418, measured on the iOS Simulator).
+
+**Locality is per handle.** On a Mac, the app pairs "This Mac" on the loopback, with the code that
+`agent-monitor --pair-phone --url http://127.0.0.1:<port>` shows: that machine alone is local, and
+reveal is relayed to it alone. An unpaired This Mac lists its sessions and shows their transcripts
+with no code at all, as the reader's own browser does, but `/file` needs a token, so its files,
+images opened by path, mdrev on a file and the HTML preview (which `data-paired` gates) wait for
+pairing, and so do writes. Every other machine is remote: its files
+download, and long sessions read windowed. On a phone nothing is local. A Mac paired both ways
+lists twice, as D4 says.
+
+**Detached views** ("Detached views"): on a Mac, a session or an artifact opens in a window of its
+own, the kit's detached page entry in a second web view on the same scheme and handle. Today's
+detached tab gets held text through `sessionStorage`, which `window.open` copies into the tab it
+makes, and a second `WKWebView` opened by `window.open` reads its opener's `sessionStorage` the same
+way when it is built from the configuration WebKit hands to `createWebViewWith` (#s418, measured on
+the iOS Simulator). On a phone the view's
+own full-screen sheets stand in for a window, as they do in the monitor's page today.
+
+### D9 — Writes across machines
+
+The compose box, dialogs and pane grants work on any machine's session, under that monitor's own
+gate: the token the app holds, and its consent, kept per pane and pid on that machine. The
+components need nothing new for it: a handle whose backend serves the write routes gets the compose
+box and the answer buttons, and one that serves none gets neither ("1. The backend contract"). Codex
+native mode is the exception: its page code comes from the monitor (its entry imports
+`/codex-workspace/api.js` and the monitor's stylesheet), which the relay does not pass (D3). So the
+app leaves native mode out until its modules join the kit, an addition for section 5.
+
+**Decided on 2026-11-17** (agent-monitor-app #s14, Hong on the dashboard: "Writes come with the
+web-app mount (#s13)"): the app writes to sessions from the moment it mounts the web app
+(`design/app-mount.md`), with no read-only stage first. The compose box, dialog answers and pane
+grants work as on the web app, each under that monitor's own gate. The relay passes the write routes
+of the compose box, dialogs and pane grants, and, since Hong's #s554 ("In, as on the web app"),
+every route of shared review's prefix (`api/mdrev-review/`, listed in `design/app-mount.md`), each
+under that machine's own mdrev key and review store. It still refuses every frame's request and
+Codex native mode's (`/api/codex/*`), whatever the page shows. What follows is the choice as it stood. **Choice for
+the owner**: writes in the first release with the rest (parity, R3), or a read-only first release
+with writes a stage later. Read-only here means no send, no answer to a dialog, no pane grant, none
+of Codex native mode's writes (`/api/codex/*`) and none of shared review's writes (a Push, a Share,
+pairing and subscriptions, which reach colleagues). Hiding a session, mdrev's held text (`hold`) and
+the reader's own notes still reach the machine, as they do from a paired phone, since none of them
+touches an agent or anyone else. The relay holds that line (D3), not only the page. Recommended:
+read-only first, so the first release proves pairing, the relay and its key (D3) before anything in
+the app can type into an agent. The relay enforces it (D3), not only the page. A lost device holding
+writes is no worse than a lost paired phone today, and its tokens are replaced as D4 says.
+
+### D10 — Machines reachable only by ssh
+
+Today some machines are reached only by ssh, through the fleet's tunnels (`design/fleet-pairing.md`,
+D1). An iOS app cannot run those tunnels. A Mac build sent through TestFlight runs in the App
+Sandbox, and a sandboxed app cannot run `ssh` with the reader's keys (#s418, measured on macOS 27
+with only `network.client`): `/usr/bin/ssh` starts but inherits the sandbox, cannot load
+`~/.ssh/id_rsa` ("Operation not permitted") and cannot write `known_hosts`, and the app itself
+cannot list `~/.ssh`. A
+sandboxed app does reach a monitor on the loopback. So the plan, which Hong chose on 2026-11-17
+(agent-monitor-app #s15: "Fleet binary as the tunnel helper"): the fleet's binary stays on the Mac
+as the tunnel helper, outside the sandbox, opening and re-opening the tunnels as today, and the Mac
+app reaches each tunnelled monitor at the loopback port the helper opened:
+
+- **Running the helper**: the reader installs and runs the fleet as today, on a fixed `--port` the
+  app is told once; a sandboxed app cannot start it.
+- **Which port is which machine**: the kernel picks the tunnels' ports, and the fleet already
+  publishes each machine's name and current local address on every poll of its `/api/fleet`. The app
+  reads that, names a tunnelled machine by the fleet's name for it, and follows it to its new port
+  when a tunnel is re-opened. The fleet listens only on `127.0.0.1`, so it always runs on the app's
+  own Mac, and every address it names is a loopback one; the app skips the entry whose address is
+  This Mac's own monitor on the loopback (paired or not), already listed, and lists every other
+  entry, a second local monitor included.
+- **The `Host` a tunnelled monitor wants**: its gate compares `Host` with its own port, which is not
+  the tunnel's local one, so files and writes would be refused. The fleet's own probe sends the
+  monitor's port in `Host` for this reason (#s150), but the fleet keeps that port to itself, and
+  `URLSession` reserves `Host`. Measured (#s418, a write with the token's cookie over the Network
+  framework by hand): `Host: 127.0.0.1:<the monitor's port>` is answered 200, a `Host` naming
+  another port (a tunnel's local end, by address or as `localhost`) 403, and no `Host` 200; a read
+  of `/api/sessions` is 200 whatever the `Host` (file reads check it, like writes). So the relay
+  speaks HTTP/1.1 itself over the Network framework for a tunnelled machine, and either sends the
+  monitor's port, which the fleet would have to publish (a fleet change), or sends no `Host`.
+  Section 5 weighs the two.
+- **Admission**, as the fleet's tabs are admitted today: an unpaired Linux monitor admits the tunnel
+  as its own user, with no token: its list and its transcripts, but not `/file` (files, images by
+  path, mdrev on a file, the HTML preview) and no writes, as D8 says of an unpaired This Mac. A
+  paired one takes a code that `agent-monitor --pair-phone --url http://127.0.0.1:<its port>` shows
+  on it, typed into the app, and then takes writes too; `/api/pair` answers only on a paired gate.
+  The app takes the code from that link and the address from `/api/fleet`, since the link names the
+  monitor's own port.
+- **A port that moved**: the relay sends a token to a tunnel's port only while the fleet's latest
+  answer names that machine there. On a Mac shared with other users, another user could take a port
+  in the moment a tunnel drops, or the fleet's own fixed port while the fleet is down, and answer as
+  the fleet (its `/api/fleet` admits any local user on macOS) to steer tokens to ports of their own;
+  this narrows the first, and neither is closed. The app is for a Mac its reader does not share.
+
+So on a Mac every machine the fleet reaches today is in the list, and on a phone only the machines
+on the tailnet. The alternatives: a Mac build signed outside TestFlight (Developer ID, no sandbox)
+that runs `ssh` itself, which changes #s413 and is the owner's; inside the sandbox, `~/.ssh` granted
+by the reader through an open panel and kept as a security-scoped bookmark (whether a child `ssh`
+may then read it is not measured), or a key of the app's own in its container that the reader
+authorizes on each machine; or one machine relaying for the others, the remote point the owner ruled
+out.
+
+### D11 — Notifications: the owner's choice
+
+With no server of its own, a push needs something to send it through Apple's push service. Either
+**each monitor sends** "a session on <machine> needs you" (an APNs key on every machine, and a
+payload with no session content, since it leaves the tailnet through Apple's servers), or **there
+are none**, and the app shows attention only while it is open. Background refresh on iOS is
+opportunistic and is not a substitute. A machine reached only by ssh makes no new outbound
+connections (`design/fleet-pairing.md`, D1), so it could not send one. Pushes would be a monitor
+change, a new network path and a signing key spread over every machine, so they are in section 5.
+Recommended for the first release: none.
+
+### D12 — The fleet's tabs retire
+
+Once the Mac app covers what the tabs did, the fleet's page could be retired, with a migration
+note, in the way the classic view was (#s98). Its binary stays as the Mac app's tunnel helper (D10),
+unless a later build runs the tunnels itself (outside the sandbox, or with `~/.ssh` granted or a key
+of its own, D10; phase 0a found a sandboxed app cannot use the reader's keys); then the binary and
+its formula could retire too. Removing a feature is the owner's (section 5).
+
+## 4. Security
+
+- **No monitor exposes more than today.** A tailnet monitor sees the app as one more paired phone,
+  over the same path; This Mac's sees it as the reader's own browser; a tunnelled one, as the fleet's
+  tabs.
+- **Tokens stay in the Keychain**, on the device only, and never enter the web view, a log or a URL.
+  The relay strips the `Set-Cookie` that would carry one to the page (D3).
+- **The relay reaches only paired machines**, by their entry in the app, with the path normalized:
+  the page cannot make it reach a host or a route that was not paired.
+- **No code from a machine runs in the app's main frame.** The page, the kit and mdrev come from the
+  app's bundle; the relay answers data routes only, and the main frame never navigates under `/k/`
+  (D3). An agent's HTML page runs only in its sandboxed frame on its own scheme.
+- **Only the app's own page uses the relay**: the key is in its requests' path and nowhere else, and
+  reaches the page by a main-frame script, never a handler (D3). A navigation out of the app's
+  schemes, from the main frame or a frame, opens in the browser only after the reader says yes in a
+  sheet naming the address, since the navigation delegate cannot tell a tap from a script's click
+  (#s418); a frame's is asked about only on the reader's own click (D3). A download from the main
+  frame of a `blob:` address passes; one of the relay's `/file` is fetched by the app itself and
+  handed to the share sheet; every other download, and every download from a frame, is refused.
+- **No token on disk but the Keychain's**: pairing and the relay use a session with no cookie store
+  (D3, D4).
+- **Reveal is relayed only to this Mac's own monitor** (D8).
+- **Masking is each monitor's**, and off unless its mask policy turns it on (#365). The app reaches
+  a tailnet monitor by its tailnet name, so a policy that masks for clients across a network masks
+  for the app. This Mac's monitor and a tunnelled one are reached on the loopback, so they mask only
+  under the `always` policy, as for the fleet's tabs today. The app adds no masking of its own.
+- **What crosses the network**: the reader's device to each machine, over the tailnet (WireGuard),
+  and, if the owner chooses pushes, a content-free notice through Apple's push service. Nothing else
+  leaves the tailnet.
+
+## 5. Contracts this creates or changes, and who relies on them
+
+Decided: the app itself, in the private repository `tanghong123/agent-monitor-app` (#s414). The
+agent sets up the repository and the build; distribution through TestFlight is the owner's own, on
+his Apple account (#s413). Each item below is the owner's to approve when it comes up, with a
+recommendation:
+
+- **The web app as one kit mount** (#s551, `design/app-mount.md`): Hong agreed to it on 2026-11-17,
+  with the native options his plan named, and ruled the same day on each item it raised beyond them:
+  writes (agent-monitor-app #s14), a Machines row (#s553), shared review (#s554) and Review on an
+  iPad (#s555). Anything more goes to him the same way.
+- **The kit's components and the backend contract** are `design/embedding.md`'s, decided there. The
+  app relies on the contract across monitor versions (D2), which is what versioning it is for.
+  Settled there since draft 3 (`design/embedding.md` at 52bfd821, by its author within the owner's
+  direction): the request layer holds a handle per backend (D5); the session view's title, turn and
+  Info events and its frame hook ("Customizing", step 4); the kit as step 7 and detached views as
+  step 8, in a later kit; mdrev's guest and the diagram runtime vendored by each host until a second
+  host needs them in the kit.
+- **How the app learns a monitor's contract version** (D2), for embedding's step 2: (a) the kit maps
+  a monitor's release version, which its page already carries (`data-version` on `/`, read natively
+  by the app), to the contract versions it serves, with no monitor change; or (b) a version field in
+  an answer the app already reads, a monitor change. Recommended: (b) if step 2 adds one for every
+  host anyway, else (a).
+- **The session list beyond one backend** (D6, D7): the merged source in the kit, which rewrites ids
+  and group keys as `<machine>/<id>`; an optional `machine` field on a session-list row that only
+  the merged source writes; and the list reading, per machine, which apps it can follow and each
+  app's layout (`/api/layout` and `/api/layout?source=<app>`, keyed by machine and app), each layout
+  matched against its own machine's rows, where it reads one machine's today. All of them only add.
+  A larger alternative is a session list that takes N backends itself; one with no addition at all
+  folds the machine into the project's label, which says where a row runs but makes "By device"
+  impossible (R2). Recommended: the merged source, the field and the layouts per machine, triaged
+  with embedding's step 5. Decided by the owner on #s539 (section 8): the merged source in the kit.
+- **What the app comes to rely on that a monitor does today**: the pairing QR's address form,
+  `/api/pair` answering with the token in `Set-Cookie`, the gate reading its own cookie by the name
+  it derives from its token, a request with no `Origin` passing the write check, the trusted-host
+  rule that lets `/file` and writes through for the `tailscale serve` name (#331), `/api/layout`,
+  and, if (a) above is chosen, the `data-version` in the page at `/`. Recommended: written into the
+  contract in embedding's step 2, so a change to any of them is seen as a contract change.
+- **The app's pinned mdrev guest against each machine's mdrev** (D8): the guest of one mdrev release,
+  with a custom-scheme base and the key in its path, reads routes served by another release's
+  `mdrev-cli`. If the conformance check or the spike finds it cannot, the fix is a change to mdrev,
+  for its owner. The alternative with no change, loading each machine's own guest, is what D3 rules
+  out (no code from a machine in the page). Recommended: check it in phase 0a, and ask mdrev's
+  owner only on a failure.
+- **A route that names the machine** (D4): recommended not now. The tailnet name is the identity,
+  and the cost is a machine paired under two names listing twice.
+- **`--pair --rotate` on the monitor** (D4): optional. Recommended not now: deleting the token file
+  and restarting already replaces a token.
+- **Notifications** (D11): pushes sent by each monitor would be a monitor change, a path through
+  Apple's push service, a signing key on every machine, and none from a machine reached only by
+  ssh. The alternative with no change is none, the
+  app showing attention only while it is open. Recommended: none in the first release.
+- **Codex native mode in the app** (D9): its page modules joining the kit, an addition; the
+  alternative with no change is the app without native mode, which the monitor's own page keeps.
+  Recommended: without it at first, since nothing in the app's first phases needs it.
+- **The fleet as the Mac app's tunnel helper** (D10), for phase 4: the app reads `/api/fleet` as it
+  is, which then becomes something it relies on. For the `Host` a tunnelled monitor wants: the
+  fleet adds each machine's monitor port to `/api/fleet` (a field that only adds); or the app takes
+  the port from a paired monitor's pairing link (no change, but only for a paired monitor); or the
+  relay sends no `Host` and relies on the gate letting that pass. Recommended: the fleet's field,
+  since it covers every tunnelled monitor and leans on no leniency.
+- **Retiring the fleet's page, and perhaps its binary and formula** (D12): removing a feature.
+  Options: retire the page once the Mac app lists every machine the tabs did (recommended), keep it
+  beside the app, or retire the binary too if the app can run the tunnels itself.
+
+## 6. Phases
+
+Two tracks. The kit is built in claude-replay under #s406, in `design/embedding.md`'s order; the app
+is built in its own repository, and starts with what it can learn before the kit exists.
+
+| Phase | Where | Ships | Accept |
+|---|---|---|---|
+| 0a | the app's repo | Spikes: a `WKURLSchemeHandler` relaying POST bodies and streaming a large `/records` range, with the gate's cookie set by hand and no cookie store (D3); a gzipped answer through the relay (D3); the key in the path reaching every kind of request the page makes, an agent's page framed from its own scheme with its policy as a header, refusing a frame's navigation, CORS on a custom scheme, and the page's strict policy (D3); a download from the page and the share sheet (D3, R3); the web view's storage for a custom scheme (the components keep their preferences in `localStorage`); whether a custom scheme is a secure context for the APIs the components use; a second web view getting `sessionStorage` from `window.open` (D8); App Transport Security and an `http://` pairing address (D4); and on a Mac, whether a sandboxed app can run `ssh`, reach a monitor on the loopback, and speak HTTP/1.1 to a tunnelled monitor with its port or with no `Host` (D10). Most can be measured with today's monitor page loaded whole through the scheme from one machine, an exception to D3 for the spike alone. The answers are in the app repository's `docs/phase-0a.md` (#s418): the iOS Simulator's and the Mac's are in (an event stream held open, mdrev's guest under the key and the share sheet among them, each confirming the design); the Mac reached the loopback over plain http with no ATS exception; only a physical device is still to come. | Each answered by measurement on the iOS Simulator, a device and a Mac, written down |
+| 0b | claude-replay | Embedding's steps 1 (the request layer, #s416), 2 (the contract), 4 and 5 (the two components, with the app shell mounting them), 6 (layout by pane size, which the iPad and the Mac need side by side) and 7 (the kit). | Embedding's own: the app shell's browser suite green at every step, a Simulator walk |
+| 1 | both | claude-replay: the merged source and the row's `machine` field (after the owner's yes, section 5). The app: the iOS app, with pairing by QR, the Keychain, the relay and its key, the session list over the merged source, and the session view on each row's machine, files and mdrev included, read-only | Paired with two machines, the app lists both; an offline machine costs only its own rows; a session on each, its files and its Markdown read as on its own machine; an agent's page runs its scripts, and its navigation to `app://`, a navigation out before the sheet's yes and a call to each of the app's handlers are each refused; a page-issued `/api/send` or `/api/codex/send` is refused by the relay |
+| 2 | claude-replay | "By device" in the session list | The list arranged by machine, each arranged as the reader chose, on a phone and side by side on an iPad |
+| 3 | both | Writes across machines (or in 1, by the owner's choice) | The compose box, a dialog and a pane grant on another machine's session, each refused where today's rules refuse it; a frame's write refused by the relay |
+| 4 | both | The Mac app: the two components side by side, This Mac on the loopback, detached windows (embedding's step 8, in a later kit); the fleet's answer and its tunnels as the helper; the fleet's page retired | A machine reached only by ssh appears in the Mac app's list; a session opens in a window of its own; reveal works on This Mac only |
+| 5 | both | Notifications, if the owner chooses them (D11) | — |
+
+**Revised on 2026-11-17** (#s551, agent-monitor-app #s14): the app mounts the web app whole
+(`design/app-mount.md`), so phase 1's list and view, and phase 4's on a Mac, are the web app's own
+chrome rather than the two components placed by the app; and writes come with that mount, so
+phase 3 joins it. The mount's own order is in `design/app-mount.md`.
+
+## 7. What this is not
+
+- **Not a change to the monitor.** No route, field or gate, beyond the optional items in section 5,
+  which are the owner's.
+- **Not a server.** Nothing runs anywhere but the monitors, the app on the reader's device, and on a
+  Mac the fleet's tunnel helper.
+- **Not a second renderer.** The app hosts the web app itself, the same two components in the same
+  chrome as the monitor's page (D2, revised by #s551).
+- **Not a sync service.** The app stores no session content beyond each machine's last list answer
+  and what the components already cache.
+
+## 8. Decided, and still open
+
+**Decided by the owner:**
+
+- A native app on the reader's device, not a hub (#s411, D1).
+- The app is one more host of the session list and session view components, with its own native
+  chrome (#s408, #s415, D2). Revised on 2026-11-17: the app hosts the web app whole, its native
+  integration as options the kit names for it (#s551, D2, `design/app-mount.md`).
+- Its code in a new private repository, `tanghong123/agent-monitor-app`, installed through
+  TestFlight on his account (#s413, #s414).
+
+**Decided in `design/embedding.md`** by its author, within that direction (52bfd821): a backend
+handle per backend in the request layer; the session view's top-bar events and frame hook; the kit
+before detached views; each host vendoring mdrev and the diagram runtime at first.
+
+**Decided by the owner on what hosts may change** (#s436, 2026-11-08): light or dark and no colour
+settings for now, the optional controls, the events and keys kept to the component. The frame for
+an agent's page is this app's alone, not offered to other hosts, since the owner controls both
+sides and they are kept consistent.
+
+**Decided by the owner on the session list beyond one backend** (#s539, 2026-11-16, triaged on
+#s538): "build the merge into the kit (each part its own server, a machine label and stale heads on
+rows)". The merged source of D6 is kit code, each part reads a server of its own, and rows carry
+their machine and show a machine gone stale. Building it found the kit still kept one handle for
+the whole page: the list had no `backend` of its own and read whichever handle the view's
+`backend` option had last set, against D5's "never page-wide". #s540 gives the list its own; #s541
+builds the merged source on it.
+
+**Still open,** each asked when the phase it holds up comes near, not before:
+
+1. **How the app learns a monitor's contract version** (section 5, embedding's step 2).
+2. ~~**Writes** (D9, phase 3)~~: decided 2026-11-17, writes come with the web-app mount
+   (agent-monitor-app #s14, D9).
+3. **Machines reachable only by ssh** (D10, phase 4): decided 2026-11-17, the fleet's binary as the
+   Mac app's tunnel helper (agent-monitor-app #s15). Still open for phase 4: with the helper, the
+   monitor's port in `/api/fleet` (recommended) or no `Host`; then whether the fleet's page retires
+   (D12).
+4. **Notifications** (D11, phase 5): none in the first release (recommended), or pushes sent by each
+   monitor.

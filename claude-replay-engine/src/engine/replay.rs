@@ -11,7 +11,7 @@
 use crate::engine::message::{Message, QueueOpKind};
 use crate::model::*;
 use serde_json::Value;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// Streaming whole-file parse for `agent`: blocks + one wall-clock timestamp per user turn +
 /// folded metrics, all in a single pass (M9/M10). Derived from the incremental fold — feeds a
@@ -138,12 +138,21 @@ pub struct Replayer<'a> {
     /// those addresses names its recipient from here. Persisted through the meta stream
     /// (`MetaRecord::peer_names`) so a resumed fold still knows the senders in its committed part.
     peer_names: HashMap<String, String>,
-    /// The replies the safety classifier stopped in this fold (#s378): message id -> the category
-    /// the client recorded. A note naming one of them folds to its `SafetyStop` mark. Not carried
-    /// through the meta stream: a resume begins at a line that opens a turn, and the note follows
-    /// its reply within the turn (one or two records later, measured), so the two are never split
-    /// by a resume point.
-    refused: HashMap<String, Option<String>>,
+    /// The replies the safety classifier stopped in this fold (#s378) and nothing has named yet:
+    /// message id -> the category the client recorded. A note naming one of them folds to its
+    /// `SafetyStop` mark, and so does the client's API-error record naming one (#s470). Carried
+    /// through the meta stream (a gauge, like `sandbox_on`): the note or the record follows its
+    /// reply within the turn, but a resume can begin at a line inside a turn (a queued prompt
+    /// picked up, another session's message), and one between a stopped reply and the record
+    /// naming it would otherwise fold that record as a plain result line.
+    refused: BTreeMap<String, Option<String>>,
+    /// Where each assistant record of the resident window began (#s500): its id and the logical
+    /// index of the first block its content made, in order. A note withdrawing records
+    /// ([`Message::RetryNote`]) finds what they drew here. Retired with the turns that commit, and
+    /// never carried through the meta stream: a resume begins at a line that opens a turn, and a
+    /// note naming a record above such a line has that turn's opening block in the run between,
+    /// which no rule withdraws, so a cold fold leaves it the result line a resumed one does.
+    replies: Vec<(String, BlockIndex)>,
     /// Whether this transcript ran with the agent's Bash sandbox on (#s381): set by its
     /// `SandboxOn` head or any run inside it, never unset. Carried through the meta stream (a
     /// gauge, like the cwd), since the head sits far above most calls and below many resume points.
@@ -167,6 +176,35 @@ fn record_agent(map: &mut HashMap<String, (String, String)>, b: &Block) {
     // stream's `MetaDelta::push`, so the live map and the persisted stream cannot drift.
     for (key, agent_id, agent_type) in crate::engine::meta_stream::agent_pairs(b) {
         map.insert(key, (agent_id, agent_type));
+    }
+}
+
+/// #s500: where the records a retry note names begin, when they are exactly the last of
+/// `replies` (each named once, none missing, none between): the start recorded for the first.
+/// Shared with the full parse, so the two paths cannot disagree on which note withdraws a reply.
+#[doc(hidden)]
+pub fn withdrawn_run(replies: &[(String, BlockIndex)], ids: &[String]) -> Option<BlockIndex> {
+    let named: HashSet<&str> = ids.iter().map(String::as_str).collect();
+    let n = named.len();
+    if n == 0 || replies.len() < n {
+        return None;
+    }
+    let tail = &replies[replies.len() - n..];
+    let seen: HashSet<&str> = tail.iter().map(|(u, _)| u.as_str()).collect();
+    (seen == named).then(|| tail[0].1)
+}
+
+/// #s500: what a withdrawn reply may hold and still fold under its mark: thinking with no call
+/// grouped into it, and prose. A call, a result, a turn's opening or anything else in the run
+/// leaves the note where it is.
+#[doc(hidden)]
+pub fn withdrawable(b: &Block) -> bool {
+    match b {
+        Block::Thinking { tools, .. } => tools.is_empty(),
+        Block::AssistantText(_) | Block::AssistantCutOff(_) | Block::AssistantMessage { .. } => {
+            true
+        }
+        _ => false,
     }
 }
 
@@ -203,7 +241,8 @@ impl<'a> Replayer<'a> {
             agent_ids: HashMap::new(),
             inbox_ids: std::collections::HashSet::new(),
             peer_names: HashMap::new(),
-            refused: HashMap::new(),
+            refused: BTreeMap::new(),
+            replies: Vec::new(),
             sandbox_on: false,
         }
     }
@@ -431,11 +470,31 @@ impl<'a> Replayer<'a> {
                         }
                     }
                 }
-                Message::RefusedNote { id, text } => match self.refused.remove(id) {
-                    Some(category) => self.out.push(Block::SafetyStop {
-                        category,
-                        note: text.clone(),
-                    }),
+                // #s470: the API-error form of the same stop folds the same way.
+                Message::RefusedNote { id, text } | Message::RefusedError { id, text } => {
+                    match self.refused.remove(id) {
+                        Some(category) => self.out.push(Block::SafetyStop {
+                            category,
+                            note: text.clone(),
+                        }),
+                        None => self.out.push(Block::ToolResult(text.clone())),
+                    }
+                }
+                Message::ReplyRecord { uuid } => {
+                    self.replies
+                        .push((uuid.clone(), self.base + self.out.len()));
+                }
+                // #s500: the reply the client withdrew, folded under the note's mark, where the
+                // note names exactly what it drew; otherwise the note is the result line it was.
+                Message::RetryNote { ids, text } => match self.withdrawn_from(ids) {
+                    Some(lo) => {
+                        let reply = self.out[lo - self.base..].to_vec();
+                        self.suppress.extend(lo..self.base + self.out.len());
+                        self.out.push(Block::Withdrawn {
+                            note: text.clone(),
+                            reply,
+                        });
+                    }
                     None => self.out.push(Block::ToolResult(text.clone())),
                 },
                 Message::CompactBoundary {
@@ -751,6 +810,7 @@ impl<'a> Replayer<'a> {
         self.base = hi;
         self.suppress.retain(|&i| i >= self.base);
         self.tool_slot.retain(|_, &mut v| v >= self.base);
+        self.replies.retain(|&(_, i)| i >= self.base);
         if matches!(self.last_skill, Some(i) if i < self.base) {
             self.last_skill = None;
         }
@@ -807,6 +867,17 @@ impl<'a> Replayer<'a> {
                 }
             }
         }
+    }
+
+    /// Where the reply a retry note withdraws begins (#s500), as a logical index: only when the
+    /// records it names are exactly the last ones this window met, and everything they and
+    /// anything after them drew up to the note is thinking or prose ([`withdrawable`]). Any other
+    /// note (a record never met, one further back, a run holding a call, a turn's opening or a
+    /// result) leaves `None`, and the note is the result line it was.
+    fn withdrawn_from(&self, ids: &[String]) -> Option<BlockIndex> {
+        let at = withdrawn_run(&self.replies, ids)?;
+        let rel = at.checked_sub(self.base)?;
+        self.out[rel..].iter().all(withdrawable).then_some(at)
     }
 
     fn queue_pin(&self, k: usize) -> Option<usize> {
@@ -913,7 +984,7 @@ impl<'a> Replayer<'a> {
             .iter()
             .map(|(a, n)| (a.clone(), n.clone()))
             .collect();
-        self.refused.clear();
+        self.refused = mm.refused.clone();
         self.sandbox_on = mm.sandbox_on;
         self.turn_durations = mm.turn_durations.clone();
         self.turn_durations.resize(mm.user_times.len(), None);
@@ -930,6 +1001,12 @@ impl<'a> Replayer<'a> {
     /// the builder captures at each resume point.
     pub(crate) fn sandbox_on(&self) -> bool {
         self.sandbox_on
+    }
+
+    /// The stopped replies nothing has named yet (#s378, #s470) — the gauge the builder captures
+    /// at each resume point.
+    pub(crate) fn refused(&self) -> &BTreeMap<String, Option<String>> {
+        &self.refused
     }
 
     /// Raw-logical index one past the last emitted block — `base + out.len()`. The builder

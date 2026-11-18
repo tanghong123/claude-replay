@@ -1,12 +1,13 @@
 import { escapeText } from "./view-model.js";
-import { uiState } from "./state.js";
+import { backend } from "./backend.js";
 import { sandboxDocument } from "./sandbox.js";
 import { createImageView } from "./shared/image-view.js";
 import { isMarkdownName, mdrevVersion, mountMarkdown } from "./mdrev-pane.js";
-import { besideAction, onPhone, RASTER_FILE } from "./shared/capabilities.js";
+import { besideAction, RASTER_FILE } from "./shared/capabilities.js";
 import { svg } from "./icons.js";
+import { page, viewRoot } from "./view-root.js";
 
-const byId = id => document.getElementById(id);
+const byId = viewRoot.byId;
 
 /** An image in a tab of its own (#s11), from the pane: `/image`, reading a
  *  FILE by the path and stamp it was offered under (`/file` serves it there, under the same rules —
@@ -25,7 +26,7 @@ export function imageTabHref(item, shown = "") {
     const key = `am-image:${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
     try { sessionStorage.setItem(key, bytes); query.push(`held=${encodeURIComponent(key)}`); } catch (_) { /* too large for sessionStorage: the file, if any, still opens */ }
   }
-  return query.length > 1 ? `/image?${query.join("&")}` : "";
+  return query.length > 1 ? backend().url(`/image?${query.join("&")}`) : "";
 }
 const SESSION_CACHE_LIMIT = 6;
 const SESSION_TAB_LIMIT = 6;
@@ -37,9 +38,11 @@ const tabWeight = tab => 256 + 2 * String(tab.text || "").length + 2 * String(ta
 const refusal = (title, message) => Object.assign(new Error(message), { title });
 
 export class Preview {
-  constructor(actions) { this.actions = actions; this.sessionId = ""; this.sessionTabs = new Map(); this.renderGeneration = 0; this.objectUrl = ""; this.roster = []; this.rosterKey = ""; this.bind(); this.setOpen(false); this.restoreWidth(); }
+  /** `uiState` is the view's own store (view-state.js), whose `preview`, `previewTabs` and `previewId`
+   *  are the pane's: open or shut, its tabs and the one shown. */
+  constructor(actions, uiState) { this.actions = actions; this.uiState = uiState; this.sessionId = ""; this.sessionTabs = new Map(); this.renderGeneration = 0; this.objectUrl = ""; this.roster = []; this.rosterKey = ""; this.bind(); this.setOpen(false); this.restoreWidth(); }
   bind() {
-    byId("previewBtn").onclick = () => this.setOpen(!uiState.preview);
+    byId("previewBtn").onclick = () => this.setOpen(!this.uiState.preview);
     byId("closePreview").onclick = () => this.setOpen(false);
     // The Markdown document the pane shows, in a tab of its own (#271): production chrome beside
     // the demo's close button, there only while mdrev has a document mounted. NOT `noopener` — the
@@ -79,9 +82,11 @@ export class Preview {
     // to the whole screen and back. Only a phone held sideways shows it; elsewhere the pane is a
     // column with a resizer (a desktop) or the whole screen already (a phone upright).
     this.expandBtn = Object.assign(document.createElement("button"), { type: "button", className: "iconbtn preview-expand" });
-    this.expandBtn.onclick = () => this.setFull(!byId("app").classList.contains("preview-full"));
+    this.expandBtn.onclick = () => this.setFull(!viewRoot.element()?.classList.contains("preview-full"));
     this.setFull(false);
-    byId("closePreview").before(this.revealBtn, this.downloadBtn, this.printBtn, this.newTab, this.reviewBtn, this.expandBtn);
+    // A host that switched the ↗ off (`show: { detach: false }`, stage 6) gets none in the head:
+    // the show paths still flip its `hidden`, on a button nobody can reach.
+    byId("closePreview").before(this.revealBtn, this.downloadBtn, this.printBtn, ...(this.actions.detach === false ? [] : [this.newTab]), this.reviewBtn, this.expandBtn);
     // #337, the owner: with many files open the strip squeezed every tab to a few letters and the
     // CURRENT one to nothing. The tabs now keep their width and the strip scrolls; while it
     // overflows, ‹ and › beside it step to the previous and next tab (the pinned roster first),
@@ -97,12 +102,13 @@ export class Preview {
     this.nextTabBtn = step(1, "Next file", "›");
     byId("previewTabs").before(this.prevTabBtn);
     byId("previewTabs").after(this.nextTabBtn);
-    new ResizeObserver(() => this.fitTabs()).observe(byId("previewTabs"));
+    this.tabsObserver = new ResizeObserver(() => this.fitTabs());
+    this.tabsObserver.observe(byId("previewTabs"));
     byId("previewHead").onclick = event => {
       const close = event.target.closest("[data-preview-tab-close]");
       if (close) { this.closeTab(close.dataset.previewTabClose); return; }
       const tab = event.target.closest("[data-preview-tab]");
-      if (tab) { uiState.previewId = tab.dataset.previewTab; this.render(); }
+      if (tab) { this.uiState.previewId = tab.dataset.previewTab; this.render(); }
     };
     byId("previewBody").addEventListener("click", event => {
       const jump = event.target.closest("[data-artifact-record]");
@@ -111,15 +117,45 @@ export class Preview {
     const resizer = byId("resizer");
     resizer.setAttribute("role", "separator"); resizer.setAttribute("aria-orientation", "vertical"); resizer.tabIndex = 0;
     resizer.onpointerdown = event => {
-      resizer.setPointerCapture(event.pointerId); resizer.classList.add("dragging"); byId("app").classList.add("resizing");
-      resizer.onpointermove = move => this.setWidth(innerWidth - move.clientX, false);
-      resizer.onpointerup = () => { resizer.classList.remove("dragging"); byId("app").classList.remove("resizing"); resizer.onpointermove = null; localStorage.setItem("am-demo-preview", parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--preview")) || 420); };
+      resizer.setPointerCapture(event.pointerId); resizer.classList.add("dragging"); this.paneState("resizing", true);
+      // #s431 stage 3: the drag sets how the slack splits between the session and the pane, each kept
+      // at least at M (the view's `dragPane`, which remembers it when the drag ends); a double-click
+      // splits it equally again.
+      resizer.onpointermove = move => this.actions.dragPane?.(move.clientX);
+      resizer.onpointerup = () => { resizer.classList.remove("dragging"); this.paneState("resizing", false); resizer.onpointermove = null; this.actions.dragPane?.(null); };
     };
-    resizer.ondblclick = () => this.setWidth(420, true);
+    resizer.ondblclick = () => this.actions.dragPane?.("equal");
   }
-  setOpen(open) { uiState.preview = open; byId("app").classList.toggle("preview-off", !open); byId("previewBtn").classList.toggle("active", open); if (!open) this.setFull(false); if (open) this.render(); this.actions.layoutChanged?.(); }
+  /** The view is unmounted (#s429 stage 7): the review sheet closes (its key listener on the window
+   *  goes with it), mdrev's viewer unmounts, the image viewer lets go of its keys, the observers stop,
+   *  a render still reading a file drops what it reads, and the image's object URL is released. */
+  destroy() {
+    this.reviewSheet?.close?.();
+    this.teardownMarkdown();
+    this.imageView?.destroy(); this.imageView = null;
+    this.stageObserver?.disconnect(); this.stageObserver = null;
+    this.tabsObserver?.disconnect();
+    this.renderGeneration++;
+    if (this.objectUrl) { URL.revokeObjectURL(this.objectUrl); this.objectUrl = ""; }
+  }
+  /** The pane's open, full and resizing states: the view's own, whose grid follows them (#s431
+   *  stage 1), and its host's (`paneLayout`), whose rules may read them too (the app's do). */
+  // The host hears first (#s431 stage 3): the app may lay its list out again for the pane, and it lays
+  // the page out as it does, so the view must still wear its old state then. The pane's own state is
+  // changed inside the view's decision (`paneToggled`), after the page is read, so no layout styles
+  // the view between the change and the arrangement it brings: either would start the pane's
+  // transitions in the mode the view is about to leave.
+  paneState(name, on) {
+    this.actions.paneLayout?.(name, on);
+    const view = viewRoot.element();
+    const change = () => view?.classList.toggle(name, on);
+    // Only a real change glides: the pane shutting itself as it is built does not open a glide's time.
+    if (name === "preview-off" && view && view.classList.contains(name) !== on && this.actions.paneToggled) this.actions.paneToggled(change);
+    else change();
+  }
+  setOpen(open) { this.uiState.preview = open; this.paneState("preview-off", !open); byId("previewBtn").classList.toggle("active", open); if (!open) this.setFull(false); if (open) this.render(); this.actions.layoutChanged?.(); }
   setFull(full) {
-    byId("app").classList.toggle("preview-full", full);
+    this.paneState("preview-full", full);
     this.expandBtn.innerHTML = full
       ? '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14h6v6M20 10h-6V4M14 10l7-7M3 21l7-7"/></svg>'
       : '<svg viewBox="0 0 24 24" width="17" height="17" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg>';
@@ -128,26 +164,32 @@ export class Preview {
     this.expandBtn.setAttribute("aria-label", words);
     this.expandBtn.setAttribute("aria-pressed", String(full));
   }
-  setWidth(value, persist) { const width = Math.max(340, Math.min(680, Number(value) || 420)); document.documentElement.style.setProperty("--preview", `${width}px`); if (persist) localStorage.setItem("am-demo-preview", width); this.actions.layoutChanged?.(); }
-  restoreWidth() { this.setWidth(localStorage.getItem("am-demo-preview") || 420, false); }
+  setWidth(value) { const width = Math.max(340, Math.min(680, Number(value) || 420)); (this.actions.rootProperty || ((name, value) => viewRoot.styleRoot().style.setProperty(name, value)))("--preview", `${width}px`); }
+  /** The pane's width where the view's layout writes none (#s431 stage 3: a column's comes from the
+   *  owner's order, `--preview-fit`): the default, since the width remembered before stage 3
+   *  (`am-demo-preview`) stays in storage unread. */
+  restoreWidth() { this.setWidth(420); }
   setSession(sessionId) {
     if (sessionId === this.sessionId) return;
     if (this.sessionId) {
-      const tabs = uiState.previewTabs.slice(-SESSION_TAB_LIMIT);
+      const tabs = this.uiState.previewTabs.slice(-SESSION_TAB_LIMIT);
       this.sessionTabs.delete(this.sessionId);
-      this.sessionTabs.set(this.sessionId, { tabs, active: uiState.previewId, bytes: tabs.reduce((total, tab) => total + tabWeight(tab), 0) });
+      this.sessionTabs.set(this.sessionId, { tabs, active: this.uiState.previewId, bytes: tabs.reduce((total, tab) => total + tabWeight(tab), 0) });
       const cacheBytes = () => [...this.sessionTabs.values()].reduce((total, entry) => total + entry.bytes, 0);
       while (this.sessionTabs.size > SESSION_CACHE_LIMIT || cacheBytes() > SESSION_CACHE_BYTES) this.sessionTabs.delete(this.sessionTabs.keys().next().value);
     }
     this.roster = []; this.rosterKey = "";
+    // The review sheet is the old session's document: it closes with it (#s431 stage 2, where a wide
+    // phone's column beside the sheet can choose another session).
+    this.reviewSheet?.close?.();
     this.teardownMarkdown();
     this.sessionId = sessionId || "";
     const saved = this.sessionTabs.get(this.sessionId);
-    uiState.previewTabs = saved?.tabs.slice() || [];
-    uiState.previewId = saved?.active && uiState.previewTabs.some(tab => tab.id === saved.active) ? saved.active : uiState.previewTabs.at(-1)?.id || null;
+    this.uiState.previewTabs = saved?.tabs.slice() || [];
+    this.uiState.previewId = saved?.active && this.uiState.previewTabs.some(tab => tab.id === saved.active) ? saved.active : this.uiState.previewTabs.at(-1)?.id || null;
     this.paneBadge();
     this.renderGeneration++;
-    if (uiState.preview) this.render();
+    if (this.uiState.preview) this.render();
   }
   /** What this session published (#78), as `artifactRoster` groups it — one row per URL. It
    *  lives here rather than in a header menu (#95): a pinned first tab, and a count on the
@@ -160,7 +202,7 @@ export class Preview {
     if (key === this.rosterKey) return;
     this.rosterKey = key; this.roster = list;
     this.paneBadge();
-    if (uiState.preview) this.render();
+    if (this.uiState.preview) this.render();
   }
   /** The pane button's badge (#336): how many DOCUMENTS are open in the pane — its tabs, not the
    *  pinned roster, which counts itself ("Artifacts (N)"). It used to count the published
@@ -169,16 +211,19 @@ export class Preview {
   paneBadge() {
     const button = byId("previewBtn");
     const badge = button.querySelector(".preview-badge");
-    const open = uiState.previewTabs.length, published = this.roster.length;
+    const open = this.uiState.previewTabs.length, published = this.roster.length;
     if (!open) badge?.remove();
     else (badge || button.appendChild(Object.assign(document.createElement("span"), { className: "preview-badge" }))).textContent = String(open);
     const parts = [open ? `${open} open document${open === 1 ? "" : "s"}` : "", published ? `${published} published artifact${published === 1 ? "" : "s"}` : ""].filter(Boolean);
     button.title = parts.length ? `Open the right panel — ${parts.join(", ")}` : "Open the right panel";
   }
+  /** A file to show: a tab of its own, selected, and the pane open. The host hears of it (`opened`,
+   *  the view's `onFile`), as it does for the first of an Open all, the one the pane shows. */
   open(item) {
-    if (!uiState.previewTabs.some(tab => tab.id === item.id)) uiState.previewTabs.push(item);
-    if (uiState.previewTabs.length > SESSION_TAB_LIMIT) uiState.previewTabs.splice(0, uiState.previewTabs.length - SESSION_TAB_LIMIT);
-    uiState.previewId = item.id; this.paneBadge(); this.setOpen(true);
+    if (!this.uiState.previewTabs.some(tab => tab.id === item.id)) this.uiState.previewTabs.push(item);
+    if (this.uiState.previewTabs.length > SESSION_TAB_LIMIT) this.uiState.previewTabs.splice(0, this.uiState.previewTabs.length - SESSION_TAB_LIMIT);
+    this.uiState.previewId = item.id; this.paneBadge(); this.setOpen(true);
+    this.actions.opened?.(item);
   }
   /** #s222: Open all — every item a tab, in the block's order, the FIRST selected so the reader
    *  steps through them by the tabs. A tab already open moves to its place in that order (the same
@@ -188,23 +233,24 @@ export class Preview {
   openAll(items) {
     if (!items.length) return;
     const opened = new Set(items.map(item => item.id));
-    const open = new Map(uiState.previewTabs.filter(tab => opened.has(tab.id)).map(tab => [tab.id, tab]));
-    uiState.previewTabs = uiState.previewTabs.filter(tab => !opened.has(tab.id)).concat(items.map(item => (open.has(item.id) ? Object.assign(open.get(item.id), { name: item.name }) : item)));
+    const open = new Map(this.uiState.previewTabs.filter(tab => opened.has(tab.id)).map(tab => [tab.id, tab]));
+    this.uiState.previewTabs = this.uiState.previewTabs.filter(tab => !opened.has(tab.id)).concat(items.map(item => (open.has(item.id) ? Object.assign(open.get(item.id), { name: item.name }) : item)));
     const cap = Math.max(SESSION_TAB_LIMIT, items.length);
-    while (uiState.previewTabs.length > cap) {
-      const at = uiState.previewTabs.findIndex(tab => !opened.has(tab.id));
+    while (this.uiState.previewTabs.length > cap) {
+      const at = this.uiState.previewTabs.findIndex(tab => !opened.has(tab.id));
       if (at < 0) break;
-      uiState.previewTabs.splice(at, 1);
+      this.uiState.previewTabs.splice(at, 1);
     }
-    uiState.previewId = items[0].id; this.paneBadge(); this.setOpen(true);
+    this.uiState.previewId = items[0].id; this.paneBadge(); this.setOpen(true);
+    this.actions.opened?.(items[0]);
   }
   /** #337: the previous or next tab — the pinned roster first, then the files — wrapping. */
   stepTab(dir) {
-    const ids = [...(this.roster.length ? [ROSTER_ID] : []), ...uiState.previewTabs.map(tab => tab.id)];
+    const ids = [...(this.roster.length ? [ROSTER_ID] : []), ...this.uiState.previewTabs.map(tab => tab.id)];
     if (ids.length < 2) return;
-    const current = uiState.previewTabs.some(tab => tab.id === uiState.previewId) ? uiState.previewId : ROSTER_ID;
+    const current = this.uiState.previewTabs.some(tab => tab.id === this.uiState.previewId) ? this.uiState.previewId : ROSTER_ID;
     const at = Math.max(0, ids.indexOf(current));
-    uiState.previewId = ids[(at + dir + ids.length) % ids.length];
+    this.uiState.previewId = ids[(at + dir + ids.length) % ids.length];
     this.render();
   }
   /** #337: the step buttons while the strip overflows, and the current tab in view — moved by the
@@ -220,19 +266,19 @@ export class Preview {
     if (tab.left < box.left) strip.scrollLeft += tab.left - box.left - 8;
     else if (tab.right > box.right) strip.scrollLeft += tab.right - box.right + 8;
   }
-  closeTab(id) { uiState.previewTabs = uiState.previewTabs.filter(tab => tab.id !== id); if (uiState.previewId === id) uiState.previewId = uiState.previewTabs.at(-1)?.id || null; this.paneBadge(); this.render(); }
+  closeTab(id) { this.uiState.previewTabs = this.uiState.previewTabs.filter(tab => tab.id !== id); if (this.uiState.previewId === id) this.uiState.previewId = this.uiState.previewTabs.at(-1)?.id || null; this.paneBadge(); this.render(); }
   render() {
     const generation = ++this.renderGeneration;
-    const item = uiState.previewTabs.find(tab => tab.id === uiState.previewId);
+    const item = this.uiState.previewTabs.find(tab => tab.id === this.uiState.previewId);
     this.shown = item || null;
-    const beside = item ? besideAction(item) : null;
+    const beside = item ? besideAction(item, backend().local) : null;
     this.revealBtn.hidden = beside !== "reveal";
     this.downloadBtn.hidden = beside !== "download";
     // No file tab selected and something was published: the roster is what the pane shows —
     // so it is also what a freshly opened pane lands on, without hunting for a control.
     const roster = !item && this.roster.length > 0;
-    const pinned = this.roster.length ? `<button class="preview-tab pinned ${roster ? "on" : ""}" data-preview-tab="${ROSTER_ID}" title="What this session published"><span class="preview-tab-label">Artifacts (${this.roster.length})</span></button>` : "";
-    byId("previewTabs").innerHTML = pinned + uiState.previewTabs.map(tab => `<button class="preview-tab ${tab.id === uiState.previewId ? "on" : ""}" data-preview-tab="${escapeText(tab.id)}"><span class="preview-tab-label">${escapeText(tab.name)}</span><span class="preview-tab-close" data-preview-tab-close="${escapeText(tab.id)}">×</span></button>`).join("");
+    const pinned = this.roster.length ? `<button class="preview-tab sv-pinned ${roster ? "on" : ""}" data-preview-tab="${ROSTER_ID}" title="What this session published"><span class="preview-tab-label">Artifacts (${this.roster.length})</span></button>` : "";
+    byId("previewTabs").innerHTML = pinned + this.uiState.previewTabs.map(tab => `<button class="preview-tab ${tab.id === this.uiState.previewId ? "on" : ""}" data-preview-tab="${escapeText(tab.id)}"><span class="preview-tab-label">${escapeText(tab.name)}</span><span class="preview-tab-close" data-preview-tab-close="${escapeText(tab.id)}">×</span></button>`).join("");
     this.fitTabs();
     // A Markdown tab mdrev is already showing stays as it is: the tab strip and the roster re-render
     // around it, and a remount would throw away the reader's place, range and open notes. The tab
@@ -259,7 +305,7 @@ export class Preview {
     if (item.text != null || item.data) { this.show(item, item.text, item.data); return; }
     byId("previewBody").classList.add("production-loading"); byId("previewBody").textContent = "Reading securely…";
     const query = `path=${encodeURIComponent(item.path)}&sig=${encodeURIComponent(item.fsig || "")}`;
-    fetch(`/file?${query}`, { cache: "no-store" }).then(response => {
+    backend().fetch(`/file?${query}`, { cache: "no-store" }).then(response => {
       if (response.status === 401) throw new Error("Reading local files requires pairing — run `agent-monitor --pair`.");
       // #s7: the route says which — 410 for a file that is gone, 403 for one this monitor may not
       // read, with the words — so the pane says it, not "may be gone, or outside".
@@ -288,24 +334,29 @@ export class Preview {
       // #324 through #s223: an image whose saved original could not be read shows the transcript's
       // own copy, as the lightbox did, rather than the refusal, and says why.
       if (item.fallback) { this.show(item, null, item.fallback, `${error.gone ? "The original is gone" : "The original could not be read"}: this is the copy saved with the session.`); return; }
-      const body = byId("previewBody"); body.classList.remove("production-loading");
-      body.innerHTML = `<div class="preview-error"><strong>${escapeText(error.title || "Cannot preview this file")}</strong><span>${escapeText(error.message)}</span><div class="preview-error-actions">${besideAction(item) === "reveal" ? '<button class="smallbtn" data-preview-reveal>Reveal in file manager</button>' : ""}<button class="smallbtn" data-copy-path>Copy original path</button><button class="smallbtn" data-close-preview>Close tab</button></div></div>`;
-      const reveal = body.querySelector("[data-preview-reveal]");
-      if (reveal) reveal.onclick = () => this.actions.reveal?.(item);
-      body.querySelector("[data-copy-path]").onclick = () => {
-        const operation = navigator.clipboard?.writeText(item.path || "");
-        if (operation) operation.then(() => this.actions.toast?.("Copied the original path"));
-        else this.actions.toast?.("This browser does not support copying");
-      };
-      body.querySelector("[data-close-preview]").onclick = () => this.closeTab(item.id);
+      this.showError(item, error);
     });
+  }
+  /** The pane's own word that it cannot show a file: what went wrong, the file manager where the
+   *  reader is at this machine, the path to copy, and the tab to close. */
+  showError(item, error) {
+    const body = byId("previewBody"); body.classList.remove("production-loading");
+    body.innerHTML = `<div class="preview-error"><strong>${escapeText(error.title || "Cannot preview this file")}</strong><span>${escapeText(error.message)}</span><div class="preview-error-actions">${besideAction(item, backend().local) === "reveal" ? '<button class="smallbtn" data-preview-reveal>Reveal in file manager</button>' : ""}<button class="smallbtn" data-copy-path>Copy original path</button><button class="smallbtn" data-close-preview>Close tab</button></div></div>`;
+    const reveal = body.querySelector("[data-preview-reveal]");
+    if (reveal) reveal.onclick = () => this.actions.reveal?.(item);
+    body.querySelector("[data-copy-path]").onclick = () => {
+      const operation = navigator.clipboard?.writeText(item.path || "");
+      if (operation) operation.then(() => this.actions.toast?.("Copied the original path"));
+      else this.actions.toast?.("This browser does not support copying");
+    };
+    body.querySelector("[data-close-preview]").onclick = () => this.closeTab(item.id);
   }
   /** A file the page does not show: a download, with the file's place above it — and the head's
    *  reveal beside it (#272). */
   showDownload(item, size) {
     const body = byId("previewBody"); body.classList.remove("production-loading");
     const bytes = size >= 1048576 ? `${(size / 1048576).toFixed(1)} MB` : size >= 1024 ? `${Math.round(size / 1024)} KB` : size ? `${size} bytes` : "";
-    body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div></div><div class="preview-error preview-download"><strong>No preview for this file</strong><span>${escapeText(item.name)}${bytes ? ` · ${bytes}` : ""} — this pane shows text and images; this file downloads.</span><div class="preview-error-actions"><button class="smallbtn primary" data-preview-download>Download</button></div></div>`;
+    body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div></div><div class="preview-error preview-download"><strong>No preview for this file</strong><span>${escapeText(item.name)}${bytes ? ` · ${bytes}` : ""} — this pane shows text and images; this file downloads.</span><div class="preview-error-actions"><button class="smallbtn sv-primary" data-preview-download>Download</button></div></div>`;
     body.querySelector("[data-preview-download]").onclick = () => this.actions.download?.(item);
   }
   /** Text through mdrev's viewer (#270; every text file since #s13): a reader for text the
@@ -327,10 +378,10 @@ export class Preview {
       if (!handle) throw new Error("no mdrev");
       this.markdown = handle;
       // #335: not on a phone — the new tab is a page with no way back to the monitor.
-      this.newTab.hidden = onPhone();
+      this.newTab.hidden = this.actions.phone();
       this.newTab.setAttribute("aria-label", `Open this ${isMarkdownName(item.name) ? "document" : "file"} in a new tab`);
       // #s13: shared review is threads on a document's notes, and mdrev files no notes on code.
-      this.reviewBtn.hidden = !onPhone() || handle.held || !isMarkdownName(item.name);
+      this.reviewBtn.hidden = !this.actions.phone() || handle.held || !isMarkdownName(item.name);
       // #s30: where mdrev's toolbar offers no print of its own — a held reader (mdrev 1.1.24 prints
       // from its own Aa menu on a phone, #s31).
       this.printBtn.hidden = !isMarkdownName(item.name) || !handle.held;
@@ -355,7 +406,10 @@ export class Preview {
   }
   /** #s12: the document, full-screen over the whole app, mounted on the review prefix — Share and
    *  Push where the machine is paired. Nothing navigates: closing unmounts it and removes the layer,
-   *  and the transcript, the pane and the session list are as they were. */
+   *  and the transcript, the pane and the session list are as they were. It opens only from the open
+   *  pane's Review control, and the app's rules that reach it over the whole app read the pane as
+   *  open (`#app:not(.preview-off)`, production.css): an opener with the pane shut would need them
+   *  changed, or the sheet stays in the view's box. */
   openReviewSheet(item) {
     if (!item || this.reviewSheet) return;
     const sheet = document.createElement("div");
@@ -363,8 +417,8 @@ export class Preview {
     sheet.setAttribute("role", "dialog");
     sheet.setAttribute("aria-label", `Review ${item.name || "document"}`);
     sheet.innerHTML = `<div class="review-sheet-head"><button type="button" class="review-sheet-close" data-review-close aria-label="Close the review">${svg("x")}</button><strong>${escapeText(item.name || "document")}</strong></div><div class="review-sheet-body mdrev-pane"></div>`;
-    (byId("app") || document.body).append(sheet);
-    const state = { sheet, handle: null };
+    (viewRoot.element() || viewRoot.layer()).append(sheet);
+    const state = { sheet, handle: null, close: null };
     this.reviewSheet = state;
     const close = () => {
       if (this.reviewSheet !== state) return;
@@ -374,6 +428,7 @@ export class Preview {
       sheet.remove();
     };
     const onKey = event => { if (event.key === "Escape") { event.preventDefault(); close(); } };
+    state.close = close;
     addEventListener("keydown", onKey, true);
     sheet.querySelector("[data-review-close]").onclick = close;
     mountMarkdown(sheet.querySelector(".review-sheet-body"), item, { review: true }).then(handle => {
@@ -410,8 +465,13 @@ export class Preview {
       const bar = stage.querySelector("[data-zoom-bar]"), percent = stage.querySelector("[data-zoom-percent]");
       // The preview's zoom keys belong to it only while the pane is open (#268) — the pane
       // can be collapsed with an image still mounted, and a collapsed pane must not own
-      // `0`/`-`/`+`… against the compose box beside it.
-      this.imageView = createImageView(stage, img, { isActive: () => uiState.preview, onChange: state => { percent.textContent = `${state.percent}%`; } });
+      // `0`/`-`/`+`… against the compose box beside it. In a host's page, also only while the
+      // reader is working in the view (`engaged`, #s429 stage 6): a zoomed image must not take the
+      // arrows the host's page scrolls with. There its keys are heard in the capture phase, as the
+      // view's own are (`keysFirst`), so a host's listener bound before the viewer finds a key it
+      // took already taken; the app's page keeps the document's bubble phase, as before.
+      const keyHost = this.actions.keysFirst ? { addEventListener: (type, fn) => document.addEventListener(type, fn, true), removeEventListener: (type, fn) => document.removeEventListener(type, fn, true) } : undefined;
+      this.imageView = createImageView(stage, img, { keyHost, isActive: () => this.uiState.preview && this.actions.engaged?.() !== false, onChange: state => { percent.textContent = `${state.percent}%`; } });
       img.addEventListener("load", () => { bar.hidden = false; }, { once: true });
       bar.onclick = event => {
         const how = event.target.closest("[data-zoom]")?.dataset.zoom, view = this.imageView;
@@ -434,15 +494,50 @@ export class Preview {
       // back). What the tab reads is what the pane was offered: the file by its stamp, or the
       // embedded bytes themselves.
       this.image = { item, data };
-      this.newTab.hidden = onPhone();
+      this.newTab.hidden = this.actions.phone();
       this.newTab.setAttribute("aria-label", "Open this image in a new tab");
       return;
     }
     const html = /\.html?$/i.test(item.name || "");
-    if (html && document.body.dataset.paired === "true") { body.innerHTML = '<iframe class="artifact-html-frame" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>'; body.querySelector("iframe").srcdoc = sandboxDocument(text || ""); return; }
+    if (html && backend().paired) { this.showPage(item, text); return; }
     // The file's place above its text; revealing it is the head's control (#272), one for every view.
     body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div></div><div class="artifact-surface"><pre class="artifact-text"></pre></div>`;
     body.querySelector("pre").textContent = text || "";
+  }
+  /** An agent's HTML page, in a frame sandboxed without its origin, its scripts running under the
+   *  preview's policy (sandbox.js), and sending no referrer. Its document is the page's text with
+   *  that policy in front (`sandboxDocument`), written as the frame's `srcdoc`, which takes the
+   *  policy of the page around it as well. The native app's page allows no scripts, so the native
+   *  app frames the page from a source of its own (#s436, design/monitor-hub.md D3): `frame`, given
+   *  that document, answers the address the frame loads. An answer that is not an address, or a
+   *  refusal, is the pane's own error, never an empty frame. */
+  showPage(item, text) {
+    const body = byId("previewBody");
+    body.innerHTML = '<iframe class="artifact-html-frame" sandbox="allow-scripts" referrerpolicy="no-referrer"></iframe>';
+    const frame = body.querySelector("iframe"), source = sandboxDocument(text || "");
+    if (!this.actions.frame) { frame.srcdoc = source; return; }
+    const generation = this.renderGeneration;
+    const current = () => generation === this.renderGeneration && frame.isConnected;
+    // One address per tab while its text is the same: the pane draws a tab again whenever it is shown
+    // (a tab chosen, the pane reopened, a roster change), and each ask would make the native app keep
+    // another copy of the page. The address serves the tab for its whole life, across session
+    // switches, and nothing ever says it is released: the native app keeps every one for the life of
+    // the page. A refusal is not kept, so the next time the tab is shown asks again.
+    this.frames ||= new WeakMap();
+    let held = this.frames.get(item);
+    if (held?.source !== source) {
+      held = { source, address: new Promise(resolve => resolve(this.actions.frame(source))).then(address => {
+        if (typeof address !== "string" || !address) throw new Error("No address came back for this page's frame.");
+        return address;
+      }) };
+      this.frames.set(item, held);
+      held.address.catch(() => { if (this.frames.get(item) === held) this.frames.delete(item); });
+    }
+    held.address.then(address => {
+      if (current()) frame.src = address;
+    }).catch(error => {
+      if (current()) this.showError(item, refusal("Cannot show this page", error?.message || String(error || "Its frame could not be made.")));
+    });
   }
 }
 

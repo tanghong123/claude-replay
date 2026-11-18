@@ -35,14 +35,70 @@ behind is ignored, and `/api/ui` answers 404. Stage 4 (#s99) took `/session`, th
 the classic hosts framed, which answers 404 now, with its `PageChrome` options and export.js's
 artifacts mode. "The classic page" below means export.js, the offline viewer's page (`agent-replay --html`,
 `--dump-html`), which stays and is the browser suite's reference.
+**The session view is a module of its own** (#s429, `design/session-view-component.md`, embedding's
+step 4): `session-view.js` holds the transcript, the turn bar and search, the outline panes, the
+artifact pane, the compose box and the phone dock and sheets, behind `mountSessionView(element,
+options)`; `app.js` keeps the app around it (the session list, the drawer and rail, the brand, the
+theme, the session search and the toast) and mounts it. What a host may change is the view's options
+(stage 6; the doc comment over `mountSessionView` is the reference, every name is in `MOUNT_OPTIONS`
+and any other is refused, and the contract's mount interface cases hold them): `theme`; `show`, the
+optional controls by name (`reading`, `history`, `detach`, each shown unless `false`, booleans only;
+a control off is not drawn and takes no key; the app passes none); and `keyboard`, `"engaged"` by
+default (the view binds its keymap in the capture phase and answers, as the pane's image viewer
+does, only while the reader's last press or focus is inside it, as mdrev does) or `"page"`, the
+app's: the view binds none and the app's one keymap at the document routes keys to the handle's
+`keys`; and `room`, a function answering how much wider the host could make the view by narrowing
+what it lays beside it (the app: its list's width less 232; 0 without it, #s476). What the view
+tells its host comes out as optional handlers with plain data, never a node (`onTitle`, `onTurn`,
+`onInfo`, `onFile`, `onLinkCopied`, `onToast`, and `onOutline`, `{wanted}`, the reader's outline
+choice, said once as the mount returns and on each press that changes it, never for a fold the width
+forced, #s479), through one emitter that reports a handler's throw rather than raising it and holds
+what is said during the mount until it returns: the app passes all seven; its toast and `onOutline`
+(which lays out its list again) do something so far (its phone bar takes the rest at embedding's
+step 6). **The owner's order** decides how the session, the right pane, the outline and the list
+share a window (#s431 stage 3, `design/pane-layout.md`, #s462 and #s472–#s480): the session at `M`
+(480px), the pane beside it at `M`, the outline's glyphs in their column, the list (232px at least),
+the outline (290px), each shown where it fits beside the parts before it, the rest going to the
+session and the pane by the share the pane's drag sets (`am-demo-pane-share`, equal until dragged).
+`pane-layout.js` decides it: `arrangeView` for the view from its own box (its rules read the `pl-*`
+classes it sets), `arrangeApp` for the app's list from the window (`#app.app-drawer`, the rail, or
+the list at a width; the app's phone rules read `app-drawer` and the view's `pl-phone`). With a mouse
+the rail lasts down to 554px and the drawer is below it; a collapse the reader makes is remembered,
+and a fold the width forced comes back with the room. A host's page must still carry the compose box's write-mode and confirm
+elements the doc comment names (stage 7 passes them in). The reading tokens
+(`--code-size`, `--measure`) are the view element's; `grid` (the app's `#app`) is still the box a
+phone's sheets are measured against and the keyboard ride moves. Two rules hold every shell module (`ui.rs`
+`the_shell_reaches_the_page_only_through_its_root`): the view finds its elements, focus, floating
+layers, stylesheets, measured properties and theme through `viewRoot`, and the app's chrome through
+`page` (`view-root.js`), never `document` itself, so it assumes nothing of a host's page (there is no
+shadow root: the owner chose prefixed styles, #s438); and the
+view keeps its own state as classes on its element `#sessionView`, a rule's negated twin reading
+`#sessionView` too. The element is a box (#s431 stage 1, `design/pane-layout.md`): it lays out the
+session, the resizer and the right pane in a grid of its own, in the app as in a host, and its width
+is its track's, never its content's (`contain: inline-size`); `#app`'s grid holds the list and the
+view, and the pane's open, full and resizing states are still copied onto `#app` for the app's rules
+that reach in. Its server's facts
+(paired, version, the mdrev pin) come from the backend handle. **The view imports no store of the
+app's** (#s429 stage 7): `state.js` is the app's (the index, ⌘K's results, write mode), the view
+makes its own as it mounts (`view-state.js`, the compose box's `compose`), and write mode and the
+grant's confirm come in as its `write` option, so a host page carries nothing of ours; every
+listener the view binds on the page takes its `signal`, and its timers and observers go through the
+names `mountSessionView` declares, so `unmount()` stops them all; the modules under it stop their
+own (`destroy`), and work still out when it is called (a send, a grant, a confirm, a dialog's read,
+a download, a server search) checks that the view is still mounted before it touches anything, since
+the view finds its elements by id and a remount in the same element reuses the ids. After the
+unmount every handle member is a no-op (`fenced`). The native frontend tests
+(`codex_*.test.mjs`) run module SOURCE with imports stripped, so a new import needs the real module
+in their context (`VIEW_ROOT` there) and only the workspace `cargo test` runs them.
 **The sidebar head is TWO LINES by construction** (#223): the brand takes the first, the controls
 take the second and wrap within it. They never share a row, at any width. Below `SIDEBAR_TIGHT`
 (272px) the shell wears `sidebar-tight`, which squeezes the head's padding, the gaps and the glyphs
 so all five stay inside the sidebar at its 232px minimum (#210). Nothing is hidden at any width; a
 new control in that row is measured against the minimum, not the default, and the case
 (`the_app_shell_resizes_the_session_list`) hit-tests every control there rather than eyeballing it.
-**On a phone (≤760px, #310 then #313 — or a finger on a phone-sized short side, a phone held sideways,
-#s32) the app shell is a reader and a native-feeling app**, the owner's rules: upright the transcript keeps a 24px margin either side (#s55; the Reading menu's Wide
+**On a phone (the view's phone reader since #s431 stage 3: a view under 490px of its own width, or a
+touch screen's view of 760px or less or 500px tall or less; #310 then #313, #s32 a phone held
+sideways) the app shell is a reader and a native-feeling app**, the owner's rules: upright the transcript keeps a 24px margin either side (#s55; the Reading menu's Wide
 transcript gives it the whole width, a 13px gutter), controls may FLOAT, and controls of
 little use on a phone are hidden. The session list is a DRAWER over part of the view (a scrim over the
 rest closes it on a tap; `mobile-detail` = shut), opened and closed by a handle fixed at the top left —
@@ -72,7 +128,9 @@ Chrome would move focus to the button and hide the bug (`a_phone_s_filter_and_ke
 iOS focuses the field as the search opens, so hiding the funnel while typing hid it always — the
 owner found no filter in either orientation). The dock rides the keyboard through `visualViewport`
 (`--phone-kb` = the app's height less the visible one; iOS never lifts a fixed bottom element above
-it), and iOS also SCROLLS THE PAGE to bring the focused field above its keyboard (322px upright on
+it), counted only while a field that takes a keyboard has focus (#s451: after a keyboard had been up,
+the iOS 26.4 Simulator gave a fresh tab with nothing focused a visual viewport 378px short, and the
+dock floated; `typesInto`, ridden again as focus moves; `a_phone_with_nothing_focused_takes_no_short_viewport_for_the_keyboard`), and iOS also SCROLLS THE PAGE to bring the focused field above its keyboard (322px upright on
 iOS 26), which took the top bar and a wide phone's column head off the screen (#s41): pinning the page
 back with `scrollTo` fights iOS and jitters, so the app is moved back over the scroll
 (`translateY(visualViewport.pageTop)`) and `--phone-top`/`--phone-bottom` are measured against the
@@ -113,7 +171,7 @@ its output); the prompt is never sent twice (`a_resume_that_fails_as_it_starts_t
 a fake `claude` on the monitor's PATH).
 **On a desktop the open box keeps to the session's reading column** (#s245, Hong: it was centred on the
 whole workspace, so with the right pane open it lay over the outline, and stood 169px tall over the
-transcript's end): `placeDeskCompose` (`app.js`) sets its edges from the transcript's text width inside
+transcript's end): `placeDeskCompose` (`session-view.js`) sets its edges from the transcript's text width inside
 its column; it is one caption line (name, target, a pane grant's revoke, ✕; the name gives way first)
 over ONE line of field that grows with the draft, at the box's current width, to a cap (a share of the
 column) and then scrolls; the transcript's end is padded above it (`--compose-room`), a reader following
@@ -205,8 +263,9 @@ is hidden, or nothing would reach them. The handle sits at the session's top lef
 the title (as iPad apps keep their sidebar button, and wearing its sidebar glyph there; ☰ is the
 drawer's), and hides and shows the column under its own key
 (`am-phone-column`; never the rail's, never `mobile-detail`); hidden, the session stays at its
-reading width, and the Reading menu's Wide transcript (offered upright too since #s55) widens it. Between the phone and 1180px an open preview covers the whole session area beside the sidebar
-(it was a 72vw overlay over a sliver nobody could read); `a_phone_held_sideways_gets_the_phone_layout_in_one_row`
+reading width, and the Reading menu's Wide transcript (offered upright too since #s55) widens it. Where the pane cannot be a column beside the session at `M` each (`pl-pane-over`, #s431 stage 3) an
+open preview covers the whole session area beside the sidebar (it was a 72vw overlay over a sliver
+nobody could read); `a_phone_held_sideways_gets_the_phone_layout_in_one_row`
 and `a_narrow_window_s_preview_covers_the_session_rather_than_leaving_a_sliver` hold both. The dock
 never wraps (#352, `a_phone_dock_keeps_one_row_with_a_query_and_a_chip`): the CLOSED box with a query
 is its count, steps and ✕ — its chips (a scope chip is its letters alone, a tool chip wears a wrench;
@@ -277,7 +336,34 @@ verdict is asked only for a request a route answers — a refusal or a public fi
 also admits a VERIFIED same-user loopback peer without the cookie (D3b, `/proc/net/tcp`); macOS cannot
 verify one. `AGENT_MONITOR_TOKEN_ONLY=1` turns that leg off for a paired gate — stricter only — and
 the browser suite sets it on every paired monitor, so a case's unpaired browser is refused on Linux
-as on macOS (#366). The pairing
+as on macOS (#366). An UNPAIRED gate that trusts tailnet names (the monitor's) refuses a request a
+relay on the machine brought (#s417): one carrying a relay's headers (`X-Forwarded-For`,
+`X-Forwarded-Host`, `Forwarded`, `Tailscale-User-Login`, which a client behind `tailscale serve`
+cannot take off; past the 8 KiB header cap the gate still reads 64 KiB more for those names, more
+than that past the cap counts as relayed, and so does a header section the peer cuts short before
+its blank line) or a `Host` that is not a loopback name (parsed: `127.evil.example` is not one).
+`tailscale serve` connects from the loopback and macOS cannot verify that peer, so an unpaired
+monitor behind it gave every device on the tailnet its reads, and the GETs with side effects
+(`/api/ignore`, a stamped `/__reveal`), with no token. The refusal names pairing; a tunnel's
+`Host` is a loopback one, a public file stays public, and a gate trusting no tailnet name
+(`agent-replay --html`) is unchanged (`an_unpaired_gate_refuses_a_request_relayed_under_a_tailnet_name`).
+A raw relay (`tailscale serve --tcp`) sends no headers, so **while any relay reaches the port an
+unpaired gate admits no loopback peer it cannot verify** (#s422, Hong's choice on #s419): on macOS
+that is every peer, the Mac's own browser included, so a monitor `tailscale serve` relays to must be
+paired to be read at all. The relay check (`AuthGate::with_relay_check`, from
+`pair_phone::tailnet_checks`) answers from the same background read as the trusted hosts, but counts
+every relay to the port, which the trusted names do not (`relays_to`: any `Proxy` or `TCPForward`
+anywhere in the serve setup, at any path, open to Funnel or not, beside another app or not, each
+target read as tailscale reads it, with a known scheme or as `http://` plus the value, its port
+after the last colon for a dial, and one whose port is not a number counting as a relay; the one
+miss left is a target the owner writes that reads as another valid port both ways), or a name
+`AGENT_MONITOR_TRUSTED_HOSTS` lists (the browser harness removes it from every monitor but the ones
+that set it). Until a read has succeeded it says a relay may be there, and a read that timed out
+keeps what the last one found; a `tailscale` that exits at once with a failure (Tailscale stopped)
+is no relay and keeps the trusted names (#s170). An unpaired monitor reads the tailnet again on a
+clock of its own (every 30 s, every 5 s until a read has said), so a relay set up while nobody
+connects is seen within one interval and no reply waits on `tailscale` (#s151). A verified peer (Linux) and a paired gate are unchanged
+(`an_unpaired_gate_refuses_an_unverified_peer_while_a_relay_reaches_its_port`). The pairing
 cookie is named for the token it carries — `cmauth-` and eight hex digits of the token's SHA-256
 (`cookie_name`, #350) — because a cookie is scoped to the HOST, not the port: while every gate wrote
 `cmauth`, agent-metrics' `serve --phone` (this gate since #317, a token of its own) replaced the
@@ -803,7 +889,18 @@ byte-for-byte from `design/agent-monitor-codex-demo.html` by
 `scripts/extract-agent-monitor-demo.mjs` and checked by two tests. Never hand-edit them: change
 the demo and re-run the script. Production-only chrome (the session filter, the compose box's image
 controls) is layered on at runtime by the shell's own scripts and `production.css`, so the
-extraction stays exact.
+extraction stays exact. **The page loads neither `reference.css` nor `production.css`** (#s429 stage
+5b): the same script DERIVES `app-shell.css` (the app's chrome and the page's), `session-list.css`
+(the session list's, every rule hung on `#sessionList`, linked between the two, #s430 stage 3) and
+`session-view.css` (the session view's, every rule hung on `#sessionView`) from those two, through
+`scripts/session-view-css.mjs`, and the contract requires the byte match. A rule is still written in
+`production.css`; then run the script. A new class the app draws goes in one of the classifier's
+lists, which the contract checks against `app.js` and the shell. **The view draws no class the
+collaboration app styles in its own page** (#s438, where the view sits in a pane and a host's
+`.primary{…}` would reach ours by class): the view's are `sv-session-main`, `sv-task-card` and its
+`sv-task-card-*` family, `sv-pinned` and `sv-primary` (the app's confirm button keeps `.primary`),
+and it draws no `.hint` (the app's ⌘K hint keeps it) and no `.crumbs`; `ui.rs` refuses the six bare
+names in `session-view.css`, and the contract refuses them in the view's modules.
 
 **Shared frontend modules live in `claude-replay-html/src/html/shared/`** (seam 0 of
 `design/monitor-shell-duplication.md`, v1.140.0): ONE source, consumed two ways — the monitor
@@ -815,6 +912,17 @@ trailing `export { … };` line. A new module is one row in `SHARED` (`shared.rs
 import-closure test and the html crate's convention test cover the rest. `claude-monitor/src/codex-ui/shared` is a SYMLINK to that directory, there so
 node (the contract test imports `components.js`, which imports `./shared/…`) and editors resolve the
 relative paths; the served bytes still come from the html crate through `ui::asset()`.
+
+**The kit** (#s432, `design/embedding.md` "Delivery"): each release publishes
+`agent-monitor-kit-<version>.tar.gz` and its `.sha256` (`scripts/kit.sh`, run by the Release
+workflow), the two components for a host to mount from a pinned release. Its `bundle/` is
+`claude-monitor/kit/index.js` and every module that imports, walked from it and taken from `ui::asset()`
+byte for byte (`src/kit.rs`), so a new import joins the kit by itself; a new mount option or optional
+control goes in `kit/index.d.ts` too (`the_declarations_follow_each_components_options` refuses one
+missing), and the guide (`kit/embedding-guide.md`) says it for a host. The kit offers only what the
+owner ruled a host may change and what mounting needs: an option it withholds (`VIEW_WITHHELD`,
+`LIST_WITHHELD` in `kit.rs`: the frame, the app's own chrome, `keyboard`'s `"page"` mode) is offered
+only once the owner rules on it.
 
 `claude-monitor/tests/ui_contract.mjs` holds the frontend contract that only JS can answer.
 It runs from `cargo test` (via `tests/ui_contract.rs`, which SKIPS when node is missing) and as
@@ -957,12 +1065,19 @@ delivered is offered (`ToolUse::delivered` → `head.files`), not only the first
   shell that failed to LINK passed every static gate and was caught only here. Everything is
   `#[ignore]`d; the gate is
   `cargo build --release -p claude-monitor --features claude-monitor/codex-native && cargo test -p claude-replay-browser-tests -- --ignored --skip known_red`
-  (a local Chrome; CI runs the same in its `browser` job). `tests/harness/mod.rs` is the kit
+  (a local Chrome; CI runs the same split into five `browser` legs on separate runners, #s448, whose one result is the check `browser (real Chrome)`). `tests/harness/mod.rs` is the kit
   every case uses: `Stores` (a hermetic world of agent stores under the case's scratch root —
   nothing a case measures comes from this machine's sessions), record builders and
-  `long_session`, `Monitor::spawn` (`agent-monitor` on a fixed port, reaped on drop; a missing binary
+  `long_session`, `Monitor::spawn` (`agent-monitor` on the case's fixed port, reaped on drop; a missing binary
   PANICS naming the build — never a silent skip, which is how a blank shell once passed as
-  13/16), `chrome_tab()` — a browser with timer throttling off AND its first tab, the one way a
+  13/16; a port another listener holds moves the monitor to one the kernel has free, with a
+  stderr line naming the holder, and the spawn waits for the monitor's own "serving" line, so a
+  case reads its address from the handle — `url`, `remote_url`, `port` — and never writes the
+  number into one, which `no_case_writes_a_monitor_port_into_an_address` checks; scratch stays
+  named for the number asked, #s495; a restart under an open page is `Monitor::respawn`, which
+  brings the same monitor, its environment and arguments, back on the port the page is on, or
+  fails at once naming that port's holder: a second `Monitor::spawn` on the case's number would
+  move again, away from the tab), `chrome_tab()` — a browser with timer throttling off AND its first tab, the one way a
   case opens one (#343: `first_tab` launches again, up to four times with a stderr line each,
   when a fresh browser gives no tab — ~220 of ~230 failures across fifteen suite runs were that
   one error, "The event waited for never came", in runs of up to 22 cases; such a browser is
@@ -1011,6 +1126,19 @@ delivered is offered (`ToolUse::delivered` → `head.files`), not only the first
   stable for a while). Read Chrome's console
   before diagnosing a "timed out waiting for …" on a shell:
   `chrome --headless=new --enable-logging=stderr --v=0 <url>` prints `CONSOLE … Uncaught …`.
+  **The width study (#s517)** is a study, not a gate: `cargo run -p claude-replay-browser-tests
+  --example study_widths -- [--only <text>]` (after the release build above; port 3517) drives the
+  app shell at a row of window sizes and the session view at a row of host-pane sizes, mouse and
+  touch, the right pane shut and open, on the harness's hermetic world, and writes
+  `target/study-widths/<run>/`: `report.md` (per cell the layout classes, each part's box, the
+  chrome's controls a pointer cannot reach, how far what the view draws reaches past its edges, the
+  text column), `contact.html` and an MP4 sweep per surface, which needs `ffmpeg` (without one the
+  run says so at its start and skips only the videos). Each cell starts from a neutral page of the
+  monitor's origin with storage cleared; a control in a layer parked by its own state (the shut
+  pane, the shut drawer) is not checked and is listed in the cell's
+  JSON. A cell the probe could not measure is flagged everywhere and the run exits 1. It is an
+  example so the suite's `--ignored` runs never take it in; run it before and after a layout change
+  to see what moved.
   **The viewport trace (#192)** is how a scroll/blank-space report carries its own geometry:
   open either page with `?trace=viewport` (or set `localStorage.viewportTrace = "1"` to keep it
   across reloads) and the shared engine records every decision it makes — one entry per
@@ -1213,9 +1341,10 @@ the card called a question the client had stopped waiting on "waiting"), so the 
 `<type>.<key>`): Claude Code's `promptId` sat on nearly every user record for weeks and no category
 could see it. The census is `RECORD_KEYS_COMMON`/`RECORD_KEYS_BY_TYPE` in the Claude adapter, scoped
 per record type (many keys are generic words), and the QoderWork family's own keys are known to its
-adapters alone (`FAMILY_RECORD_KEYS`). It walks every record's keys, so it runs only while the sweep
-asks (`unknown::watch_keys`): an ordinary parse pays nothing. (`promptId` itself was measured as a
-turn key and refused, #362: it groups the client's prompt cycles, not the reader's prompts.)
+adapters and the Qoder store's alone (`FAMILY_RECORD_KEYS`). It walks every record's keys, so it
+runs only while the sweep asks (`unknown::watch_keys`): an ordinary parse pays nothing. (`promptId`
+itself was measured as a turn key and refused, #362: it groups the client's prompt cycles, not the
+reader's prompts.)
 
 **Text the client wraps in tags is read from the record, not shown raw** (#s79, the owner: "claude
 now differentiates messages from another session, or including copy/pasted contents"). A message
@@ -1332,7 +1461,9 @@ harness's roots (`cr-browser-follow-<pid>-<case>`, `cr-browser-state-<pid>`,
 `chrome.noindex/cr-browser-chrome-<pid>-<n>`), one per case per run and ~0.3 GB for a walk over a long
 session. A case that PASSES removes its own as its `serial()` guard goes (#s142: a day's suites
 had left 741 of them, 13.6 GB); a failed case keeps its root for diagnosis, as `CR_KEEP_SCRATCH=1`
-keeps every root. What is left the sweep prunes by the LIVENESS of the pid in the name, not by
+keeps every root. The root holds each monitor's stderr (`monitor-<port>.stderr`, #s410): its
+refusal lines, and every owner wait of Codex native mode that refused or took over a second (the
+harness sets `AGENT_MONITOR_TRACE_OWNER`), which a native-mode case failing under load needs. What is left the sweep prunes by the LIVENESS of the pid in the name, not by
 age (#205: the age rule had kept 43 GB of them after one day's runs); a running suite's roots are
 never in range, so the sweep (or `scripts/sweep-scratch.sh` alone) is safe beside a live run. Everything else goes by age.
 Scratch inside the repo is scratch inside a GIT repo, so the same file sets
@@ -1492,7 +1623,8 @@ presentation-agnostic".
   Qwenwork is Qwenwork only by provenance (a file under its store; one outside reads as
   QoderWork), and its own head rows (`runtime-config`, `workspace-directories`,
   `worktree-state`, `active-leaf`) are known to the family's adapters only (`decode_line_known`,
-  #359). A hermetic test points `QWENWORK_PROJECTS_DIR` (and `QWENWORK_DB`) at its scratch like
+  #359), and to the Qoder adapter's, since the Qoder desktop app writes the family's records into
+  the Qoder store (#s468). A hermetic test points `QWENWORK_PROJECTS_DIR` (and `QWENWORK_DB`) at its scratch like
   every other store, or it reads this machine's real sessions.
 
 Also in core (beside the vocabulary they index): `fold.rs` the `FoldPolicy` (clap-free
@@ -1561,7 +1693,7 @@ swinging 444↔405) replays in `sandbox_phone_jitter_app_replays`; a touch gestu
 iOS-style glide (`harness::touch_glide`: offset writes from the glide's own position with a scroll
 event per frame — without that event a headless tab hears the glide lazily, which invents failures).
 The preview pane remeasures the transcript only when it changes the transcript's WIDTH (#s25,
-`paneLayoutChanged` in `app.js`): on a phone and below 1180px it is an overlay, and a remeasure there
+`paneLayoutChanged` in `session-view.js`): on a phone and below 1180px it is an overlay, and a remeasure there
 only threw every measured height away (`a_phone_reader_who_opens_a_file_and_closes_the_pane_…`).
 While the head is still coming the phone's Turns count is the highest turn NUMBER drawn (#342). The
 classic page never asks for a tail and is unchanged. **The head comes in ranges** (#s274, Hong on a

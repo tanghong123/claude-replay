@@ -352,11 +352,43 @@ pub const COMPACT_AFTER: usize = 256;
 /// Code. 1.483.0 shipped the change at v73, so a Qwenwork session folded before it kept the reply
 /// as plain `AssistantText` on a resume; a v73 stream may hold either.
 ///
+/// v75: #s456 — a sub-agent's report that carries the client's notes or tails (Claude Code 2.1.317
+/// and later), and a SendMessage that waited for a resumed agent's report (`inlineHandback`), are
+/// unframed: the report, then the kept notes and tails behind a rule; the SendMessage's receipt line
+/// first. A v74 stream holds the framed text the model was sent.
+///
+/// v76: #s468 — a session in the Qoder store is decoded with the QoderWork family's lists, as the
+/// Qoder desktop app writes the family's records there, so its `api_retry` is a failure note
+/// (#s377). A v75 stream of such a session holds none.
+///
+/// v77: #s469 — the QoderWork family's `hook_output` attachment (the Qoder desktop app, client
+/// 1.1.86: a SessionStart hook's output put in the model's context) is a hook note, as #371 draws
+/// `hook_success`. A v76 stream of such a session holds nothing there.
+///
+/// v78: #s484 — an API failure whose record says a retry cannot fix it (Claude Code's
+/// `resendCannotCure`, or an `error` of `billing_error`) has its failure note open with "A retry
+/// cannot fix this · " ahead of the client's words. A v77 stream holds the client's words alone.
+///
+/// v79: #s470 — the client's API-error record naming a reply the safety classifier stopped
+/// (`refusedMessageId`, Claude Code 2.1.322) is that reply's `SafetyStop` mark when the fold met
+/// the reply, as #s378's note is. A v78 stream holds it as a plain `ToolResult`. The stopped
+/// replies nothing has named yet ride the stream from here (`refused`), since a resume can begin
+/// inside a turn; a v78 stream carries none.
+///
+/// v80: #s499 — a reply Claude Code wrote in the agent's place (its `<synthetic>` placeholder,
+/// "No response requested.") folds to a client note, a `ToolResult`, where a v79 stream holds it
+/// as the agent's `AssistantText`.
+///
+/// v81: #s500 — a reply Claude Code withdrew for a broken tool call (its retry note naming the
+/// reply's records in `retractedMessageUuids`, 2.1.325) folds to one `Withdrawn` mark in the
+/// note's place, the reply's thinking and text under it. A v80 stream holds the reply where it
+/// was and the note as a `ToolResult`.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 74;
+pub const FOLD_VERSION: u16 = 81;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
@@ -448,6 +480,11 @@ pub struct MetaRecord {
     /// written when it changes. A stream from before it reads as off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sandbox_on: Option<bool>,
+    /// The replies the safety classifier stopped that nothing had named as of this resume point
+    /// (#s470: message id -> category), written whole when they change. A stream from before it
+    /// reads as none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refused: Option<BTreeMap<String, Option<String>>>,
 
     // ── resumption: presence IS the resume-point indicator ──
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -546,6 +583,9 @@ pub struct MaterializedMeta {
     /// The transcript ran with the agent's Bash sandbox on (#s381).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sandbox_on: bool,
+    /// The stopped replies nothing has named yet (#s470).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub refused: BTreeMap<String, Option<String>>,
 }
 
 impl MaterializedMeta {
@@ -629,6 +669,9 @@ impl MaterializedMeta {
         }
         if let Some(on) = r.sandbox_on {
             self.sandbox_on = on;
+        }
+        if let Some(refused) = &r.refused {
+            self.refused = refused.clone();
         }
     }
 }

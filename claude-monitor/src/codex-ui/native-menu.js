@@ -1,3 +1,5 @@
+import { page, viewRoot } from "./view-root.js";
+
 /** Read-only discovery shared by the enabling control and the active native menu. */
 export async function readNativeStatus(fetcher, { timeoutMs = 30_000, schedule = setTimeout, cancel = clearTimeout } = {}) {
   const controller = new AbortController(); let timer;
@@ -6,7 +8,7 @@ export async function readNativeStatus(fetcher, { timeoutMs = 30_000, schedule =
     reject(new Error("Codex status timed out. Click the native control to retry.", { cause })); controller.abort(cause);
   }, timeoutMs); });
   const read = async () => {
-    const response = await fetcher("/api/codex/status", { cache: "no-store", credentials: "same-origin", signal: controller.signal });
+    const response = await fetcher("/api/codex/status", { cache: "no-store", signal: controller.signal });
     if (!response.ok) throw new Error(`Native status HTTP ${response.status}`);
     const status = await response.json();
     if (!status || typeof status !== "object" || Array.isArray(status) || status.ok !== true
@@ -24,13 +26,14 @@ export function ownsNativeServer(status) {
 }
 
 /** Cancel and Escape keep the server running. The caller sends Stop only after confirmation. */
-export function confirmNativeShutdown(document, returnFocus, { owned = true, activeTurns = [] } = {}) {
-  const dialog = document.createElement("dialog");
+/** `host` is the document the dialog opens in (the page's; a test passes its own). */
+export function confirmNativeShutdown(host, returnFocus, { owned = true, activeTurns = [] } = {}) {
+  const dialog = host.createElement("dialog");
   dialog.id = "nativeStopDialog"; dialog.className = "production-native-stop";
   dialog.setAttribute("aria-labelledby", "nativeStopTitle");
   dialog.setAttribute("aria-describedby", "nativeStopDescription");
-  const title = document.createElement("h2"); title.id = "nativeStopTitle"; title.textContent = owned ? "Stop Codex server?" : "Disconnect Codex native?";
-  const description = document.createElement("p"); description.id = "nativeStopDescription";
+  const title = host.createElement("h2"); title.id = "nativeStopTitle"; title.textContent = owned ? "Stop Codex server?" : "Disconnect Codex native?";
+  const description = host.createElement("p"); description.id = "nativeStopDescription";
   const turns = activeTurns.map(turn => turn.turnId
     ? `Turn ${turn.turnId} in ${turn.threadName || turn.threadId}`
     : `Active conversation ${turn.threadName || turn.threadId} (turn identity unavailable)`);
@@ -38,9 +41,9 @@ export function confirmNativeShutdown(document, returnFocus, { owned = true, act
   description.textContent = running + (owned
     ? "Connected Codex apps will disconnect, and running tasks will be interrupted. Saved conversation history will remain available."
     : "Monitor will disconnect while native work is active or pending. The external server and its turns keep running. In-flight sends may have an uncertain result; check their receipts before sending again.");
-  const actions = document.createElement("div"); actions.className = "production-native-stop-actions";
-  const cancel = document.createElement("button"); cancel.type = "button"; cancel.id = "nativeStopCancel"; cancel.textContent = "Cancel"; cancel.autofocus = true;
-  const stop = document.createElement("button"); stop.type = "button"; stop.id = "nativeStopConfirm"; stop.textContent = owned ? "Stop server" : "Disconnect";
+  const actions = host.createElement("div"); actions.className = "production-native-stop-actions";
+  const cancel = host.createElement("button"); cancel.type = "button"; cancel.id = "nativeStopCancel"; cancel.textContent = "Cancel"; cancel.autofocus = true;
+  const stop = host.createElement("button"); stop.type = "button"; stop.id = "nativeStopConfirm"; stop.textContent = owned ? "Stop server" : "Disconnect";
   actions.append(cancel, stop); dialog.append(title, description, actions);
   return new Promise(resolve => {
     let settled = false;
@@ -55,7 +58,7 @@ export function confirmNativeShutdown(document, returnFocus, { owned = true, act
     dialog.addEventListener("close", () => settle(false), { once: true });
     dialog.addEventListener("cancel", event => { event.preventDefault(); settle(false); });
     cancel.onclick = () => settle(false); stop.onclick = () => settle(true);
-    document.body.append(dialog); dialog.showModal(); cancel.focus();
+    host.body.append(dialog); dialog.showModal(); cancel.focus();
   });
 }
 /** Keep the shared-server benefit and setup prompt before launcher-dependent steps. */
@@ -88,17 +91,17 @@ export function positionNativeMenu(menu, button) {
 
 /** Keep optional native mode inside the existing Write row, before and after activation. */
 export function mountNativeMenu(onOpen) {
-  const row = document.getElementById("writeBtn");
+  const row = page.byId("writeBtn");
   const button = document.createElement("button");
   button.type = "button"; button.id = "codexNativeButton"; button.className = "production-native-trigger";
   button.setAttribute("aria-label", "Write mode options"); button.setAttribute("aria-haspopup", "dialog");
   button.setAttribute("aria-expanded", "false"); button.setAttribute("aria-controls", "codexNativeMenu");
   button.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m7 10 5 5 5-5"/></svg>';
   button.onclick = () => menu.matches(":popover-open") ? menu.hidePopover() : onOpen();
-  row.insertBefore(button, document.getElementById("writeInfo"));
+  row.insertBefore(button, page.byId("writeInfo"));
   const menu = document.createElement("div"); menu.className = "production-native-menu";
   menu.id = "codexNativeMenu"; menu.setAttribute("popover", "auto"); menu.setAttribute("role", "dialog");
-  menu.setAttribute("aria-label", "Write mode options"); document.body.append(menu);
+  menu.setAttribute("aria-label", "Write mode options"); page.body().append(menu);
   menu.addEventListener("toggle", event => button.setAttribute("aria-expanded", String(event.newState === "open")));
   menu.addEventListener("keydown", event => {
     if (event.key !== "Escape") return;

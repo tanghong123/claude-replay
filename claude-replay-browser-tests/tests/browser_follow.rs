@@ -518,6 +518,192 @@ fn jump_to_bottom_lands_after_a_viewport_resize() {
     let _ = std::fs::remove_dir_all(&base);
 }
 
+/// **The classic page scales its heights by the width its records are laid out at** (#s492).
+/// Where a scrollbar takes room (Linux, Windows, a Mac set to always show them), the page's own
+/// scrollbar appears once the records outgrow the window and narrows the column, and no `resize`
+/// fires for it. The engine's last width was read as the mount was attached and empty, so the next
+/// resize could scale every remembered height by a ratio from the wider column, as #s431 found in
+/// the app shell's transcript. Both ways a page comes to overflow are walked: a long session at its
+/// first load, and a short one growing past the window, at windows narrower than `main`'s 820px cap
+/// binds (about 1075px), where the column follows the window. And a third: in wide mode on a 1920px
+/// window the column is over 1500px, where a 15px scrollbar is under the engine's 1% threshold; there
+/// the width is taken without a remeasure (one would read the ratio as no width change and clear
+/// every remembered height), and the next resize still scales by the column's own widths. The ratios
+/// of every remeasure since the mark are multiplied, since each starts from the width the one before
+/// ended at.
+#[test]
+#[ignore] // needs a local Chrome/Chromium; see the module docs
+fn the_classic_page_scales_its_heights_by_the_width_its_records_are_laid_out_at() {
+    const MARK: &str = "(function(){ window.__t0 = performance.now(); window.__w0 = document.querySelector('.vwin').getBoundingClientRect().width; return true; })()";
+    const REMEASURES: &str = "(function(){ var w = document.querySelector('.vwin').getBoundingClientRect().width; var rs = window.__viewportHistory.states.filter(function (s) { return s.cause === 'remeasure' && s.t >= window.__t0; }).map(function (s) { return s.ratio; }); return { count: rs.length, ratios: rs, ratio: Math.round(rs.reduce(function (a, r) { return a * r; }, 1) * 1000) / 1000, expected: Math.round(window.__w0 / w * 1000) / 1000, from: Math.round(window.__w0), to: Math.round(w), innerWidth: innerWidth }; })()";
+    const ROOM: &str = "window.innerWidth - document.documentElement.clientWidth";
+    // Whether the page overflows the window: what makes a scrollbar appear, read apart from the
+    // room one takes, since a page that keeps its gutter has the room before it overflows.
+    const OVER: &str =
+        "document.documentElement.scrollHeight - document.documentElement.clientHeight";
+    let _serial = serial();
+    let base = base("classic-scrollbar-width");
+    std::env::set_var("CLAUDE_REPLAY_CACHE", &base);
+    let turn = |i: u32| {
+        user(
+            &format!(
+                "question {i}: {}",
+                "lorem ipsum dolor sit amet consectetur. ".repeat(4)
+            ),
+            i % 60,
+        ) + &assistant(
+            &format!(
+                "answer {i}: {}",
+                "sed do eiusmod tempor incididunt ut labore. ".repeat(9)
+            ),
+            i % 60,
+        )
+    };
+    let long = base.join("long.jsonl");
+    std::fs::write(&long, (0..120).map(turn).collect::<String>()).unwrap();
+    let short = base.join("short.jsonl");
+    std::fs::write(&short, turn(0)).unwrap();
+    let args = Args {
+        no_cache: true,
+        ..Default::default()
+    };
+    let wide_short = base.join("wide-short.jsonl");
+    std::fs::write(&wide_short, turn(0)).unwrap();
+    let mut wrong = Vec::new();
+    for (name, src, grows, wide, (from, to)) in [
+        (
+            "a long session at its first load",
+            &long,
+            false,
+            false,
+            (1000.0, 900.0),
+        ),
+        (
+            "a short session grown past the window",
+            &short,
+            true,
+            false,
+            (1000.0, 900.0),
+        ),
+        (
+            "a short session grown past a wide column",
+            &wide_short,
+            true,
+            true,
+            (1920.0, 1800.0),
+        ),
+    ] {
+        let server = start_server(&args, std::slice::from_ref(src)).expect("server starts");
+        let url = server.url_for_root(0).expect("hosted");
+        let (browser, tab) = harness::chrome_tab();
+        harness::classic_scrollbars(&tab);
+        harness::resize(&tab, from, 800.0);
+        tab.navigate_to(&url).unwrap();
+        tab.wait_until_navigated().unwrap();
+        wait_for(
+            &tab,
+            &format!("{name}: the page drawn"),
+            Duration::from_secs(20),
+            |s| s["blocks"].as_i64().unwrap_or(-1) >= 2,
+        );
+        if wide {
+            eval(
+                &tab,
+                "(function(){ document.getElementById('btn-wide').click(); return true; })()",
+                false,
+            );
+            std::thread::sleep(Duration::from_millis(1200));
+            let col = eval(
+                &tab,
+                "document.querySelector('.vwin').getBoundingClientRect().width",
+                false,
+            );
+            assert!(
+                col.as_f64().unwrap_or(0.0) > 1500.0,
+                "{name}: premise, wide mode gives a column over 1500px: {col}"
+            );
+        }
+        // Remeasures from here to the mark: the scrollbar's own, when it moves the column.
+        eval(
+            &tab,
+            "(function(){ window.__tg = performance.now(); window.__wg = document.querySelector('.vwin').getBoundingClientRect().width; return true; })()",
+            false,
+        );
+        if grows {
+            let over = eval(&tab, OVER, false);
+            assert!(
+                over.as_f64().unwrap_or(99.0) < 1.0,
+                "{name}: premise, the session fits the window: {over}"
+            );
+            // A wide column wraps less, so it takes more turns to overflow the window.
+            for i in 1..if wide { 40 } else { 16 } {
+                append(src, &turn(i));
+            }
+        }
+        wait_probe(
+            &tab,
+            &format!("{name}: the page overflowing the window"),
+            Duration::from_secs(20),
+            OVER,
+            |v| v.as_f64().unwrap_or(0.0) > 200.0,
+        );
+        // Let the growth's apply and its measures finish before the mark.
+        std::thread::sleep(Duration::from_millis(2600));
+        let room = eval(&tab, ROOM, false);
+        assert!(
+            room.as_f64().unwrap_or(0.0) >= 14.5,
+            "{name}: the page's scrollbar takes room: {room}"
+        );
+        if wide {
+            // The scene's premise: the scrollbar narrowed the column while it watched, so no
+            // remeasure below means the width was taken, not that nothing moved.
+            let moved = eval(
+                &tab,
+                "window.__wg - document.querySelector('.vwin').getBoundingClientRect().width",
+                false,
+            );
+            assert!(
+                moved.as_f64().unwrap_or(0.0) >= 14.5,
+                "{name}: premise, the scrollbar narrowed the column while the scene watched: {moved}"
+            );
+            let early = eval(&tab, "JSON.stringify(window.__viewportHistory.states.filter(function (s) { return s.cause === 'remeasure' && s.t >= window.__tg; }).map(function (s) { return s.ratio; }))", false);
+            if early.as_str() != Some("[]") {
+                wrong.push(format!(
+                    "{name}: the scrollbar beside a wide column remeasured (ratios {early}), which clears every remembered height"
+                ));
+            }
+        }
+        eval(&tab, MARK, false);
+        harness::resize(&tab, to, 800.0);
+        wait_probe(
+            &tab,
+            &format!("{name}: a remeasure at the new width"),
+            Duration::from_secs(10),
+            REMEASURES,
+            |v| v["count"].as_i64().unwrap_or(0) >= 1 && v["innerWidth"] == to as i64,
+        );
+        // Any later resize event of the same move is in the product too.
+        std::thread::sleep(Duration::from_millis(800));
+        let seen = eval(&tab, REMEASURES, false);
+        let (ratio, expected) = (
+            seen["ratio"].as_f64().unwrap_or(0.0),
+            seen["expected"].as_f64().unwrap_or(-1.0),
+        );
+        eprintln!("{name}: {seen}");
+        if (ratio - expected).abs() > 0.002 {
+            wrong.push(format!("{name}: {seen}"));
+        }
+        drop(tab);
+        drop(browser);
+        drop(server);
+    }
+    assert!(
+        wrong.is_empty(),
+        "the remeasure scales by the column's own widths, before and after: {wrong:#?}"
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// **A turn landing must survive late reflow.** Reported from the monitor: clicking a turn
 /// in the sidebar landed several turns away, on a stretch full of images, and only a
 /// SECOND click worked — because the first had finally measured the region.
@@ -913,13 +1099,15 @@ fn the_app_shell_hides_and_restores_a_session() {
     );
     let store_rows = 1;
     let monitor = Monitor::spawn(Kind::V1, 2832, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to("http://127.0.0.1:2832/?ui=app").unwrap();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     // The fixture is stamped in the builders' fixed past hour, so it is Idle — out of the
     // shell's default filter (#202). This case reads the TREE, so it asks for every bucket.
-    harness::show_every_session(&tab, "http://127.0.0.1:2832/?ui=app");
+    harness::show_every_session(&tab, &format!("http://127.0.0.1:{port}/?ui=app"));
 
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
         tab.evaluate(js, true)
@@ -944,7 +1132,7 @@ fn the_app_shell_hides_and_restores_a_session() {
     let painted = eval(&tab, "JSON.stringify({filterBtn: !!document.getElementById('filterBtn'), tree: (document.getElementById('tree')||{innerHTML:''}).innerHTML.slice(0, 160), modules: performance.getEntriesByType('resource').filter(e => e.name.includes('/monitor-ui/')).map(e => [e.name.split('/').pop(), e.responseStatus])})");
     assert!(
         !first.is_empty(),
-        "the store has {store_rows} rows but the app shell painted none in 30s — did app.js throw? {painted}"
+        "the store has {store_rows} rows but the app shell painted none in 30s — did app.js or session-view.js throw? {painted}"
     );
     let row = format!("document.querySelector('.tree-row.session[data-session=\"{first}\"]')");
     let before = eval(
@@ -1056,6 +1244,7 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
         &harness::long_session(6, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(Kind::V1, 2833, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
@@ -1066,7 +1255,8 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
     };
     // Find a parent with children by asking the same routes the shell uses — first the
     // listing (blocking on the cold scan), then `/pull` per session for its meta.
-    tab.navigate_to("http://127.0.0.1:2833/?ui=app").unwrap();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     // The child's id is whatever the index gave the sub-agent transcript: read it off the
     // parent's meta rather than guessing the naming.
@@ -1077,8 +1267,10 @@ fn the_app_shell_walks_a_child_back_to_its_parent() {
         .first()
         .cloned()
         .unwrap_or_else(|| panic!("the fixture parent lists its sub-agent child: {listed}"));
-    tab.navigate_to(&format!("http://127.0.0.1:2833/?ui=app&session={child_id}"))
-        .unwrap();
+    tab.navigate_to(&format!(
+        "http://127.0.0.1:{port}/?ui=app&session={child_id}"
+    ))
+    .unwrap();
     tab.wait_until_navigated().unwrap();
     let mut live = false;
     for _ in 0..80 {
@@ -1168,6 +1360,7 @@ fn the_app_shell_restores_the_scroll_position_across_a_reload() {
     let sid = "cccccccc-0000-4000-8000-000000000001".to_string();
     stores.claude_session(&sid, &harness::long_session(80, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2834, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
@@ -1176,7 +1369,7 @@ fn the_app_shell_restores_the_scroll_position_across_a_reload() {
             .and_then(|r| r.value)
             .unwrap_or(serde_json::Value::Null)
     };
-    tab.navigate_to(&format!("http://127.0.0.1:2834/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "document.querySelector('.transcript') && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3", "the fixture session to be tall enough to scroll", std::time::Duration::from_secs(20), "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : -1");
@@ -1260,6 +1453,7 @@ fn the_app_shell_keys_step_turns_and_heads() {
         ),
     );
     let monitor = Monitor::spawn(Kind::V1, 2835, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
@@ -1268,7 +1462,8 @@ fn the_app_shell_keys_step_turns_and_heads() {
             .and_then(|r| r.value)
             .unwrap_or(serde_json::Value::Null)
     };
-    tab.navigate_to(&format!("http://127.0.0.1:2835/?ui=app&session={sid}"))
+    harness::track_idle(&tab);
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "(function(){ var u=document.querySelectorAll('.virtual-window .turn.user').length, h=document.querySelectorAll('.virtual-window button.renderer-head').length; return u >= 3 && h >= 1; })()", "three user turns and a tool head mounted", std::time::Duration::from_secs(20), "document.querySelectorAll('.virtual-window .turn.user').length + ' turns, ' + document.querySelectorAll('.virtual-window button.renderer-head').length + ' heads'");
@@ -1278,54 +1473,6652 @@ fn the_app_shell_keys_step_turns_and_heads() {
     // Start at the top, then `]` twice: the anchor must move to a LATER user turn each time.
     let top_turn = "(function(){ var s=document.querySelector('.transcript'), top=s.getBoundingClientRect().top; for (var c of document.querySelector('.virtual-window').children) { var r=c.getBoundingClientRect(); if (r.bottom > top + 1) return c.dataset.unitKey || ''; } return ''; })()";
     eval(&tab, "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:-1})); s.scrollTop = 0; return 'ok'; })()");
-    std::thread::sleep(std::time::Duration::from_millis(500));
+    // The first key must wait for the engine to have HEARD that scroll (#s443). While it still
+    // follows the tail, `]` steps from the last turn: on a busy box, 500 ms after the scroll the
+    // first `]` went to t39, the last, and the second could only stay there ("…and again:
+    // 100 -> 100 (top "user:t39")", 3 of 10 runs on hong-devserver; with no wait at all, 1 of
+    // 3 here).
+    harness::until_reader_owns_the_view(&tab);
     // Position is the unit's RECORD index (`data-unit-from`), never its place among the
-    // mounted children: the window is virtualized and re-mounted around every jump.
-    let unit_index = |tab: &headless_chrome::Tab| -> i64 {
-        eval(tab, "(function(){ var s=document.querySelector('.transcript'), top=s.getBoundingClientRect().top; for (var c of document.querySelector('.virtual-window').children) { if (c.getBoundingClientRect().top >= top - 24) return Number(c.dataset.unitFrom); } return -1; })()")
-            .as_i64()
+    // mounted children: the window is virtualized and re-mounted around every jump. The
+    // reading carries the scroll offset too (`<unit>@<offset>`), so a jump still under way
+    // reads as moving. Each key is followed by a wait for its effect to land and hold still,
+    // never a fixed sleep, so the next key steps from where the last one landed.
+    let reading = "(function(){ var s=document.querySelector('.transcript'), top=s.getBoundingClientRect().top; for (var c of document.querySelector('.virtual-window').children) { if (c.getBoundingClientRect().top >= top - 24) return c.dataset.unitFrom + '@' + Math.round(s.scrollTop); } return '-1@' + Math.round(s.scrollTop); })()";
+    let unit_of = |v: &serde_json::Value| -> i64 {
+        v.as_str()
+            .and_then(|s| s.split('@').next())
+            .and_then(|u| u.parse().ok())
             .unwrap_or(-1)
     };
-    let start = unit_index(&tab);
+    let offset_of = |v: &serde_json::Value| -> i64 {
+        v.as_str()
+            .and_then(|s| s.split('@').nth(1))
+            .and_then(|o| o.parse().ok())
+            .unwrap_or(-1)
+    };
+    let bound = std::time::Duration::from_secs(10);
+    let (at_top, seen_start) = harness::until_still(&tab, reading, |v| offset_of(v) == 0, bound);
+    let start = unit_of(&at_top);
     eval(&tab, &key("]", false));
-    std::thread::sleep(std::time::Duration::from_millis(600));
-    let after_one = unit_index(&tab);
+    let (v, seen_one) = harness::until_still(&tab, reading, |v| unit_of(v) > start, bound);
+    let after_one = unit_of(&v);
     eval(&tab, &key("]", false));
-    std::thread::sleep(std::time::Duration::from_millis(600));
-    let after_two = unit_index(&tab);
+    let (v, seen_two) = harness::until_still(&tab, reading, |v| unit_of(v) > after_one, bound);
+    let after_two = unit_of(&v);
     let top_after_two = eval(&tab, top_turn);
     eval(&tab, &key("[", false));
-    std::thread::sleep(std::time::Duration::from_millis(600));
-    let back = unit_index(&tab);
+    let (v, seen_back) = harness::until_still(&tab, reading, |v| unit_of(v) < after_two, bound);
+    let back = unit_of(&v);
     // `j` focuses a tool head; typing into the search box must not step anything.
+    // Its effect is the focus AND the reveal that brings the head clear of the edges, smoothly
+    // (`stepHead`: to 160px, or as near as the top of the transcript allows), so wait for both,
+    // or the reveal lands after the reading the next check starts from.
     eval(&tab, &key("j", false));
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    let focused = eval(
+    let on_head = "(function(){ var a=document.activeElement, s=document.querySelector('.transcript'); if (!a || !a.classList.contains('renderer-head')) return 'none@' + Math.round(s.scrollTop); var r=a.getBoundingClientRect(), v=s.getBoundingClientRect(); return (r.top >= v.top + 100 && r.bottom <= v.bottom - 60 ? 'clear' : 'away') + '@' + Math.round(s.scrollTop); })()";
+    let (head, _) = harness::until_still(
         &tab,
-        "document.activeElement && document.activeElement.classList.contains('renderer-head')",
+        on_head,
+        |v| {
+            let s = v.as_str().unwrap_or("");
+            s.starts_with("clear@") || s == "away@0"
+        },
+        bound,
     );
+    let focused = !head.as_str().unwrap_or("none").starts_with("none");
     eval(
         &tab,
         "document.getElementById('transcriptSearchInput').focus(); 'ok'",
     );
-    let before_typing = unit_index(&tab);
+    let (v, _) = harness::until_still(&tab, reading, |_| true, bound);
+    let before_typing = unit_of(&v);
     eval(&tab, "document.getElementById('transcriptSearchInput').dispatchEvent(new KeyboardEvent('keydown', {key: ']', bubbles: true, cancelable: true})); 'ok'");
-    std::thread::sleep(std::time::Duration::from_millis(400));
-    let while_typing = unit_index(&tab);
+    // A key the page refused has no effect to wait for, so this waits for the page to settle
+    // (a step it wrongly took would still be under way, and would hold the settle) and the
+    // reading to hold still.
+    let (v, _) = harness::until_still(&tab, reading, |_| true, bound);
+    let while_typing = unit_of(&v);
     drop(monitor);
     assert!(
         after_one > start,
-        "`]` moved to a later unit: {start} -> {after_one}"
+        "`]` moved to a later unit: {start} -> {after_one} (readings {seen_start:?} then {seen_one:?})"
     );
     assert!(
         after_two > after_one,
-        "…and again: {after_one} -> {after_two} (top {top_after_two})"
+        "…and again: {after_one} -> {after_two} (top {top_after_two}; readings {seen_two:?})"
     );
-    assert!(back < after_two, "`[` moved back: {after_two} -> {back}");
-    assert_eq!(focused, true, "`j` put focus on a tool head");
+    assert!(
+        back < after_two,
+        "`[` moved back: {after_two} -> {back} (readings {seen_back:?})"
+    );
+    assert!(focused, "`j` put focus on a tool head ({head})");
     assert_eq!(
         while_typing, before_typing,
         "keys do nothing while typing in the search box"
+    );
+}
+
+/// The events of `name` the session view raised into the app's handler, through the case's wrapper
+/// (`fixtures/host/session-view-spy.js`), each as `{name, args, plain}`, in order.
+fn view_events(tab: &headless_chrome::Tab, name: &str) -> Vec<serde_json::Value> {
+    harness::probe(
+        tab,
+        &format!("((window.__viewHeard || {{}}).said || []).filter(function (e) {{ return e.name === {name:?}; }})"),
+    )
+    .as_array()
+    .cloned()
+    .unwrap_or_default()
+}
+
+/// The last of them, or null before any.
+fn last_view_event(tab: &headless_chrome::Tab, name: &str) -> serde_json::Value {
+    view_events(tab, name)
+        .pop()
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// Two events in a row saying the same thing: what the view's change-only rule must never send.
+fn repeated(events: &[serde_json::Value]) -> Option<String> {
+    events
+        .windows(2)
+        .find(|pair| pair[0]["args"] == pair[1]["args"])
+        .map(|pair| pair[1]["args"].to_string())
+}
+
+/// Counts the page's reads of the session list (`window.__polls`): the index's poll, which redraws
+/// the view's top bar every 5 s. Installed before the page's scripts, like the idle tracker.
+const COUNT_POLLS: &str = "(function(){ window.__polls = 0; var f = window.fetch; window.fetch = function (u) { if (String(u).indexOf('/api/sessions') >= 0) window.__polls++; return f.apply(this, arguments); }; })()";
+
+/// A Read of a PNG and its result carrying the image, as an agent records one: `b64` the payload.
+fn read_image_at(id: &str, path: &str, b64: &str, ts: &str) -> String {
+    let call = serde_json::json!({"type": "assistant", "timestamp": ts, "message": {"role": "assistant", "content": [
+        {"type": "tool_use", "id": id, "name": "Read", "input": {"file_path": path}}]}});
+    let result = serde_json::json!({"type": "user", "timestamp": ts, "message": {"role": "user", "content": [{
+        "type": "tool_result", "tool_use_id": id,
+        "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": b64.trim()}}]}]}});
+    format!("{call}\n{result}\n")
+}
+
+/// The app shell is a host of its session view like any other (#s429 stage 6,
+/// design/session-view-component.md): what the view tells its host reaches the handlers the APP
+/// passed, each with plain data — the title when a session opens and not again across an index poll,
+/// a press for the session's Info and not a hover, a file opened in the pane (its path and the text
+/// the transcript carries), an Open all of three images as one file under the file's own name, a
+/// link copied, a toast the app then shows, and the turn the reader is in as `]` moves it and not
+/// again across a scroll inside that turn. The case answers the app's request for
+/// `session-view.js` with a wrapper (harness::answer_in_browser) that records each call on its way to
+/// the app's own handler; the monitor serves nothing new.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_hears_what_its_session_view_tells_its_host() {
+    let _serial = serial();
+    let base = base("appshell-view-events");
+    let stores = Stores::new(&base);
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let notes = repo.join("notes.md");
+    std::fs::write(&notes, "line 1\nline 2\nline 3\nline 4\n").unwrap();
+    let sid = "cccccccc-0000-4000-8000-0000000000e6".to_string();
+    let mut jsonl = harness::long_session(
+        16,
+        harness::Shape {
+            tool_every: 3,
+            think_every: 0,
+            prose_repeat: 6,
+        },
+    );
+    jsonl += &harness::user_at("carry on", &harness::at("30:01"));
+    jsonl += &harness::assistant_at(
+        "Picking up where the summary left off.",
+        &harness::at("30:02"),
+    );
+    jsonl += &harness::restored_file_at(
+        &notes.display().to_string(),
+        "notes.md",
+        4,
+        &harness::at("30:02"),
+    );
+    // Three images in a row: one block with an Open all.
+    for i in 0..3 {
+        jsonl += &read_image_at(
+            &format!("r{i}"),
+            &format!("/tmp/shot{i}.png"),
+            harness::TINY_PNG_B64,
+            &harness::at(&format!("30:1{i}")),
+        );
+    }
+    jsonl += &harness::user_at("next", &harness::at("30:20"));
+    let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(&sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3102, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::track_idle(&tab);
+    {
+        use headless_chrome::protocol::cdp::Page;
+        tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+            source: COUNT_POLLS.to_string(),
+            world_name: None,
+            include_command_line_api: None,
+            run_immediately: None,
+        })
+        .expect("the poll counter is installed");
+    }
+    harness::answer_in_browser(
+        &tab,
+        vec![harness::Answer {
+            pattern: "*/monitor-ui/session-view.js".into(),
+            path: "/monitor-ui/session-view.js".into(),
+            content_type: "text/javascript; charset=utf-8".into(),
+            body: include_str!("fixtures/host/session-view-spy.js").into(),
+        }],
+    );
+    tab.navigate_to(&monitor.url(&format!("?ui=app&session={sid}")))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let bound = std::time::Duration::from_secs(20);
+    let heard = "JSON.stringify(window.__viewHeard || null).slice(-1500)";
+    let count = |name: &str| view_events(&tab, name).len();
+    harness::until(
+        &tab,
+        "!!window.__viewHeard && document.querySelectorAll('.virtual-window .turn.user').length >= 3",
+        "the app shell mounted through the wrapper, with a session's turns drawn",
+        bound,
+        heard,
+    );
+    let passed = harness::probe(&tab, "window.__viewHeard.passed.slice().sort()");
+    assert_eq!(
+        passed,
+        serde_json::json!([
+            "onFile",
+            "onInfo",
+            "onLinkCopied",
+            "onOutline",
+            "onTitle",
+            "onToast",
+            "onTurn"
+        ]),
+        "the app passes a handler for each of the view's events"
+    );
+
+    // Its title, as the top bar shows it, once the session is open.
+    harness::until(
+        &tab,
+        &format!("(function(){{ var s = (window.__viewHeard.said || []).filter(function (e) {{ return e.name === 'onTitle'; }}).pop(); var t = document.getElementById('sessionTitle').textContent; return !!s && s.args[0].session === {sid:?} && s.args[0].title === t && t !== 'Agent Monitor'; }})()"),
+        "the view to tell the app the open session's title",
+        bound,
+        heard,
+    );
+
+    // A hover over Info peeks at it and says nothing; a press pins it and says so, once.
+    let peeked = harness::eval(&tab, "(function(){ var b = document.getElementById('outlineFooterInfo'); b.dispatchEvent(new PointerEvent('pointerenter', { pointerType: 'mouse' })); return document.getElementById('infoPopover').classList.contains('open'); })()");
+    let after_hover = count("onInfo");
+    harness::eval(
+        &tab,
+        "document.getElementById('outlineFooterInfo').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "!!(window.__viewHeard.said || []).some(function (e) { return e.name === 'onInfo'; })",
+        "the view to tell the app the reader asked for Info",
+        bound,
+        heard,
+    );
+    let infos = view_events(&tab, "onInfo");
+
+    // A file opened in the pane: the restored file's card, its path and the text it carries.
+    harness::until(
+        &tab,
+        "!!document.querySelector('[data-attachment-action]') && !!document.querySelector('.image-run [data-open-all]')",
+        "the restored file's card and the three images",
+        bound,
+        "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(-400) : 'no transcript'",
+    );
+    harness::eval(&tab, "(function(){ var r = [...document.querySelectorAll('.renderer.closed')].find(function (r) { return r.querySelector('[data-attachment-action]'); }); if (r) r.querySelector(':scope > .renderer-head').click(); var b = [...document.querySelectorAll('[data-attachment-action=\"preview\"]')].find(function (b) { return /notes\\.md$/.test(b.dataset.path || ''); }); if (b) b.click(); return !!b; })()");
+    harness::until(
+        &tab,
+        "!!(window.__viewHeard.said || []).some(function (e) { return e.name === 'onFile'; })",
+        "the view to tell the app a file opened",
+        bound,
+        heard,
+    );
+    let file = last_view_event(&tab, "onFile");
+
+    // Open all of the three images: one file, the one the pane shows, under the file's own name.
+    harness::eval(
+        &tab,
+        "document.querySelector('.image-run [data-open-all]').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "(window.__viewHeard.said || []).filter(function (e) { return e.name === 'onFile'; }).length >= 2 && !!document.querySelector('#previewTabs .preview-tab.on')",
+        "the view to tell the app the Open all",
+        bound,
+        heard,
+    );
+    let shown_tab = harness::eval(&tab, "(document.querySelector('#previewTabs .preview-tab.on .preview-tab-label') || {}).textContent || ''");
+
+    // A link copied, from a record's `#`.
+    harness::stub_clipboard(&tab);
+    let record = harness::eval(&tab, "(function(){ var b = document.querySelector('.virtual-window [data-spot-link]'); if (!b) return ''; b.click(); return b.dataset.spotLink; })()");
+    let record = record.as_str().unwrap_or("").to_string();
+    assert!(!record.is_empty(), "a record offers its link");
+    harness::until(
+        &tab,
+        "!!(window.__viewHeard.said || []).some(function (e) { return e.name === 'onLinkCopied'; })",
+        "the view to tell the app a link was copied",
+        bound,
+        heard,
+    );
+    let link = last_view_event(&tab, "onLinkCopied");
+    let copied = harness::copied_text(&tab);
+
+    // A toast: the session's id copied from the title's menu. The app shows it.
+    harness::eval(
+        &tab,
+        "document.querySelector('[data-copy-session=\"id\"]').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "!!(window.__viewHeard.said || []).some(function (e) { return e.name === 'onToast'; }) && document.getElementById('toast').textContent === 'Copied session id'",
+        "the view's toast to reach the app, which shows it",
+        bound,
+        &format!("{heard} + ' | toast: ' + document.getElementById('toast').textContent"),
+    );
+    let toast = last_view_event(&tab, "onToast");
+
+    // Across an index poll, which redraws the top bar, the title is not said again.
+    let polls = harness::eval(&tab, "window.__polls").as_i64().unwrap_or(0);
+    harness::until(
+        &tab,
+        &format!("window.__polls >= {}", polls + 1),
+        "an index poll",
+        bound,
+        "window.__polls",
+    );
+    let _ = harness::until_still(&tab, "window.__polls", |_| true, bound);
+    let titles = view_events(&tab, "onTitle");
+
+    // The turn the reader is in: from the top, then `]` to the next, each as the top bar's subtitle
+    // names it; and a scroll inside that turn says nothing.
+    let turn_matches = "(function(){ var s = (window.__viewHeard.said || []).filter(function (e) { return e.name === 'onTurn'; }).pop(); if (!s || s.args[0].turn == null) return false; var a = s.args[0]; return ('Turn ' + a.turn + ' — ' + a.label).trim() === document.getElementById('turnSubtitle').textContent.trim(); })()";
+    harness::eval(&tab, "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:-1})); s.scrollTop = 0; return 'ok'; })()");
+    harness::until_reader_owns_the_view(&tab);
+    harness::until(
+        &tab,
+        &format!("{turn_matches} && (window.__viewHeard.said.filter(function (e) {{ return e.name === 'onTurn'; }}).pop().args[0].turn === 1)"),
+        "the view to tell the app the first turn, at the top",
+        bound,
+        heard,
+    );
+    let first = last_view_event(&tab, "onTurn");
+    harness::key(&tab, "]", false);
+    harness::until(
+        &tab,
+        &format!("{turn_matches} && window.__viewHeard.said.filter(function (e) {{ return e.name === 'onTurn'; }}).pop().args[0].turn > 1"),
+        "the view to tell the app the turn `]` moved to",
+        bound,
+        heard,
+    );
+    let subtitle = "document.getElementById('turnSubtitle').textContent + '@' + Math.round(document.querySelector('.transcript').scrollTop)";
+    let after = last_view_event(&tab, "onTurn");
+    // A scroll inside the turn `]` landed: the first step down names the same turn, in the subtitle
+    // and to the app, and the app hears nothing new. Right after a landing the turn above's tail
+    // sits behind the turn bar, and painting from the unit crossing the top named it (#s450: this
+    // case stepped until two readings agreed while it did).
+    let turn_of = |v: &serde_json::Value| {
+        v.as_str()
+            .and_then(|s| s.split('@').next())
+            .map(str::to_string)
+    };
+    let step_down = "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:40})); s.scrollTop += 40; return 'ok'; })()";
+    let (landed, _) = harness::until_still(&tab, subtitle, |_| true, bound);
+    let turns_before = count("onTurn");
+    harness::eval(&tab, step_down);
+    let (scrolled, _) =
+        harness::until_still(&tab, subtitle, |v| v.as_str() != landed.as_str(), bound);
+    let turns_after = count("onTurn");
+    let still_heard = harness::eval(&tab, turn_matches);
+    let turns = view_events(&tab, "onTurn");
+
+    let said = harness::probe(&tab, "window.__viewHeard.said");
+    let all = said.as_array().cloned().unwrap_or_default();
+    drop(monitor);
+    assert_eq!(peeked, serde_json::json!(true), "the hover peeked at Info");
+    assert_eq!(after_hover, 0, "and told the app nothing");
+    assert_eq!(
+        infos.len(),
+        1,
+        "a press that pins Info is one request: {infos:?}"
+    );
+    assert_eq!(
+        infos[0]["args"],
+        serde_json::json!([{ "session": sid }]),
+        "{infos:?}"
+    );
+    assert_eq!(file["args"][0]["name"], "notes.md", "{file}");
+    assert_eq!(
+        file["args"][0]["path"],
+        serde_json::json!(notes.display().to_string()),
+        "{file}"
+    );
+    assert!(
+        file["args"][0]["text"]
+            .as_str()
+            .is_some_and(|t| t.contains("line 1")),
+        "the text the transcript carries for it: {file}"
+    );
+    let opened = all
+        .iter()
+        .filter(|e| e["name"] == "onFile")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert_eq!(
+        opened.len(),
+        2,
+        "the Open all of three images is ONE file opened: {opened:?}"
+    );
+    let name = opened[1]["args"][0]["name"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        !name.is_empty()
+            && !name.contains("1/3")
+            && shown_tab.as_str() == Some(format!("{name} 1/3").as_str()),
+        "named as the file, not as its tab ({shown_tab}): {:?}",
+        opened[1]
+    );
+    assert_eq!(
+        link["args"][0]["record"],
+        serde_json::json!(record),
+        "{link}"
+    );
+    let url = link["args"][0]["url"].as_str().unwrap_or("").to_string();
+    assert!(
+        url.ends_with(&format!("#{record}")) && url == copied,
+        "the link it copied: {link}, copied {copied:?}"
+    );
+    assert_eq!(
+        toast["args"],
+        serde_json::json!(["Copied session id"]),
+        "{toast}"
+    );
+    assert_eq!(
+        repeated(&titles),
+        None,
+        "no title said twice in a row, across the index's poll: {titles:?}"
+    );
+    assert!(
+        first["args"][0]["turn"] == serde_json::json!(1)
+            && after["args"][0]["turn"].as_i64().unwrap_or(0) > 1
+            && after["args"][0]["session"] == serde_json::json!(sid),
+        "`]` moved the turn the app hears from the first: {first} -> {after}"
+    );
+    assert!(
+        scrolled != landed && turn_of(&scrolled) == turn_of(&landed),
+        "one step down from where `]` landed names the same turn ({landed} -> {scrolled}): {turns:?}"
+    );
+    assert_eq!(
+        turns_after, turns_before,
+        "a scroll inside one turn ({landed} -> {scrolled}) said nothing: {turns:?}"
+    );
+    assert_eq!(
+        still_heard,
+        serde_json::json!(true),
+        "…and the turn the app heard last is still the one the subtitle shows: {turns:?}"
+    );
+    assert_eq!(
+        repeated(&turns),
+        None,
+        "no turn said twice in a row: {turns:?}"
+    );
+    assert!(
+        all.iter().all(|e| e["plain"] == serde_json::json!(true)),
+        "every event carries plain data, never a node: {said}"
+    );
+}
+
+/// Whether a key pressed where the reader is (the focused element, or the page) was taken: the
+/// dispatch answers false when a listener prevented it.
+const PRESS: &str = "(function (k) { var t = document.activeElement || document.body; return !t.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); })";
+
+/// A host switches the session view's optional controls off (#s429 stage 6): mounted alone in a
+/// page of the case's own (`fixtures/host/session-view-host.html`, answered by the browser itself on
+/// the monitor's origin), with the Reading menu, the viewport history's Save and the pane's ↗ off,
+/// none of them is drawn, and the Reading menu's keys are not taken even while the reader works in
+/// the view, while a key whose control is on still is. On a phone the dock's Aa goes with it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_draws_no_control_switched_off_and_takes_none_of_its_keys() {
+    let _serial = serial();
+    let base = base("host-controls-off");
+    let monitor = Monitor::spawn(Kind::V1, 3103, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::open_host_page(&tab, &monitor, "hide=reading,history,detach");
+    let drawn = harness::probe(
+        &tab,
+        "({ reading: !!document.getElementById('readingBtn') || !!document.querySelector('.reading-cluster'), history: !!document.querySelector('[data-history-save]'), detach: !!document.querySelector('[data-preview-new-tab]'), paneHead: !!document.getElementById('closePreview') && !!document.querySelector('.preview-reveal'), transcript: !!document.getElementById('transcript'), wrapKey: 'wrap' in window.__view.keys })",
+    );
+    harness::eval(&tab, "document.getElementById('transcript').dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); 'ok'");
+    let taken = harness::probe(&tab, &format!("['w', '+', '=', '-', '_'].map({PRESS})"));
+    let after = harness::probe(
+        &tab,
+        "({ wrap: document.getElementById('sessionView').classList.contains('wrap-code'), size: document.getElementById('sessionView').style.getPropertyValue('--code-size') })",
+    );
+    let search = harness::probe(
+        &tab,
+        &format!("({{ taken: {PRESS}('/'), focus: (document.activeElement || {{}}).id || '' }})"),
+    );
+    let host_saw = harness::probe(
+        &tab,
+        "window.__host.keys.map(function (k) { return k.key + ':' + k.prevented; })",
+    );
+    // On a phone the Reading menu is the dock's Aa: there with the menu on, gone with it off.
+    harness::phone(&tab, 390, 844);
+    harness::open_host_page(&tab, &monitor, "");
+    let phone_on = harness::probe(&tab, "({ dock: !!document.getElementById('dockPill'), aa: !!document.querySelector('#dockPill .reading-cluster') })");
+    harness::open_host_page(&tab, &monitor, "hide=reading");
+    let phone_off = harness::probe(&tab, "({ dock: !!document.getElementById('dockPill'), aa: !!document.querySelector('#dockPill .reading-cluster'), anywhere: !!document.querySelector('.reading-cluster') || !!document.getElementById('readingBtn') })");
+    drop(monitor);
+    assert_eq!(
+        drawn,
+        serde_json::json!({ "reading": false, "history": false, "detach": false, "paneHead": true, "transcript": true, "wrapKey": false }),
+        "no control switched off is drawn, and the rest of the view is"
+    );
+    assert_eq!(
+        taken,
+        serde_json::json!([false, false, false, false, false]),
+        "the Reading menu's keys are not the view's with it off"
+    );
+    assert_eq!(
+        after,
+        serde_json::json!({ "wrap": false, "size": "12px" }),
+        "and change nothing"
+    );
+    assert_eq!(
+        search,
+        serde_json::json!({ "taken": true, "focus": "transcriptSearchInput" }),
+        "a key whose control is on still answers while the reader works in the view"
+    );
+    assert_eq!(
+        host_saw,
+        serde_json::json!(["w:false", "+:false", "=:false", "-:false", "_:false", "/:true"]),
+        "the host's own listener, bound before the mount, heard every key after the view"
+    );
+    assert_eq!(
+        phone_on,
+        serde_json::json!({ "dock": true, "aa": true }),
+        "on a phone the dock carries the Reading menu (Aa)"
+    );
+    assert_eq!(
+        phone_off,
+        serde_json::json!({ "dock": true, "aa": false, "anywhere": false }),
+        "and with reading off it does not, nor does anything else"
+    );
+}
+
+/// A host's keys stay the host's (#s429 stage 6, design/embedding.md "Customizing"): mounted alone
+/// in the test host page with a session open and its default, `keyboard: "engaged"`, the session view
+/// answers its keymap only while the reader's last press or focus is inside it — not before the
+/// reader has touched it, not after a press or focus in the host, and never for a key it has no
+/// action for — and so does the artifact pane's image viewer: with a zoomed image there, ArrowDown
+/// pans it while the reader works in the view and reaches the host once they are back on the
+/// host's page. The host's own listener, bound before the mount, hears every key after the view. With
+/// `keyboard: "page"` the view binds none: the host routes keys to its handle, as the app does.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_takes_its_keys_only_while_the_reader_works_in_it() {
+    let _serial = serial();
+    let base = base("host-keys-engaged");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000000e7".to_string();
+    let mut jsonl = harness::user_at("look at the screenshot", &harness::at("00:01"));
+    jsonl += &harness::assistant_at("reading it", &harness::at("00:02"));
+    jsonl += &read_image_at(
+        "r0",
+        "/tmp/big.png",
+        harness::BIG_PNG_B64,
+        &harness::at("00:03"),
+    );
+    jsonl += &harness::assistant_at("it is a big one", &harness::at("00:04"));
+    stores.claude_session(&sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3104, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.image-thumb')",
+        "the session's image in the host's view",
+        std::time::Duration::from_secs(20),
+        "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+    );
+    let drawn = harness::probe(
+        &tab,
+        "({ reading: !!document.getElementById('readingBtn'), history: !!document.querySelector('[data-history-save]'), detach: !!document.querySelector('[data-preview-new-tab]') })",
+    );
+    let wrapped = "document.getElementById('sessionView').classList.contains('wrap-code')";
+    let step = |js: &str| -> serde_json::Value {
+        harness::probe(
+            &tab,
+            &format!("(function(){{ {js}; return {{ taken: {PRESS}('w'), wrap: {wrapped}, active: (document.activeElement || {{}}).id || document.activeElement.tagName }}; }})()"),
+        )
+    };
+    let to_host = "var b = document.getElementById('hostButton'); b.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); b.focus()";
+    let untouched = step("");
+    let pressed_in = step("document.getElementById('transcript').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))");
+    let unbound = harness::probe(&tab, &format!("{PRESS}('\\\\')"));
+    let host_press = step(to_host);
+    // The first of the view's buttons that really takes the focus (a hidden one does not).
+    let focus_in = step("[].slice.call(document.querySelectorAll('#sessionView button')).some(function (b) { if (b.disabled) return false; b.focus(); return document.activeElement === b; })");
+    let focus_in_active = harness::eval(
+        &tab,
+        "document.getElementById('sessionView').contains(document.activeElement)",
+    );
+    let host_focus = step("document.getElementById('hostButton').focus()");
+    // The image in the pane, zoomed past its stage so the arrows pan it.
+    harness::eval(&tab, "(function(){ var t = document.querySelector('.image-thumb'); t.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); t.click(); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "(function(){ var i = document.querySelector('#previewBody .artifact-stage img'); return !!i && i.complete && i.naturalWidth > 0 && !document.querySelector('#previewBody [data-zoom-bar]').hidden; })()",
+        "the image in the host's pane",
+        std::time::Duration::from_secs(20),
+        "(document.getElementById('previewBody') || {}).innerHTML",
+    );
+    // Zoomed until it is taller than its stage too, so ArrowDown has room to pan.
+    let zoomed = harness::eval(&tab, "(function(){ var stage = document.querySelector('#previewBody .artifact-stage'), img = stage.querySelector('img'), zoom = stage.querySelector('[data-zoom=\"in\"]'); var tall = function () { return img.getBoundingClientRect().height > stage.getBoundingClientRect().height + 100; }; for (var n = 0; n < 14 && !(stage.dataset.pannable === 'yes' && tall()); n++) { zoom.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); zoom.focus(); zoom.click(); } return stage.dataset.pannable === 'yes' && tall(); })()");
+    let pan = "(function(){ var i = document.querySelector('#previewBody .artifact-stage img'); return i.style.transform; })()";
+    let before_pan = harness::eval(&tab, pan);
+    let arrow_in = harness::probe(&tab, &format!("{PRESS}('ArrowDown')"));
+    let after_pan = harness::eval(&tab, pan);
+    let arrow_out = harness::probe(
+        &tab,
+        &format!("(function(){{ {to_host}; return {PRESS}('ArrowDown'); }})()"),
+    );
+    let after_out = harness::eval(&tab, pan);
+    let host_saw = harness::probe(
+        &tab,
+        "window.__host.keys.map(function (k) { return k.key + ':' + k.prevented; })",
+    );
+    // `keyboard: "page"`: the view binds nothing; the host's own routing to the handle still works.
+    harness::open_host_page(&tab, &monitor, "keyboard=page");
+    let page_mode = step("document.getElementById('transcript').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))");
+    let routed = harness::eval(
+        &tab,
+        &format!("(function(){{ window.__view.keys.wrap(); return {wrapped}; }})()"),
+    );
+    drop(monitor);
+    assert_eq!(
+        drawn,
+        serde_json::json!({ "reading": true, "history": true, "detach": true }),
+        "every optional control is shown by default"
+    );
+    assert_eq!(
+        (untouched["taken"].clone(), untouched["wrap"].clone()),
+        (serde_json::json!(false), serde_json::json!(false)),
+        "before the reader has touched the view, its keys are the host's: {untouched}"
+    );
+    assert_eq!(
+        (pressed_in["taken"].clone(), pressed_in["wrap"].clone()),
+        (serde_json::json!(true), serde_json::json!(true)),
+        "a press inside the view engages it, the focus still on the page: {pressed_in}"
+    );
+    assert_eq!(
+        unbound,
+        serde_json::json!(false),
+        "a key the view has no action for (`\\`) stays the page's"
+    );
+    assert_eq!(
+        (
+            host_press["taken"].clone(),
+            host_press["wrap"].clone(),
+            host_press["active"].clone()
+        ),
+        (
+            serde_json::json!(false),
+            serde_json::json!(true),
+            serde_json::json!("hostButton")
+        ),
+        "a press in the host ends it: {host_press}"
+    );
+    assert_eq!(
+        focus_in_active,
+        serde_json::json!(true),
+        "the focus went into the view"
+    );
+    assert_eq!(
+        (focus_in["taken"].clone(), focus_in["wrap"].clone()),
+        (serde_json::json!(true), serde_json::json!(false)),
+        "focus coming into the view engages it: {focus_in}"
+    );
+    assert_eq!(
+        (host_focus["taken"].clone(), host_focus["wrap"].clone()),
+        (serde_json::json!(false), serde_json::json!(false)),
+        "focus going to the host ends it: {host_focus}"
+    );
+    assert_eq!(
+        zoomed,
+        serde_json::json!(true),
+        "the image zoomed past its stage"
+    );
+    assert!(
+        arrow_in == serde_json::json!(true) && after_pan != before_pan,
+        "engaged, ArrowDown pans the zoomed image: taken {arrow_in}, {before_pan} -> {after_pan}"
+    );
+    assert!(
+        arrow_out == serde_json::json!(false) && after_out == after_pan,
+        "back on the host's page, ArrowDown is the host's: taken {arrow_out}, {after_pan} -> {after_out}"
+    );
+    assert_eq!(
+        host_saw,
+        serde_json::json!(["w:false", "w:true", "\\:false", "w:false", "w:true", "w:false", "ArrowDown:true", "ArrowDown:false"]),
+        "the host's own listener, bound before the mount, heard every key after the view, taken or not"
+    );
+    assert_eq!(
+        (page_mode["taken"].clone(), page_mode["wrap"].clone()),
+        (serde_json::json!(false), serde_json::json!(false)),
+        "with keyboard: \"page\" the view binds none, even while engaged: {page_mode}"
+    );
+    assert_eq!(
+        routed,
+        serde_json::json!(true),
+        "and the host's own routing to the handle's keys works"
+    );
+}
+
+/// The session list mounted alone (#s430, design/session-list-component.md, stage 2): in a page of
+/// the case's own (`fixtures/host/session-list-host.html`, answered by the browser itself on the
+/// monitor's origin), with no app shell and no session view, `mountSessionList` fills itself from
+/// the monitor's index, and choosing a session there (a real click on its row) tells the host
+/// through `onOpen`, with that id and a new place in the history. The list moves no selection
+/// itself: a host that holds the reader leaves the list with none, and one that opens the session
+/// takes it as the list's selection with `select`, as the app does; choosing another moves it.
+/// Before stage 2 the list was app.js's own code and there was no `mountSessionList` to import, so
+/// the host cannot mount it and the case fails there; a list that took the choice as its selection
+/// itself fails the held choice.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_list_in_a_host_tells_it_which_session_the_reader_chose() {
+    let _serial = serial();
+    let base = base("list-host-open");
+    let stores = Stores::new(&base);
+    let first = "cccccccc-0000-4000-8000-0000000000f1".to_string();
+    let second = "cccccccc-0000-4000-8000-0000000000f2".to_string();
+    stores.claude_session(
+        &first,
+        &(harness::user_at("the first errand", &harness::at("00:01"))
+            + &harness::assistant_at("on it", &harness::at("00:02"))),
+    );
+    stores.claude_session(
+        &second,
+        &(harness::user_at("the second errand", &harness::at("00:03"))
+            + &harness::assistant_at("done", &harness::at("00:04"))),
+    );
+    let monitor = Monitor::spawn(Kind::V1, 3264, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::open_list_host_page(&tab, &monitor);
+    let row = |sid: &str| format!("#tree .tree-row.session[data-session=\"{sid}\"]");
+    harness::until(
+        &tab,
+        &format!(
+            "!!document.querySelector('{}') && !!document.querySelector('{}')",
+            row(&first).replace('\'', "\\'"),
+            row(&second).replace('\'', "\\'")
+        ),
+        "both sessions listed in the host's list",
+        Duration::from_secs(30),
+        "JSON.stringify({ host: window.__host, tree: (document.getElementById('tree') || {}).innerText })",
+    );
+    let page = harness::probe(
+        &tab,
+        "({ app: !!document.getElementById('app'), view: !!document.getElementById('sessionView'), sidebar: !!document.querySelector('.sidebar'), list: (document.querySelector('#hostPane > #sessionList') || {}).id || '', rail: !!(document.getElementById('sidebarMiniFilter') || document.getElementById('sidebarMiniAgents')), indexed: window.__host.indexed > 0, opened: window.__host.opened.length })",
+    );
+    let marked = "[].slice.call(document.querySelectorAll('#tree .tree-row.session.selected')).map(function (r) { return r.dataset.session; })";
+    // A host that holds the reader hears the choice and opens nothing.
+    harness::probe(&tab, "(window.__host.holds = true)");
+    tab.find_element(&row(&first)).unwrap().click().unwrap();
+    harness::until(
+        &tab,
+        "window.__host.opened.length >= 1",
+        "the host to hear the held choice",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host)",
+    );
+    let held = harness::probe(
+        &tab,
+        &format!("({{ opened: window.__host.opened, selected: window.__list.selected(), marked: {marked} }})"),
+    );
+    harness::probe(&tab, "(window.__host.holds = false)");
+    tab.find_element(&row(&first)).unwrap().click().unwrap();
+    harness::until(
+        &tab,
+        "window.__host.opened.length >= 2",
+        "the host to hear the first choice",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host)",
+    );
+    let chose_first = harness::probe(
+        &tab,
+        &format!("({{ opened: window.__host.opened.slice(1), selected: window.__list.selected(), marked: {marked} }})"),
+    );
+    tab.find_element(&row(&second)).unwrap().click().unwrap();
+    harness::until(
+        &tab,
+        "window.__host.opened.length >= 3",
+        "the host to hear the second choice",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host)",
+    );
+    let chose_second = harness::probe(
+        &tab,
+        &format!("({{ opened: window.__host.opened.slice(1), selected: window.__list.selected(), marked: {marked}, errors: window.__host.error }})"),
+    );
+    // #s430 stage 3: the host places nothing, so the list draws its controls and the filter's sheet in
+    // a head of its own at its top, the sheet's containing block: open, the sheet hangs below the
+    // head's row, inside the host's pane, and is what a point inside it hits.
+    tab.find_element("#sessionList > .session-list-head #filterBtn")
+        .unwrap()
+        .click()
+        .unwrap();
+    harness::until(
+        &tab,
+        "!document.getElementById('sessionFilter').hidden",
+        "the filter's sheet to open in the list's own head",
+        Duration::from_secs(10),
+        "(document.getElementById('sessionList') || {}).outerHTML",
+    );
+    let sheet = harness::probe(
+        &tab,
+        "(function () { var list = document.getElementById('sessionList'), pane = document.getElementById('hostPane'), head = list.querySelector(':scope > .session-list-head'), sheet = document.getElementById('sessionFilter'); var h = head.getBoundingClientRect(), s = sheet.getBoundingClientRect(), p = pane.getBoundingClientRect(); var hit = document.elementFromPoint(s.left + s.width / 2, s.top + Math.min(20, s.height / 2)); return { first: list.firstElementChild === head, held: [].map.call(head.querySelectorAll(':scope > .session-list-controls > *, :scope > #sessionFilter'), function (c) { return c.id; }), strip: [].map.call(head.children, function (c) { return c.className || c.id; }), positioned: getComputedStyle(head).position, shown: s.height > 0, below: s.top >= h.bottom - 1 && s.top <= h.bottom + 1, inside: s.left >= p.left && s.right <= p.right + 0.5 && s.top >= p.top, hit: !!hit && sheet.contains(hit) }; })()",
+    );
+    drop(monitor);
+    assert_eq!(
+        page,
+        serde_json::json!({ "app": false, "view": false, "sidebar": false, "list": "sessionList", "rail": false, "indexed": true, "opened": 0 }),
+        "the list stands alone in the host's page, built in the host's empty #sessionList, filled from the index, with no rail parts, and nothing chosen yet"
+    );
+    assert_eq!(
+        sheet,
+        serde_json::json!({ "first": true, "held": ["collapseBtn", "expandBtn", "filterBtn", "sessionFilter"], "strip": ["session-list-controls", "navigator-options session-filter-options"], "positioned": "relative", "shown": true, "below": true, "inside": true, "hit": true }),
+        "with no `place`, the controls and the sheet are in the list's own head at its top, and the sheet hangs under that head's row, inside the host's pane"
+    );
+    assert_eq!(
+        held,
+        serde_json::json!({ "opened": [{ "id": first, "push": true }], "selected": "", "marked": [] }),
+        "a click on a row tells the host, and the list moves no selection of its own: a host that holds the reader leaves it with none"
+    );
+    assert_eq!(
+        chose_first,
+        serde_json::json!({ "opened": [{ "id": first, "push": true }], "selected": first, "marked": [first] }),
+        "a host that opens the session takes it as the list's selection (`select`)"
+    );
+    assert_eq!(
+        chose_second,
+        serde_json::json!({ "opened": [{ "id": first, "push": true }, { "id": second, "push": true }], "selected": second, "marked": [second], "errors": null }),
+        "and choosing another moves the selection"
+    );
+}
+
+/// Two Claude sessions in the case's stores for the list host's cases (#s430 stage 4), idle (the
+/// builders stamp a fixed past hour), each with its own prompt.
+fn list_host_world(stores: &Stores, ids: &[&str]) {
+    for (n, sid) in ids.iter().enumerate() {
+        stores.claude_session(
+            sid,
+            &(harness::user_at(
+                &format!("errand {n}"),
+                &harness::at(&format!("00:0{}", 2 * n + 1)),
+            ) + &harness::assistant_at("done", &harness::at(&format!("00:0{}", 2 * n + 2)))),
+        );
+    }
+}
+
+/// Wait until the list host's list has read the index and drawn it.
+fn until_list_drawn(tab: &headless_chrome::Tab) {
+    harness::until(
+        tab,
+        "window.__host.indexed > 0 && window.__host.drawn > 0",
+        "the host's list to read the index and draw it",
+        Duration::from_secs(30),
+        "JSON.stringify({ host: window.__host, tree: (document.getElementById('tree') || {}).innerText })",
+    );
+    harness::pause("list host", Duration::from_millis(300));
+}
+
+/// A host switches the session list's optional controls off (#s430 stage 4, design/session-list-
+/// component.md): the session filter, hiding and the arrangements, each by name in `show`. A control
+/// switched off is not drawn, and the page's choice it would make is not applied: with the reader's
+/// filter stored as Blocked alone and their arrangement as one list by activity, then as the Claude
+/// app's, the list shows the idle session, grouped by agent and project, and reads no other app's list.
+/// It never writes over the reader's choice, which the host's `persist` (the app's) would store: a host
+/// that shows the controls still finds it. A hide is not such a choice, the monitor keeping it for
+/// every page: a session the reader hid stays out with hiding off, even while Include hidden is still
+/// ticked in the page. The filter's glyph says what its sheet offers, and with all three off neither
+/// the glyph nor the sheet is drawn. Before stage 4 `show` was refused as an option no list took (or,
+/// before the refusal, ignored), so every load drew the reader's choice.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_list_in_a_host_switches_its_controls_off() {
+    let _serial = serial();
+    let base = base("list-host-show");
+    let stores = Stores::new(&base);
+    let ids = [
+        "cccccccc-0000-4000-8000-0000000004a1",
+        "cccccccc-0000-4000-8000-0000000004a2",
+    ];
+    list_host_world(&stores, &ids);
+    stores.app_session("local_a1", ids[0], "App first", 60, None);
+    stores.app_session("local_a2", ids[1], "App second", 120, None);
+    stores.app_settings(&[("cg-plan", "Planning", &["local_a2"])]);
+    let monitor = Monitor::spawn(Kind::V1, 3267, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let rows = "document.querySelectorAll('#tree .tree-row.session').length";
+    let until_rows = |n: usize, what: &str| {
+        harness::until(
+            &tab,
+            &format!("{rows} === {n}"),
+            what,
+            Duration::from_secs(30),
+            "JSON.stringify({ host: window.__host, tree: (document.getElementById('tree') || {}).innerText })",
+        );
+    };
+    // First the reader hides one session of the two, and asks to see hidden ones.
+    harness::open_list_host_page_with(&tab, &monitor, "mount=0");
+    harness::eval(
+        &tab,
+        "localStorage.setItem('am-prod-session-filter', '[\"recent\",\"blocked\",\"idle\"]'); localStorage.removeItem('am-prod-session-flat'); localStorage.removeItem('am-prod-session-arrange'); 'ok'",
+    );
+    harness::open_list_host_page_with(&tab, &monitor, "");
+    until_rows(2, "both sessions listed");
+    harness::eval(
+        &tab,
+        "document.querySelector('#tree .tree-row.session .tree-action[data-ignore-op=\"add\"]').click(); 'ok'",
+    );
+    until_rows(1, "the hidden session gone from the list");
+    harness::eval(
+        &tab,
+        "document.getElementById('filterBtn').click(); document.querySelector('#sessionFilter [data-include-hidden]').click(); 'ok'",
+    );
+    until_rows(2, "the hidden session back under Include hidden");
+    let included = harness::probe(
+        &tab,
+        "document.querySelectorAll('#tree .tree-row.session.is-hidden').length",
+    );
+    // The same page mounts the list again with hiding off, Include hidden still ticked in its state.
+    harness::eval(
+        &tab,
+        "window.__list.unmount(); window.__host.mount({ show: { hiding: false } }); 'ok'",
+    );
+    harness::until(
+        &tab,
+        &format!("{rows} > 0"),
+        "the list mounted again with hiding off to draw its sessions",
+        Duration::from_secs(30),
+        "JSON.stringify({ host: window.__host, tree: (document.getElementById('tree') || {}).innerText })",
+    );
+    harness::pause("list host", Duration::from_millis(500));
+    let remounted = harness::probe(
+        &tab,
+        &format!("({{ rows: {rows}, dimmed: document.querySelectorAll('#tree .is-hidden').length, includeHidden: !!document.querySelector('[data-include-hidden]'), errors: window.__host.errors }})"),
+    );
+    // Arranged like the Claude app, which lists both sessions: an arranged list shows each session the
+    // app lists, the hidden one dimmed with every control shown (#s387), and with hiding off as any other.
+    let arranged = |extra: &str| {
+        harness::eval(
+            &tab,
+            &format!("window.__list.unmount(); window.__host.mount({extra}); 'ok'"),
+        );
+        harness::until(
+            &tab,
+            &format!("!!document.querySelector('#tree .arranged-head') && {rows} === 2"),
+            "the list arranged like the Claude app, both sessions listed",
+            Duration::from_secs(60),
+            "JSON.stringify({ host: window.__host, tree: (document.getElementById('tree') || {}).innerText })",
+        );
+        harness::pause("list host", Duration::from_millis(500));
+        harness::probe(
+            &tab,
+            "({ dimmed: document.querySelectorAll('#tree .tree-row.session.is-hidden').length, errors: window.__host.errors })",
+        )
+    };
+    harness::eval(
+        &tab,
+        "localStorage.setItem('am-prod-session-arrange', 'claude-app'); 'ok'",
+    );
+    harness::open_list_host_page_with(&tab, &monitor, "mount=0");
+    harness::eval(&tab, "window.__host.mount(); 'ok'");
+    until_list_drawn(&tab);
+    let arranged_shown = arranged("");
+    let arranged_off = arranged("{ show: { hiding: false } }");
+    // Then the reader's own choice: Blocked alone, one list by activity.
+    harness::eval(
+        &tab,
+        "localStorage.setItem('am-prod-session-filter', '[\"blocked\"]'); localStorage.setItem('am-prod-session-flat', '1'); localStorage.removeItem('am-prod-session-arrange'); 'ok'",
+    );
+    // What the list draws, and what the page asked the monitor for since `from` (a request count).
+    let seen = |from: usize| {
+        harness::probe(
+            &tab,
+            &format!("(function () {{ var list = document.getElementById('sessionList'), sheet = document.getElementById('sessionFilter'), glyph = document.getElementById('filterBtn'), q = function (sel) {{ return !!(sheet && sheet.querySelector(sel)); }}; return {{ rows: {rows}, grouped: !!document.querySelector('#tree .agent-label'), flat: list.classList.contains('sessions-flat'), glyph: glyph ? glyph.title : null, sheet: !!sheet, everything: q('[data-filter-reset]'), buckets: sheet ? sheet.querySelectorAll('[data-bucket]').length : 0, includeHidden: q('[data-include-hidden]'), arrange: sheet ? sheet.querySelectorAll('[data-arrange]').length : 0, hides: [document.querySelectorAll('#tree .tree-row.session .tree-action[data-ignore-op]').length, document.querySelectorAll('#tree .tree-action[data-ignore-op]').length - document.querySelectorAll('#tree .tree-row.session .tree-action[data-ignore-op]').length], controls: [].map.call(list.querySelectorAll(':scope > .session-list-head > .session-list-controls > *'), function (c) {{ return c.id; }}), filtered: window.__list.filtered(), layoutReads: window.__host.requests.slice({from}).filter(function (r) {{ return r.url.indexOf('/api/layout') >= 0; }}).length, errors: window.__host.errors }}; }})()"),
+        )
+    };
+    let open_sheet = || {
+        harness::eval(
+            &tab,
+            "(function () { var b = document.getElementById('filterBtn'); if (!b) return 'none'; b.click(); return 'ok'; })()",
+        );
+        harness::pause("list host", Duration::from_millis(500));
+    };
+    let requests = || {
+        harness::eval(&tab, "window.__host.requests.length")
+            .as_u64()
+            .unwrap_or(0) as usize
+    };
+    // Every control shown: the reader's filter and arrangement are what the list draws.
+    harness::open_list_host_page_with(&tab, &monitor, "");
+    until_list_drawn(&tab);
+    let from = requests();
+    open_sheet();
+    let shown = seen(from);
+    // The reader then chose to arrange it like the Claude app, which the next two lists must not read.
+    harness::eval(
+        &tab,
+        "localStorage.setItem('am-prod-session-arrange', 'claude-app'); 'ok'",
+    );
+    // The filter and the arrangements off: hiding is all the sheet offers.
+    harness::open_list_host_page_with(&tab, &monitor, "hide=filter,arrangements");
+    until_list_drawn(&tab);
+    let from = requests();
+    open_sheet();
+    let partly = seen(from);
+    // All three off; the reader folds and unfolds the groups, which the host's `persist` stores.
+    harness::open_list_host_page_with(&tab, &monitor, "hide=filter,hiding,arrangements");
+    until_list_drawn(&tab);
+    let from = requests();
+    open_sheet();
+    let none = seen(from);
+    harness::eval(
+        &tab,
+        "document.getElementById('collapseBtn').click(); document.getElementById('expandBtn').click(); 'ok'",
+    );
+    let stored = harness::probe(
+        &tab,
+        "({ filter: localStorage.getItem('am-prod-session-filter'), flat: localStorage.getItem('am-prod-session-flat'), arrange: localStorage.getItem('am-prod-session-arrange') })",
+    );
+    drop(monitor);
+    assert_eq!(
+        included,
+        serde_json::json!(1),
+        "the reader hid one session, and Include hidden shows it, dimmed"
+    );
+    assert_eq!(
+        remounted,
+        serde_json::json!({ "rows": 1, "dimmed": 0, "includeHidden": false, "errors": [] }),
+        "hiding off: what the reader hid stays out, Include hidden still ticked in the page or not, and nothing offers it"
+    );
+    assert_eq!(
+        arranged_shown,
+        serde_json::json!({ "dimmed": 1, "errors": [] }),
+        "arranged like the Claude app, which lists the session the reader hid, it is drawn dimmed"
+    );
+    assert_eq!(
+        arranged_off,
+        serde_json::json!({ "dimmed": 0, "errors": [] }),
+        "and with hiding off it is drawn as any other, with no dim it could not explain"
+    );
+    assert_eq!(
+        shown,
+        serde_json::json!({ "rows": 0, "grouped": false, "flat": true, "glyph": "Showing Blocked — 0 of 1", "sheet": true, "everything": true, "buckets": 3, "includeHidden": true, "arrange": 5, "hides": [0, 0], "controls": ["collapseBtn", "expandBtn", "filterBtn"], "filtered": true, "layoutReads": 1, "errors": [] }),
+        "every control shown: the reader's filter (Blocked alone) leaves the idle session out, their one list by activity is drawn, and the sheet offers everything, asking which apps it could follow"
+    );
+    assert_eq!(
+        partly,
+        serde_json::json!({ "rows": 1, "grouped": true, "flat": false, "glyph": "Include hidden sessions", "sheet": true, "everything": false, "buckets": 0, "includeHidden": true, "arrange": 0, "hides": [1, 1], "controls": ["collapseBtn", "expandBtn", "filterBtn"], "filtered": false, "layoutReads": 0, "errors": [] }),
+        "the filter and the arrangements off: the idle session is listed, by agent and project, with its hide and the project with its own, the glyph and the sheet offer Include hidden alone, and the Claude app's list is not asked for"
+    );
+    assert_eq!(
+        none,
+        serde_json::json!({ "rows": 1, "grouped": true, "flat": false, "glyph": null, "sheet": false, "everything": false, "buckets": 0, "includeHidden": false, "arrange": 0, "hides": [0, 0], "controls": ["collapseBtn", "expandBtn"], "filtered": false, "layoutReads": 0, "errors": [] }),
+        "all three off: no hide on a session or a group, and no filter glyph or sheet, which would offer nothing"
+    );
+    assert_eq!(
+        stored,
+        serde_json::json!({ "filter": "[\"blocked\"]", "flat": "1", "arrange": "claude-app" }),
+        "and the reader's own choice is stored as they made it, though the list wrote its state since"
+    );
+}
+
+/// The session list's keys in a host (#s430 stage 4): engaged (the default) the list binds ↓ and ↑
+/// on its own element, so they step through its rows only while one of them has the focus, and leave
+/// every other key, and those keys elsewhere, to the page; with `keyboard: "page"` it binds none of
+/// them (Enter and Space on a focused row still activate it, as a click), and the host's keymap calls
+/// the handle's `keys`. A key that moves nothing (on a project's row, past the last session) is not
+/// taken, and chooses nothing. The row a step or Tab focused keeps the focus as the tree is rewritten;
+/// a row the mouse pressed and left does not, whether or not it had the focus. That press's focus
+/// stays the press's through a modifier alone and through the window's return (#s460), and becomes
+/// the keyboard's when a key comes and the focus moves. Before stage 4 the list bound no key at all
+/// (the app's keymap called its `step`), so a host's reader could not step through the list.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_list_in_a_host_takes_its_keys_only_on_its_rows() {
+    let _serial = serial();
+    let base = base("list-host-keys");
+    let stores = Stores::new(&base);
+    let ids = [
+        "cccccccc-0000-4000-8000-0000000004b1",
+        "cccccccc-0000-4000-8000-0000000004b2",
+    ];
+    list_host_world(&stores, &ids);
+    let monitor = Monitor::spawn(Kind::V1, 3268, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::open_list_host_page_with(&tab, &monitor, "mount=0");
+    harness::eval(
+        &tab,
+        "localStorage.setItem('am-prod-session-filter', '[\"recent\",\"blocked\",\"idle\"]'); 'ok'",
+    );
+    let order = "[].map.call(document.querySelectorAll('#tree .tree-row.session'), function (r) { return r.dataset.session; })";
+    let focus_row = "document.querySelector('#tree .tree-row.session').focus()";
+    let press = |key: &str| -> serde_json::Value {
+        harness::probe(
+            &tab,
+            &format!("(function () {{ var taken = {PRESS}({key:?}); return {{ taken: taken, opened: window.__host.opened.length, focus: (document.activeElement && (document.activeElement.dataset.session || document.activeElement.id)) || '' }}; }})()"),
+        )
+    };
+    harness::open_list_host_page_with(&tab, &monitor, "");
+    until_list_drawn(&tab);
+    let rows = harness::probe(&tab, order);
+    harness::eval(&tab, focus_row);
+    let down = press("ArrowDown");
+    // The host moves the selection itself, which rewrites the tree under the row the step reached, as
+    // the index's next read or a fold would: the focus stays on that row.
+    let rewritten = harness::probe(
+        &tab,
+        &format!("(function () {{ var before = document.activeElement; window.__list.select({}); var now = document.activeElement; return {{ replaced: !before.isConnected, focus: (now && now.dataset.session) || '' }}; }})()", rows[0]),
+    );
+    let up = press("ArrowUp");
+    let other = press("]");
+    harness::eval(&tab, "document.getElementById('hostButton').focus()");
+    let outside = press("ArrowDown");
+    harness::eval(
+        &tab,
+        "document.querySelector('#tree .tree-row.project').focus()",
+    );
+    let on_project = press("ArrowDown");
+    harness::eval(
+        &tab,
+        "(function () { var r = document.querySelectorAll('#tree .tree-row.session'); r[r.length - 1].focus(); return 'ok'; })()",
+    );
+    let past_last = press("ArrowDown");
+    // The mouse's own press on the first row, dragged off it to the host's button: no click, so no
+    // session is chosen and nothing gives the focus back, and the row has the focus the press gave it.
+    // A rewrite (the host's select) does not carry that focus, as it carries the keyboard's.
+    let at = harness::probe(
+        &tab,
+        "(function () { var r = document.querySelector('#tree .tree-row.session').getBoundingClientRect(), b = document.getElementById('hostButton').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, b.left + b.width / 2, b.top + b.height / 2]; })()",
+    );
+    let xy = |i: usize| at[i].as_f64().unwrap_or(0.0);
+    harness::drag_select(&tab, xy(0), xy(1), xy(2), xy(3));
+    let focused = "(document.activeElement && (document.activeElement.dataset.session || document.activeElement.id)) || ''";
+    let pressed = harness::probe(&tab, focused);
+    let pressed_rewritten = harness::probe(
+        &tab,
+        &format!(
+            "(function () {{ window.__list.select({}); return {focused}; }})()",
+            rows[1]
+        ),
+    );
+    // A press that gives no focus (on the tree's empty part), then the keyboard's: Tab, and the focus it
+    // brings to the first row. That focus is the keyboard's, and a rewrite carries it.
+    let tabbed = harness::probe(
+        &tab,
+        &format!(
+            "(function () {{ document.getElementById('tree').dispatchEvent(new PointerEvent('pointerdown', {{ bubbles: true }})); document.getElementById('hostButton').dispatchEvent(new KeyboardEvent('keydown', {{ key: 'Tab', bubbles: true, cancelable: true }})); document.querySelector('#tree .tree-row.session').focus(); window.__list.select({}); return {focused}; }})()",
+            rows[0]
+        ),
+    );
+    // Then the mouse presses that row, which has the focus already, and drags off it: the focus stays,
+    // and it is the press's now, so a rewrite does not carry it.
+    harness::drag_select(&tab, xy(0), xy(1), xy(2), xy(3));
+    let pressed_focused = harness::probe(&tab, focused);
+    let pressed_focused_rewritten = harness::probe(
+        &tab,
+        &format!(
+            "(function () {{ window.__list.select({}); return {focused}; }})()",
+            rows[1]
+        ),
+    );
+    let engaged = harness::probe(
+        &tab,
+        "({ opened: window.__host.opened, keys: window.__host.keys.map(function (k) { return k.key + ':' + k.prevented; }) })",
+    );
+    // #s460: after a press dragged off the first row, `then` runs, and the host selects `select`,
+    // which rewrites the tree (each step selects the other session, or nothing would be rewritten).
+    let after_press = |then: &str, select: &serde_json::Value| -> serde_json::Value {
+        harness::drag_select(&tab, xy(0), xy(1), xy(2), xy(3));
+        harness::probe(
+            &tab,
+            &format!(
+                "(function () {{ var row = document.querySelector('#tree .tree-row.session'); {then} var before = document.activeElement; window.__list.select({select}); return {{ replaced: !before.isConnected, focus: {focused} }}; }})()"
+            ),
+        )
+    };
+    let refocus = "document.getElementById('hostButton').focus(); row.focus();";
+    // A modifier alone (Cmd-Tab's own Meta reaches the page), then a script moves the focus off the
+    // row and back: Meta is not the last key, so the focus is still the press's.
+    let after_meta = after_press(&format!("{PRESS}('Meta'); {refocus}"), &rows[0]);
+    // A key, then the same move: that focus came after a key, so it is the keyboard's.
+    let after_key = after_press(&format!("{PRESS}('x'); {refocus}"), &rows[1]);
+    // A key, then the window goes and comes back as Chrome 153 does it (measured): a focusout on the
+    // row that leaves it the active element, then a focusin on it. That is no new focus.
+    let after_return = after_press(
+        &format!("{PRESS}('x'); row.dispatchEvent(new FocusEvent('focusout', {{ bubbles: true }})); row.dispatchEvent(new FocusEvent('focusin', {{ bubbles: true }}));"),
+        &rows[0],
+    );
+    harness::open_list_host_page_with(&tab, &monitor, "keyboard=page");
+    until_list_drawn(&tab);
+    harness::eval(&tab, focus_row);
+    let page_press = press("ArrowDown");
+    let routed = harness::probe(
+        &tab,
+        "(function () { window.__list.keys['list-next'](); return window.__host.opened; })()",
+    );
+    drop(monitor);
+    let (first, second) = (rows[0].clone(), rows[1].clone());
+    assert_eq!(
+        rows.as_array().map(|r| r.len()),
+        Some(2),
+        "both sessions listed: {rows}"
+    );
+    assert_eq!(
+        down,
+        serde_json::json!({ "taken": true, "opened": 1, "focus": second }),
+        "engaged, ↓ on a row is the list's: the next row has the focus, and the host hears the choice"
+    );
+    assert_eq!(
+        rewritten,
+        serde_json::json!({ "replaced": true, "focus": second }),
+        "a rewrite of the tree after the step leaves the focus on the row it reached"
+    );
+    assert_eq!(
+        up,
+        serde_json::json!({ "taken": true, "opened": 2, "focus": first }),
+        "and ↑ the previous"
+    );
+    assert_eq!(
+        (other["taken"].clone(), other["opened"].clone()),
+        (serde_json::json!(false), serde_json::json!(2)),
+        "a key the list has no action for stays the page's: {other}"
+    );
+    assert_eq!(
+        outside,
+        serde_json::json!({ "taken": false, "opened": 2, "focus": "hostButton" }),
+        "and ↓ with the focus in the host is the host's"
+    );
+    assert_eq!(
+        on_project,
+        serde_json::json!({ "taken": false, "opened": 2, "focus": "" }),
+        "↓ on a project's row moves nothing, so the page keeps it"
+    );
+    assert_eq!(
+        past_last,
+        serde_json::json!({ "taken": false, "opened": 2, "focus": second }),
+        "and so does ↓ on the last session, which chooses it no more"
+    );
+    assert_eq!(
+        (pressed, pressed_rewritten),
+        (first.clone(), serde_json::json!("")),
+        "a press dragged off a row leaves it the focus the press gave, which a rewrite does not carry"
+    );
+    assert_eq!(
+        tabbed,
+        first.clone(),
+        "a press that gave no focus, then Tab: the keyboard's focus, which a rewrite carries"
+    );
+    assert_eq!(
+        (pressed_focused, pressed_focused_rewritten),
+        (first.clone(), serde_json::json!("")),
+        "a press on the row the keyboard focused makes its focus the press's, which a rewrite does not carry"
+    );
+    assert_eq!(
+        engaged,
+        serde_json::json!({ "opened": [{ "id": second, "push": true }, { "id": first, "push": true }], "keys": ["ArrowDown:true", "ArrowUp:true", "]:false", "ArrowDown:false", "ArrowDown:false", "ArrowDown:false", "Tab:false"] }),
+        "the host's own listener, bound before the mount, heard every key after the list, taken or not"
+    );
+    assert_eq!(
+        after_meta,
+        serde_json::json!({ "replaced": true, "focus": "" }),
+        "a press dragged off a row, then a modifier alone and a focus moved off the row and back: still the press's focus, which a rewrite does not carry"
+    );
+    assert_eq!(
+        after_key,
+        serde_json::json!({ "replaced": true, "focus": first }),
+        "a press dragged off a row, then a key and the same move: the keyboard's focus, which a rewrite carries"
+    );
+    assert_eq!(
+        after_return,
+        serde_json::json!({ "replaced": true, "focus": "" }),
+        "a press dragged off a row, then a key and the window's return (focusout and focusin on the row that keeps the focus): still the press's, which a rewrite does not carry"
+    );
+    assert_eq!(
+        page_press,
+        serde_json::json!({ "taken": false, "opened": 0, "focus": first }),
+        "with keyboard: \"page\" the list binds no list keys: ↓ on its own row is the page's"
+    );
+    assert_eq!(
+        routed,
+        serde_json::json!([{ "id": second, "push": true }]),
+        "and the host's own routing to the handle's keys steps from the focused row"
+    );
+}
+
+/// A click on a fork family's ⑂ chip hands the page its keys (#s460), as a click choosing a session
+/// does. A family holding the open session is drawn open whatever its chip says, so that click
+/// redraws nothing, and the chip the press focused (Chrome focuses a button it presses; WebKit, the
+/// row) kept the page's keys until the reader clicked in the transcript. Enter on the chip is a click
+/// too and leaves the focus where the keyboard put it. The family is two Qwenwork sessions, the
+/// second forked from the first by its sidecar's `fork_from`.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_list_hands_the_page_its_keys_after_a_fork_chip_click() {
+    let _serial = serial();
+    let base = base("list-host-fork-chip");
+    let stores = Stores::new(&base);
+    let (origin, fork) = (
+        "aaaa1111-0000-4000-8000-0000000004c1",
+        "aaaa1111-0000-4000-8000-0000000004c2",
+    );
+    // The family's discovery passes over a transcript under 4 KB, so each is a long session.
+    for sid in [origin, fork] {
+        let path =
+            stores.qwenwork_session(sid, &harness::long_session(6, harness::Shape::default()));
+        if sid == fork {
+            std::fs::write(
+                path.with_file_name(format!("{fork}-session.json")),
+                format!("{{\"fork_from\":\"{origin}\"}}"),
+            )
+            .unwrap();
+        }
+    }
+    let monitor = Monitor::spawn(Kind::V1, 3271, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::open_list_host_page_with(&tab, &monitor, "mount=0");
+    harness::eval(
+        &tab,
+        "localStorage.setItem('am-prod-session-filter', '[\"recent\",\"blocked\",\"idle\"]'); 'ok'",
+    );
+    harness::open_list_host_page_with(&tab, &monitor, "");
+    until_list_drawn(&tab);
+    // The host opens the fork, so the family holds the open session and is drawn open.
+    harness::eval(&tab, &format!("window.__list.select({fork:?}); 'ok'"));
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('#tree [data-family-toggle]') && !!document.querySelector('#tree .tree-row.session[data-session={fork:?}]')"),
+        "the family's chip and its fork's row drawn",
+        Duration::from_secs(10),
+        "(document.getElementById('tree') || {}).innerHTML",
+    );
+    let chip = "document.querySelector('#tree [data-family-toggle]')";
+    let at = harness::probe(
+        &tab,
+        &format!("(function () {{ var r = {chip}.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"),
+    );
+    let (x, y) = (at[0].as_f64().unwrap_or(0.0), at[1].as_f64().unwrap_or(0.0));
+    let after = format!(
+        "(function () {{ var a = document.activeElement; return {{ same: window.__chip === {chip}, expanded: {chip}.getAttribute('aria-expanded'), inTree: document.getElementById('tree').contains(a) }}; }})()"
+    );
+    harness::eval(&tab, &format!("window.__chip = {chip}; 'ok'"));
+    harness::drag_select(&tab, x, y, x, y);
+    harness::pause("chip click", Duration::from_millis(300));
+    let clicked = harness::probe(&tab, &after);
+    harness::eval(
+        &tab,
+        &format!("window.__chip = {chip}; {chip}.focus(); 'ok'"),
+    );
+    let entered = harness::probe(
+        &tab,
+        &format!("(function () {{ {PRESS}('Enter'); return {after}; }})()"),
+    );
+    drop(monitor);
+    assert_eq!(
+        clicked,
+        serde_json::json!({ "same": true, "expanded": "true", "inTree": false }),
+        "a click on the chip of a family holding the open session redraws nothing and hands the page its keys"
+    );
+    assert_eq!(
+        entered,
+        serde_json::json!({ "same": true, "expanded": "true", "inTree": true }),
+        "Enter on the chip is a click that leaves the focus where the keyboard put it"
+    );
+}
+
+/// The session list unmounts (#s430 stage 4, as the view's stage 7): mounted in a host's element,
+/// arranged like the Claude app, with a section's menu and the filter's sheet opened and closed so
+/// every listener it binds on the page is bound, `unmount()` removes every one of them (as the
+/// browser itself reports them), takes away what it put outside its element and leaves the element as
+/// the host gave it; every member of the handle then does nothing. Work still out does nothing when
+/// it comes back: replies to the index's read, another app's list, the apps it could follow and a
+/// hide, all held by the host across the unmount, draw nothing, tell the host nothing and start no
+/// request. Mounting again in the same element draws a new list, which works. Before stage 4 the
+/// list had no unmount, so the case fails at its first call; a fence taken out of the list (the
+/// index's stop, another app's list, the apps it could follow, a hide) fails the late replies.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_list_in_a_host_unmounts_and_mounts_again() {
+    let _serial = serial();
+    let base = base("list-host-unmount");
+    let stores = Stores::new(&base);
+    let ids = [
+        "cccccccc-0000-4000-8000-0000000004c1",
+        "cccccccc-0000-4000-8000-0000000004c2",
+    ];
+    list_host_world(&stores, &ids);
+    stores.app_session("local_c1", ids[0], "App first", 60, None);
+    stores.app_session("local_c2", ids[1], "App second", 120, None);
+    stores.app_settings(&[("cg-plan", "Planning", &["local_c2"])]);
+    let monitor = Monitor::spawn(Kind::V1, 3269, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::open_list_host_page_with(&tab, &monitor, "mount=0");
+    harness::eval(
+        &tab,
+        "localStorage.setItem('am-prod-session-arrange', 'claude-app'); localStorage.setItem('am-prod-session-filter', '[\"recent\",\"blocked\",\"idle\"]'); 'ok'",
+    );
+    harness::open_list_host_page_with(&tab, &monitor, "mount=0");
+    // The page around the list, whatever the list might have touched: its element, what the body
+    // holds, and the host's pane.
+    let page = "(function () { var list = document.getElementById('sessionList'); return { element: list ? list.outerHTML : null, bodyKids: document.body.children.length, pane: document.getElementById('hostPane').children.length, errors: window.__host.errors }; })()";
+    let before = harness::probe(&tab, page);
+    // The page's listeners, and the element's own, which outlives the list.
+    let targets = [
+        ("window", "window"),
+        ("document", "document"),
+        ("list", "document.getElementById('sessionList')"),
+    ];
+    let listeners_before = harness::listeners_of(&tab, &targets);
+    harness::eval(&tab, "window.__host.mount()");
+    until_list_drawn(&tab);
+    harness::until(
+        &tab,
+        "!!document.querySelector('#tree .arranged-head [data-section-view]')",
+        "the list arranged like the Claude app, its sections' menus offered",
+        Duration::from_secs(60),
+        "document.getElementById('tree').innerText",
+    );
+    // A section's menu open and closed, the filter's sheet open and closed: every listener bound.
+    let escape = "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))";
+    harness::eval(
+        &tab,
+        "document.querySelector('#tree .arranged-head [data-section-view]').click()",
+    );
+    harness::until(
+        &tab,
+        "!!document.getElementById('sectionViewMenu') && !document.getElementById('sectionViewMenu').hidden",
+        "a section's menu to open",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host.errors)",
+    );
+    harness::eval(&tab, escape);
+    harness::eval(&tab, "document.getElementById('filterBtn').click()");
+    harness::pause("list host", Duration::from_millis(300));
+    harness::eval(&tab, escape);
+    let listeners_mounted = harness::listeners_of(&tab, &targets);
+    let floating = harness::probe(&tab, "({ menu: !!document.getElementById('sectionViewMenu'), sheet: !!document.getElementById('sessionFilter') })");
+    // Work out across the unmount: another app's list (asked for after the index's read), the apps
+    // it could follow (as the sheet opens), a hide and the index's read itself, each reply held.
+    // The app's list changes first, while the list's polls are stopped, so the held reply carries a
+    // list the list has not drawn: one it had drawn would draw nothing even unfenced.
+    harness::eval(&tab, "window.__list.stop(); 'ok'");
+    stores.app_session("local_c1", ids[0], "App first, renamed", 60, None);
+    let renamed = Instant::now() + Duration::from_secs(30);
+    loop {
+        harness::eval(
+            &tab,
+            "(function () { fetch('/api/layout?source=claude-app', { cache: 'no-store' }).then(function (r) { return r.text(); }).then(function (t) { window.__layoutSeen = t; }); return 'ok'; })()",
+        );
+        harness::pause("list host", Duration::from_millis(500));
+        let seen = harness::eval(
+            &tab,
+            "String(window.__layoutSeen || '').indexOf('App first, renamed') >= 0",
+        );
+        if seen == serde_json::json!(true) {
+            break;
+        }
+        assert!(
+            Instant::now() < renamed,
+            "the monitor never read the app's renamed session"
+        );
+    }
+    harness::eval(
+        &tab,
+        "window.__host.hold = '/api/layout'; window.__host.held = 0; window.__list.start(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "window.__host.held >= 1",
+        "another app's list to be asked for and held",
+        Duration::from_secs(20),
+        "JSON.stringify(window.__host.requests.slice(-4))",
+    );
+    harness::eval(&tab, "document.getElementById('filterBtn').click(); 'ok'");
+    harness::until(
+        &tab,
+        "window.__host.held >= 2",
+        "the apps it could follow to be asked for and held",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host.requests.slice(-4))",
+    );
+    harness::eval(&tab, escape);
+    harness::eval(&tab, "window.__host.hold = '/api/(layout|sessions|ignore)'; var hide = document.querySelector('#tree .tree-action[data-ignore-op]'); hide.click(); window.__list.refresh(); 'ok'");
+    harness::until(
+        &tab,
+        "window.__host.held >= 4",
+        "the hide and the index's read to be asked for and held",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host.requests.slice(-4))",
+    );
+    let told = "({ indexed: window.__host.indexed, drawn: window.__host.drawn, toasts: window.__host.toasts.length, opened: window.__host.opened.length, requests: window.__host.requests.length })";
+    let at_unmount = harness::probe(&tab, told);
+    harness::eval(&tab, "window.__list.unmount(); 'ok'");
+    let after = harness::probe(&tab, page);
+    let listeners_after = harness::listeners_of(&tab, &targets);
+    let released = harness::eval(&tab, "window.__host.release()");
+    harness::pause("list host", Duration::from_millis(1500));
+    let late = harness::probe(&tab, told);
+    let after_late = harness::probe(&tab, page);
+    let fenced = harness::probe(
+        &tab,
+        "(function () { var l = window.__list; return { rows: l.rows(), selected: l.selected(), filtered: l.filtered(), grouped: l.grouped(), next: l.keys['list-next'](), select: l.select('x'), again: l.unmount() }; })()",
+    );
+    // Mounting again in the same element.
+    harness::eval(&tab, "window.__host.hold = null; 'ok'");
+    harness::eval(&tab, "window.__host.mount()");
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#tree .tree-row.session').length === 2 && !!document.querySelector('#tree .arranged-head')",
+        "a second list drawn in the same element",
+        Duration::from_secs(30),
+        "JSON.stringify({ host: window.__host, tree: (document.getElementById('tree') || {}).innerText })",
+    );
+    let again = harness::probe(
+        &tab,
+        "({ trees: document.querySelectorAll('#sessionList > .tree').length, heads: document.querySelectorAll('#sessionList > .session-list-head').length, errors: window.__host.errors })",
+    );
+    // The host unmounts the list from inside its own `onIndex`: back in the list's code, nothing more
+    // is drawn, said or asked for (another app's list follows each index read).
+    let since_unmount = "({ drawn: window.__host.drawn - window.__host.drawnAtUnmount, requests: window.__host.requests.filter(function (r) { return r.at > window.__host.unmountedAt; }).map(function (r) { return r.url; }), errors: window.__host.errors })";
+    harness::eval(
+        &tab,
+        "window.__host.unmountIn = 'onIndex'; window.__host.unmountedAt = null; window.__list.refresh(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "window.__host.unmountedAt !== null",
+        "the host to unmount the list inside onIndex",
+        Duration::from_secs(20),
+        "JSON.stringify(window.__host.errors)",
+    );
+    harness::pause("list host", Duration::from_millis(1500));
+    let in_callback = harness::probe(&tab, since_unmount);
+    let after_callback = harness::probe(&tab, page);
+    // A host that places the list's parts in its own bar and rail, and its floating layers in the
+    // body: the unmount takes them from wherever the host put them.
+    harness::eval(&tab, "window.__host.mount(window.__host.placing)");
+    harness::until(
+        &tab,
+        "!!document.querySelector('#tree .arranged-head [data-section-view]')",
+        "a list mounted by a placing host to draw the Claude app's sections",
+        Duration::from_secs(30),
+        "JSON.stringify({ host: window.__host, tree: (document.getElementById('tree') || {}).innerText })",
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('#tree .arranged-head [data-section-view]').click()",
+    );
+    harness::until(
+        &tab,
+        "!!document.getElementById('sectionViewMenu') && !document.getElementById('sectionViewMenu').hidden",
+        "the section's menu to open in the body",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host.errors)",
+    );
+    harness::eval(&tab, escape);
+    let parts = "({ controls: document.querySelectorAll('#hostControls > *').length, sheet: document.querySelectorAll('#hostSheet > *').length, rail: document.querySelectorAll('#hostRail > *').length, menu: !!document.querySelector('body > #sectionViewMenu'), flyout: !!document.querySelector('body > #railFlyout'), inList: document.querySelectorAll('#sessionList .session-list-controls, #sessionList #sessionFilter, #sessionList #railFlyout').length })";
+    let placed = harness::probe(&tab, parts);
+    harness::eval(&tab, "window.__list.unmount(); 'ok'");
+    let placed_after = harness::probe(&tab, parts);
+    let page_after_placed = harness::probe(&tab, page);
+    drop(monitor);
+    assert!(
+        listeners_mounted.len() > listeners_before.len(),
+        "the mounted list binds listeners on the page: {listeners_before:?} -> {listeners_mounted:?}"
+    );
+    assert!(
+        listeners_mounted.contains(&"list:keydown:bubble".to_string()),
+        "and its keys on its element: {listeners_mounted:?}"
+    );
+    assert_eq!(
+        floating,
+        serde_json::json!({ "menu": true, "sheet": true }),
+        "and floats a section's menu and the filter's sheet"
+    );
+    assert_eq!(
+        listeners_after, listeners_before,
+        "the unmount removes every listener the list bound on the page"
+    );
+    assert_eq!(
+        after, before,
+        "and leaves the page as it was: the element as the host gave it, nothing left in the body"
+    );
+    assert_eq!(
+        released,
+        serde_json::json!(4),
+        "four replies were held across the unmount"
+    );
+    assert_eq!(
+        late, at_unmount,
+        "the replies that come back after the unmount draw nothing, tell the host nothing and start no request"
+    );
+    assert_eq!(
+        after_late, before,
+        "and the element stays as the host gave it"
+    );
+    assert_eq!(
+        fenced,
+        serde_json::json!({}),
+        "after the unmount every member of the handle does nothing and answers nothing"
+    );
+    assert_eq!(
+        again,
+        serde_json::json!({ "trees": 1, "heads": 1, "errors": [] }),
+        "and a second mount in the same element draws one new list"
+    );
+    assert_eq!(
+        in_callback,
+        serde_json::json!({ "drawn": 0, "requests": [], "errors": [] }),
+        "unmounted from inside the host's onIndex, the list draws nothing more and asks for nothing"
+    );
+    assert_eq!(
+        after_callback, before,
+        "and leaves its element as the host gave it"
+    );
+    assert_eq!(
+        placed,
+        serde_json::json!({ "controls": 1, "sheet": 1, "rail": 2, "menu": true, "flyout": true, "inList": 0 }),
+        "a placing host holds the list's strip, its sheet and its rail parts, its layers in the body"
+    );
+    assert_eq!(
+        placed_after,
+        serde_json::json!({ "controls": 0, "sheet": 0, "rail": 0, "menu": false, "flyout": false, "inList": 0 }),
+        "and the unmount takes every one of them back"
+    );
+    assert_eq!(page_after_placed, before, "leaving the page as it was");
+}
+
+/// What the list host's first session row shows (#s431 stage 2): the list's width and whether it
+/// wears its compact rows (`pl-max-w-231`), the row's height, whether its agent and project are drawn,
+/// and its title's indent from the list's left edge.
+const LIST_ROW_LAYOUT: &str = "(function(){ var list = document.getElementById('sessionList'); var row = document.querySelector('#tree .tree-row.session'); var drawn = function(e){ if (!e) return null; var b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && getComputedStyle(e).display !== 'none'; }; var title = row && row.querySelector('.tree-title'); return { width: Math.round(list.getBoundingClientRect().width), compact: list.classList.contains('pl-max-w-231'), height: row ? Math.round(row.getBoundingClientRect().height) : null, agent: drawn(row && row.querySelector('.tree-agent')), project: drawn(row && row.querySelector('.tree-project')), indent: title ? Math.round(title.getBoundingClientRect().left - list.getBoundingClientRect().left) : null }; })()";
+
+/// Set the list host's pane to `width` and wait until the list has read its new width: compact rows
+/// below 232px, its desktop or touch rows from there.
+fn list_pane_width(tab: &headless_chrome::Tab, width: u32) -> serde_json::Value {
+    harness::eval(
+        tab,
+        &format!("(document.getElementById('hostPane').style.width = '{width}px', 'ok')"),
+    );
+    harness::until(
+        tab,
+        &format!(
+            "(function(){{ var l = document.getElementById('sessionList'); return Math.round(l.getBoundingClientRect().width) === {width} && l.classList.contains('pl-max-w-231') === {}; }})()",
+            width < 232
+        ),
+        "the list to read its pane's new width",
+        Duration::from_secs(10),
+        &format!("JSON.stringify({LIST_ROW_LAYOUT})"),
+    );
+    harness::probe(tab, LIST_ROW_LAYOUT)
+}
+
+/// #s431 stage 4 (design/pane-layout.md, "Drawn inside the pane"): the list's own floating layers stand
+/// by their controls wherever a host draws the list. The host's pane here is moved off the window's
+/// corner (300px in, under its 40px bar) and wears a transform, which makes it the box its fixed
+/// descendants are placed in, as a sliding drawer's would. A section's menu opens under its control,
+/// its right edge at the control's, inside the window, and takes a press at its middle; the filter's
+/// sheet holds more than the pane leaves it and ends at the list's foot, above the pane's clip, so its
+/// last row takes a press. Red on f32883ef, which wrote the window's coordinates into the pane's box:
+/// the menu stood 300px right of its control and 40px low. Then the list is made 800px tall in the
+/// 360px pane that scrolls it: the sheet ends at the pane's foot, which clips it, and its last row
+/// still takes a press (red on 5eecc345, which ended it at the list's foot, past the pane's).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_list_in_a_host_places_its_layers_by_their_controls_in_a_transformed_pane() {
+    let _serial = serial();
+    let base = base("list-host-layers");
+    let stores = Stores::new(&base);
+    let ids = [
+        "cccccccc-0000-4000-8000-0000000004d1",
+        "cccccccc-0000-4000-8000-0000000004d2",
+    ];
+    list_host_world(&stores, &ids);
+    stores.app_session("local_d1", ids[0], "App first", 60, None);
+    stores.app_session("local_d2", ids[1], "App second", 120, None);
+    stores.app_settings(&[("cg-plan", "Planning", &["local_d2"])]);
+    let monitor = Monitor::spawn(Kind::V1, 3275, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1200.0, 900.0);
+    harness::open_list_host_page_with(&tab, &monitor, "mount=0");
+    harness::eval(
+        &tab,
+        "localStorage.setItem('am-prod-session-arrange', 'claude-app'); localStorage.setItem('am-prod-session-filter', '[\"recent\",\"blocked\",\"idle\"]'); 'ok'",
+    );
+    harness::open_list_host_page_with(&tab, &monitor, "");
+    until_list_drawn(&tab);
+    harness::until(
+        &tab,
+        "!!document.querySelector('#tree .arranged-head [data-section-view]')",
+        "the list arranged like the Claude app, its sections' menus offered",
+        Duration::from_secs(60),
+        "document.getElementById('tree').innerText",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ var p = document.getElementById('hostPane'); p.style.left = '300px'; p.style.height = '360px'; p.style.bottom = 'auto'; p.style.transform = 'translateX(0)'; return true; })()",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    // Where the control was as it was pressed: the press can scroll the tree to bring it into view
+    // after the menu is placed, as it does in the app.
+    harness::eval(
+        &tab,
+        "(function(){ var c = document.querySelector('#tree .arranged-head [data-section-view]').getBoundingClientRect(); window.__anchorAtPress = { right: Math.round(c.right), bottom: Math.round(c.bottom) }; c = null; document.querySelector('#tree .arranged-head [data-section-view]').click(); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "!!document.getElementById('sectionViewMenu') && !document.getElementById('sectionViewMenu').hidden",
+        "a section's menu to open",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host.errors)",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let menu = harness::probe(
+        &tab,
+        "(function(){ var m = document.getElementById('sectionViewMenu'), a = document.querySelector('#tree .arranged-head [data-section-view]'); var r = m.getBoundingClientRect(), c = a.getBoundingClientRect(); var x = r.left + r.width / 2, y = r.top + Math.min(r.height / 2, 40); var hit = document.elementFromPoint(x, y); return { left: Math.round(r.left), right: Math.round(r.right), top: Math.round(r.top), bottom: Math.round(r.bottom), anchorRight: Math.round(c.right), anchorBottom: Math.round(c.bottom), pressedAt: window.__anchorAtPress, margin: Math.round(parseFloat(getComputedStyle(m).marginTop) || 0), inWindow: r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight, pressed: !!hit && m.contains(hit) }; })()",
+    );
+    harness::eval(
+        &tab,
+        "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }))",
+    );
+    harness::eval(&tab, "document.getElementById('filterBtn').click()");
+    harness::until(
+        &tab,
+        "(function(){ var s = document.getElementById('sessionFilter'); return !!s && !s.hidden; })()",
+        "the filter's sheet to open",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host.errors)",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let sheet = harness::probe(
+        &tab,
+        "(function(){ var s = document.getElementById('sessionFilter'), l = document.getElementById('sessionList'); var r = s.getBoundingClientRect(), lr = l.getBoundingClientRect(); var rows = Array.prototype.filter.call(s.querySelectorAll('.scope-option'), function(o){ return o.getClientRects().length > 0 && getComputedStyle(o).visibility !== 'hidden'; }); var last = rows[rows.length - 1]; s.scrollTop = s.scrollHeight; var lrr = last.getBoundingClientRect(); var hit = document.elementFromPoint(lrr.left + 20, lrr.top + lrr.height / 2); return { bottom: Math.round(r.bottom), listBottom: Math.round(lr.bottom), sheetScrolls: s.scrollHeight > s.clientHeight + 1, last: last.textContent.trim().slice(0, 40), lastBox: [Math.round(lrr.left), Math.round(lrr.top), Math.round(lrr.width), Math.round(lrr.height)], hit: hit ? (hit.id || hit.className || hit.tagName) : null, lastPressed: !!hit && last.contains(hit) }; })()",
+    );
+    // A list taller than the pane that scrolls it (the review of stage 4): the sheet ends at the pane's
+    // foot, the box that clips it, not at the list's, 440px below it.
+    harness::eval(&tab, "document.getElementById('filterBtn').click()");
+    harness::eval(
+        &tab,
+        "(function(){ var l = document.getElementById('sessionList'); l.style.flex = 'none'; l.style.height = '800px'; document.getElementById('hostPane').scrollTop = 0; return true; })()",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    harness::eval(&tab, "document.getElementById('filterBtn').click()");
+    harness::until(
+        &tab,
+        "(function(){ var s = document.getElementById('sessionFilter'); return !!s && !s.hidden; })()",
+        "the filter's sheet to open in a list taller than its pane",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__host.errors)",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let clipped = harness::probe(
+        &tab,
+        "(function(){ var s = document.getElementById('sessionFilter'), l = document.getElementById('sessionList'), p = document.getElementById('hostPane'); var r = s.getBoundingClientRect(); var rows = Array.prototype.filter.call(s.querySelectorAll('.scope-option'), function(o){ return o.getClientRects().length > 0 && getComputedStyle(o).visibility !== 'hidden'; }); var last = rows[rows.length - 1]; s.scrollTop = s.scrollHeight; var lrr = last.getBoundingClientRect(); var hit = document.elementFromPoint(lrr.left + 20, lrr.top + lrr.height / 2); return { bottom: Math.round(r.bottom), paneBottom: Math.round(p.getBoundingClientRect().bottom), listBottom: Math.round(l.getBoundingClientRect().bottom), lastPressed: !!hit && last.contains(hit), hit: hit ? (hit.id || hit.className || hit.tagName) : null }; })()",
+    );
+    drop(monitor);
+    assert_eq!(
+        menu["inWindow"], true,
+        "the section's menu is inside the window: {menu}"
+    );
+    assert!(
+        [&menu["pressedAt"], &menu].iter().any(|at| {
+            let (right, bottom) = if at.get("anchorRight").is_some() {
+                (at["anchorRight"].as_i64(), at["anchorBottom"].as_i64())
+            } else {
+                (at["right"].as_i64(), at["bottom"].as_i64())
+            };
+            (menu["right"].as_i64().unwrap_or(0) - right.unwrap_or(-99)).abs() <= 1
+                && (menu["top"].as_i64().unwrap_or(0)
+                    - bottom.unwrap_or(-99)
+                    - 4
+                    - menu["margin"].as_i64().unwrap_or(0))
+                .abs()
+                    <= 1
+        }),
+        "the section's menu opens 4px under its control (and its own margin), its right edge at the control's: {menu}"
+    );
+    assert_eq!(
+        menu["pressed"], true,
+        "the section's menu takes a press: {menu}"
+    );
+    // The sheet holds more than the pane leaves it, so what is measured is its cap: a sheet that fit
+    // would end inside the pane on the code before it too.
+    assert_eq!(
+        sheet["sheetScrolls"], true,
+        "the filter's sheet is taller than the room the pane leaves it: {sheet}"
+    );
+    assert!(
+        sheet["bottom"].as_i64().unwrap_or(9999) <= sheet["listBottom"].as_i64().unwrap_or(0),
+        "the filter's sheet ends at the list's foot: {sheet}"
+    );
+    assert_eq!(
+        sheet["lastPressed"], true,
+        "the filter's last row takes a press: {sheet}"
+    );
+    assert!(
+        clipped["listBottom"].as_i64().unwrap_or(0)
+            > clipped["paneBottom"].as_i64().unwrap_or(0) + 200
+            && clipped["bottom"].as_i64().unwrap_or(9999)
+                <= clipped["paneBottom"].as_i64().unwrap_or(0),
+        "in a list taller than its pane the filter's sheet ends at the pane's foot: {clipped}"
+    );
+    assert_eq!(
+        clipped["lastPressed"], true,
+        "and its last row takes a press there: {clipped}"
+    );
+}
+
+/// The session list in a host lays out its rows by its own width and the screen's touch (#s431 stage
+/// 2, design/pane-layout.md, "The session list"), never by the window. In a host's 320px pane with a
+/// mouse a tree's session row is the desktop's one line, under 44px, and the flat list's names each
+/// session's agent and its project on a second line. Narrowed to 200px, below the app's least sidebar
+/// of 232px, the rows are compact: the flat list keeps the agent and drops the project, and the tree's
+/// indent is 12px narrower. Widened again they are as before. On an emulated phone, a touch screen, a
+/// tree's row is 44px at either width, and the narrow pane makes the rows compact there too. 1.520.0's
+/// compact rule set a tree session's padding to 32px, its default, so the 200px tree kept its indent
+/// and the case failed there, with a mouse and on a phone alike.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_list_in_a_host_lays_out_its_rows_by_its_own_width_and_touch() {
+    let _serial = serial();
+    let base = base("list-host-widths");
+    let stores = Stores::new(&base);
+    let ids = [
+        "cccccccc-0000-4000-8000-0000000004e1",
+        "cccccccc-0000-4000-8000-0000000004e2",
+    ];
+    list_host_world(&stores, &ids);
+    let monitor = Monitor::spawn(Kind::V1, 3272, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    // The list shows the idle sessions the builders write, as one flat list.
+    let open = |flat: bool| {
+        harness::open_list_host_page_with(&tab, &monitor, "mount=0");
+        harness::eval(
+            &tab,
+            &format!(
+                "localStorage.setItem('am-prod-session-filter', '[\"recent\",\"blocked\",\"idle\"]'); localStorage.setItem('am-prod-session-flat', '{}'); localStorage.removeItem('am-prod-session-arrange'); 'ok'",
+                if flat { "1" } else { "0" }
+            ),
+        );
+        harness::open_list_host_page(&tab, &monitor);
+        until_list_drawn(&tab);
+    };
+    let field = |v: &serde_json::Value, k: &str| v[k].clone();
+
+    // With a mouse, the flat list.
+    open(true);
+    let wide = list_pane_width(&tab, 320);
+    let narrow = list_pane_width(&tab, 200);
+    let again = list_pane_width(&tab, 320);
+    assert_eq!(
+        (
+            field(&wide, "compact"),
+            field(&wide, "agent"),
+            field(&wide, "project")
+        ),
+        (
+            serde_json::json!(false),
+            serde_json::json!(true),
+            serde_json::json!(true)
+        ),
+        "a 320px list with a mouse names each session's agent and project: {wide}"
+    );
+    assert_eq!(
+        (
+            field(&narrow, "compact"),
+            field(&narrow, "agent"),
+            field(&narrow, "project")
+        ),
+        (
+            serde_json::json!(true),
+            serde_json::json!(true),
+            serde_json::json!(false)
+        ),
+        "a 200px list keeps the agent and drops the project: {narrow}"
+    );
+    assert_eq!(
+        (field(&again, "compact"), field(&again, "project")),
+        (serde_json::json!(false), serde_json::json!(true)),
+        "widened again, the project comes back: {again}"
+    );
+
+    // With a mouse, the tree.
+    open(false);
+    let tree_wide = list_pane_width(&tab, 320);
+    let tree_narrow = list_pane_width(&tab, 200);
+    assert!(
+        tree_wide["height"].as_i64().unwrap() < 44,
+        "with a mouse a tree's row is the desktop's one line: {tree_wide}"
+    );
+    assert_eq!(
+        tree_wide["indent"].as_i64().unwrap() - tree_narrow["indent"].as_i64().unwrap(),
+        12,
+        "a 200px tree indents a session 12px less: {tree_wide} then {tree_narrow}"
+    );
+
+    // On a touch screen, the tree, then the flat list.
+    harness::phone(&tab, 390, 844);
+    open(false);
+    let touch_tree_wide = list_pane_width(&tab, 320);
+    let touch_tree_narrow = list_pane_width(&tab, 200);
+    for (what, seen) in [("320px", &touch_tree_wide), ("200px", &touch_tree_narrow)] {
+        assert!(
+            seen["height"].as_i64().unwrap() >= 44,
+            "on a touch screen a {what} tree's row is 44px: {seen}"
+        );
+    }
+    assert_eq!(
+        touch_tree_wide["indent"].as_i64().unwrap()
+            - touch_tree_narrow["indent"].as_i64().unwrap(),
+        12,
+        "a 200px tree on a touch screen indents a session 12px less: {touch_tree_wide} then {touch_tree_narrow}"
+    );
+    open(true);
+    let touch_wide = list_pane_width(&tab, 320);
+    let touch_narrow = list_pane_width(&tab, 200);
+    assert_eq!(
+        (field(&touch_wide, "compact"), field(&touch_wide, "project")),
+        (serde_json::json!(false), serde_json::json!(true)),
+        "a 320px list on a touch screen names the project: {touch_wide}"
+    );
+    assert_eq!(
+        (
+            field(&touch_narrow, "compact"),
+            field(&touch_narrow, "agent"),
+            field(&touch_narrow, "project")
+        ),
+        (
+            serde_json::json!(true),
+            serde_json::json!(true),
+            serde_json::json!(false)
+        ),
+        "a 200px list on a touch screen is compact too: {touch_narrow}"
+    );
+}
+
+/// A session chosen with the mouse leaves the page's keys to the transcript (#s430 stage 4, from its
+/// review). A click focuses the session's row; choosing another session redraws the list with its
+/// selection, which drops that focus to the page, and the open session clicked again redraws nothing,
+/// so the click itself gives the focus back. Either way the app's keymap reads the next key as the
+/// transcript's. Stage 4 first carried the focus across every redraw, so a clicked row kept it and
+/// `[`, `]`, `j` and Space did nothing until the reader clicked in the transcript; before stage 4 the
+/// open session clicked again kept it too. Only the keyboard's focus on a row, a step's or Tab's, is
+/// kept as the list is rewritten, which the case presses through the app's own keymap, there and back.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_keeps_its_transcript_keys_after_a_session_is_clicked() {
+    let _serial = serial();
+    let base = base("appshell-click-keys");
+    let stores = Stores::new(&base);
+    let first = "cccccccc-0000-4000-8000-0000000004c1";
+    let second = "cccccccc-0000-4000-8000-0000000004c2";
+    for sid in [first, second] {
+        stores.claude_session(
+            sid,
+            &harness::long_session(
+                30,
+                harness::Shape {
+                    tool_every: 3,
+                    think_every: 5,
+                    prose_repeat: 6,
+                },
+            ),
+        );
+    }
+    let monitor = Monitor::spawn(Kind::V1, 3270, &base, Some(&stores), true);
+    let port = monitor.port;
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::track_idle(&tab);
+    harness::show_every_session(
+        &tab,
+        &format!("http://127.0.0.1:{port}/?ui=app&session={first}"),
+    );
+    let row = format!("#tree .tree-row.session[data-session=\"{second}\"]");
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector({row:?}) && document.querySelectorAll('.virtual-window .turn.user').length >= 3"),
+        "the list drawn and the first session's turns mounted",
+        Duration::from_secs(30),
+        "JSON.stringify({ tree: (document.getElementById('tree') || {}).innerText, turns: document.querySelectorAll('.virtual-window .turn.user').length })",
+    );
+    // The mouse's own click, which focuses the row as it presses it.
+    harness::click_when_settled(&tab, &row, "the second session's row");
+    harness::until(
+        &tab,
+        &format!("location.search.indexOf('{second}') >= 0 && !!document.querySelector({row:?} + '.selected') && document.querySelectorAll('.virtual-window .turn.user').length >= 3"),
+        "the second session shown, its row selected",
+        Duration::from_secs(30),
+        "JSON.stringify({ search: location.search, turns: document.querySelectorAll('.virtual-window .turn.user').length })",
+    );
+    let scrolled = "Math.round(document.querySelector('.transcript').scrollTop)";
+    let (rest, _) = harness::until_still(
+        &tab,
+        scrolled,
+        |v| v.as_i64().unwrap_or(0) > 0,
+        Duration::from_secs(15),
+    );
+    let rest = rest.as_i64().unwrap_or(0);
+    let focus = harness::probe(
+        &tab,
+        "(function () { var a = document.activeElement; return a && a.closest && a.closest('.tree-row') ? 'a row of the list' : (a ? a.tagName.toLowerCase() : 'none'); })()",
+    );
+    // A key goes where the focus is, as a real one would.
+    harness::eval(
+        &tab,
+        "(document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true, cancelable: true })); 'ok'",
+    );
+    let moved_from = |rest: i64| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            if harness::eval(&tab, &format!("{scrolled} < {rest} - 20")) == serde_json::json!(true)
+            {
+                return true;
+            }
+            if Instant::now() > deadline {
+                return false;
+            }
+            harness::pause("click keys", Duration::from_millis(200));
+        }
+    };
+    let moved = moved_from(rest);
+    // The open session's row clicked again: the app redraws nothing, and the click still hands the
+    // page its keys.
+    let (again_rest, _) = harness::until_still(
+        &tab,
+        scrolled,
+        |v| v.as_i64().unwrap_or(0) > 0,
+        Duration::from_secs(15),
+    );
+    let again_rest = again_rest.as_i64().unwrap_or(0);
+    harness::click_when_settled(&tab, &row, "the open session's row");
+    harness::pause("click keys", Duration::from_millis(300));
+    let again_focus = harness::probe(
+        &tab,
+        "(function () { var a = document.activeElement; return a && a.closest && a.closest('.tree-row') ? 'a row of the list' : (a ? a.tagName.toLowerCase() : 'none'); })()",
+    );
+    harness::eval(
+        &tab,
+        "(document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true, cancelable: true })); 'ok'",
+    );
+    let moved_again = moved_from(again_rest);
+    // The list's keys through the app's own keymap: from the open session's row a step to the other
+    // session and back, the row it reached keeping the focus as the app redraws the list.
+    let order = harness::probe(
+        &tab,
+        "[].map.call(document.querySelectorAll('#tree .tree-row.session'), function (r) { return r.dataset.session; })",
+    );
+    let (to_first, to_second) = if order[0] == serde_json::json!(first) {
+        ("ArrowUp", "ArrowDown")
+    } else {
+        ("ArrowDown", "ArrowUp")
+    };
+    let step = |key: &str, to: &str| {
+        harness::eval(
+            &tab,
+            &format!("document.querySelector('#tree .tree-row.session[data-session=\"' + {} + '\"]').focus(); 'ok'", serde_json::json!(if to == first { second } else { first })),
+        );
+        let taken = harness::probe(&tab, &format!("{PRESS}({key:?})"));
+        let to_row = format!("#tree .tree-row.session[data-session=\"{to}\"]");
+        harness::until(
+            &tab,
+            &format!("location.search.indexOf('{to}') >= 0 && !!document.querySelector({to_row:?} + '.selected')"),
+            "the list's key to open the other session",
+            Duration::from_secs(30),
+            "JSON.stringify({ search: location.search, active: document.activeElement && document.activeElement.outerHTML.slice(0, 120) })",
+        );
+        harness::pause("click keys", Duration::from_millis(500));
+        let focus = harness::probe(
+            &tab,
+            "(document.activeElement && document.activeElement.dataset.session) || ''",
+        );
+        serde_json::json!({ "taken": taken, "focus": focus })
+    };
+    let stepped = step(to_first, first);
+    let stepped_back = step(to_second, second);
+    drop(monitor);
+    assert_eq!(
+        focus,
+        serde_json::json!("body"),
+        "the click chose the session and the redraw left no row of the list with the focus"
+    );
+    assert!(
+        moved,
+        "so `[` is the transcript's: it steps back a turn from the end ({rest}px)"
+    );
+    assert_eq!(
+        again_focus,
+        serde_json::json!("body"),
+        "the open session's row clicked again, which redraws nothing, keeps no focus either"
+    );
+    assert!(
+        moved_again,
+        "so `[` is still the transcript's ({again_rest}px)"
+    );
+    assert_eq!(
+        (stepped, stepped_back),
+        (
+            serde_json::json!({ "taken": true, "focus": first }),
+            serde_json::json!({ "taken": true, "focus": second })
+        ),
+        "the list's keys, through the app's keymap, open the next session and keep the focus on its row, there and back"
+    );
+}
+
+/// #s450: right after `]` lands a turn, scrolling DOWN never makes the subtitle
+/// (`#turnSubtitle`, which names the turn the reader is in) name a turn before the one landed on,
+/// and at any one offset every value it is given is the same. The scroll path reads the unit under
+/// the spy's line, just below the turn bar (`unitAtTop`); after a transaction the engine's
+/// position names the unit crossing the viewport's TOP, which after a landing is the previous
+/// turn's tail, behind the bar. Painted from that, one 24px scroll down named the turn before until
+/// the next scroll event. Swept in 4px steps, since the two readings' boundaries could differ by a
+/// margin, and at a phone's size too, where the line is 20px down and no bar covers the transcript.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_subtitle_keeps_the_jumped_to_turn_scrolling_down() {
+    subtitle_after_a_jump(3261, None);
+}
+
+/// #s450 on a phone held upright: the same sweep.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_subtitle_keeps_the_jumped_to_turn_scrolling_down() {
+    subtitle_after_a_jump(3262, Some((390, 844)));
+}
+
+fn subtitle_after_a_jump(port: u16, phone: Option<(u32, u32)>) {
+    let _serial = serial();
+    let base = base(&format!("subtitle-after-a-jump-{port}"));
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000450".to_string();
+    stores.claude_session(
+        &sid,
+        &harness::long_session(
+            40,
+            harness::Shape {
+                tool_every: 2,
+                think_every: 5,
+                prose_repeat: 6,
+            },
+        ),
+    );
+    let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let port = monitor.port;
+    let (_browser, tab) = harness::chrome_tab();
+    if let Some((w, h)) = phone {
+        harness::phone(&tab, w, h);
+    }
+    monitor.pair(&tab);
+    harness::track_idle(&tab);
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "document.querySelectorAll('.virtual-window .turn.user').length >= 3",
+        "three user turns mounted",
+        std::time::Duration::from_secs(20),
+        "document.querySelectorAll('.virtual-window .turn.user').length + ' turns'",
+    );
+    harness::eval(&tab, "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:-1})); s.scrollTop = 0; return 'ok'; })()");
+    harness::until_reader_owns_the_view(&tab);
+    let reading = "(function(){ var s=document.querySelector('.transcript'), top=s.getBoundingClientRect().top; for (var c of document.querySelector('.virtual-window').children) { if (c.getBoundingClientRect().top >= top - 24) return c.dataset.unitFrom + '@' + Math.round(s.scrollTop); } return '-1@' + Math.round(s.scrollTop); })()";
+    let unit_of = |v: &serde_json::Value| -> i64 {
+        v.as_str()
+            .and_then(|s| s.split('@').next())
+            .and_then(|u| u.parse().ok())
+            .unwrap_or(-1)
+    };
+    // `<unit>@<offset>`, or the landing's `<unit>@<offset>|<subtitle>`.
+    let offset_of = |v: &serde_json::Value| -> i64 {
+        v.as_str()
+            .and_then(|s| s.split('|').next())
+            .and_then(|s| s.split('@').nth(1))
+            .and_then(|o| o.parse().ok())
+            .unwrap_or(-1)
+    };
+    // "Turn 7 — label" → 7.
+    let turn_of = |text: &str| -> i64 {
+        text.strip_prefix("Turn ")
+            .and_then(|t| t.split(' ').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(-1)
+    };
+    let subtitle = "document.getElementById('turnSubtitle').textContent";
+    let bound = std::time::Duration::from_secs(10);
+    let (at_top, _) = harness::until_still(&tab, reading, |v| offset_of(v) == 0, bound);
+    // Every value the subtitle is given, in order: each paint replaces its text, so a paint that
+    // names the same turn is recorded too.
+    harness::eval(&tab, "(function(){ var t=document.getElementById('turnSubtitle'); window.__subtitles=[]; new MutationObserver(function(){ window.__subtitles.push(t.textContent); }).observe(t, {childList:true, characterData:true, subtree:true}); return 'ok'; })()");
+    let mut previous_unit = unit_of(&at_top);
+    let mut previous_turn = turn_of(harness::eval(&tab, subtitle).as_str().unwrap_or(""));
+    // The landing is read with the subtitle, so neither is taken before the other has caught up.
+    let landing = format!("({reading}) + '|' + {subtitle}");
+    let landing_turn = |v: &serde_json::Value| -> i64 {
+        turn_of(v.as_str().and_then(|s| s.split('|').nth(1)).unwrap_or(""))
+    };
+    for _ in 0..2 {
+        harness::key(&tab, "]", false);
+        let (landed_at, seen) = harness::until_still(
+            &tab,
+            &landing,
+            |v| unit_of(v) > previous_unit && landing_turn(v) > previous_turn,
+            bound,
+        );
+        let landed = landing_turn(&landed_at);
+        assert!(
+            unit_of(&landed_at) > previous_unit && landed > previous_turn,
+            "`]` lands the next turn: unit {previous_unit}, turn {previous_turn} -> {landed_at} (readings {seen:?})"
+        );
+        previous_unit = unit_of(&landed_at);
+        previous_turn = landed;
+        let mut offset = offset_of(&landed_at);
+        let mut steps: Vec<String> = Vec::new();
+        for step in 1..=30 {
+            harness::eval(&tab, "window.__subtitles = []; 'ok'");
+            harness::eval(&tab, "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:4, bubbles:true})); s.scrollTop += 4; return 'ok'; })()");
+            // Where the view went, not where 4px more would be: a unit mounting above the reader is
+            // measured and the engine holds what they read, which moves the offset by the difference.
+            let before = offset;
+            let (at, _) = harness::until_still(&tab, reading, |v| offset_of(v) != before, bound);
+            offset = offset_of(&at);
+            let values: Vec<i64> = harness::eval(&tab, "JSON.stringify(window.__subtitles)")
+                .as_str()
+                .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+                .unwrap_or_default()
+                .iter()
+                .map(|t| turn_of(t))
+                .collect();
+            steps.push(format!("{at}: {values:?}"));
+            assert_ne!(
+                offset, before,
+                "each step moves the view: every step so far: {steps:?}"
+            );
+            assert!(
+                values.iter().all(|&t| t == landed),
+                "{step} steps of 4px down after `]` landed turn {landed} (the offset {}px on), the subtitle was painted {values:?}; every step so far: {steps:?}",
+                offset - offset_of(&landed_at)
+            );
+        }
+    }
+}
+
+/// #s450, a plan card's margin. The walk from the engine's position to the spy's line steps by
+/// the engine's heights, which are margin boxes, and a proposed plan's card has an 8px top margin
+/// the units around it do not. Landed on the turn after a plan, and scrolled UP a pixel at a time
+/// across that band, the subtitle gets one answer at each offset: every value it is painted there
+/// is the same. Stepping by border tops named the turn before in the band, where the scroll path
+/// named the landed turn.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_subtitle_after_a_plan_card_gives_one_answer_per_offset() {
+    let _serial = serial();
+    let port = 3263;
+    let base = base("subtitle-after-a-plan-card");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000451";
+    let mut session = String::new();
+    for i in 0..12u32 {
+        session += &harness::user(
+            &format!(
+                "question {i}: {}",
+                "lorem ipsum dolor sit amet, consectetur. ".repeat(4)
+            ),
+            i,
+        );
+        let answer = if i == 1 {
+            "<proposed_plan>\\n# Plan\\n\\n- step one\\n- step two\\n</proposed_plan>".to_string()
+        } else {
+            format!(
+                "answer {i}: {}",
+                "sed do eiusmod tempor incididunt ut labore. ".repeat(20)
+            )
+        };
+        session += &harness::assistant(&answer, i);
+    }
+    stores.claude_session(sid, &session);
+    let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let port = monitor.port;
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::track_idle(&tab);
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "document.querySelectorAll('.virtual-window .turn.user').length >= 3 && !!document.querySelector('.virtual-window .turn.proposed-plan')",
+        "three user turns and the plan card mounted",
+        std::time::Duration::from_secs(20),
+        "document.querySelectorAll('.virtual-window .turn.user').length + ' turns'",
+    );
+    harness::eval(&tab, "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:-1})); s.scrollTop = 0; return 'ok'; })()");
+    harness::until_reader_owns_the_view(&tab);
+    let reading = "(function(){ var s=document.querySelector('.transcript'), top=s.getBoundingClientRect().top; for (var c of document.querySelector('.virtual-window').children) { if (c.getBoundingClientRect().top >= top - 24) return c.dataset.unitFrom + '@' + Math.round(s.scrollTop); } return '-1@' + Math.round(s.scrollTop); })()";
+    let unit_of = |v: &serde_json::Value| -> i64 {
+        v.as_str()
+            .and_then(|s| s.split('@').next())
+            .and_then(|u| u.parse().ok())
+            .unwrap_or(-1)
+    };
+    let offset_of = |v: &serde_json::Value| -> i64 {
+        v.as_str()
+            .and_then(|s| s.split('@').nth(1))
+            .and_then(|o| o.parse().ok())
+            .unwrap_or(-1)
+    };
+    let bound = std::time::Duration::from_secs(10);
+    let (at_top, _) = harness::until_still(&tab, reading, |v| offset_of(v) == 0, bound);
+    // `]` twice: to the second turn, then to the third, which the plan card closes the second.
+    let mut unit = unit_of(&at_top);
+    for _ in 0..2 {
+        harness::key(&tab, "]", false);
+        let before = unit;
+        let (landed_at, seen) = harness::until_still(&tab, reading, |v| unit_of(v) > before, bound);
+        unit = unit_of(&landed_at);
+        assert!(unit > before, "`]` lands the next turn (readings {seen:?})");
+    }
+    let premise = harness::eval(&tab, &format!("(function(){{ var u=[...document.querySelector('.virtual-window').children].find(function(c){{ return c.dataset.unitFrom === '{unit}'; }}); var p=u && u.previousElementSibling; return !!(p && p.classList.contains('proposed-plan')) && getComputedStyle(p).marginTop === '8px' && getComputedStyle(u).marginTop === '0px'; }})()"));
+    assert_eq!(
+        premise,
+        serde_json::Value::Bool(true),
+        "the landed turn follows the plan card, whose top margin is 8px where the turn's is 0"
+    );
+    harness::eval(&tab, "(function(){ var t=document.getElementById('turnSubtitle'); window.__subtitles=[]; new MutationObserver(function(){ window.__subtitles.push(t.textContent.split(' — ')[0]); }).observe(t, {childList:true, characterData:true, subtree:true}); return 'ok'; })()");
+    let (landed_at, _) = harness::until_still(&tab, reading, |_| true, bound);
+    // Where the landed turn's top sits below the scroller's, read on screen: the band the case is
+    // about is the 8px under its landing, which only the content moving into it reaches, not an
+    // offset the engine wrote back as a unit mounted.
+    let turn_top = format!("(function(){{ var s=document.querySelector('.transcript'); var u=[...document.querySelector('.virtual-window').children].find(function(c){{ return c.dataset.unitFrom === '{unit}'; }}); return u ? Math.round(u.getBoundingClientRect().top - s.getBoundingClientRect().top) : -1000; }})()");
+    let landed_top = harness::eval(&tab, &turn_top).as_i64().unwrap_or(-1000);
+    let mut tops: Vec<i64> = Vec::new();
+    let mut offset = offset_of(&landed_at);
+    let mut steps: Vec<String> = Vec::new();
+    for _ in 0..12 {
+        harness::eval(&tab, "window.__subtitles = []; 'ok'");
+        harness::eval(&tab, "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:-1, bubbles:true})); s.scrollTop -= 1; return 'ok'; })()");
+        // Where the view went: the engine may hold what the reader sees as a unit above mounts.
+        let before = offset;
+        let (at, _) = harness::until_still(&tab, reading, |v| offset_of(v) != before, bound);
+        offset = offset_of(&at);
+        let values: Vec<String> = harness::eval(&tab, "JSON.stringify(window.__subtitles)")
+            .as_str()
+            .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+            .unwrap_or_default();
+        let top = harness::eval(&tab, &turn_top).as_i64().unwrap_or(-1000);
+        tops.push(top);
+        steps.push(format!("{at} top {top}: {values:?}"));
+        assert_ne!(
+            offset, before,
+            "each step moves the view: every step so far: {steps:?}"
+        );
+        // Both callers paint on every update, the same text included (`updateTurnBar` always writes
+        // it), so two answers at one offset are both recorded here.
+        assert!(
+            values.windows(2).all(|w| w[0] == w[1]),
+            "scrolled up {}px from the landing after the plan card, the subtitle was painted {values:?} at one offset; every step so far: {steps:?}",
+            offset_of(&landed_at) - offset
+        );
+    }
+    assert!(
+        tops.iter()
+            .any(|&t| t > landed_top && t <= landed_top + 8),
+        "the sweep passed through the 8px under the landing (at {landed_top}px): every step: {steps:?}"
+    );
+}
+
+/// #s454: a smooth head step (`j`) gives the turn one answer. `stepHead` brings a head it has to
+/// move to 160px from the top, smoothly; each scroll event of that travel paints the turn bar and
+/// the subtitle from the unit under the spy's line (the landing plus 8), and on arrival the
+/// engine's position, a command's, names the revealed head's unit. Where a turn's opener lies
+/// between the spy's line and the head, the two readings name different turns. The arrival itself
+/// shows none of it: the engine hears it only in a scroll event (`ownScroll`), whose handler paints
+/// from the spy's line right after the arrival's paint, in the same task, and the turn said
+/// (`queueTurn`, a microtask) is the last. But the command holds its target until the reader
+/// moves, and any transaction while they rest (a unit below measured, a live append) painted from
+/// that key with no scroll after it: the subtitle named the head's turn and the host heard it,
+/// where a pixel of scroll named the turn before again. `keyAtSpyLine` reads a command placed
+/// below the landing at the spy's line now.
+///
+/// Each step records every value the subtitle shows (an observer's callback reads the text at a
+/// microtask checkpoint) and every `onTurn` from the press until the view is still; then a unit
+/// below grows by 40px with no input, and the case waits for the engine to measure it; then the
+/// view scrolls one pixel, which reads the spy's line. The turn at rest is the one that pixel
+/// names, nothing shown or said during the step passes it, the growth changes nothing, and nothing
+/// is said one pixel on. The turns open three ways, a prompt, a slash command and another
+/// session's message, each followed at once by its tool call, and the case holds every opener to
+/// 40px. As drawn, an opener barely fits the band: on a desktop the turn bar puts the line 60px
+/// down and a slash command's card with the head below it takes 120px (a prompt 131px), so none
+/// does; on a phone the line is 20px down and the card sits 3px under it (measured on macOS). At
+/// 40px the opener of every head a step moves is in the band on both, and most steps must have it
+/// there, or the case proves nothing.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_head_step_names_one_turn() {
+    head_step_names_one_turn(3265, None);
+}
+
+/// #s454 on a phone's size, where the band between the spy's line and 160px holds a prompt.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_head_step_names_one_turn() {
+    head_step_names_one_turn(3266, Some((390, 844)));
+}
+
+fn head_step_names_one_turn(port: u16, phone: Option<(u32, u32)>) {
+    let _serial = serial();
+    let base = base(&format!("head-step-one-turn-{port}"));
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000454";
+    let mut session = String::new();
+    // Each turn opens one of three ways, a prompt, a slash command or another session's message,
+    // each as short as it comes, and goes straight on to its tool call.
+    for i in 0..14u32 {
+        let ts = harness::at(&format!("{:02}:00", 4 * i));
+        session += &match i % 3 {
+            0 => harness::user(&format!("question {i}"), 4 * i),
+            1 => harness::command_at("review", &format!("{i}"), "", &ts),
+            _ => format!(
+                "{}\n",
+                serde_json::json!({
+                    "type": "user", "cwd": "/r", "timestamp": ts, "isMeta": true,
+                    "promptSource": "system", "turnOrigin": "peer",
+                    "origin": {"kind": "peer", "from": "uds:/tmp/s.sock", "verifiedPeerPid": 1, "msg_id": format!("m{i}"),
+                               "name": "skua-HD", "fromMode": "bypass", "body": format!("note {i}")},
+                    "message": {"role": "user", "content": format!("Another Claude session sent a message:\n<cross-session-message from=\"uds:/tmp/s.sock\" from-name=\"skua-HD\" from-mode=\"bypass\">\nnote {i}\n</cross-session-message>\n\nThis came from another Claude session — not typed by your user.")}
+                })
+            ),
+        };
+        session += &harness::tool_open(&format!("call{i}"), 4 * i + 1);
+        session += &harness::tool_result(&format!("call{i}"), 4 * i + 2);
+        session += &harness::assistant(
+            &format!(
+                "answer {i}: {}",
+                "sed do eiusmod tempor incididunt ut labore. ".repeat(60)
+            ),
+            4 * i + 3,
+        );
+    }
+    stores.claude_session(sid, &session);
+    let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    if let Some((w, h)) = phone {
+        harness::phone(&tab, w, h);
+    }
+    monitor.pair(&tab);
+    harness::track_idle(&tab);
+    // The view mounted through the case's wrapper, which records what it tells the app.
+    harness::answer_in_browser(
+        &tab,
+        vec![harness::Answer {
+            pattern: "*/monitor-ui/session-view.js".into(),
+            path: "/monitor-ui/session-view.js".into(),
+            content_type: "text/javascript; charset=utf-8".into(),
+            body: include_str!("fixtures/host/session-view-spy.js").into(),
+        }],
+    );
+    tab.navigate_to(&monitor.url(&format!("?ui=app&session={sid}")))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let bound = std::time::Duration::from_secs(20);
+    harness::until(
+        &tab,
+        "!!window.__viewHeard && document.querySelectorAll('.virtual-window .turn.user').length >= 2 && !!document.querySelector('.virtual-window button.renderer-head')",
+        "the session's turns and a tool head drawn, through the wrapper",
+        bound,
+        "document.querySelectorAll('.virtual-window .turn.user').length + ' turns'",
+    );
+    // Every opener 40px tall, whatever the fonts: a head brought to 160px then has its opener
+    // between the spy's line and itself, on a desktop as on a phone.
+    harness::eval(&tab, "(function(){ var st=document.createElement('style'); st.textContent='.virtual-window .turn.user, .virtual-window .turn.peer { height: 40px !important; min-height: 0 !important; box-sizing: border-box !important; overflow: hidden !important; }'; document.head.appendChild(st); return 'ok'; })()");
+    harness::eval(&tab, "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:-1})); s.scrollTop = 0; return 'ok'; })()");
+    harness::until_reader_owns_the_view(&tab);
+    harness::eval(&tab, "(function(){ var t=document.getElementById('turnSubtitle'); window.__subtitles=[]; new MutationObserver(function(){ window.__subtitles.push(t.textContent); }).observe(t, {childList:true, characterData:true, subtree:true}); return 'ok'; })()");
+    // "Turn 7 — question 6" → 7.
+    let turn_of = |text: &str| -> i64 {
+        text.strip_prefix("Turn ")
+            .and_then(|t| t.split(' ').next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or(-1)
+    };
+    // Where the view is, the focused head, the subtitle; and the prompt the focused head's turn
+    // opened with, with whether it lies under the spy's line (the landing plus 8, as `unitAtTop`).
+    let reading = "(function(){ var s=document.querySelector('.transcript'), top=s.getBoundingClientRect().top; var line=top+(parseFloat(getComputedStyle(s).scrollPaddingTop)||18)+8; var h=document.activeElement, head=h && h.matches && h.matches('button.renderer-head') ? h : null; var unit=head && head.closest('[data-unit-key]'), prompt=unit; while (prompt && !prompt.classList.contains('user') && !prompt.classList.contains('peer')) prompt=prompt.previousElementSibling; return JSON.stringify({ at: Math.round(s.scrollTop), head: unit ? unit.dataset.unitKey : null, headTop: head ? Math.round(head.getBoundingClientRect().top - top) : null, headBottom: head ? Math.round(head.getBoundingClientRect().bottom - top) : null, h: s.clientHeight, prompt: prompt ? prompt.className + ' ' + prompt.textContent.trim().slice(0, 16) : null, promptBelowSpy: prompt ? prompt.getBoundingClientRect().top > line : null, promptTop: prompt ? Math.round(prompt.getBoundingClientRect().top - top) : null, line: Math.round(line - top), subtitle: document.getElementById('turnSubtitle').textContent }); })()";
+    let parse = |v: &serde_json::Value| -> serde_json::Value {
+        v.as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or(serde_json::Value::Null)
+    };
+    let said_turns = |from: usize| -> Vec<i64> {
+        view_events(&tab, "onTurn")
+            .iter()
+            .skip(from)
+            .map(|e| e["args"][0]["turn"].as_i64().unwrap_or(-1))
+            .collect()
+    };
+    let mut steps: Vec<String> = Vec::new();
+    let mut in_band = 0;
+    let mut head = serde_json::Value::Null;
+    for step in 1..=8 {
+        let said_from = view_events(&tab, "onTurn").len();
+        harness::eval(&tab, "window.__subtitles = []; 'ok'");
+        harness::key(&tab, "j", false);
+        let before = head.clone();
+        // Focus moves at once and the travel after it: done once the new head sits where
+        // `stepHead` leaves one, clear of the top 100px and of the bottom 60px.
+        let (rest, _) = harness::until_still(
+            &tab,
+            reading,
+            |v| {
+                let r = parse(v);
+                let (top, bottom, h) = (
+                    r["headTop"].as_i64().unwrap_or(-1),
+                    r["headBottom"].as_i64().unwrap_or(-1),
+                    r["h"].as_i64().unwrap_or(0),
+                );
+                !r["head"].is_null() && r["head"] != before && top >= 100 && bottom <= h - 60
+            },
+            bound,
+        );
+        let rest = parse(&rest);
+        head = rest["head"].clone();
+        let painted: Vec<i64> = harness::eval(&tab, "JSON.stringify(window.__subtitles)")
+            .as_str()
+            .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+            .unwrap_or_default()
+            .iter()
+            .map(|t| turn_of(t))
+            .collect();
+        let said = said_turns(said_from);
+        let at_rest = turn_of(rest["subtitle"].as_str().unwrap_or(""));
+        // While the reader rests, a unit below grows (a live session's output, an image arriving):
+        // the engine measures it in a transaction of its own, with no input and nothing to move.
+        let said_grow_from = view_events(&tab, "onTurn").len();
+        harness::eval(&tab, "window.__subtitles = []; 'ok'");
+        harness::eval(&tab, "(function(){ window.__statesBeforeGrowth = window.__viewportHistory.states.length; var w=document.querySelector('.virtual-window'), u=w.lastElementChild; var d=document.createElement('div'); d.style.height='40px'; u.appendChild(d); return u.dataset.unitKey; })()");
+        // The idle tracker does not see a DOM change: wait for the engine to have measured it, a
+        // `measure` transaction after the growth, or the step would test nothing.
+        harness::until(
+            &tab,
+            "window.__viewportHistory.states.slice(window.__statesBeforeGrowth).some(function (s) { return s.cause === 'measure'; })",
+            "the engine to measure the grown unit",
+            bound,
+            "JSON.stringify(window.__viewportHistory.states.slice(window.__statesBeforeGrowth).map(function (s) { return s.cause; }))",
+        );
+        let (grown, _) = harness::until_still(&tab, reading, |_| true, bound);
+        let grown = parse(&grown);
+        let painted_grow: Vec<i64> = harness::eval(&tab, "JSON.stringify(window.__subtitles)")
+            .as_str()
+            .and_then(|s| serde_json::from_str::<Vec<String>>(s).ok())
+            .unwrap_or_default()
+            .iter()
+            .map(|t| turn_of(t))
+            .collect();
+        let said_grow = said_turns(said_grow_from);
+        let at_grown = turn_of(grown["subtitle"].as_str().unwrap_or(""));
+        // One pixel down: the scroll path reads the spy's line.
+        let said_nudge_from = view_events(&tab, "onTurn").len();
+        let offset = rest["at"].as_i64().unwrap_or(-1);
+        harness::eval(&tab, "(function(){ var s=document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel',{deltaY:1, bubbles:true})); s.scrollTop += 1; return 'ok'; })()");
+        let (nudged, _) = harness::until_still(
+            &tab,
+            reading,
+            |v| parse(v)["at"].as_i64().unwrap_or(-1) != offset,
+            bound,
+        );
+        let nudged = parse(&nudged);
+        let spy = turn_of(nudged["subtitle"].as_str().unwrap_or(""));
+        let said_nudge = said_turns(said_nudge_from);
+        // A step that brought its head to 160px with the head's opener under the spy's line.
+        if rest["promptBelowSpy"] == serde_json::json!(true)
+            && (rest["headTop"].as_i64().unwrap_or(0) - 160).abs() <= 2
+        {
+            in_band += 1;
+        }
+        steps.push(format!(
+            "step {step}: {rest} painted {painted:?} said {said:?}; a unit below grown: turn {at_grown}, painted {painted_grow:?}, said {said_grow:?}; one pixel on: turn {spy}, said {said_nudge:?}"
+        ));
+        assert_eq!(
+            at_rest, spy,
+            "after `j` the subtitle at rest names the turn the spy's line is in, as one pixel of scroll then does: every step so far: {steps:?}"
+        );
+        // `j` moves the spy's line down through the turns before the one it lands in, never past it.
+        assert!(
+            painted.iter().chain(said.iter()).all(|&t| t <= at_rest)
+                && said.last().is_none_or(|&t| t == at_rest)
+                && said_nudge.is_empty(),
+            "the step shows and says no turn past the one it rests in, the host hears that turn last, and nothing more one pixel on: every step so far: {steps:?}"
+        );
+        assert!(
+            at_grown == at_rest
+                && painted_grow.iter().all(|&t| t == at_rest)
+                && said_grow.is_empty(),
+            "a unit below growing while the reader rests changes neither the turn shown nor the turn the host heard: every step so far: {steps:?}"
+        );
+    }
+    eprintln!(
+        "head steps ({}): {steps:#?}",
+        if phone.is_some() { "phone" } else { "desktop" }
+    );
+    // Every step after the first moves a head to 160px; the first finds one already in place.
+    assert!(
+        in_band >= 4,
+        "most steps put the head's opener under the spy's line with the head well below it ({in_band} of 8): {steps:?}"
+    );
+}
+
+/// The native app's own frame for an agent's page (#s429 stage 7, #s436; design/monitor-hub.md D3).
+/// The artifact pane shows an HTML page an agent wrote in a frame whose document is its `srcdoc`,
+/// and a `srcdoc` takes the policy of the page around it: under a host page whose policy allows no
+/// inline script (the native app's), the agent page's script does not run. With the `frame` option
+/// the view hands the host the page, its own policy in front, and the frame loads the address the
+/// host answers, still sandboxed without its origin and sending no referrer, and its script runs. A
+/// host that refuses, or answers no address, gets the pane's own error, not an empty frame. Without
+/// the option and without the policy, the srcdoc's script runs as it always did.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_frames_an_agents_page_from_the_hosts_own_source() {
+    let _serial = serial();
+    let base = base("host-native-frame");
+    let stores = Stores::new(&base);
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let page = repo.join("page.html");
+    std::fs::write(
+        &page,
+        "<h1>An agent's page</h1><script>parent.postMessage('agent page ran', '*')</script>",
+    )
+    .unwrap();
+    let path = page.display().to_string();
+    let sid = "cccccccc-0000-4000-8000-0000000000f7".to_string();
+    let mut jsonl = harness::user_at("show me the page", &harness::at("00:01"));
+    jsonl += &harness::read_tool_at("t0", &path, &harness::at("00:02"));
+    jsonl += &harness::tool_result_at("t0", &harness::at("00:02"));
+    jsonl += &harness::assistant_at("there it is", &harness::at("00:03"));
+    let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(&sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3105, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    // The native app's policy: no inline script but the host's own, by its nonce.
+    let policy = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'self'; script-src 'self' 'nonce-host'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:\">";
+    // What the host's own source answers for the frame (the native app serves the page it was
+    // handed from a scheme of its own; here a page the browser answers on the monitor's origin).
+    let framed = || harness::Answer {
+        pattern: "*/host-frame*".into(),
+        path: "/host-frame".into(),
+        content_type: "text/html; charset=utf-8".into(),
+        body:
+            "<!doctype html><p>framed</p><script>parent.postMessage('host frame ran', '*')</script>"
+                .into(),
+    };
+    let selector = format!("[data-reference-path={path:?}]");
+    // Open the page in the pane, and read what the frame is and what reached the host.
+    let open = |query: &str, policy: &str| -> serde_json::Value {
+        harness::open_host_page_with(&tab, &monitor, query, policy, vec![framed()]);
+        harness::until(
+            &tab,
+            &format!("!!document.querySelector({selector:?})"),
+            "the page's path in the host's view",
+            std::time::Duration::from_secs(20),
+            "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+        );
+        harness::eval(
+            &tab,
+            &format!("document.querySelector({selector:?}).click(); 'ok'"),
+        );
+        harness::until(
+            &tab,
+            "(function(){ var b = document.getElementById('previewBody'); var f = b && b.querySelector('iframe.artifact-html-frame'); return !!(b && b.querySelector('.preview-error')) || !!(f && (f.getAttribute('src') || f.getAttribute('srcdoc'))); })()",
+            "the pane to frame the page, or say it cannot",
+            std::time::Duration::from_secs(20),
+            "(document.getElementById('previewBody') || {}).innerHTML",
+        );
+        // A script that runs says so at once; give one that does not the same time to.
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        harness::probe(
+            &tab,
+            "(function(){ var b = document.getElementById('previewBody'), f = b.querySelector('iframe.artifact-html-frame'), e = b.querySelector('.preview-error strong'); return { frames: b.querySelectorAll('iframe').length, src: f ? f.getAttribute('src') : null, srcdoc: !!(f && f.hasAttribute('srcdoc')), sandbox: f ? f.getAttribute('sandbox') : null, referrer: f ? f.getAttribute('referrerpolicy') : null, error: e ? e.textContent : null, messages: window.__host.messages, handed: window.__host.framed.map(function (h) { return { page: h.indexOf(\"<h1>An agent's page</h1>\") >= 0, policy: h.indexOf('Content-Security-Policy') >= 0 && h.indexOf(\"script-src 'unsafe-inline'\") >= 0 }; }) }; })()",
+        )
+    };
+    let plain = open(&format!("session={sid}"), "");
+    let strict = open(&format!("session={sid}"), policy);
+    let native = open(&format!("session={sid}&frame=/host-frame"), policy);
+    let refused = open(&format!("session={sid}&frame=reject"), policy);
+    let empty = open(&format!("session={sid}&frame=empty"), policy);
+    drop(monitor);
+    assert_eq!(
+        plain,
+        serde_json::json!({ "frames": 1, "src": null, "srcdoc": true, "sandbox": "allow-scripts", "referrer": "no-referrer", "error": null, "messages": ["agent page ran"], "handed": [] }),
+        "without a frame option or a policy, the srcdoc's script runs, as it always did"
+    );
+    assert_eq!(
+        strict,
+        serde_json::json!({ "frames": 1, "src": null, "srcdoc": true, "sandbox": "allow-scripts", "referrer": "no-referrer", "error": null, "messages": [], "handed": [] }),
+        "under a host's policy with no inline script, the srcdoc's script does not run"
+    );
+    assert_eq!(
+        native,
+        serde_json::json!({ "frames": 1, "src": "/host-frame", "srcdoc": false, "sandbox": "allow-scripts", "referrer": "no-referrer", "error": null, "messages": ["host frame ran"], "handed": [{ "page": true, "policy": true }] }),
+        "with the frame option the host is handed the page with its policy in front, and the frame loads the host's address, sandboxed as before, its script running"
+    );
+    for (what, seen) in [("a refusal", &refused), ("an empty answer", &empty)] {
+        assert_eq!(
+            (
+                seen["frames"].clone(),
+                seen["error"].clone(),
+                seen["handed"].clone()
+            ),
+            (
+                serde_json::json!(0),
+                serde_json::json!("Cannot show this page"),
+                serde_json::json!([{ "page": true, "policy": true }])
+            ),
+            "{what} is the pane's own error, not an empty frame: {seen}"
+        );
+    }
+}
+
+/// A host page that carries none of the app's write controls (its switch, the rail's write button,
+/// the pairing help) or its confirm layer mounts the session view, and the view offers no writes
+/// (#s429 stage 7): no compose button, no notice, no ✎ in a phone's dock, over a session that could
+/// be written to. Writes are the host's to offer, through the `write` option: with write mode on, the
+/// same session gets its compose button, and the box opens on it saying it resumes the session.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_without_write_controls_mounts_and_offers_no_writes() {
+    let _serial = serial();
+    let base = base("host-no-writes");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000000f8".to_string();
+    let mut jsonl = harness::user_at("a finished session", &harness::at("00:01"));
+    jsonl += &harness::assistant_at("all done", &harness::at("00:02"));
+    stores.claude_session(&sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3106, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let read = |tab: &headless_chrome::Tab| -> serde_json::Value {
+        harness::until(
+            tab,
+            "!!document.querySelector('.transcript') && /all done/.test(document.querySelector('.transcript').innerText)",
+            "the session in the host's view",
+            std::time::Duration::from_secs(20),
+            "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+        );
+        harness::probe(
+            tab,
+            "({ appElements: ['writeSwitch', 'writeBtn', 'writeInfo', 'writeHelp', 'sidebarMiniWrite', 'confirmLayer', 'confirmText', 'cancelSend', 'confirmSend'].filter(function (id) { return !!document.getElementById(id); }), fab: document.getElementById('composeFab').classList.contains('show'), notice: document.getElementById('writeNotice').classList.contains('show'), dock: !!document.getElementById('dockCompose') && document.getElementById('dockCompose').getClientRects().length > 0, errors: window.__host.error })",
+        )
+    };
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}"));
+    let without = read(&tab);
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}&write=on"));
+    let with = read(&tab);
+    harness::eval(&tab, "document.getElementById('composeFab').click(); 'ok'");
+    let opened = harness::probe(
+        &tab,
+        "({ open: document.getElementById('composer').classList.contains('production-show'), target: document.getElementById('composeTarget').textContent, asks: window.__host.asks || [] })",
+    );
+    harness::phone(&tab, 390, 844);
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}"));
+    let phone_without = read(&tab);
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}&write=on"));
+    let phone_with = read(&tab);
+    drop(monitor);
+    assert_eq!(
+        without,
+        serde_json::json!({ "appElements": [], "fab": false, "notice": false, "dock": false, "errors": null }),
+        "a host page with none of the app's write controls mounts the view, which offers no writes"
+    );
+    assert_eq!(
+        phone_without,
+        serde_json::json!({ "appElements": [], "fab": false, "notice": false, "dock": false, "errors": null }),
+        "and none in a phone's dock"
+    );
+    assert_eq!(
+        phone_with,
+        serde_json::json!({ "appElements": [], "fab": true, "notice": false, "dock": true, "errors": null }),
+        "with the host's write mode on, a phone's dock offers ✎"
+    );
+    assert_eq!(
+        with,
+        serde_json::json!({ "appElements": [], "fab": true, "notice": false, "dock": false, "errors": null }),
+        "and a desktop the compose button"
+    );
+    assert_eq!(
+        opened,
+        serde_json::json!({ "open": true, "target": "Resumes this session", "asks": [] }),
+        "which opens the box on the session, asking the host nothing until a live pane needs a grant"
+    );
+}
+
+/// #s431 stage 1: the view lays itself out as it is built, and none of it glides. Its element in a
+/// host's page has the view's grid from the moment it takes its id, and a read early in the mount laid
+/// the pane's column out open before the pane shut itself, so the column closed over .22s under a view
+/// that had just appeared. A pane opened once the view is mounted still glides open.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_mounts_with_its_pane_shut_and_nothing_gliding() {
+    let _serial = serial();
+    let base = base("host-mount-still");
+    let monitor = Monitor::spawn(Kind::V1, 3110, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1440.0, 900.0);
+    harness::open_host_page(&tab, &monitor, "mount=0");
+    let glides = "(function(){ var v = document.getElementById('sessionView'); return { shut: !!v && v.classList.contains('preview-off'), mounting: !!v && v.classList.contains('sv-mounting'), glides: v ? v.getAnimations().filter(function(a){ return a instanceof CSSTransition; }).map(function(a){ return a.transitionProperty; }) : null }; })()";
+    let mounted = harness::probe(
+        &tab,
+        &format!("(function(){{ window.__host.mount(); return {glides}; }})()"),
+    );
+    let opened = harness::probe(
+        &tab,
+        &format!("(function(){{ var b = document.getElementById('previewBtn'); if (!b) return {{ button: false }}; b.click(); var seen = {glides}; seen.button = true; return seen; }})()"),
+    );
+    drop(monitor);
+    assert_eq!(
+        mounted["shut"], true,
+        "the view mounts with its pane shut: {mounted}"
+    );
+    assert_eq!(
+        mounted["mounting"], false,
+        "the mount's hold is gone once it returns: {mounted}"
+    );
+    assert_eq!(
+        mounted["glides"],
+        serde_json::json!([]),
+        "nothing glides as the view is mounted: {mounted}"
+    );
+    assert_eq!(
+        opened["button"], true,
+        "the view draws the pane's button: {opened}"
+    );
+    assert_eq!(opened["shut"], false, "the pane opened: {opened}");
+    assert_eq!(
+        opened["glides"],
+        serde_json::json!(["grid-template-columns"]),
+        "a pane opened once the view is mounted glides open, as in the app: {opened}"
+    );
+}
+
+/// What the session view decided about its own layout (#s431 stage 2, design/pane-layout.md): whether
+/// it is a phone, the width its bands read (`--pl-b`), its own box and the classes it set.
+const VIEW_LAYOUT: &str = "(function(){ var v = document.getElementById('sessionView'); if (!v) return null; var r = v.getBoundingClientRect(); return { phone: v.classList.contains('pl-phone'), b: v.style.getPropertyValue('--pl-b'), x: v.style.getPropertyValue('--pane-x'), w: Math.round(r.width), h: Math.round(r.height), classes: Array.prototype.filter.call(v.classList, function(c){ return c.indexOf('pl-') === 0; }).sort() }; })()";
+
+/// Each of the view's layout classes that disagrees with the WINDOW's media query it stands for, as
+/// the stylesheets read the window before #s431 stage 2: `pl-max-w-1180` for `(max-width:1180px)`,
+/// `pl-coarse` for `(pointer:coarse)`, `pl-phone` for the phone query of #s32. Empty where the view
+/// reads exactly what the window read.
+const VIEW_AGAINST_WINDOW: &str = "(function(){ var v = document.getElementById('sessionView'); if (!v) return ['no view']; var names = ['pl-coarse','pl-fine','pl-max-h-500','pl-max-w-1180','pl-max-w-560','pl-max-w-620','pl-max-w-700','pl-max-w-760','pl-max-w-900','pl-min-h-501','pl-min-w-1181','pl-min-w-701','pl-min-w-761','pl-min-w-900','pl-min-w-901','pl-phone']; var query = function(n){ if (n === 'pl-phone') return '(max-width:760px), (pointer:coarse) and (max-height:500px)'; if (n === 'pl-coarse') return '(pointer:coarse)'; if (n === 'pl-fine') return '(pointer:fine)'; var m = /^pl-(max|min)-(w|h)-(\\d+)$/.exec(n); return '(' + m[1] + '-' + (m[2] === 'w' ? 'width' : 'height') + ':' + m[3] + 'px)'; }; return names.filter(function(n){ return v.classList.contains(n) !== matchMedia(query(n)).matches; }).map(function(n){ return n + (v.classList.contains(n) ? ' set' : ' not set') + ', window ' + query(n); }); })()";
+
+/// The layout module's read of the view's box (`harness::VIEW_CAUGHT_UP`).
+const VIEW_CAUGHT_UP: &str = harness::VIEW_CAUGHT_UP;
+
+/// Put the test host's pane at `left`, `width` wide, and wait for the view to have decided at that box.
+fn place_host_pane(tab: &headless_chrome::Tab, left: u32, width: u32) -> serde_json::Value {
+    harness::eval(
+        tab,
+        &format!("(function(){{ var p = document.getElementById('hostPane'); p.style.left = '{left}px'; p.style.right = 'auto'; p.style.width = '{width}px'; return true; }})()"),
+    );
+    harness::until(
+        tab,
+        &format!("(function(){{ var v = document.getElementById('sessionView'); return !!v && Math.round(v.getBoundingClientRect().width) === {width} && v.style.getPropertyValue('--pane-x') === '{left}px'; }})() && {VIEW_CAUGHT_UP}"),
+        &format!("the view to decide at a {width}px box at x={left}"),
+        Duration::from_secs(10),
+        VIEW_LAYOUT,
+    );
+    harness::probe(tab, VIEW_LAYOUT)
+}
+
+/// One placement of the host's pane: its left edge and width, whether the view is to read as a phone,
+/// the width its bands are to read, and the layout classes it must and must not wear.
+type HostPlacement = (
+    u32,
+    u32,
+    bool,
+    u32,
+    &'static [&'static str],
+    &'static [&'static str],
+);
+
+/// #s431 stage 2 (design/pane-layout.md, "Its own size, and touch"; the owner's ruling, #s461): the
+/// session view in a host's pane lays itself out by its own box, never the window or what the host
+/// has beside it. In a 1400px window, a 380px pane at x=500 is the phone reader, its bands reading
+/// its own 380px; a 700px pane is the desktop layout whose bands read 1000px, as a 1000px window at
+/// the default sidebar; 1000 and 1100px panes read 1300 and 1400. On the code before it the view set
+/// no class and read the window, 1400px, at every size. The 380px phone reader's shut pane stays out
+/// of the host's page beside it (red on 6b30c331, where it lay there over the page).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_lays_itself_out_by_its_own_box() {
+    let _serial = serial();
+    let base = base("host-own-box");
+    let monitor = Monitor::spawn(Kind::V1, 3111, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1400.0, 900.0);
+    harness::open_host_page(&tab, &monitor, "");
+    let cases: [HostPlacement; 4] = [
+        (
+            500,
+            380,
+            true,
+            380,
+            &[
+                "pl-max-w-760",
+                "pl-max-w-700",
+                "pl-max-w-560",
+                "pl-min-h-501",
+            ],
+            &["pl-min-w-761", "pl-max-h-500", "pl-min-w-900"],
+        ),
+        (
+            300,
+            700,
+            false,
+            1000,
+            &[
+                "pl-max-w-1180",
+                "pl-min-w-761",
+                "pl-min-w-901",
+                "pl-min-h-501",
+            ],
+            &["pl-max-w-900", "pl-max-w-760", "pl-min-w-1181"],
+        ),
+        (
+            200,
+            1000,
+            false,
+            1300,
+            &["pl-min-w-1181", "pl-min-w-761"],
+            &["pl-max-w-1180", "pl-max-w-760"],
+        ),
+        (
+            200,
+            1100,
+            false,
+            1400,
+            &["pl-min-w-1181"],
+            &["pl-max-w-1180"],
+        ),
+    ];
+    let mut seen = Vec::new();
+    for (left, width, phone, band, on, off) in cases {
+        let layout = place_host_pane(&tab, left, width);
+        if phone {
+            // The phone reader holds its layers in its box, and its shut pane parks past the box's
+            // right edge, which here is not the window's: it must not lie over the host's page there
+            // (#s431 stage 2, the review of 6b30c331).
+            let x = left + width + 120;
+            harness::until(
+                &tab,
+                &format!("(function(){{ var f = {LAYERS_AMISS}(null); var h = document.elementFromPoint({x}, 450); return f.outside.length === 0 && !document.getElementById('sessionView').contains(h); }})()"),
+                "the shut pane to stay out of the host's page beside the view",
+                Duration::from_secs(5),
+                &format!("JSON.stringify({{ amiss: {LAYERS_AMISS}(null), at: (document.elementFromPoint({x}, 450) || {{}}).className }})"),
+            );
+        }
+        seen.push((left, width, phone, band, on, off, layout));
+    }
+    drop(monitor);
+    for (left, width, phone, band, on, off, layout) in seen {
+        assert_eq!(
+            layout["phone"], phone,
+            "a {width}px pane at x={left}: {layout}"
+        );
+        assert_eq!(
+            layout["b"],
+            format!("{band}px"),
+            "a {width}px pane's bands read {band}px: {layout}"
+        );
+        let classes: Vec<&str> = layout["classes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c.as_str())
+            .collect();
+        for name in on {
+            assert!(
+                classes.contains(name),
+                "a {width}px pane holds {name}: {layout}"
+            );
+        }
+        for name in off {
+            assert!(
+                !classes.contains(name),
+                "a {width}px pane does not hold {name}: {layout}"
+            );
+        }
+    }
+}
+
+/// The layers a desktop view in a host's pane opens, each as (name, how it is opened, the element
+/// that shows it opened, how it is closed): the overlaid right pane, the task card (from the outline's
+/// Tasks list, whose rows exist whether or not the outline is shown at that width), the session's
+/// menu, the Reading menu and the search's filter.
+const HOST_DESKTOP_LAYERS: [(&str, &str, &str, &str); 5] = [
+    (
+        "the right pane",
+        "document.getElementById('previewBtn').click()",
+        "#closePreview",
+        "document.getElementById('closePreview').click()",
+    ),
+    (
+        "the task card",
+        "document.querySelector('#navigatorWork .work-task-head').click()",
+        "#taskPopover",
+        "document.querySelector('#taskPopover .task-popover-close').click()",
+    ),
+    (
+        "the session's menu",
+        "document.getElementById('sessionTitle').click()",
+        "#sessionCopyMenu",
+        // A press elsewhere closes it, as for a reader: a click on the title always opens it.
+        "document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))",
+    ),
+    (
+        "the Reading menu",
+        "document.getElementById('readingBtn').click()",
+        "#readingOptions",
+        "document.getElementById('readingBtn').click()",
+    ),
+    (
+        "the search's filter",
+        "document.getElementById('filterTranscriptBtn').click()",
+        "#navigatorOptions",
+        "document.getElementById('filterTranscriptBtn').click()",
+    ),
+];
+
+/// Opens each of `steps` in turn and returns, for each that is amiss, what [`LAYERS_AMISS`] found:
+/// it did not open, a layer of the view's is drawn outside the view's box, or the layer does not take
+/// a press inside it.
+fn layers_amiss_by_steps(
+    tab: &headless_chrome::Tab,
+    steps: &[(&str, &str, &str, &str)],
+) -> Vec<(String, serde_json::Value)> {
+    let mut amiss = Vec::new();
+    for (name, open, target, close) in steps {
+        harness::eval(tab, &format!("(function(){{ {open}; return true; }})()"));
+        harness::eval(tab, "new Promise(function(done){ requestAnimationFrame(function(){ setTimeout(done, 400); }); })");
+        let found = harness::probe(tab, &format!("{LAYERS_AMISS}('{target}')"));
+        if found["opened"] != serde_json::json!(true)
+            || found["outside"] != serde_json::json!([])
+            || found["missed"] != serde_json::json!([])
+        {
+            amiss.push((name.to_string(), found));
+        }
+        harness::eval(tab, &format!("(function(){{ {close}; return true; }})()"));
+        harness::eval(tab, "new Promise(function(done){ requestAnimationFrame(function(){ setTimeout(done, 300); }); })");
+    }
+    amiss
+}
+
+/// #s431 stage 4 (design/pane-layout.md, "Drawn inside the pane"): in a host's pane off the window's
+/// left edge and below its 40px bar, every layer the view opens is drawn inside the pane, on all four
+/// sides, and takes a press there, in the light theme and the dark: at 380px the phone reader's (its
+/// dock's sheets, Info, the menus, the right pane, and the task card from its Tasks sheet), at 700,
+/// 1000 and 1100px the desktop's (the right pane over the session or beside it, the task card, the
+/// session's menu, the Reading menu, the search's filter). Red on 1.520.0: the overlaid pane lay
+/// against the window's top, right and bottom, over the host's bar and the page beside the pane, and
+/// the task card was drawn in the page's body, placed from the window.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_draws_its_layers_inside_its_pane() {
+    let _serial = serial();
+    let base = base("host-layers-inside");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000004f1".to_string();
+    stores.claude_session(&sid, &harness::long_session(6, harness::Shape::default()));
+    stores.claude_tasks(
+        &sid,
+        &[
+            ("1", "one, done", "completed"),
+            ("2", "two, running", "in_progress"),
+            ("3", "three, pending", "pending"),
+        ],
+    );
+    let monitor = Monitor::spawn(Kind::V1, 3273, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1400.0, 900.0);
+    let phone_card: [(&str, &str, &str, &str); 1] = [(
+        "the task card",
+        "document.getElementById('phonePane-tasks').click(); document.querySelector('#navigatorWork .work-task-head').click()",
+        "#taskPopover",
+        "document.querySelector('#taskPopover .task-popover-close').click(); document.getElementById('phonePane-tasks').click()",
+    )];
+    let mut seen = Vec::new();
+    for theme in ["light", "dark"] {
+        for (left, width) in [(500, 380), (300, 700), (200, 1000), (200, 1100)] {
+            harness::open_host_page(&tab, &monitor, &format!("session={sid}&theme={theme}"));
+            harness::until(
+                &tab,
+                "!!document.querySelector('.virtual-window .turn.user') && document.querySelectorAll('#navigatorWork .work-task').length > 0",
+                "the session and its tasks in the host's view",
+                Duration::from_secs(20),
+                "document.body.innerText.slice(0, 200)",
+            );
+            let layout = place_host_pane(&tab, left, width);
+            let mut amiss = if layout["phone"] == serde_json::json!(true) {
+                let mut found = phone_layers_amiss(&tab, &["the reply box"]);
+                found.extend(layers_amiss_by_steps(&tab, &phone_card));
+                found
+            } else {
+                layers_amiss_by_steps(&tab, &HOST_DESKTOP_LAYERS)
+            };
+            let boxed = harness::probe(
+                &tab,
+                "(function(){ var v = document.getElementById('sessionView'); return { boxed: v.classList.contains('pl-boxed'), contain: getComputedStyle(v).contain, theme: v.dataset.theme }; })()",
+            );
+            if boxed["boxed"] != serde_json::json!(true)
+                || !boxed["contain"].as_str().unwrap_or("").contains("layout")
+                || boxed["theme"] != serde_json::json!(theme)
+            {
+                amiss.push(("the view's box".to_string(), boxed));
+            }
+            seen.push((theme, left, width, layout, amiss));
+        }
+    }
+    drop(monitor);
+    for (theme, left, width, layout, amiss) in seen {
+        assert!(
+            amiss.is_empty(),
+            "a {width}px pane at x={left} under the host's bar, {theme}: every layer inside the pane, \
+             taking a press there: {amiss:?} ({layout})"
+        );
+    }
+}
+
+/// What the app draws, read for [`the_app_shell_contains_its_view_and_draws_everything_else_as_before`]:
+/// every element under the page's body whose position is fixed, absolute or sticky and that is drawn,
+/// by name and rounded box, and the element `elementFromPoint` finds on a 40px grid over the window.
+const APP_DRAWN: &str = "(function(){ var name = function(e){ if (!e) return 'nothing'; return e.id ? '#' + e.id : e.tagName.toLowerCase() + (e.classList.length ? '.' + Array.prototype.slice.call(e.classList, 0, 3).join('.') : ''); }; var own = function(e){ return !!e.closest && !!e.closest('#taskPopover, #taskScrim'); }; var box = function(e){ if (!e) return null; var r = e.getBoundingClientRect(); return r.width < 1 || r.height < 1 ? null : { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom) }; }; var placed = []; document.body.querySelectorAll('*').forEach(function(e){ if (own(e)) return; var cs = getComputedStyle(e); if (!/^(fixed|absolute|sticky)$/.test(cs.position) || cs.display === 'none' || cs.visibility === 'hidden') return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return; placed.push(name(e) + ' ' + Math.round(r.left) + ',' + Math.round(r.top) + ' ' + Math.round(r.width) + 'x' + Math.round(r.height)); }); var points = []; for (var y = 20; y < innerHeight; y += 40) for (var x = 20; x < innerWidth; x += 40) { var hit = document.elementFromPoint(x, y); points.push({ x: x, y: y, at: x + ',' + y + ' ' + (hit && own(hit) ? 'the task card' : name(hit)) }); } var card = document.getElementById('taskPopover'); return { placed: placed, points: points, card: card && !card.hidden ? box(card) : null, opener: box(document.querySelector('#navigatorWork .work-task-head')) }; })()";
+
+/// Takes the view's containment off (`on` false: its cuts 0, as an uncontained view's are) or gives
+/// it back, and waits two frames.
+fn app_view_contained(tab: &headless_chrome::Tab, on: bool) {
+    let js = if on {
+        "(function(){ var v = document.getElementById('sessionView'); ['contain', '--pl-cut-left', '--pl-cut-right', '--pl-cut-top', '--pl-cut-bottom'].forEach(function(p){ v.style.removeProperty(p); }); return true; })()"
+    } else {
+        "(function(){ var v = document.getElementById('sessionView'); v.style.setProperty('contain', 'inline-size'); ['left', 'right', 'top', 'bottom'].forEach(function(s){ v.style.setProperty('--pl-cut-' + s, '0px'); }); return true; })()"
+    };
+    harness::eval(tab, js);
+    harness::eval(tab, TWO_FRAMES);
+}
+
+/// #s431 stage 4 (design/pane-layout.md, "Drawn inside the pane"; the review's measure before the
+/// app's view is contained): beside the app's list the view contains its layout, as in a host's pane,
+/// and that changes nothing the app draws. At a 1440, 1180, 1000, 900 and 700px window, with the pane
+/// shut and open (a column, or over the session), at rest and with each of the view's layers open
+/// (the task card, the session's menu, the Reading menu, the search's filter), every placed element's
+/// box and what a press finds on a grid over the window are the same contained as with the
+/// containment taken off. A drag of the pane's edge over the list still drags: the drag catcher stops
+/// at the view's edge, and the resizer holds the pointer.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_contains_its_view_and_draws_everything_else_as_before() {
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchMouseEvent, DispatchMouseEventTypeOption, MouseButton,
+    };
+    let _serial = serial();
+    let base = base("app-view-contained");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000004f2".to_string();
+    stores.claude_session(&sid, &harness::long_session(12, harness::Shape::default()));
+    stores.claude_tasks(
+        &sid,
+        &[
+            ("1", "one, done", "completed"),
+            ("2", "two, running", "in_progress"),
+            ("3", "three, pending", "pending"),
+        ],
+    );
+    let monitor = Monitor::spawn(Kind::V1, 3274, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::mouse_window(&tab, 1440, 900);
+    monitor.open(&tab, &format!("?session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window .turn.user') && document.querySelectorAll('#navigatorWork .work-task').length > 0 && !!document.querySelector('#sessionList .tree-row.session')",
+        "the app shell to open the session and its tasks, the session listed",
+        Duration::from_secs(30),
+        "document.body.innerText.slice(0, 200)",
+    );
+    // Each step: its name, what opens it and closes it, and whether a reader can press its opener
+    // there (a task row in an outline folded to the bar has no box, and a click by script on it opens
+    // a card no reader could).
+    let pressable = "(function(){ var e = document.querySelector('#navigatorWork .work-task-head'); if (!e) return false; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return false; var h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!h && e.contains(h); })()";
+    let steps: [(&str, &str, &str, &str); 5] = [
+        ("at rest", "", "", ""),
+        (
+            "the task card",
+            "document.querySelector('#navigatorWork .work-task-head').click()",
+            "document.querySelector('#taskPopover .task-popover-close').click()",
+            pressable,
+        ),
+        (
+            "the session's menu",
+            "document.getElementById('sessionTitle').click()",
+            "document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))",
+            "",
+        ),
+        (
+            "the Reading menu",
+            "document.getElementById('readingBtn').click()",
+            "document.getElementById('readingBtn').click()",
+            "",
+        ),
+        (
+            "the search's filter",
+            "document.getElementById('filterTranscriptBtn').click()",
+            "document.getElementById('filterTranscriptBtn').click()",
+            "",
+        ),
+    ];
+    let mut differ = Vec::new();
+    let mut boxed = Vec::new();
+    let mut skipped: Vec<String> = Vec::new();
+    // Where the task card was drawn both ways, so its place by its row was compared.
+    let mut carded: Vec<String> = Vec::new();
+    for width in [1440_u32, 1180, 1000, 900, 700] {
+        harness::mouse_window(&tab, width, 900);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && {VIEW_CAUGHT_UP}"),
+            &format!("the view to decide at a {width}px window"),
+            Duration::from_secs(10),
+            VIEW_LAYOUT,
+        );
+        for open in [false, true] {
+            let shut = harness::eval(
+                &tab,
+                "document.getElementById('sessionView').classList.contains('preview-off')",
+            );
+            if shut == serde_json::json!(open) {
+                harness::eval(&tab, "document.getElementById('previewBtn').click()");
+            }
+            harness::until(
+                &tab,
+                &format!("(function(){{ var v = document.getElementById('sessionView'); return v.classList.contains('preview-off') === {} && v.getAnimations().length === 0; }})() && {VIEW_CAUGHT_UP}", !open),
+                &format!("the pane {} at a {width}px window", if open { "open" } else { "shut" }),
+                Duration::from_secs(10),
+                VIEW_LAYOUT,
+            );
+            // The Tasks drawer open, as a reader opens it to reach a task's row.
+            harness::eval(
+                &tab,
+                "(function(){ var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) { var t = document.querySelector('[data-nav-card-toggle=\"tasks\"]'); if (t) t.click(); } return true; })()",
+            );
+            harness::until_drawers_settle(&tab);
+            boxed.push((
+                width,
+                open,
+                harness::probe(&tab, "(function(){ var v = document.getElementById('sessionView'); return { boxed: v.classList.contains('pl-boxed'), contain: getComputedStyle(v).contain }; })()"),
+            ));
+            for (name, opener, close, shown) in steps {
+                if !shown.is_empty() && harness::eval(&tab, shown) != serde_json::json!(true) {
+                    skipped.push(format!(
+                        "{width}px, pane {}, {name}",
+                        if open { "open" } else { "shut" }
+                    ));
+                    continue;
+                }
+                let mut drawn = Vec::new();
+                for on in [true, false] {
+                    app_view_contained(&tab, on);
+                    if !opener.is_empty() {
+                        harness::eval(&tab, &format!("(function(){{ {opener}; return true; }})()"));
+                    }
+                    harness::eval(&tab, "new Promise(function(done){ requestAnimationFrame(function(){ setTimeout(done, 400); }); })");
+                    drawn.push(harness::probe(&tab, APP_DRAWN));
+                    if !close.is_empty() {
+                        harness::eval(&tab, &format!("(function(){{ {close}; return true; }})()"));
+                    }
+                    harness::eval(&tab, "new Promise(function(done){ requestAnimationFrame(function(){ setTimeout(done, 300); }); })");
+                }
+                app_view_contained(&tab, true);
+                // The task card is the view's own layer, placed from the view's box (its own case
+                // holds that): what it covers either way is left out, and it keeps its place by its
+                // row either way (the row may have scrolled between the two).
+                let covers = |v: &serde_json::Value, x: i64, y: i64| {
+                    let c = &v["card"];
+                    !c.is_null()
+                        && c["left"].as_i64().unwrap_or(0) <= x
+                        && x <= c["right"].as_i64().unwrap_or(0)
+                        && c["top"].as_i64().unwrap_or(0) <= y
+                        && y <= c["bottom"].as_i64().unwrap_or(0)
+                };
+                if name == "the task card"
+                    && !drawn[0]["card"].is_null()
+                    && !drawn[1]["card"].is_null()
+                {
+                    carded.push(format!(
+                        "{width}px, pane {}",
+                        if open { "open" } else { "shut" }
+                    ));
+                }
+                if !drawn[0]["card"].is_null() {
+                    let by_row = |v: &serde_json::Value| {
+                        (
+                            v["card"]["left"].as_i64().unwrap_or(0)
+                                - v["opener"]["right"].as_i64().unwrap_or(0),
+                            v["card"]["top"].as_i64().unwrap_or(0)
+                                - v["opener"]["top"].as_i64().unwrap_or(0),
+                        )
+                    };
+                    let (a, b) = (by_row(&drawn[0]), by_row(&drawn[1]));
+                    if (a.0 - b.0).abs() > 1 || (a.1 - b.1).abs() > 1 {
+                        differ.push(format!("{width}px, pane {}, {name}: the card beside its row contained {a:?}, uncontained {b:?}", if open { "open" } else { "shut" }));
+                    }
+                }
+                let set = |v: &serde_json::Value, k: &str| -> Vec<String> {
+                    v[k].as_array()
+                        .map(|a| {
+                            a.iter()
+                                .filter_map(|x| match x.as_str() {
+                                    Some(s) => Some(s.to_string()),
+                                    None => {
+                                        let (px, py) = (
+                                            x["x"].as_i64().unwrap_or(0),
+                                            x["y"].as_i64().unwrap_or(0),
+                                        );
+                                        (!covers(&drawn[0], px, py) && !covers(&drawn[1], px, py))
+                                            .then(|| x["at"].as_str().unwrap_or("").to_string())
+                                    }
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default()
+                };
+                {
+                    let mut only = Vec::new();
+                    for key in ["placed", "points"] {
+                        let (a, b) = (set(&drawn[0], key), set(&drawn[1], key));
+                        only.extend(
+                            a.iter()
+                                .filter(|x| !b.contains(x))
+                                .map(|x| format!("contained only: {x}")),
+                        );
+                        only.extend(
+                            b.iter()
+                                .filter(|x| !a.contains(x))
+                                .map(|x| format!("uncontained only: {x}")),
+                        );
+                    }
+                    if !only.is_empty() {
+                        differ.push(format!(
+                            "{width}px, pane {}, {name}: {}",
+                            if open { "open" } else { "shut" },
+                            only.join("; ")
+                        ));
+                    }
+                }
+            }
+        }
+    }
+    // The drag: at 1440px with the pane a column, its edge dragged from the resizer to over the list.
+    harness::mouse_window(&tab, 1440, 900);
+    harness::until(
+        &tab,
+        &format!("innerWidth === 1440 && !document.getElementById('sessionView').classList.contains('preview-off') && document.getElementById('sessionView').classList.contains('pl-pane-column') && {VIEW_CAUGHT_UP}"),
+        "the pane a column at 1440px",
+        Duration::from_secs(10),
+        VIEW_LAYOUT,
+    );
+    harness::eval(&tab, "localStorage.removeItem('am-demo-pane-share')");
+    let x0 = harness::eval(&tab, "(function(){ var r = document.getElementById('resizer').getBoundingClientRect(); return r.left + r.width / 2; })()")
+        .as_f64()
+        .expect("the resizer's place");
+    let list_x = harness::eval(&tab, "(function(){ var r = document.querySelector('#app>.sidebar').getBoundingClientRect(); return r.left + r.width / 2; })()")
+        .as_f64()
+        .expect("the list's middle");
+    let mouse = |kind: DispatchMouseEventTypeOption, x: f64, buttons: u32| {
+        tab.call_method(DispatchMouseEvent {
+            Type: kind,
+            x,
+            y: 400.0,
+            modifiers: None,
+            timestamp: None,
+            button: Some(MouseButton::Left),
+            buttons: Some(buttons),
+            click_count: Some(1),
+            force: None,
+            tangential_pressure: None,
+            tilt_x: None,
+            tilt_y: None,
+            twist: None,
+            delta_x: None,
+            delta_y: None,
+            pointer_Type: None,
+        })
+        .unwrap();
+    };
+    let selected = harness::eval(&tab, "location.search");
+    mouse(DispatchMouseEventTypeOption::MouseMoved, x0, 0);
+    mouse(DispatchMouseEventTypeOption::MousePressed, x0, 1);
+    mouse(
+        DispatchMouseEventTypeOption::MouseMoved,
+        (x0 + list_x) / 2.0,
+        1,
+    );
+    mouse(DispatchMouseEventTypeOption::MouseMoved, list_x, 1);
+    let held = harness::probe(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return { resizing: v.classList.contains('resizing'), session: Math.round(document.querySelector('#sessionView>.workspace').getBoundingClientRect().width) }; })()",
+    );
+    mouse(DispatchMouseEventTypeOption::MouseReleased, list_x, 0);
+    harness::eval(&tab, TWO_FRAMES);
+    let after = harness::probe(
+        &tab,
+        "({ resizing: document.getElementById('sessionView').classList.contains('resizing'), share: Number(localStorage.getItem('am-demo-pane-share')), search: location.search })",
+    );
+    drop(monitor);
+    for (width, open, b) in boxed {
+        assert!(
+            b["boxed"] == true && b["contain"].as_str().unwrap_or("").contains("layout"),
+            "beside the list at a {width}px window, pane {}, the view contains its layout: {b}",
+            if open { "open" } else { "shut" }
+        );
+    }
+    assert!(
+        differ.is_empty(),
+        "contained, the app draws everything as it did uncontained:\n{}",
+        differ.join("\n")
+    );
+    // The card is opened wherever a reader can press its row in the outline: the 1440 and 1180px
+    // windows with the pane shut, where the outline is shown. Elsewhere the outline is folded to its
+    // glyphs, and a card opened from there is a narrow view's, which the host's case
+    // (`the_session_view_in_a_host_draws_its_layers_inside_its_pane`) opens in its pane.
+    for need in ["1440px, pane shut", "1180px, pane shut"] {
+        assert!(
+            carded.iter().any(|at| at == need),
+            "the task card is drawn contained and uncontained, and compared, where the outline shows its \
+             rows: not at {need} (compared at {carded:?}; no row to press at {skipped:?})"
+        );
+    }
+    eprintln!("the task card had no row to press at: {skipped:?}");
+    assert_eq!(
+        held["resizing"], true,
+        "the drag is under way over the list: {held}"
+    );
+    assert!(
+        held["session"].as_f64().unwrap_or(0.0) >= 480.0,
+        "the session keeps M under a drag past it: {held}"
+    );
+    assert_eq!(after["resizing"], false, "the drag ended: {after}");
+    assert!(
+        (after["share"].as_f64().unwrap_or(0.0) - 1.0).abs() < 1e-6,
+        "the pane took the whole slack, dragged past the session's M: {after}"
+    );
+    assert_eq!(
+        after["search"], selected,
+        "no session was chosen by the release over the list: {after}"
+    );
+}
+
+/// An `rgb(…)` or `color(srgb …)` computed colour as its 0–255 channels.
+fn css_rgb(value: &serde_json::Value) -> Option<[f64; 3]> {
+    let text = value.as_str()?;
+    let (scale, inner) = if let Some(rest) = text.strip_prefix("color(srgb ") {
+        (255.0, rest)
+    } else {
+        (1.0, text.strip_prefix("rgb(")?)
+    };
+    let parts: Vec<f64> = inner
+        .trim_end_matches(')')
+        .split([',', ' ', '/'])
+        .filter(|p| !p.is_empty())
+        .take(3)
+        .map(|p| p.parse::<f64>().map(|v| v * scale))
+        .collect::<Result<_, _>>()
+        .ok()?;
+    (parts.len() == 3).then(|| [parts[0], parts[1], parts[2]])
+}
+
+/// #s431 stage 4, from the iOS Simulator walk of #s496 (the 17 Pro Max held sideways): beside a wide
+/// phone's column the task card's dim rises with the view to cover the column, and the view's top bar
+/// rose with it over the handle by the session's title, which the reader saw vanish. As on 1.521.0,
+/// where the dim lay over the page, the handle stays drawn while the card is open, dimmed as the dim
+/// dims what lies under it (its glyph the ink mixed with the scrim's colour at the scrim's 42%), and
+/// a tap on it reaches the dim, which closes the card and leaves the column shown; in the light theme
+/// and the dark. Red on 1bfcb57c: what is drawn at the handle's middle is the dim over the top bar.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_wide_phone_s_task_card_dims_the_handle_by_the_title_and_keeps_it_drawn() {
+    let _serial = serial();
+    let base = base("wide-phone-card-handle");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000004f3".to_string();
+    stores.claude_session(&sid, &harness::long_session(6, harness::Shape::default()));
+    stores.claude_tasks(
+        &sid,
+        &[
+            ("1", "one, done", "completed"),
+            ("2", "two, running", "in_progress"),
+        ],
+    );
+    let monitor = Monitor::spawn(Kind::V1, 3276, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::phone(&tab, 932, 430);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    monitor.open(&tab, &format!("?session={sid}"));
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.virtual-window .turn.user') && document.querySelectorAll('#navigatorWork .work-task-head').length > 0 && !document.getElementById('app').classList.contains('phone-column-off') && document.getElementById('sessionView').classList.contains('pl-boxed') && document.getElementById('sessionView').classList.contains('pl-phone') && {VIEW_CAUGHT_UP}"),
+        "the session beside the wide phone's column, its tasks listed",
+        Duration::from_secs(30),
+        VIEW_LAYOUT,
+    );
+    let handle = "(function(){ var h = document.getElementById('drawerHandle'), r = h.getBoundingClientRect(), cs = getComputedStyle(h); var x = r.left + r.width / 2, y = r.top + r.height / 2; var name = function (e) { return !e ? 'nothing' : e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + String(e.className && e.className.baseVal !== undefined ? e.className.baseVal : e.className).split(' ')[0]; }; var taken = document.elementFromPoint(x, y); h.style.pointerEvents = 'auto'; var drawn = document.elementFromPoint(x, y); h.style.pointerEvents = ''; return { at: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)], visibility: cs.visibility, display: cs.display, color: cs.color, taken: h.contains(taken) ? 'the handle' : name(taken), drawn: h.contains(drawn) ? 'the handle' : name(drawn), card: !document.getElementById('taskPopover').hidden }; })()";
+    let mut seen = Vec::new();
+    for theme in ["light", "dark"] {
+        harness::eval(
+            &tab,
+            &format!("document.documentElement.dataset.theme = '{theme}'; true"),
+        );
+        harness::eval(&tab, TWO_FRAMES);
+        let shut = harness::probe(&tab, handle);
+        harness::eval(
+            &tab,
+            "document.querySelector('#navigatorWork .work-task-head').click(); true",
+        );
+        harness::until(
+            &tab,
+            "!document.getElementById('taskPopover').hidden && !!document.getElementById('taskScrim') && getComputedStyle(document.getElementById('taskScrim')).display !== 'none'",
+            "the task card and its dim to open",
+            Duration::from_secs(5),
+            "document.getElementById('taskPopover').hidden",
+        );
+        harness::eval(&tab, TWO_FRAMES);
+        let open = harness::probe(&tab, handle);
+        let (x, y) = phone_point(&tab, "(function(){ var r = document.getElementById('drawerHandle').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+        phone_tap_at(&tab, x, y);
+        harness::until(
+            &tab,
+            "document.getElementById('taskPopover').hidden && getComputedStyle(document.getElementById('taskScrim')).display === 'none'",
+            "a tap on the handle to reach the dim and close the card",
+            Duration::from_secs(5),
+            "document.getElementById('taskPopover').hidden",
+        );
+        harness::eval(&tab, TWO_FRAMES);
+        let after = harness::probe(
+            &tab,
+            &format!("(function(){{ var h = {handle}; h.column = !document.getElementById('app').classList.contains('phone-column-off'); return h; }})()"),
+        );
+        seen.push((theme, shut, open, after));
+    }
+    drop(monitor);
+    for (theme, shut, open, after) in seen {
+        assert_eq!(
+            (
+                shut["taken"].as_str(),
+                shut["display"].as_str(),
+                shut["visibility"].as_str()
+            ),
+            (Some("the handle"), Some("grid"), Some("visible")),
+            "{theme}: with no card open the handle by the title is drawn and takes a press: {shut}"
+        );
+        assert_eq!(
+            (open["drawn"].as_str(), open["visibility"].as_str(), open["at"].clone()),
+            (Some("the handle"), Some("visible"), shut["at"].clone()),
+            "{theme}: with the card open the handle stays drawn where it was, over the view's top bar: {open}"
+        );
+        assert_eq!(
+            open["taken"], "#taskScrim",
+            "{theme}: …and a press there reaches the dim, as when the dim lay over it: {open}"
+        );
+        let (ink, dimmed) = (
+            css_rgb(&shut["color"]).expect("the handle's colour"),
+            css_rgb(&open["color"]).expect("the dimmed handle's colour"),
+        );
+        let expected = [
+            ink[0] * 0.58 + 14.0 * 0.42,
+            ink[1] * 0.58 + 19.0 * 0.42,
+            ink[2] * 0.58 + 31.0 * 0.42,
+        ];
+        assert!(
+            (0..3).all(|i| (dimmed[i] - expected[i]).abs() <= 2.0),
+            "{theme}: the handle is dimmed as the dim dims the bar under it: {dimmed:?}, expected {expected:?} from {ink:?} ({open})"
+        );
+        assert_eq!(
+            (after["taken"].as_str(), after["color"].clone(), after["column"].clone()),
+            (Some("the handle"), shut["color"].clone(), serde_json::json!(true)),
+            "{theme}: the tap closed the card and nothing else, and the handle is as it was: {after}"
+        );
+    }
+}
+
+/// Two animation frames, which a style change needs before what it started is heard (#321).
+const TWO_FRAMES: &str = "new Promise(function (done) { requestAnimationFrame(function () { requestAnimationFrame(function () { done(true); }); }); })";
+
+/// Every transition that starts inside the session view from now on, as `<class> <property>`: a
+/// `transitionrun` bubbles from the part that glides to the view's element.
+const RECORD_GLIDES: &str = "(function(){ window.__glides = []; document.getElementById('sessionView').addEventListener('transitionrun', function(e){ window.__glides.push(String(e.target.className || e.target.id).split(' ').slice(0, 2).join('.') + ' ' + e.propertyName); }); return true; })()";
+
+/// #s431 stage 2: a layout decision lays the view out and never glides, at the mount or later. A
+/// decision adds the classes the view's width rules read after a read that styled its parts without
+/// them, so a part whose rule changes with them glided into place: at the mount the outline's track was
+/// still 36px off when the first prompts measured, and a long prompt named 30 hidden lines for 24
+/// (`the_app_shell_collapses_a_prompt_only_when_that_hides_several_lines`). The same happened at every
+/// decision after it: a host's pane crossing a band, and the app's window crossing one, where the
+/// outline's track and the shut pane glided (red on 9819e94b, whose hold covered the mount alone). The
+/// reader's own toggle still glides: the pane opened from its button.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_glides_at_no_layout_decision() {
+    let _serial = serial();
+    let base = base("view-decides-still");
+    let monitor = Monitor::spawn(Kind::V1, 3117, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1400.0, 900.0);
+    harness::open_host_page(&tab, &monitor, "");
+    let mut host = Vec::new();
+    for (left, width) in [(300, 700), (200, 1100), (500, 380), (200, 1000)] {
+        harness::eval(&tab, RECORD_GLIDES);
+        place_host_pane(&tab, left, width);
+        harness::eval(&tab, TWO_FRAMES);
+        host.push((
+            width,
+            harness::eval(&tab, "JSON.stringify(window.__glides)"),
+        ));
+    }
+    tab.navigate_to(&monitor.url("?ui=app")).unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        &format!("!!document.getElementById('sessionView') && {VIEW_CAUGHT_UP}"),
+        "the app shell's view to decide its layout",
+        Duration::from_secs(20),
+        "document.body.className",
+    );
+    let mut app = Vec::new();
+    for width in [1100.0_f64, 820.0, 1440.0] {
+        harness::eval(&tab, RECORD_GLIDES);
+        harness::resize(&tab, width, 900.0);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {} && {VIEW_CAUGHT_UP}", width as i64),
+            &format!("the view to decide at a {width}px window"),
+            Duration::from_secs(10),
+            VIEW_LAYOUT,
+        );
+        harness::eval(&tab, TWO_FRAMES);
+        app.push((
+            width,
+            harness::eval(&tab, "JSON.stringify(window.__glides)"),
+        ));
+    }
+    harness::eval(&tab, RECORD_GLIDES);
+    let opened = harness::eval(
+        &tab,
+        "(function(){ var b = document.getElementById('previewBtn'); if (!b) return 'no button'; b.click(); return 'clicked'; })()",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let toggled = harness::eval(&tab, "JSON.stringify(window.__glides)");
+    drop(monitor);
+    for (width, glides) in host {
+        assert_eq!(
+            glides,
+            serde_json::json!("[]"),
+            "nothing glides as a host's pane of {width}px is laid out"
+        );
+    }
+    for (width, glides) in app {
+        assert_eq!(
+            glides,
+            serde_json::json!("[]"),
+            "nothing glides as the app's view is laid out at a {width}px window"
+        );
+    }
+    assert_eq!(opened, serde_json::json!("clicked"), "the pane's button");
+    assert!(
+        toggled
+            .as_str()
+            .unwrap_or("")
+            .contains("grid-template-columns"),
+        "the pane the reader opens still glides open: {toggled}"
+    );
+}
+
+/// #s431 stage 2: on a phone the view in a host's pane is still laid out by its own box and the
+/// screen's pointer. Upright (390×844) the pane the screen's width is the phone reader, its bands
+/// reading 390px; held sideways (932×430) a 450px pane is a phone by its height, its bands reading
+/// 450px and not the wide phone's; the same pane the screen's whole width is the wide phone's.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_on_a_phone_reads_its_own_box_and_the_finger() {
+    let _serial = serial();
+    let base = base("host-own-box-phone");
+    let monitor = Monitor::spawn(Kind::V1, 3112, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let mut seen = Vec::new();
+    for (screen, (left, width), band, on, off) in [
+        (
+            (390, 844),
+            (0, 390),
+            390,
+            &["pl-phone", "pl-coarse", "pl-max-w-760", "pl-min-h-501"][..],
+            &["pl-max-h-500", "pl-min-w-900"][..],
+        ),
+        (
+            (932, 430),
+            (0, 450),
+            450,
+            &["pl-phone", "pl-coarse", "pl-max-h-500", "pl-max-w-700"],
+            &["pl-min-w-900", "pl-min-h-501"],
+        ),
+        (
+            (932, 430),
+            (0, 932),
+            932,
+            &["pl-phone", "pl-coarse", "pl-max-h-500", "pl-min-w-900"],
+            &["pl-max-w-900", "pl-min-h-501"],
+        ),
+    ] {
+        harness::phone(&tab, screen.0, screen.1);
+        harness::open_host_page(&tab, &monitor, "");
+        seen.push((
+            screen,
+            width,
+            band,
+            on,
+            off,
+            place_host_pane(&tab, left, width),
+        ));
+    }
+    drop(monitor);
+    for (screen, width, band, on, off, layout) in seen {
+        assert_eq!(
+            layout["b"],
+            format!("{band}px"),
+            "a {width}px pane on a {screen:?} phone: {layout}"
+        );
+        let classes: Vec<&str> = layout["classes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|c| c.as_str())
+            .collect();
+        for name in on {
+            assert!(
+                classes.contains(name),
+                "a {width}px pane on a {screen:?} phone holds {name}: {layout}"
+            );
+        }
+        for name in off {
+            assert!(
+                !classes.contains(name),
+                "a {width}px pane on a {screen:?} phone does not hold {name}: {layout}"
+            );
+        }
+    }
+}
+
+/// #s431 stage 2 (design/pane-layout.md, "Drawn inside the pane"): a phone reader in a host's pane
+/// counts the screen's insets only where they fall in its own box, on either side. Held sideways
+/// (932×430, the island's 62px at both sides) a 450px pane at the screen's left edge keeps its dock
+/// 12px plus the inset from its left and 12px from its right, which ends 482px short of the screen's;
+/// in the middle 12px from both; at the screen's right edge 12px from its left and 12px plus the inset
+/// from its right. The right side was red on 6b30c331, which took the screen's whole right inset in
+/// any box. And where the window has a classic scrollbar the box's right gap is measured to the
+/// scrollbar, not across it (`clientWidth`, not `innerWidth`; red on f17bb8c4). A review sheet is drawn
+/// inside the pane too, its close control inside the inset where the island falls in the pane (red on
+/// 10d88b7d, which reached the sheet to the window's sides in a host as in the app). At ⤢ the pane
+/// takes the whole screen in a host too, and so does a sheet opened there, with the screen's whole
+/// insets (red on cf156c65, which counted them from the pane's old place). Each placement is a fresh
+/// mount: a move with no resize is the next case's (#s467).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_on_a_phone_counts_the_insets_only_inside_its_box() {
+    let _serial = serial();
+    let base = base("host-insets");
+    let monitor = Monitor::spawn(Kind::V1, 3115, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    // A desktop window whose page scrolls under a classic scrollbar: the view's right gap stops at it.
+    harness::resize(&tab, 1400.0, 900.0);
+    harness::open_host_page(&tab, &monitor, "");
+    harness::eval(
+        &tab,
+        "(function(){ var st = document.createElement('style'); st.textContent = 'html{overflow-y:scroll}html::-webkit-scrollbar{width:15px}html::-webkit-scrollbar-thumb{background:#888}'; document.head.append(st); return true; })()",
+    );
+    place_host_pane(&tab, 600, 400);
+    let scrolled = harness::probe(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return { bar: innerWidth - document.documentElement.clientWidth, right: Math.round(document.documentElement.clientWidth - v.getBoundingClientRect().right), paneR: v.style.getPropertyValue('--pane-r') }; })()",
+    );
+    harness::phone(&tab, 932, 430);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    let gaps = "(function(){ var v = document.getElementById('sessionView').getBoundingClientRect(), d = document.getElementById('phoneDock'); var r = d.getBoundingClientRect(); return { view: Math.round(v.left) + '-' + Math.round(v.right), position: getComputedStyle(d).position, left: Math.round(r.left - v.left), right: Math.round(v.right - r.right) }; })()";
+    let mut seen = Vec::new();
+    for (left, want_left, want_right) in [(0, 74, 12), (241, 12, 12), (482, 12, 74)] {
+        harness::open_host_page(&tab, &monitor, "");
+        place_host_pane(&tab, left, 450);
+        harness::until(
+            &tab,
+            "(function(){ var d = document.getElementById('phoneDock'); return !!d && d.getBoundingClientRect().width > 0; })()",
+            "the phone reader's dock",
+            Duration::from_secs(10),
+            gaps,
+        );
+        let mut got = harness::probe(&tab, gaps);
+        got["sheet"] = case_sheet(&tab);
+        seen.push((left, want_left, want_right, got));
+    }
+    // ⤢ in the middle placement: the pane takes the whole screen, and a sheet opened there too.
+    harness::open_host_page(&tab, &monitor, "");
+    place_host_pane(&tab, 241, 450);
+    let host_full = pane_full_screen(&tab);
+    drop(monitor);
+    assert!(
+        scrolled["bar"].as_i64().unwrap_or(0) > 0,
+        "the window has a classic scrollbar to measure against: {scrolled}"
+    );
+    assert_eq!(
+        scrolled["paneR"],
+        format!("{}px", scrolled["right"]),
+        "the view's right gap is measured to the scrollbar: {scrolled}"
+    );
+    for (left, want_left, want_right, got) in seen {
+        assert_eq!(
+            got["position"], "fixed",
+            "a 450px pane at x={left}: the dock floats: {got}"
+        );
+        assert_eq!(
+            (got["left"].as_i64(), got["right"].as_i64()),
+            (Some(want_left), Some(want_right)),
+            "a 450px pane at x={left} on a phone held sideways keeps its dock {want_left}px from its \
+             left and {want_right}px from its right, the island's inset counted only inside it: {got}"
+        );
+        let sheet = &got["sheet"];
+        assert!(
+            sheet["left"].as_i64() == Some(i64::from(left))
+                && sheet["right"].as_i64() == Some(i64::from(left) + 450)
+                && sheet["padLeft"].as_i64() == Some(want_left - 12)
+                && sheet["padRight"].as_i64() == Some(want_right - 12),
+            "a review sheet in a 450px pane at x={left} is drawn inside the pane, the island's inset \
+             counted only where it falls in the pane ({}px left, {}px right): {got}",
+            want_left - 12,
+            want_right - 12
+        );
+    }
+    assert!(
+        host_full["left"] == 0
+            && host_full["right"] == host_full["sheet"]["width"]
+            && host_full["atLeft"] == "the pane",
+        "at ⤢ in a host the pane takes the whole screen, a press at its left edge reaching it: \
+         {host_full}"
+    );
+    let host_sheet = &host_full["sheet"];
+    assert!(
+        host_sheet["left"] == 0
+            && host_sheet["right"] == host_sheet["width"]
+            && host_sheet["top"] == 0
+            && host_sheet["bottom"] == host_sheet["height"]
+            && host_sheet["padLeft"] == 62
+            && host_sheet["padRight"] == 62,
+        "at ⤢ in a host's pane the review sheet takes the whole screen with its whole insets, as the \
+         pane does: {host_full}"
+    );
+}
+
+/// #s467 (a gap #s431 stage 2's inset case found): a host that moves the view's box without resizing
+/// it is heard, by a watch on the box's place with no timer (design/pane-layout.md, "Drawn inside the
+/// pane"). A 450px pane on a phone held sideways, moved by its `left` from the screen's left edge to its
+/// middle: the dock is 12px from both sides at the new place, where it kept counting the island's inset
+/// at its left (red on 5b68bfcf, whose layout kept the old place, `--pane-x`). Moved back by a
+/// transform, which moves no layout box: the place is the screen's left edge again and the dock counts
+/// the inset there. Neither move holds the view's transitions (the review of stage 4: a move decided
+/// the whole layout again, which cut what glided, every frame of a host's scroll). Then the pane is the
+/// whole screen's width and height under a 40px bar of the host's: it is boxed, its gap at the top
+/// 40px (red on 5eecc345, which read no top gap for a box as tall as the window). The holds are
+/// counted where the view adds `pl-holding`, and the resize to the whole screen, a decision of the
+/// whole layout, must add one, so the count is known to hear a hold. Last the keyboard comes up in
+/// that pane: the view's ride moves the host's box back over iOS's scroll, and the view keeps the
+/// gaps it read at the bar, boxed 40px from the top.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_hears_its_box_move_without_a_resize() {
+    let _serial = serial();
+    let base = base("host-move");
+    let monitor = Monitor::spawn(Kind::V1, 3116, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::phone(&tab, 932, 430);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    harness::open_host_page(&tab, &monitor, "");
+    place_host_pane(&tab, 0, 450);
+    harness::eval(&tab, TWO_FRAMES);
+    // Every hold of the view's transitions from here on: a move alone writes only where the view is
+    // (the review of stage 4), so none.
+    harness::eval(
+        &tab,
+        "(function(){ window.__holds = 0; var add = DOMTokenList.prototype.add; DOMTokenList.prototype.add = function(){ if (Array.prototype.indexOf.call(arguments, 'pl-holding') >= 0) window.__holds++; return add.apply(this, arguments); }; return true; })()",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ var p = document.getElementById('hostPane'); p.style.left = '241px'; return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'), d = document.getElementById('phoneDock'); var vr = v.getBoundingClientRect(), r = d.getBoundingClientRect(); return Math.round(vr.left) === 241 && Math.round(r.left - vr.left) === 12 && Math.round(vr.right - r.right) === 12; })()",
+        "the dock 12px from both sides once the pane moved to the screen's middle",
+        Duration::from_secs(5),
+        "(function(){ var v = document.getElementById('sessionView'), d = document.getElementById('phoneDock'); var vr = v.getBoundingClientRect(), r = d.getBoundingClientRect(); return JSON.stringify({ view: Math.round(vr.left), paneX: v.style.getPropertyValue('--pane-x'), left: Math.round(r.left - vr.left), right: Math.round(vr.right - r.right) }); })()",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('hostPane').style.transform = 'translateX(-241px)'; return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'), d = document.getElementById('phoneDock'); var vr = v.getBoundingClientRect(), r = d.getBoundingClientRect(); return Math.round(vr.left) === 0 && v.style.getPropertyValue('--pane-x') === '0px' && Math.round(r.left - vr.left) > 12 && Math.round(vr.right - r.right) === 12; })()",
+        "the dock counting the island's inset again once a transform moved the pane back to the screen's left edge",
+        Duration::from_secs(5),
+        "(function(){ var v = document.getElementById('sessionView'), d = document.getElementById('phoneDock'); var vr = v.getBoundingClientRect(), r = d.getBoundingClientRect(); return JSON.stringify({ view: Math.round(vr.left), paneX: v.style.getPropertyValue('--pane-x'), left: Math.round(r.left - vr.left), right: Math.round(vr.right - r.right) }); })()",
+    );
+    let holds = harness::eval(&tab, "window.__holds");
+    // A pane as wide and as tall as the screen under a 40px bar of the host's (the review of stage 4):
+    // its box starts below the window's top, so it is boxed, whatever its height. On the code before it
+    // a box as tall as the window read no gap at its top or foot, and the view, the whole width, was
+    // not boxed: its layers were placed against the window, over the host's bar.
+    harness::eval(
+        &tab,
+        "(function(){ var p = document.getElementById('hostPane'); p.style.transform = ''; p.style.left = '0px'; p.style.width = '932px'; p.style.top = '40px'; p.style.bottom = 'auto'; p.style.height = '100vh'; return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'), r = v.getBoundingClientRect(); return Math.round(r.top) === 40 && Math.round(r.width) === 932 && v.style.getPropertyValue('--pl-w') === '932px' && v.style.getPropertyValue('--pl-h') === '430px' && v.classList.contains('pl-boxed') && v.style.getPropertyValue('--pane-y') === '40px'; })()",
+        "a screen-tall pane under the host's bar to be boxed, its gap at the top 40px",
+        Duration::from_secs(5),
+        "(function(){ var v = document.getElementById('sessionView'), r = v.getBoundingClientRect(); return JSON.stringify({ top: Math.round(r.top), width: Math.round(r.width), height: Math.round(r.height), plW: v.style.getPropertyValue('--pl-w'), plH: v.style.getPropertyValue('--pl-h'), boxed: v.classList.contains('pl-boxed'), paneY: v.style.getPropertyValue('--pane-y'), paneB: v.style.getPropertyValue('--pane-b') }); })()",
+    );
+    // That step resized the view, a decision of the whole layout, which holds: the count hears a hold.
+    let resized = harness::eval(&tab, "window.__holds");
+    // The keyboard up in that pane (the review of stage 4): iOS scrolls the page 100px and the view's
+    // ride moves the host's box (the `grid` it was given) back over it. The view, placed for the
+    // keyboard, keeps the gaps it read at the bar, still boxed 40px from the top; on the code before it
+    // a ride read no gaps, unboxing a pane under a bar for as long as the keyboard was up.
+    harness::eval(
+        &tab,
+        "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 200; } }); Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return 100; } }); visualViewport.dispatchEvent(new Event('scroll')); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('hostPane').style.transform === 'translateY(100px)'",
+        "the view's ride to move the host's box back over the page's scroll",
+        Duration::from_secs(5),
+        "document.getElementById('hostPane').style.transform",
+    );
+    // A decision the ride must take, and one that shows: the pane 6px shorter while the keyboard is up
+    // (the delta review of b4ad87a9: with nothing to decide, the state before the ride passed as kept).
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('hostPane').style.height = 'calc(100vh - 6px)'; return true; })()",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('sessionView').style.getPropertyValue('--pl-h') === '424px'",
+        "the view to decide again at its new height while the keyboard ride moves it",
+        Duration::from_secs(5),
+        "document.getElementById('sessionView').style.getPropertyValue('--pl-h')",
+    );
+    let riding = harness::eval(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return JSON.stringify({ boxed: v.classList.contains('pl-boxed'), paneY: v.style.getPropertyValue('--pane-y'), top: Math.round(v.getBoundingClientRect().top) }); })()",
+    );
+    drop(monitor);
+    assert_eq!(
+        holds,
+        serde_json::json!(0),
+        "a move alone holds none of the view's transitions"
+    );
+    assert!(
+        resized.as_i64().unwrap_or(0) >= 1,
+        "a resize holds them, so the count above could hear one: {resized}"
+    );
+    assert_eq!(
+        riding,
+        serde_json::json!("{\"boxed\":true,\"paneY\":\"40px\",\"top\":140}"),
+        "while the keyboard ride moves the pane under the bar, the view keeps its gaps and its box"
+    );
+}
+
+/// #s497 (the second delta review of #s431 stage 4): a desktop host page that scrolls keeps its offset
+/// while the session view in its pane is a phone reader (a 400px pane, under 490px of the view). The
+/// keyboard ride answers iOS scrolling the page to bring a focused field above its keyboard, and it
+/// also ran on every scroll of the page once the view was in its phone family: with a mouse and no
+/// keyboard, the page's offset read as iOS's, so the ride snapped the host's page back to its top and
+/// gave its box a `translateY` of that offset for a frame. Here the reader scrolls the page by a mouse
+/// wheel and then by a script (a key, the scrollbar), and the page keeps each offset, the pane never
+/// transformed. Red on 081be59e, where the page went back to 0.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_desktop_host_page_that_scrolls_keeps_its_offset_beside_a_phone_reader() {
+    use headless_chrome::protocol::cdp::Input::{DispatchMouseEvent, DispatchMouseEventTypeOption};
+    let _serial = serial();
+    let base = base("host-page-scroll");
+    let monitor = Monitor::spawn(Kind::V1, 3119, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1400.0, 900.0);
+    harness::open_host_page(&tab, &monitor, "");
+    place_host_pane(&tab, 500, 400);
+    // A page taller than the window, and every transform written on the host's box from here on.
+    harness::eval(
+        &tab,
+        "(function(){ document.body.style.height = '3000px'; var p = document.getElementById('hostPane'); window.__transforms = []; new MutationObserver(function(){ if (p.style.transform) window.__transforms.push(p.style.transform); }).observe(p, { attributes: true, attributeFilter: ['style'] }); return true; })()",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let facts = "JSON.stringify({ phone: document.getElementById('sessionView').classList.contains('pl-phone'), coarse: matchMedia('(pointer:coarse)').matches, scroll: Math.round(scrollY), transform: document.getElementById('hostPane').style.transform, transforms: window.__transforms })";
+    let before: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default();
+    assert!(
+        before["phone"] == true && before["coarse"] == false && before["scroll"] == 0,
+        "the view is a phone reader in a mouse window's page at its top: {before}"
+    );
+    // The reader's wheel, over the host's page beside the pane.
+    tab.call_method(DispatchMouseEvent {
+        Type: DispatchMouseEventTypeOption::MouseWheel,
+        x: 200.0,
+        y: 600.0,
+        modifiers: None,
+        timestamp: None,
+        button: None,
+        buttons: None,
+        click_count: None,
+        force: None,
+        tangential_pressure: None,
+        tilt_x: None,
+        tilt_y: None,
+        twist: None,
+        delta_x: Some(0.0),
+        delta_y: Some(300.0),
+        pointer_Type: None,
+    })
+    .expect("a mouse wheel");
+    harness::until(
+        &tab,
+        "Math.round(scrollY) === 300",
+        "the page to keep the 300px the wheel scrolled it",
+        Duration::from_secs(5),
+        facts,
+    );
+    harness::pause("any ride a scroll event starts", Duration::from_millis(300));
+    harness::eval(&tab, TWO_FRAMES);
+    let wheeled: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default();
+    // A scroll the page is given by a script (a key, the scrollbar).
+    harness::eval(&tab, "(function(){ scrollBy(0, 200); return true; })()");
+    harness::pause("any ride a scroll event starts", Duration::from_millis(300));
+    harness::eval(&tab, TWO_FRAMES);
+    let scripted: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default();
+    // The ride is asked by more than the page's scroll: focus moving and the visual viewport's own
+    // events. Neither may take the page's offset for iOS's either.
+    harness::eval(
+        &tab,
+        "(function(){ document.dispatchEvent(new FocusEvent('focusin')); visualViewport.dispatchEvent(new Event('resize')); visualViewport.dispatchEvent(new Event('scroll')); return true; })()",
+    );
+    harness::pause(
+        "the ride focus and the viewport ask for",
+        Duration::from_millis(300),
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    let asked: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default();
+    drop(monitor);
+    assert_eq!(
+        (wheeled["scroll"].clone(), wheeled["transforms"].clone()),
+        (serde_json::json!(300), serde_json::json!([])),
+        "the page keeps the wheel's offset and its pane is never transformed: {wheeled}"
+    );
+    assert_eq!(
+        (scripted["scroll"].clone(), scripted["transforms"].clone()),
+        (serde_json::json!(500), serde_json::json!([])),
+        "the page keeps a scripted offset and its pane is never transformed: {scripted}"
+    );
+    assert_eq!(
+        (asked["scroll"].clone(), asked["transforms"].clone()),
+        (serde_json::json!(500), serde_json::json!([])),
+        "a ride focus or the visual viewport asks for leaves the page's offset alone: {asked}"
+    );
+}
+
+/// #s431 stage 4 (the second delta review of b4ad87a9): the gaps a decision during the keyboard ride
+/// keeps come only from a decision that saw a box while no ride moved it, and the ride's end decides
+/// again. A view its host mounts hidden decided once at 0×0, whose foot read the window's whole height
+/// as its gap: shown while the ride ran, it kept that gap, 430px at its foot; and the decision that
+/// shows it during the ride reads the moved box for that ride alone, so a second scroll in the same
+/// ride is read again rather than kept (the review of d07aef0c). And where the page's
+/// scroll and the ride's transform cancel, as on iOS, the box does not move as the ride ends, so no
+/// watch of its place hears that the gaps it kept are stale: a host that hid its bar while the reader
+/// typed left the view placed 40px down after the ride.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_reads_its_gaps_again_around_the_keyboard_ride() {
+    let _serial = serial();
+    let base = base("host-ride-gaps");
+    let monitor = Monitor::spawn(Kind::V1, 3118, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::phone(&tab, 932, 430);
+    harness::open_host_page(&tab, &monitor, "mount=0");
+    let facts = "(function(){ var v = document.getElementById('sessionView'), p = document.getElementById('hostPane'); return { paneY: v ? v.style.getPropertyValue('--pane-y') : null, paneB: v ? v.style.getPropertyValue('--pane-b') : null, boxed: v ? v.classList.contains('pl-boxed') : null, top: v ? Math.round(v.getBoundingClientRect().top) : null, transform: p.style.transform, scroll: Math.round(scrollY) }; })()";
+    let seen = format!("JSON.stringify({facts})");
+    // Mounted hidden; the keyboard up (shadowed, as the move case does) before the pane is shown.
+    harness::eval(
+        &tab,
+        "document.getElementById('hostPane').hidden = true; window.__host.mount(); 'ok'",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    harness::eval(
+        &tab,
+        "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 200; } }); Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return 100; } }); visualViewport.dispatchEvent(new Event('scroll')); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('hostPane').style.transform === 'translateY(100px)'",
+        "the ride to move the hidden view's box back over the page's scroll",
+        Duration::from_secs(5),
+        &seen,
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('hostPane').hidden = false; 'ok'",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return v.getBoundingClientRect().height > 0 && v.style.getPropertyValue('--pl-h') === '390px'; })()",
+        "the view shown, and decided at its box",
+        Duration::from_secs(5),
+        &seen,
+    );
+    let shown = harness::probe(&tab, facts);
+    // iOS scrolls again as the field moves (60px now): the ride moves the box, and with no gaps kept the
+    // decision reads the moved box again. Had the shown decision kept the 140px it read, this one would
+    // keep it too (the review of 8ac8fd19..d07aef0c).
+    harness::eval(
+        &tab,
+        "(function(){ Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return 60; } }); visualViewport.dispatchEvent(new Event('scroll')); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return document.getElementById('hostPane').style.transform === 'translateY(60px)' && v.style.getPropertyValue('--pane-y') === '100px'; })()",
+        "a decision in the same ride to read the box where the second scroll put it",
+        Duration::from_secs(5),
+        &seen,
+    );
+    // The keyboard down: the ride ends, the box moves back, and the gaps are the bar's.
+    harness::eval(
+        &tab,
+        "(function(){ delete visualViewport.height; delete visualViewport.pageTop; visualViewport.dispatchEvent(new Event('scroll')); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return document.getElementById('hostPane').style.transform === '' && v.style.getPropertyValue('--pane-y') === '40px' && v.style.getPropertyValue('--pane-b') === '0px'; })()",
+        "the view under the host's bar once the ride ended",
+        Duration::from_secs(5),
+        &seen,
+    );
+    // A page that really scrolls with a pane that scrolls with it: the keyboard up, and the page
+    // scrolled 100px, which the ride's transform gives back, so the box stays where it was.
+    harness::eval(
+        &tab,
+        "(function(){ document.body.style.height = '2000px'; var p = document.getElementById('hostPane'); p.style.position = 'absolute'; p.style.top = '40px'; p.style.bottom = 'auto'; p.style.height = '390px'; Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 200; } }); scrollTo(0, 100); return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return Math.round(scrollY) === 100 && document.getElementById('hostPane').style.transform === 'translateY(100px)' && Math.round(v.getBoundingClientRect().top) === 40; })()",
+        "the ride to give the page's 100px scroll back to the pane",
+        Duration::from_secs(5),
+        &seen,
+    );
+    // The host hides its bar while the reader types, and its pane grows 6px: a decision the view must
+    // take (its height shows it), which keeps the gaps it read under the bar.
+    harness::eval(
+        &tab,
+        "(function(){ var p = document.getElementById('hostPane'); p.style.top = '0px'; p.style.height = '396px'; return true; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return Math.round(v.getBoundingClientRect().top) === 0 && v.style.getPropertyValue('--pl-h') === '396px'; })()",
+        "the pane at the window's top, the bar gone, and the view decided at its new height",
+        Duration::from_secs(5),
+        &seen,
+    );
+    let kept = harness::probe(&tab, facts);
+    // The page scrolls back as the ride ends: the transform goes with it, and the box does not move.
+    harness::eval(&tab, "(function(){ scrollTo(0, 0); return true; })()");
+    harness::until(
+        &tab,
+        "(function(){ return Math.round(scrollY) === 0 && document.getElementById('hostPane').style.transform === ''; })()",
+        "the ride to end with the page's scroll",
+        Duration::from_secs(5),
+        &seen,
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    harness::eval(&tab, TWO_FRAMES);
+    let ended = harness::probe(&tab, facts);
+    drop(monitor);
+    assert_eq!(
+        (shown["paneB"].clone(), shown["paneY"].clone()),
+        (serde_json::json!("0px"), serde_json::json!("140px")),
+        "a view shown during the ride with no gaps kept reads its box as it is, not the hidden box's foot: {shown}"
+    );
+    assert_eq!(
+        (kept["paneY"].clone(), kept["top"].clone()),
+        (serde_json::json!("40px"), serde_json::json!(0)),
+        "during the ride the view keeps the gaps it read under the bar: {kept}"
+    );
+    assert_eq!(
+        (
+            ended["paneY"].clone(),
+            ended["paneB"].clone(),
+            ended["top"].clone()
+        ),
+        (
+            serde_json::json!("0px"),
+            serde_json::json!("34px"),
+            serde_json::json!(0)
+        ),
+        "the ride's end reads the gaps again though the box did not move: {ended}"
+    );
+}
+
+/// #s431 stage 2: wherever design/pane-layout.md's table says "the same", the app's view reads exactly
+/// what the window read before: every layout class it sets agrees with the window's media query it
+/// stands for. Desktop windows of 1440, 1180, 1000 and 820px at the default sidebar; an iPad-sized
+/// touch window (834×1194) with its sidebar; a phone upright and held sideways; a wide phone held
+/// sideways with its list column hidden.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_view_reads_what_the_window_read_where_nothing_changes() {
+    let _serial = serial();
+    let (monitor, _browser, tab) = shell_with_a_session("appshell-view-as-window", 3113);
+    let sid = "cccccccc-0000-4000-8000-000000000160";
+    let mut seen = Vec::new();
+    // #s431 stage 3: below 858px the owner's order narrows the list (and on a touch window of 834px the
+    // view beside the list is the phone reader, #s475), so those are no longer windows where nothing
+    // changes: `the_app_shell_lays_out_its_list_by_the_owners_order` holds them.
+    for width in [1440.0, 1180.0, 1000.0] {
+        harness::resize(&tab, width, 900.0);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && (function(){{ var v = document.getElementById('sessionView'); return !!v && Math.round(v.getBoundingClientRect().width) === innerWidth - 300; }})() && {VIEW_CAUGHT_UP}"),
+            &format!("a {width}px window with the default sidebar"),
+            Duration::from_secs(10),
+            VIEW_LAYOUT,
+        );
+        seen.push((
+            format!("a {width}px window"),
+            harness::probe(&tab, VIEW_AGAINST_WINDOW),
+            harness::probe(&tab, VIEW_LAYOUT),
+        ));
+    }
+    for (name, (w, h), column_off) in [
+        ("a phone upright", (390, 844), false),
+        ("a phone held sideways", (844, 390), false),
+        (
+            "a wide phone held sideways, its column hidden",
+            (932, 430),
+            true,
+        ),
+    ] {
+        harness::phone(&tab, w, h);
+        if column_off {
+            harness::eval(&tab, "localStorage.setItem('am-phone-column', '0')");
+        }
+        monitor.open(&tab, &format!("?ui=app&session={sid}"));
+        harness::until(
+            &tab,
+            &format!("innerWidth === {w} && !!document.querySelector('.virtual-window') && !!document.getElementById('sessionView') && {VIEW_CAUGHT_UP}"),
+            &format!("{name} to draw the session"),
+            Duration::from_secs(20),
+            VIEW_LAYOUT,
+        );
+        seen.push((
+            name.to_string(),
+            harness::probe(&tab, VIEW_AGAINST_WINDOW),
+            harness::probe(&tab, VIEW_LAYOUT),
+        ));
+    }
+    drop(monitor);
+    for (name, disagree, layout) in seen {
+        assert_eq!(
+            disagree,
+            serde_json::json!([]),
+            "in {name} the view reads what the window read: {layout}"
+        );
+    }
+}
+
+/// #s431 stage 2 (the review of 86b7c06f): what is wrong with the view's layers while it is a phone
+/// reader that is not the whole window. `opened`: the layer `target` names is drawn (a step whose
+/// press opened nothing must not pass). `outside`: the fixed layers drawn outside the view's box on
+/// any of its four sides (one wholly off the screen, as the shut pane beside a window's edge, aside),
+/// and the layer `target` names if it is outside it, wherever it is drawn (stage 4: the task card was
+/// drawn in the page's body, which no walk of the view's element finds). `missed`: which of the first
+/// list row in reach, the title (at rest) or the layer just opened, and the drawer's handle (at rest
+/// and over the right pane, which it stays above) do not take a press near their top left corner, or
+/// in the layer they are drawn in at their middle and inside their other three corners (the review of
+/// stage 4: one point let a layer pass with its lower half covered); and, where the handle shows and
+/// an open layer covers its place, whether the handle is drawn over the layer.
+const LAYERS_AMISS: &str = "(function(target){ var v = document.getElementById('sessionView'), vr = v.getBoundingClientRect(); var name = function(e){ return e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + Array.prototype.slice.call(e.classList).join('.'); }; var beyond = function(r){ return r.left < vr.left - 0.5 || r.right > vr.right + 0.5 || r.top < vr.top - 0.5 || r.bottom > vr.bottom + 0.5; }; var edges = function(r){ return Math.round(r.left) + '-' + Math.round(r.right) + ' ' + Math.round(r.top) + '-' + Math.round(r.bottom); }; var outside = []; [v].concat(Array.prototype.slice.call(v.querySelectorAll('*'))).forEach(function(e){ var cs = getComputedStyle(e); if (cs.position !== 'fixed' || cs.display === 'none' || cs.visibility === 'hidden') return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1 || r.left >= innerWidth || r.right <= 0 || r.top >= innerHeight || r.bottom <= 0) return; if (beyond(r)) outside.push(name(e) + ' ' + edges(r)); }); var missed = []; var at = function(e, x, y){ var h = document.elementFromPoint(x, y); return e.contains(h) ? null : (h ? name(h) : 'nothing'); }; var press = function(label, e){ if (!e) return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1) return; var layer = e; while (layer && layer !== v && getComputedStyle(layer).position !== 'fixed') layer = layer.parentElement; if (!layer || layer === v || !v.contains(e)) layer = e; var ix = Math.min(r.width / 2, 12), iy = Math.min(r.height / 2, 12); var points = [[r.left + Math.min(r.width / 2, 20), r.top + Math.min(r.height / 2, 20), e, ''], [r.left + r.width / 2, r.top + r.height / 2, layer, ' at its middle'], [r.right - ix, r.top + iy, layer, ' at its top right'], [r.left + ix, r.bottom - iy, layer, ' at its bottom left'], [r.right - ix, r.bottom - iy, layer, ' at its bottom right']]; for (var i = 0; i < points.length; i++) { var p = points[i]; if (p[0] < 0 || p[1] < 0 || p[0] >= innerWidth || p[1] >= innerHeight) continue; var under = at(p[2], p[0], p[1]); if (under) { missed.push(label + ' under ' + under + p[3]); return; } } }; var row = Array.prototype.slice.call(document.querySelectorAll('#app>.sidebar .tree-row')).find(function(r){ var b = r.getBoundingClientRect(); return b.height > 0 && b.top >= 60 && b.bottom <= innerHeight - 60 && b.right <= vr.left; }); press('a list row', row); var t = target ? document.querySelector(target) : null; var opened = !target || (!!t && t.getClientRects().length > 0 && t.getBoundingClientRect().width >= 1 && t.getBoundingClientRect().height >= 1 && getComputedStyle(t).visibility === 'visible'); if (t && opened && beyond(t.getBoundingClientRect())) outside.push(target + ' ' + edges(t.getBoundingClientRect())); var handle = document.getElementById('drawerHandle'); var hs = handle && getComputedStyle(handle); var handleShown = !!handle && hs.display !== 'none' && hs.visibility === 'visible'; if (handleShown && (!target || target === '#closePreview')) press('the handle', handle); if (handleShown && t && target !== '#closePreview') { var layer = t; while (layer && layer !== v && getComputedStyle(layer).position !== 'fixed') layer = layer.parentElement; if (!layer || layer === v) layer = t; var lr = layer.getBoundingClientRect(), hr = handle.getBoundingClientRect(); if (lr.left < hr.right && hr.left < lr.right && lr.top < hr.bottom && hr.top < lr.bottom) { var under = at(layer, (Math.max(lr.left, hr.left) + Math.min(lr.right, hr.right)) / 2, (Math.max(lr.top, hr.top) + Math.min(lr.bottom, hr.bottom)) / 2); if (under) missed.push(target + ' under ' + under + ' where the handle is'); } } if (target) press(target, t); else press('the title', document.getElementById('sessionTitle')); return { opened: opened, outside: outside, missed: missed, view: Math.round(vr.left) + '-' + Math.round(vr.right) }; })";
+
+/// Opens each of the phone reader's layers in turn (Info, Aa, the Turns sheet, the session's menu,
+/// the search's filter, the right pane, the reply box) and returns, for each that is amiss, what
+/// [`LAYERS_AMISS`] found. A step named in `not_offered` is one this layout does not offer (the Turns
+/// sheet beside a wide phone's column, whose switcher holds the panes): its opener must not show.
+/// Write mode is switched on for the reply box and off again.
+fn phone_layers_amiss(
+    tab: &headless_chrome::Tab,
+    not_offered: &[&str],
+) -> Vec<(String, serde_json::Value)> {
+    let steps: [(&str, &str, &str, &str, &str); 8] = [
+        ("at rest", "", "", "", ""),
+        ("Info", "phoneInfo", "document.getElementById('phoneInfo').click()", "#infoPopover", "document.getElementById('phoneInfo').click()"),
+        ("Aa", "readingBtn", "document.getElementById('readingBtn').click()", "#readingOptions", "document.getElementById('readingBtn').click()"),
+        ("the Turns sheet", "phonePane-turns", "document.getElementById('phonePane-turns').click()", ".phone-pane-menu:not([hidden])", "document.getElementById('phonePane-turns').click()"),
+        ("the session's menu", "sessionTitle", "document.getElementById('sessionTitle').click()", "#sessionCopyMenu", "document.getElementById('sessionTitle').click()"),
+        ("the search's filter", "transcriptSearchInput", "document.getElementById('transcriptSearchInput').focus(); document.getElementById('filterTranscriptBtn').click()", "#navigatorOptions", "document.getElementById('phoneSearchDone').click()"),
+        ("the right pane", "previewBtn", "document.getElementById('previewBtn').click()", "#closePreview", "document.getElementById('closePreview').click()"),
+        ("the reply box", "writeSwitch", "document.getElementById('writeSwitch').click()", "#composeInput", "document.getElementById('closeComposer').click(); document.getElementById('writeSwitch').click()"),
+    ];
+    let mut amiss = Vec::new();
+    for (name, opener, open, target, close) in steps {
+        if not_offered.contains(&name) {
+            let shown = harness::probe(
+                tab,
+                &format!("(function(){{ var e = document.getElementById('{opener}'); return !!e && getComputedStyle(e).display !== 'none' && e.getClientRects().length > 0; }})()"),
+            );
+            if shown != serde_json::json!(false) {
+                amiss.push((
+                    name.to_string(),
+                    serde_json::json!({ "notOffered": "its opener shows" }),
+                ));
+            }
+            continue;
+        }
+        if !open.is_empty() {
+            harness::eval(tab, &format!("(function(){{ {open}; return true; }})()"));
+        }
+        if name == "the reply box" {
+            harness::until(
+                tab,
+                "(function(){ var b = document.getElementById('dockCompose'); return !!b && !b.hidden && b.getClientRects().length > 0; })()",
+                "write mode to put the reply box's circle in the dock",
+                Duration::from_secs(10),
+                "document.getElementById('dockCompose') && document.getElementById('dockCompose').outerHTML.slice(0, 200)",
+            );
+            harness::eval(tab, "document.getElementById('dockCompose').click()");
+        }
+        harness::eval(tab, "new Promise(function(done){ requestAnimationFrame(function(){ setTimeout(done, 400); }); })");
+        let t = if target.is_empty() {
+            "null".to_string()
+        } else {
+            format!("'{target}'")
+        };
+        let found = harness::probe(tab, &format!("{LAYERS_AMISS}({t})"));
+        if found["opened"] != serde_json::json!(true)
+            || found["outside"] != serde_json::json!([])
+            || found["missed"] != serde_json::json!([])
+        {
+            amiss.push((name.to_string(), found));
+        }
+        if !close.is_empty() {
+            harness::eval(tab, &format!("(function(){{ {close}; return true; }})()"));
+        }
+    }
+    amiss
+}
+
+/// Appends a review sheet to the view as `openReviewSheet` (preview.js) does on a phone: the case's
+/// sessions offer no Markdown file to review, so it is put there by hand, its close control at its top
+/// left. [`CASE_SHEET_DRAWN`] waits for it, [`CASE_SHEET_READ`] reads where it lies.
+const CASE_SHEET: &str = "(function(){ var s = document.createElement('div'); s.className = 'review-sheet'; s.id = 'caseReviewSheet'; s.setAttribute('role', 'dialog'); s.innerHTML = '<div class=\"review-sheet-head\"><button type=\"button\" class=\"review-sheet-close\" id=\"caseReviewClose\" aria-label=\"Close the review\">x</button><strong>notes.md</strong></div><div class=\"review-sheet-body\"></div>'; document.getElementById('sessionView').append(s); return true; })()";
+const CASE_SHEET_DRAWN: &str = "(function(){ var s = document.getElementById('caseReviewSheet'), c = document.getElementById('caseReviewClose'); return !!s && s.getBoundingClientRect().width > 0 && c.getBoundingClientRect().width >= 44; })()";
+/// The sheet's edges, its side padding (the screen's insets as the sheet counts them), its close
+/// control's left edge, and the window's size.
+const CASE_SHEET_READ: &str = "(function(){ var s = document.getElementById('caseReviewSheet'), r = s.getBoundingClientRect(), c = getComputedStyle(s); return { left: Math.round(r.left), top: Math.round(r.top), right: Math.round(r.right), bottom: Math.round(r.bottom), width: innerWidth, height: innerHeight, padLeft: Math.round(parseFloat(c.paddingLeft)), padRight: Math.round(parseFloat(c.paddingRight)), closeLeft: Math.round(document.getElementById('caseReviewClose').getBoundingClientRect().left) }; })()";
+
+/// Puts [`CASE_SHEET`] in the view, reads it once drawn, and takes it away.
+fn case_sheet(tab: &headless_chrome::Tab) -> serde_json::Value {
+    harness::eval(tab, CASE_SHEET);
+    harness::until(
+        tab,
+        CASE_SHEET_DRAWN,
+        "the review sheet to be drawn",
+        Duration::from_secs(5),
+        "(function(){ var s = document.getElementById('caseReviewSheet'); return s ? JSON.stringify(s.getBoundingClientRect()) : 'no sheet'; })()",
+    );
+    let seen = harness::probe(tab, CASE_SHEET_READ);
+    harness::eval(
+        tab,
+        "document.getElementById('caseReviewSheet').remove(); true",
+    );
+    seen
+}
+
+/// A review sheet ([`CASE_SHEET`]) over the open pane; then what [`LAYERS_AMISS`] finds with it open,
+/// where the sheet lies (`sheet`), its close control's left edge (`closeLeft`), and the pane's place
+/// before the sheet, under it and after it (`pane`), and the sheet and the pane are taken away.
+fn review_sheet_amiss(tab: &headless_chrome::Tab) -> serde_json::Value {
+    let settled = "document.getElementById('preview').getAnimations().length === 0";
+    harness::eval(tab, "document.getElementById('previewBtn').click()");
+    harness::until(
+        tab,
+        &format!("!document.getElementById('sessionView').classList.contains('preview-off') && {settled}"),
+        "the right pane to open",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').className",
+    );
+    let pane = "(function(){ var r = document.getElementById('preview').getBoundingClientRect(); return Math.round(r.left) + '-' + Math.round(r.right) + ' ' + Math.round(r.top) + '-' + Math.round(r.bottom); })()";
+    let before = harness::eval(tab, pane);
+    harness::eval(tab, CASE_SHEET);
+    harness::until(
+        tab,
+        CASE_SHEET_DRAWN,
+        "the review sheet to be drawn",
+        Duration::from_secs(5),
+        "(function(){ var s = document.getElementById('caseReviewSheet'); return s ? JSON.stringify(s.getBoundingClientRect()) : 'no sheet'; })()",
+    );
+    let mut found = harness::probe(
+        tab,
+        &format!("(function(){{ var f = {LAYERS_AMISS}('#caseReviewClose'); var r = {CASE_SHEET_READ}; f.sheet = r; f.closeLeft = r.closeLeft; return f; }})()"),
+    );
+    let under = harness::eval(tab, pane);
+    harness::eval(
+        tab,
+        "document.getElementById('caseReviewSheet').remove(); true",
+    );
+    let after = harness::eval(tab, pane);
+    found["pane"] = serde_json::json!([before, under, after]);
+    harness::eval(tab, "document.getElementById('closePreview').click()");
+    harness::until(
+        tab,
+        &format!(
+            "document.getElementById('sessionView').classList.contains('preview-off') && {settled}"
+        ),
+        "the right pane to shut",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').className",
+    );
+    found
+}
+
+/// Opens the right pane over a wide phone's session and, with a layer of the view's left open under
+/// it (Aa's menu, opened by hand; in use, a dialog's card in a reply box left open), returns whether
+/// the app's handle is drawn and takes a press at its middle; then the layer goes and the pane shuts.
+fn handle_over_the_pane(tab: &headless_chrome::Tab) -> serde_json::Value {
+    let settled = "document.getElementById('preview').getAnimations().length === 0";
+    harness::eval(tab, "document.getElementById('previewBtn').click()");
+    harness::until(
+        tab,
+        &format!("!document.getElementById('sessionView').classList.contains('preview-off') && {settled}"),
+        "the right pane to open",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').className",
+    );
+    harness::eval(
+        tab,
+        "document.querySelector('#sessionView .reading-cluster>.reading-options').classList.add('open'); true",
+    );
+    let seen = harness::probe(
+        tab,
+        "(function(){ var h = document.getElementById('drawerHandle'), r = h.getBoundingClientRect(); var at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { visibility: getComputedStyle(h).visibility, takes: h.contains(at), at: at ? (at.id || at.className) : 'nothing' }; })()",
+    );
+    harness::eval(
+        tab,
+        "document.querySelector('#sessionView .reading-cluster>.reading-options').classList.remove('open'); true",
+    );
+    harness::eval(tab, "document.getElementById('closePreview').click()");
+    harness::until(
+        tab,
+        &format!(
+            "document.getElementById('sessionView').classList.contains('preview-off') && {settled}"
+        ),
+        "the right pane to shut",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').className",
+    );
+    seen
+}
+
+/// Opens the right pane and takes it to the whole screen with its ⤢ (a phone held sideways), and
+/// returns where the pane lies, what a press at the window's left, over a wide phone's column,
+/// reaches, and the session's flow under it before ⤢ and at it (`session`, `sessionBefore`: each
+/// element of the session's column that no fixed layer holds, its place, width and side padding) and
+/// where a review sheet opened at ⤢ lies (`sheet`, [`CASE_SHEET_READ`]); then the pane goes back and
+/// shuts.
+fn pane_full_screen(tab: &headless_chrome::Tab) -> serde_json::Value {
+    let settled = "document.getElementById('preview').getAnimations().length === 0";
+    harness::eval(tab, "document.getElementById('previewBtn').click()");
+    harness::until(
+        tab,
+        &format!("!document.getElementById('sessionView').classList.contains('preview-off') && {settled}"),
+        "the right pane to open",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').className",
+    );
+    let insets = "(function(){ var v = document.getElementById('sessionView'); var floats = function(e){ for (; e && e !== v; e = e.parentElement) if (getComputedStyle(e).position === 'fixed') return true; return false; }; return Array.prototype.filter.call(v.querySelectorAll('.workspace *'), function(e){ return !floats(e); }).map(function(e){ var r = e.getBoundingClientRect(), c = getComputedStyle(e); return Math.round(r.left) + ',' + Math.round(r.width) + ',' + c.paddingLeft + ',' + c.paddingRight; }).join(' '); })()";
+    let before = harness::eval(tab, insets);
+    harness::eval(
+        tab,
+        "document.querySelector('#preview .preview-expand').click()",
+    );
+    harness::until(
+        tab,
+        &format!("document.getElementById('sessionView').classList.contains('preview-full') && {settled}"),
+        "⤢ to take the pane to the whole screen",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').className",
+    );
+    harness::eval(tab, "new Promise(function(done){ requestAnimationFrame(function(){ requestAnimationFrame(done); }); })");
+    let mut full = harness::probe(
+        tab,
+        "(function(){ var p = document.getElementById('preview'), r = p.getBoundingClientRect(); var h = document.elementFromPoint(80, innerHeight / 2); return { left: Math.round(r.left), right: Math.round(r.right), window: innerWidth, atLeft: p.contains(h) ? 'the pane' : (h ? (h.id ? '#' + h.id : h.tagName.toLowerCase() + '.' + h.className) : 'nothing') }; })()",
+    );
+    full["session"] = harness::eval(tab, insets);
+    full["sessionBefore"] = before;
+    full["sheet"] = case_sheet(tab);
+    harness::eval(
+        tab,
+        "document.querySelector('#preview .preview-expand').click()",
+    );
+    harness::until(
+        tab,
+        &format!("!document.getElementById('sessionView').classList.contains('preview-full') && {settled}"),
+        "⤢ to bring the pane back",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').className",
+    );
+    harness::eval(tab, "document.getElementById('closePreview').click()");
+    harness::until(
+        tab,
+        &format!(
+            "document.getElementById('sessionView').classList.contains('preview-off') && {settled}"
+        ),
+        "the right pane to shut",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').className",
+    );
+    full
+}
+
+/// #s431 stage 2: the places design/pane-layout.md says change, each red on the code before it. Stage
+/// 3's order moved the widths where each shows (a mouse window keeps the rail to 554px, and only a
+/// touch view of 760px or less is the phone reader beside its list), so the steps are taken there.
+/// - A 520px desktop window is the compact desktop layout under the drawer's handle, where it was
+///   the phone reader: no dock, and the handle clear of the title.
+/// - A 900px touch window with a 520px sidebar narrows the list to 342px and leaves the view 558px:
+///   the phone reader beside the list, its dock shown and no 44px kept at its left for a handle that
+///   is not there, where it was the desktop layout squeezed into the view.
+/// - An 1100px window on the rail leaves the view 1036px: its right pane opens as a column beside the
+///   session, where it lay over it.
+/// - A wide phone held sideways with its list column shown leaves the view about 650px: a narrower
+///   phone's layout (its bands read its own width), not the wide phone's.
+/// - Beside the list and beside the wide phone's column, the phone reader's fixed layers (its
+///   dock, Info, Aa, the Turns sheet, the session's menu, the filter, the right pane and the reply
+///   box) open, stay in its own box and leave the list, the handle and the title reachable; the review
+///   of stage 2's first cut found them placed against the window, over the sidebar (red on 86b7c06f
+///   beside the sidebar; beside the column the app had kept each clear by a rule of its own). Beside
+///   the column the island's inset is the column's, so the dock is 12px inside the view, not 12px plus
+///   the inset.
+/// - Beside the column in Safari's 330px, where Aa rises over the top bar by the handle (#s242), and
+///   with a review sheet over the view, the handle is never drawn over the layer; and the pane's ⤢
+///   still takes the whole screen, the column included (both red on 6b30c331, whose contained view
+///   painted under the app's handle and held the pane in its box). So does the review sheet, its
+///   close control inside the island's inset (red on f17bb8c4, which held the sheet in the view's box),
+///   and the open pane under it keeps its place; opened at ⤢ it covers the screen too, top to bottom
+///   with the screen's whole insets (red on 10d88b7d, which reached from the contained view's edges
+///   where ⤢ no longer contains it). Beside the list the phone reader's sheet covers the
+///   window too (red on cf156c65, whose rule read the window's size where the containment it undoes
+///   reads the view's).
+///   Over the open pane the handle stays with a layer of the view left open under it (red on
+///   f17bb8c4, where it hid). At ⤢ nothing in the session's flow under the pane moves (a guard: on
+///   f17bb8c4 only the session's fixed layers under the pane took the screen's insets).
+/// - The list's rows are 44px touch targets on an iPad's sidebar, where they were 37px.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window() {
+    let _serial = serial();
+    let (monitor, _browser, tab) = shell_with_a_session("appshell-view-own-box", 3114);
+    let sid = "cccccccc-0000-4000-8000-000000000160";
+    let open = |tab: &headless_chrome::Tab, width: f64, what: &str| {
+        monitor.open(tab, &format!("?ui=app&session={sid}"));
+        harness::until(
+            tab,
+            &format!("innerWidth === {width} && !!document.querySelector('.virtual-window') && {VIEW_CAUGHT_UP}"),
+            what,
+            Duration::from_secs(20),
+            VIEW_LAYOUT,
+        );
+    };
+    let shown = "function(id){ var e = document.getElementById(id) || document.querySelector(id); if (!e) return false; var r = e.getBoundingClientRect(); return getComputedStyle(e).display !== 'none' && r.width > 0 && r.height > 0; }";
+    // A 520px desktop window.
+    harness::resize(&tab, 520.0, 900.0);
+    open(&tab, 520.0, "a 520px window");
+    let narrow = harness::probe(
+        &tab,
+        &format!("(function(){{ var shown = {shown}; var h = document.getElementById('drawerHandle').getBoundingClientRect(), t = document.getElementById('sessionTitle').getBoundingClientRect(); return {{ layout: {VIEW_LAYOUT}, dock: shown('.phone-dock'), handle: shown('drawerHandle'), handleRight: Math.round(h.right), titleTextLeft: Math.round(t.left + parseFloat(getComputedStyle(document.getElementById('sessionTitle')).paddingLeft)) }}; }})()"),
+    );
+    // A 900px touch window with a 520px sidebar: a tablet's, as tall as it is wide.
+    harness::eval(&tab, "localStorage.setItem('am-sidebar-width', '520')");
+    harness::phone(&tab, 900, 900);
+    open(&tab, 900.0, "a 900px touch window with a 520px sidebar");
+    harness::until(
+        &tab,
+        &format!("Math.round(document.getElementById('sessionView').getBoundingClientRect().width) === 558 && {VIEW_CAUGHT_UP}"),
+        "the view to be 558px beside the list, narrowed from 520px to 342px",
+        Duration::from_secs(10),
+        VIEW_LAYOUT,
+    );
+    let beside = harness::probe(
+        &tab,
+        &format!("(function(){{ var shown = {shown}; var v = document.getElementById('sessionView').getBoundingClientRect(), t = document.getElementById('sessionTitle').getBoundingClientRect(); return {{ layout: {VIEW_LAYOUT}, dock: shown('.phone-dock'), handle: shown('drawerHandle'), titleInset: Math.round(t.left - v.left) }}; }})()"),
+    );
+    let beside_layers = phone_layers_amiss(&tab, &[]);
+    let beside_review = review_sheet_amiss(&tab);
+    harness::eval(&tab, "localStorage.removeItem('am-sidebar-width')");
+    // An 1100px window on the rail, the right pane open.
+    harness::mouse_window(&tab, 1100, 900);
+    open(&tab, 1100.0, "an 1100px window");
+    harness::eval(&tab, "document.getElementById('sidebarCollapse').click()");
+    harness::until(
+        &tab,
+        &format!("document.getElementById('app').classList.contains('sidebar-off') && Math.round(document.getElementById('sessionView').getBoundingClientRect().width) === innerWidth - 64 && {VIEW_CAUGHT_UP}"),
+        "the rail, the view 64px less than the window",
+        Duration::from_secs(10),
+        VIEW_LAYOUT,
+    );
+    harness::eval(&tab, "document.getElementById('previewBtn').click()");
+    harness::until(
+        &tab,
+        "!document.getElementById('sessionView').classList.contains('preview-off') && document.getElementById('app').getAnimations().length === 0 && document.getElementById('preview').getAnimations().length === 0",
+        "the right pane to open and settle",
+        Duration::from_secs(10),
+        VIEW_LAYOUT,
+    );
+    let rail = harness::probe(
+        &tab,
+        &format!("(function(){{ var p = document.getElementById('preview'), w = document.querySelector('#sessionView>.workspace'); var pr = p.getBoundingClientRect(), wr = w.getBoundingClientRect(); return {{ layout: {VIEW_LAYOUT}, position: getComputedStyle(p).position, paneLeft: Math.round(pr.left), paneRight: Math.round(pr.right), sessionRight: Math.round(wr.right) }}; }})()"),
+    );
+    harness::eval(&tab, "document.getElementById('sidebarMiniExpand').click()");
+    // A wide phone held sideways, its column shown; then the list's rows on an iPad.
+    harness::phone(&tab, 932, 430);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    harness::eval(&tab, "localStorage.removeItem('am-phone-column')");
+    open(&tab, 932.0, "a wide phone held sideways");
+    let wide = harness::probe(&tab, VIEW_LAYOUT);
+    let wide_dock = harness::probe(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(); return { viewLeft: Math.round(v.left), dockLeft: Math.round(d.left) }; })()",
+    );
+    let wide_layers = phone_layers_amiss(&tab, &["the Turns sheet"]);
+    let wide_handle = handle_over_the_pane(&tab);
+    let wide_full = pane_full_screen(&tab);
+    // The same phone in Safari, whose tab bar leaves 330px of it.
+    harness::phone(&tab, 932, 330);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    open(&tab, 932.0, "a wide phone held sideways in Safari");
+    let short_layers = phone_layers_amiss(&tab, &["the Turns sheet"]);
+    let review = review_sheet_amiss(&tab);
+    harness::safe_area(&tab, (0, 0, 0, 0));
+    harness::phone(&tab, 834, 1194);
+    open(&tab, 834.0, "an iPad upright");
+    harness::until(
+        &tab,
+        "!!document.querySelector('#sessionList :is(.tree-row.session,.tree-row.project)')",
+        "the list to draw a session row",
+        Duration::from_secs(10),
+        "document.getElementById('sessionList') && document.getElementById('sessionList').innerHTML.slice(0, 200)",
+    );
+    let rows = harness::probe(
+        &tab,
+        "(function(){ var r = document.querySelector('#sessionList :is(.tree-row.session,.tree-row.project)'); return { minHeight: getComputedStyle(r).minHeight, height: Math.round(r.getBoundingClientRect().height) }; })()",
+    );
+    drop(monitor);
+    assert_eq!(
+        narrow["layout"]["phone"], false,
+        "a 520px window is not the phone reader: {narrow}"
+    );
+    assert_eq!(
+        narrow["layout"]["b"], "820px",
+        "its bands read an 820px window's, its own 520 and the sidebar's 300: {narrow}"
+    );
+    assert_eq!(
+        narrow["dock"], false,
+        "no phone dock in a 520px window: {narrow}"
+    );
+    assert_eq!(
+        narrow["handle"], true,
+        "the drawer's handle is the app's, by the window: {narrow}"
+    );
+    assert!(
+        narrow["handleRight"].as_i64() <= narrow["titleTextLeft"].as_i64(),
+        "the handle is clear of the title's words (its box starts 5px sooner: its hover pad): {narrow}"
+    );
+    assert_eq!(
+        beside["layout"]["phone"], true,
+        "a 558px touch view beside the list is the phone reader: {beside}"
+    );
+    assert_eq!(beside["dock"], true, "its dock is shown: {beside}");
+    assert_eq!(
+        beside["handle"], false,
+        "there is no drawer in a 900px window: {beside}"
+    );
+    assert!(
+        beside["titleInset"].as_i64().is_some_and(|x| x < 30),
+        "its title keeps no 44px for a handle: {beside}"
+    );
+    assert_eq!(
+        rail["layout"]["phone"], false,
+        "on the rail the view is the desktop's: {rail}"
+    );
+    assert_eq!(
+        rail["layout"]["b"], "1336px",
+        "its bands read its own 1036px, plus the sidebar's 300: {rail}"
+    );
+    assert_ne!(
+        rail["position"], "fixed",
+        "the right pane is a column, not an overlay: {rail}"
+    );
+    assert!(
+        rail["paneLeft"].as_i64() >= rail["sessionRight"].as_i64().map(|x| x - 1),
+        "the right pane sits beside the session, not over it: {rail}"
+    );
+    assert!(
+        rail["paneRight"].as_i64().is_some_and(|x| x <= 1100),
+        "the right pane ends inside the window: {rail}"
+    );
+    assert_eq!(
+        wide["phone"], true,
+        "a wide phone's view beside its column is a phone: {wide}"
+    );
+    let classes: Vec<&str> = wide["classes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|c| c.as_str())
+        .collect();
+    assert!(
+        !classes.contains(&"pl-min-w-900")
+            && classes.contains(&"pl-max-w-900")
+            && classes.contains(&"pl-max-w-700"),
+        "its bands read its own width, about 650px, not the wide phone's: {wide}"
+    );
+    assert_eq!(
+        beside_layers,
+        Vec::new(),
+        "beside the list the phone reader keeps every layer in its own box, and the list, the title \
+         and each layer take a press"
+    );
+    assert_eq!(
+        wide_layers,
+        Vec::new(),
+        "beside a wide phone's column the phone reader keeps every layer in its own box, and the list, \
+         the handle, the title and each layer take a press"
+    );
+    assert_eq!(
+        short_layers,
+        Vec::new(),
+        "beside the column in Safari's 330px, each layer, Aa risen over the top bar among them, is drawn \
+         over the handle, never under it"
+    );
+    assert_eq!(
+        (review["opened"].clone(), review["missed"].clone()),
+        (
+            serde_json::json!(true),
+            serde_json::json!(["a list row under div.review-sheet-body"])
+        ),
+        "a review sheet beside the column takes the press on its close control, and on the column's \
+         rows, which it covers; never the handle: {review}"
+    );
+    assert!(
+        review["pane"][0] == review["pane"][1] && review["pane"][1] == review["pane"][2],
+        "the open pane under the review sheet keeps its place, so mdrev does not reflow under it: {review}"
+    );
+    let sheet = &review["sheet"];
+    assert!(
+        sheet["left"] == 0
+            && sheet["top"] == 0
+            && sheet["right"] == sheet["width"]
+            && sheet["bottom"] == sheet["height"]
+            && review["closeLeft"].as_i64().unwrap_or(0) >= 62,
+        "the review sheet is the whole screen's, the column included, its close control inside the \
+         island's inset (the owner's full-screen sheet, #s12): {review}"
+    );
+    assert!(
+        wide_full["left"] == 0
+            && wide_full["right"] == wide_full["window"]
+            && wide_full["atLeft"] == "the pane",
+        "⤢ takes the pane to the whole screen beside the column, the column included: {wide_full}"
+    );
+    assert!(
+        wide_handle["visibility"] == "visible" && wide_handle["takes"] == true,
+        "over the open pane the handle stays, a layer left open under the pane or not: {wide_handle}"
+    );
+    assert_eq!(
+        wide_full["session"], wide_full["sessionBefore"],
+        "at ⤢ nothing in the session's flow under the pane moves, so nothing remeasures beneath it: {wide_full}"
+    );
+    let beside_sheet = &beside_review["sheet"];
+    assert!(
+        beside_sheet["left"] == 0
+            && beside_sheet["right"] == 900
+            && beside_sheet["top"] == 0
+            && beside_sheet["bottom"] == beside_sheet["height"]
+            && beside_review["pane"][0] == beside_review["pane"][1]
+            && beside_review["opened"] == true
+            && beside_review["missed"] == serde_json::json!(["a list row under div.review-sheet-body"]),
+        "beside a 520px sidebar the phone reader's review sheet covers the window, the sidebar \
+         included, over the list's rows and taking the press on its close control, and the pane under \
+         it keeps its place: {beside_review}"
+    );
+    let full_sheet = &wide_full["sheet"];
+    assert!(
+        full_sheet["left"] == 0
+            && full_sheet["right"] == full_sheet["width"]
+            && full_sheet["top"] == 0
+            && full_sheet["bottom"] == full_sheet["height"]
+            && full_sheet["padLeft"] == 62
+            && full_sheet["padRight"] == 62
+            && full_sheet["closeLeft"].as_i64().unwrap_or(0) >= 62,
+        "a review sheet opened at ⤢ covers the whole screen, its close control inside the island's \
+         inset: {wide_full}"
+    );
+    assert!(
+        wide_dock["dockLeft"].as_i64() == wide_dock["viewLeft"].as_i64().map(|x| x + 12),
+        "beside the column the dock keeps 12px inside the view, the island's inset being the column's: \
+         {wide_dock}"
+    );
+    assert_eq!(
+        rows["minHeight"], "44px",
+        "an iPad's session rows are touch targets: {rows}"
+    );
+}
+
+/// #s464 (the owner's choice, option 1): the view's and the list's elements are their boxes, a host's
+/// to place and size, and the host hides either with the element's `hidden` attribute. The layout the
+/// view and the list give their elements sits at the id's weight, over the browser's own rule for
+/// `hidden`, so before this the attribute left both on the screen.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_host_hides_the_session_view_and_the_session_list_with_their_hidden_attribute() {
+    let _serial = serial();
+    let base = base("host-hidden");
+    let monitor = Monitor::spawn(Kind::V1, 3115, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1280.0, 800.0);
+    let toggle = |id: &str| {
+        format!("(function(){{ var e = document.getElementById('{id}'); var read = function(){{ var r = e.getBoundingClientRect(); return {{ display: getComputedStyle(e).display, w: Math.round(r.width), h: Math.round(r.height) }}; }}; var shown = read(); e.hidden = true; var hidden = read(); e.hidden = false; var again = read(); return {{ shown: shown, hidden: hidden, again: again }}; }})()")
+    };
+    harness::open_host_page(&tab, &monitor, "");
+    let view = harness::probe(&tab, &toggle("sessionView"));
+    harness::open_list_host_page(&tab, &monitor);
+    let list = harness::probe(&tab, &toggle("sessionList"));
+    drop(monitor);
+    for (name, seen) in [("the session view", &view), ("the session list", &list)] {
+        assert_ne!(
+            seen["shown"]["display"], "none",
+            "{name} is shown in its host: {seen}"
+        );
+        assert!(
+            seen["shown"]["w"].as_i64() > Some(0) && seen["shown"]["h"].as_i64() > Some(0),
+            "{name} has its box: {seen}"
+        );
+        assert_eq!(
+            seen["hidden"]["display"], "none",
+            "the hidden attribute hides {name}: {seen}"
+        );
+        assert_eq!(
+            seen["hidden"]["w"], 0,
+            "{name} takes no room while hidden: {seen}"
+        );
+        assert_eq!(
+            seen["again"], seen["shown"],
+            "{name} comes back as it was: {seen}"
+        );
+    }
+}
+
+/// #s464 with #s431: a host that hides the view and shows it again gives a reader who had scrolled up
+/// their place back (the review of ddcac874). Hidden, every unit the view has drawn reports no height,
+/// which the transcript could take for a measure, and the reader's place could be read off a column
+/// with nothing in it: shown again, the reader would be at the top of the session. The same holds when
+/// the window changes width while the view is hidden, when records arrive while it is, and when the
+/// host opens the session again while it is (the view restores the reader's place with a jump, whose
+/// follow was decided from a gap that reads 0 while hidden, the review of b65a0e52): a reader scrolled
+/// up keeps their place, to the pixel where the width is the same, and one following the session in a
+/// window taller than the engine's overscan is at its end with the new turn on screen and the viewport
+/// covered (a window mounted while hidden is sized for no viewport, so the first transaction with the
+/// box back mounts it again).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_view_its_host_hides_keeps_the_reader_s_place() {
+    let _serial = serial();
+    let base = base("host-hidden-place");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000003a2".to_string();
+    let transcript =
+        stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3122, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1280.0, 800.0);
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window .turn.user')",
+        "the session in the host's view",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let surface = harness::Surface::AppShell;
+    // Up from the end, well inside the session: a reader who is not following it.
+    for _ in 0..6 {
+        harness::scroll_by(&tab, surface, -900);
+    }
+    let rest = || {
+        harness::eval(&tab, TWO_FRAMES);
+        std::thread::sleep(Duration::from_millis(700));
+    };
+    rest();
+    // The engine's state, the first unit on screen with its top against the scroller's (the reader's
+    // place to the pixel), the run's width, and whether the run covers the viewport.
+    let place = "(function(){ var s = document.querySelector('.transcript'), box = s.getBoundingClientRect(); var h = window.__viewportHistory.states; var units = [...s.querySelectorAll('[data-unit-index]')]; var first = units.find(function (e) { return e.getBoundingClientRect().bottom > box.top + 1; }); var last = units[units.length - 1]; return { top: Math.round(s.scrollTop), height: Math.round(s.scrollHeight), states: h.length, count: h.length ? h[h.length - 1].count : null, following: h.length ? h[h.length - 1].following : null, unit: first ? first.dataset.unitKey : null, at: first ? Math.round(first.getBoundingClientRect().top - box.top) : null, width: units.length ? Math.round(units[0].parentElement.getBoundingClientRect().width) : null, covered: units.length > 0 && units[0].getBoundingClientRect().top <= box.top + 1 && (last.getBoundingClientRect().bottom >= box.bottom - 1 || (h.length > 0 && Number(last.dataset.unitIndex) === h[h.length - 1].count - 1)), viewport: Math.round(box.height), violations: (window.__viewportViolations || []).length }; })()";
+    // Hides the view, does what happens meanwhile, and shows it again: what the engine did while it
+    // was hidden (each transaction's cause), and the place before and after.
+    let cycle = |meanwhile: &dyn Fn()| {
+        let before = harness::probe(&tab, place);
+        harness::eval(
+            &tab,
+            "document.getElementById('sessionView').hidden = true; 'ok'",
+        );
+        harness::until(
+            &tab,
+            "document.getElementById('sessionView').getBoundingClientRect().width === 0",
+            "the view hidden by its host",
+            Duration::from_secs(5),
+            place,
+        );
+        rest();
+        meanwhile();
+        rest();
+        let causes = harness::probe(
+            &tab,
+            &format!(
+                "window.__viewportHistory.states.slice({}).map(function (e) {{ return e.cause; }})",
+                before["states"]
+            ),
+        );
+        harness::eval(
+            &tab,
+            "document.getElementById('sessionView').hidden = false; 'ok'",
+        );
+        harness::until(
+            &tab,
+            "document.getElementById('sessionView').getBoundingClientRect().width > 0",
+            "the view shown again",
+            Duration::from_secs(5),
+            place,
+        );
+        rest();
+        let after = harness::probe(&tab, place);
+        (before, causes, after)
+    };
+    let no_reading = |causes: &serde_json::Value| {
+        causes
+            .as_array()
+            .map(|all| {
+                all.iter().all(|cause| {
+                    !["measure", "update", "displaced", "grown"]
+                        .contains(&cause.as_str().unwrap_or(""))
+                })
+            })
+            .unwrap_or(false)
+    };
+    // (step, turn before, turn after, before, causes while hidden, after, the same pixel expected)
+    let mut seen = Vec::new();
+    // The same width.
+    let turn = harness::turn_at_top(&tab, surface);
+    assert!(
+        turn > 1 && !harness::at_tail(&tab, surface),
+        "the reader is inside the session: turn {turn}"
+    );
+    let (before, causes, after) = cycle(&|| {});
+    seen.push((
+        "the same width",
+        turn,
+        harness::turn_at_top(&tab, surface),
+        before,
+        causes,
+        after,
+        true,
+    ));
+    // The window narrower while the view is hidden: below the column's cap, the transcript's width
+    // changes.
+    let turn = harness::turn_at_top(&tab, surface);
+    let (before, causes, after) = cycle(&|| {
+        harness::resize(&tab, 960.0, 800.0);
+        harness::until(
+            &tab,
+            "window.innerWidth === 960",
+            "the window at its new width",
+            Duration::from_secs(5),
+            "window.innerWidth",
+        );
+    });
+    assert_ne!(
+        before["width"], after["width"],
+        "the step changes the transcript's width: before {before}, after {after}"
+    );
+    seen.push((
+        "a new width",
+        turn,
+        harness::turn_at_top(&tab, surface),
+        before,
+        causes,
+        after,
+        false,
+    ));
+    // A turn arriving while the view is hidden, the reader scrolled up.
+    // A turn: the prompt (its first line names it), and the answer to it.
+    let arrive = |text: &str, count: i64| {
+        let name = text.split("\\n").next().unwrap_or(text);
+        harness::append(
+            &transcript,
+            &(harness::user_at(text, &harness::now_minus(20))
+                + &harness::assistant_at(
+                    &format!("the answer to {name}"),
+                    &harness::now_minus(19),
+                )),
+        );
+        harness::until(
+            &tab,
+            &format!("(function(){{ var h = window.__viewportHistory.states; return h.length && h[h.length - 1].count > {count}; }})()"),
+            "the turn in the hidden view's records",
+            Duration::from_secs(20),
+            place,
+        );
+    };
+    let turn = harness::turn_at_top(&tab, surface);
+    let count = harness::probe(&tab, place)["count"].as_i64().unwrap_or(0);
+    let (before, causes, after) =
+        cycle(&|| arrive("a question asked while the view was hidden", count));
+    seen.push((
+        "a turn arriving",
+        turn,
+        harness::turn_at_top(&tab, surface),
+        before,
+        causes,
+        after,
+        true,
+    ));
+    // The host opens the session again while the view is hidden: the view empties, and restores the
+    // reader's remembered place with a jump once the records are back.
+    let reopen = || {
+        let states = harness::probe(&tab, place)["states"].as_i64().unwrap_or(0);
+        harness::eval(&tab, &format!("window.__view.open('{sid}'); 'ok'"));
+        harness::until(
+            &tab,
+            &format!("(function(){{ var s = window.__viewportHistory.states.slice({states}); var z = s.findIndex(function (e) {{ return e.count === 0; }}); return z >= 0 && s.slice(z + 1).some(function (e) {{ return e.count > 0; }}); }})()"),
+            "the session's records again in the hidden view",
+            Duration::from_secs(20),
+            place,
+        );
+    };
+    let turn = harness::turn_at_top(&tab, surface);
+    let (before, causes, after) = cycle(&reopen);
+    seen.push((
+        "the session opened again",
+        turn,
+        harness::turn_at_top(&tab, surface),
+        before,
+        causes,
+        after,
+        false,
+    ));
+    // A reader following the session in a window taller than the engine's overscan, a turn arriving
+    // while the view is hidden.
+    harness::resize(&tab, 1280.0, 2200.0);
+    harness::until(
+        &tab,
+        "window.innerHeight > 1800",
+        "a window taller than the engine's overscan",
+        Duration::from_secs(5),
+        "window.innerHeight",
+    );
+    harness::jump_to_end(&tab, surface);
+    rest();
+    let following = harness::at_tail(&tab, surface);
+    let count = harness::probe(&tab, place)["count"].as_i64().unwrap_or(0);
+    // Its prompt is long: mounted while hidden, it is clamped once the box is back, with one control
+    // to show the rest (the page's pass over what was mounted could read no lines while hidden).
+    let long = std::iter::once("a second question while hidden".to_string())
+        .chain((1..40).map(|n| format!("line {n} of a long prompt")))
+        .collect::<Vec<_>>()
+        .join("\\n");
+    let (fbefore, fcauses, fafter) = cycle(&|| arrive(&long, count));
+    let tail = harness::at_tail(&tab, surface);
+    let answer = harness::probe(&tab, "(function(){ var s = document.querySelector('.transcript').getBoundingClientRect(); var hit = [...document.querySelectorAll('.virtual-window .turn')].find(function (e) { return e.textContent.indexOf('the answer to a second question while hidden') >= 0; }); if (!hit) return 'not mounted'; var r = hit.getBoundingClientRect(); return r.bottom > s.top && r.top < s.bottom ? 'on screen' : 'off screen ' + Math.round(r.top) + '..' + Math.round(r.bottom) + ' of ' + Math.round(s.top) + '..' + Math.round(s.bottom); })()");
+    let clamp = harness::probe(&tab, "(function(){ var prompt = [...document.querySelectorAll('.virtual-window .turn.user')].find(function (e) { return e.textContent.indexOf('a second question while hidden') >= 0; }); if (!prompt) return 'not mounted'; return { collapsible: prompt.classList.contains('prompt-collapsible') || !!prompt.querySelector('.prompt-collapsible'), collapsed: !!prompt.querySelector('.prompt-copy-shell.collapsed'), expanders: prompt.querySelectorAll('.prompt-expand').length }; })()");
+    // A follower's session opened again while the view is hidden: the remembered pin is restored with
+    // no jump (the end is `follow`, which reads no gap), and shown again the reader is at the end.
+    let (obefore, ocauses, oafter) = cycle(&reopen);
+    let otail = harness::at_tail(&tab, surface);
+    let violations = harness::probe(
+        &tab,
+        "JSON.stringify((window.__viewportViolations || []).slice(0, 4))",
+    );
+    drop(monitor);
+    assert!(
+        obefore["following"] == serde_json::json!(true) && no_reading(&ocauses),
+        "a follower's session opened again while hidden reads nothing: before {obefore}, while hidden {ocauses}"
+    );
+    assert!(
+        otail && oafter["following"] == serde_json::json!(true) && oafter["covered"] == serde_json::json!(true),
+        "…and shown again the reader follows it at the end, the viewport covered: at the end {otail}, before {obefore}, while hidden {ocauses}, after {oafter}"
+    );
+    assert_eq!(
+        clamp,
+        serde_json::json!({ "collapsible": true, "collapsed": true, "expanders": 1 }),
+        "a long prompt mounted while hidden is clamped once shown, with one control: {fafter}"
+    );
+    for (name, turn, turn_after, before, causes, after, exact) in &seen {
+        assert!(
+            no_reading(causes),
+            "{name}: hidden, the transcript measures and reads nothing: {causes}"
+        );
+        assert_eq!(
+            turn_after, turn,
+            "{name}: shown again, the reader is at the turn they left: before {before}, while hidden {causes}, after {after}"
+        );
+        if *exact {
+            assert!(
+                after["unit"] == before["unit"]
+                    && (after["at"].as_i64().unwrap_or(9999) - before["at"].as_i64().unwrap_or(0))
+                        .abs()
+                        <= 2,
+                "{name}: shown again, the same unit is at the same place: before {before}, after {after}"
+            );
+        }
+        assert_eq!(
+            after["following"],
+            serde_json::json!(false),
+            "{name}: the reader still does not follow the session: {after}"
+        );
+    }
+    assert!(following, "the reader follows the session: {fbefore}");
+    assert!(
+        no_reading(&fcauses),
+        "following, hidden, the transcript measures and reads nothing: {fcauses}"
+    );
+    assert!(
+        tail && answer == "on screen" && fafter["covered"] == serde_json::json!(true),
+        "following, shown again, the reader is at the end with the new turn on screen and the viewport covered: at the end {tail}, the answer {answer}, before {fbefore}, while hidden {fcauses}, after {fafter}"
+    );
+    assert_eq!(
+        violations,
+        serde_json::json!("[]"),
+        "the engine broke none of its invariants"
+    );
+}
+
+/// #s464 with #s431 (the review of b65a0e52): a tail-first open's head that lands while the host has
+/// the view hidden is a prepend, which moves the reader's place to the units' new indices. Hidden,
+/// nothing read the place again after it, so the kept place named the old index: shown again, a reader
+/// who had scrolled up in the tail was put about the prepend's size of units away from their turn.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_view_its_host_hides_keeps_the_reader_s_place_as_the_head_lands() {
+    head_lands_while_the_view_is_hidden(3124, "host-hidden-head", false);
+}
+
+/// The same, for a reader at the top of the tail with the "Loading earlier turns" card in view: the
+/// landing holds them by the turn below the card (#314), at the place on screen it had, which hidden
+/// is read from the sums (no box gives a top): read off the hidden box, that turn was put at the
+/// viewport's top, the card's height above where it was.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_view_its_host_hides_keeps_the_reader_on_the_card_as_the_head_lands() {
+    head_lands_while_the_view_is_hidden(3125, "host-hidden-head-card", true);
+}
+
+fn head_lands_while_the_view_is_hidden(port: u16, case: &str, at_card: bool) {
+    let _serial = serial();
+    let base = base(case);
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000003a3".to_string();
+    stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1280.0, 800.0);
+    harness::hold_the_head(&tab);
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}&tailBudget=24576"));
+    harness::until(
+        &tab,
+        "window.__headRequested >= 1 && !!document.querySelector('.virtual-window .turn.user')",
+        "the tail drawn, and the head asked for behind it",
+        Duration::from_secs(20),
+        "JSON.stringify({ asked: window.__headRequested, turns: document.querySelectorAll('.virtual-window .turn.user').length })",
+    );
+    let surface = harness::Surface::AppShell;
+    let rest = || {
+        harness::eval(&tab, TWO_FRAMES);
+        std::thread::sleep(Duration::from_millis(700));
+    };
+    rest();
+    if at_card {
+        // As far up as the page goes: the card at the top, the tail's first turn below it.
+        for _ in 0..8 {
+            harness::scroll_by(&tab, surface, -3000);
+        }
+    } else {
+        harness::scroll_by(&tab, surface, -700);
+    }
+    rest();
+    // The unit the reader is held by: the first on screen, or, at the card, the one after it.
+    let held = harness::probe(
+        &tab,
+        &format!("(function(){{ var s = document.querySelector('.transcript'), box = s.getBoundingClientRect(); var units = [...s.querySelectorAll('[data-unit-index]')].filter(function (e) {{ return e.getBoundingClientRect().bottom > box.top + 1; }}); var card = units.length && units[0].classList.contains('pending-head'); var unit = {at_card} ? (card ? units[1] : null) : (card ? null : units[0]); return unit ? unit.dataset.unitKey : null; }})()"),
+    );
+    let key = held.as_str().unwrap_or("").to_string();
+    let place = format!("(function(){{ var s = document.querySelector('.transcript'), box = s.getBoundingClientRect(); var h = window.__viewportHistory.states; var unit = [...s.querySelectorAll('[data-unit-key]')].find(function (e) {{ return e.dataset.unitKey === {}; }}); return {{ top: Math.round(s.scrollTop), states: h.length, count: h.length ? h[h.length - 1].count : null, following: h.length ? h[h.length - 1].following : null, at: unit ? Math.round(unit.getBoundingClientRect().top - box.top) : null, card: !!s.querySelector('.turn.pending-head'), violations: (window.__viewportViolations || []).length }}; }})()", serde_json::json!(key));
+    let turn = harness::turn_at_top(&tab, surface);
+    let before = harness::probe(&tab, &place);
+    assert!(
+        !key.is_empty() && !harness::at_tail(&tab, surface) && before["at"].is_i64(),
+        "the reader is up in the tail{}: turn {turn}, held by {held}, {before}",
+        if at_card { ", the card in view" } else { "" }
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('sessionView').hidden = true; 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('sessionView').getBoundingClientRect().width === 0",
+        "the view hidden by its host",
+        Duration::from_secs(5),
+        &place,
+    );
+    rest();
+    harness::eval(&tab, "window.__releaseHead(); 1");
+    harness::until(
+        &tab,
+        &format!(
+            "(function(){{ var h = window.__viewportHistory.states; return h.length && h[h.length - 1].count > {}; }})()",
+            before["count"]
+        ),
+        "the head landed in the hidden view",
+        Duration::from_secs(20),
+        &place,
+    );
+    rest();
+    let landed = harness::probe(&tab, &place);
+    harness::eval(
+        &tab,
+        "document.getElementById('sessionView').hidden = false; 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('sessionView').getBoundingClientRect().width > 0",
+        "the view shown again",
+        Duration::from_secs(5),
+        &place,
+    );
+    rest();
+    let after = harness::probe(&tab, &place);
+    let turn_after = harness::turn_at_top(&tab, surface);
+    drop(monitor);
+    assert!(
+        after["card"] == serde_json::json!(false),
+        "the head landed: before {before}, landed {landed}, after {after}"
+    );
+    if !at_card {
+        assert_eq!(
+            turn_after, turn,
+            "shown again after the head landed, the reader is at the turn they left: before {before}, landed {landed}, after {after}"
+        );
+    }
+    assert!(
+        (after["at"].as_i64().unwrap_or(9999) - before["at"].as_i64().unwrap_or(0)).abs() <= 2
+            && after["following"] == serde_json::json!(false)
+            && after["violations"] == serde_json::json!(0),
+        "shown again, the unit {key} is at the place it had, the reader not following, no invariant broken: before {before}, landed {landed}, after {after}"
+    );
+}
+
+/// #s431 stage 3, from the Simulator walk of 19702961 (#s481): on an iPad a reader at the end of the
+/// transcript stays there when the list folds and opens. The list's fold changes the view's width, and
+/// on an iPad upright (834px) it switches the view between the phone reader and the desktop layout, which
+/// 1.517.0 never did at that width; held sideways (1376px) with the pane open, the fold gives the outline
+/// the room to open. The walk found the reader left 102 to 191px above the end in both, where 1.517.0
+/// kept it. Each press is a finger's tap, as on the iPad.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn an_ipad_reader_at_the_end_stays_there_as_the_list_folds_and_opens() {
+    let _serial = serial();
+    let base = base("ipad-end-fold");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000003a4".to_string();
+    stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3126, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let surface = harness::Surface::AppShell;
+    let rest = || {
+        harness::eval(&tab, TWO_FRAMES);
+        std::thread::sleep(Duration::from_millis(1200));
+    };
+    let quiet = "document.getElementById('app').getAnimations().length === 0 && document.getElementById('sessionView').getAnimations({ subtree: true }).filter(function (a) { return a instanceof CSSTransition; }).length === 0";
+    let read = "(function(){ var s = document.querySelector('.transcript'), v = document.getElementById('sessionView'), app = document.getElementById('app'); var h = window.__viewportHistory.states; var outline = ['open', 'glyphs', 'bar', 'dock'].find(function (k) { return v.classList.contains('pl-outline-' + k); }) || ''; return { gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), following: h.length ? h[h.length - 1].following : null, phone: v.classList.contains('pl-phone'), rail: app.classList.contains('sidebar-off'), view: Math.round(v.getBoundingClientRect().width), outline: outline, causes: h.filter(function (e) { return e.t >= (window.__t0 || 0); }).map(function (e) { return e.cause + (e.following ? '' : '!'); }) }; })()";
+    // A scene: the window, the session opened at its end, then the list folded and opened again, each
+    // by a finger on the control in sight. What each press left: (scene, press, before, after).
+    let mut seen = Vec::new();
+    for (scene, width, height, pane) in [
+        ("an iPad upright", 834u32, 1194u32, false),
+        ("an iPad held sideways, the pane open", 1376, 1032, true),
+    ] {
+        harness::phone(&tab, width, height);
+        monitor.open(&tab, &format!("?ui=app&session={sid}"));
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && !!document.querySelector('.virtual-window .turn.user') && {VIEW_CAUGHT_UP} && {quiet}"),
+            &format!("{scene}: the session drawn"),
+            Duration::from_secs(20),
+            read,
+        );
+        if pane {
+            harness::eval(
+                &tab,
+                "document.getElementById('outlineRailInfo').click(); 'ok'",
+            );
+            harness::until(
+                &tab,
+                &format!("document.getElementById('app').classList.contains('sidebar-off') === false && {VIEW_CAUGHT_UP} && {quiet}"),
+                &format!("{scene}: the pane open"),
+                Duration::from_secs(10),
+                read,
+            );
+        }
+        rest();
+        harness::jump_to_end(&tab, surface);
+        rest();
+        for (press, control) in [("fold", "sidebarCollapse"), ("open", "sidebarMiniExpand")] {
+            let before = harness::probe(&tab, read);
+            let at = harness::probe(
+                &tab,
+                &format!("(function(){{ window.__t0 = performance.now(); var r = document.getElementById('{control}').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2, r.width]; }})()"),
+            );
+            assert!(
+                at[2].as_f64().unwrap_or(0.0) > 0.0,
+                "{scene}: the {press} control is in sight: {at} {before}"
+            );
+            harness::finger_tap(
+                &tab,
+                at[0].as_f64().unwrap_or(0.0),
+                at[1].as_f64().unwrap_or(0.0),
+            );
+            let rail = press == "fold";
+            harness::until(
+                &tab,
+                &format!("document.getElementById('app').classList.contains('sidebar-off') === {rail} && {VIEW_CAUGHT_UP} && {quiet}"),
+                &format!("{scene}: the list to {press}"),
+                Duration::from_secs(10),
+                read,
+            );
+            rest();
+            seen.push((scene, press, before, harness::probe(&tab, read)));
+        }
+    }
+    drop(monitor);
+    let report = seen
+        .iter()
+        .map(|(scene, press, before, after)| {
+            format!("{scene}, {press}: before {before}, after {after}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let upright: Vec<_> = seen
+        .iter()
+        .filter(|(scene, ..)| *scene == "an iPad upright")
+        .map(|(_, _, before, after)| (before["phone"].clone(), after["phone"].clone()))
+        .collect();
+    assert_eq!(
+        upright,
+        vec![
+            (serde_json::json!(true), serde_json::json!(false)),
+            (serde_json::json!(false), serde_json::json!(true))
+        ],
+        "upright, the fold switches the view to the desktop layout and the open back to the phone reader:\n{report}"
+    );
+    for (scene, press, before, after) in &seen {
+        assert!(
+            before["gap"].as_i64().unwrap_or(9999).abs() <= 2
+                && before["following"] == serde_json::json!(true),
+            "{scene}, {press}: the reader is at the end, following: {before}"
+        );
+        assert!(
+            after["gap"].as_i64().unwrap_or(9999).abs() <= 2
+                && after["following"] == serde_json::json!(true),
+            "{scene}, {press}: the reader is still at the end, following:\n{report}"
+        );
+    }
+}
+
+/// #s481, the mechanism under the iPad's lost end, made exact: the browser clamps the offset in a
+/// layout where the content is shorter for a moment (the phone reader's foot pad gone before the box
+/// shrank), the content grows back, and the engine transacts before the clamp's scroll event reaches it.
+/// The reader is not moving the view, so the transaction leaves follow as it is and the tail waits for
+/// the event, whose stamp is the clamp's: with no input behind it, the follower is put back at the end.
+/// Read as the reader leaving the end, it was left there, the clamp's distance above it. The held event
+/// is dispatched again as itself, so it keeps its stamp, as a late one does; where the browser has not
+/// sent it yet (a headless tab draws lazily), one is sent in its place.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_follower_the_browser_moves_with_no_input_keeps_following() {
+    let _serial = serial();
+    let base = base("clamp-keeps-follow");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000003a5".to_string();
+    stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3127, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1280.0, 800.0);
+    monitor.open(&tab, &format!("?ui=app&session={sid}&trace=viewport"));
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.virtual-window .turn.user') && {VIEW_CAUGHT_UP}"),
+        "the session drawn",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let surface = harness::Surface::AppShell;
+    let rest = || {
+        harness::eval(&tab, TWO_FRAMES);
+        std::thread::sleep(Duration::from_millis(900));
+    };
+    harness::jump_to_end(&tab, surface);
+    rest();
+    let read = "(function(){ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; var t = (window.__viewportTrace || []).filter(function (e) { return e.t >= (window.__t0 || 0); }); return { gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), following: h.length ? h[h.length - 1].following : null, held: window.__held || 0, causes: h.filter(function (e) { return e.t >= (window.__t0 || 0); }).map(function (e) { return e.cause + (e.following ? '' : '!'); }), verdicts: t.filter(function (e) { return e.event === 'follow:unheard'; }).map(function (e) { return e.verdict; }), lapsed: t.filter(function (e) { return e.event === 'unheard:lapsed'; }).length }; })()";
+    let before = harness::probe(&tab, read);
+    // In one task: the transcript's scroll events held from the engine (delivered late, as WebKit's
+    // was); the last three units gone and the layout read, so the browser clamps the offset to the
+    // shorter content; the units back; and a mounted unit a few pixels taller, so the engine measures
+    // in the next frame, before the held event.
+    let moved = harness::probe(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__held = 0; window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__held++; window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); units[0].style.paddingBottom = '7px'; return { top: Math.round(top), clamped: Math.round(clamped), gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
+    );
+    // Read once the engine has transacted, well inside the two seconds the tail waits for the event.
+    harness::until(
+        &tab,
+        "window.__viewportHistory.states.some(function (e) { return e.t >= window.__t0; })",
+        "a transaction after the clamp",
+        Duration::from_secs(10),
+        read,
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    let measured = harness::probe(&tab, read);
+    harness::eval(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); window.removeEventListener('scroll', window.__hold, true); window.__heldEvents.forEach(function (e) { s.dispatchEvent(e); }); if (!window.__heldEvents.length) s.dispatchEvent(new Event('scroll')); return 'ok'; })()",
+    );
+    rest();
+    let after = harness::probe(&tab, read);
+    // The same clamp again, and its event never comes (a tab that sends none): the tail waits its two
+    // seconds, then takes the offset as the engine's own and goes to the end, once. The lapse used to
+    // keep the stale belief, so the converge after it read the clamp as unheard again and waited
+    // again, every two seconds, for as long as no event came (the review of 68a629b3).
+    let moved_again = harness::probe(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__held = 0; window.__heldEvents = []; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); units[0].style.paddingBottom = '14px'; return { top: Math.round(top), clamped: Math.round(clamped), gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
+    );
+    harness::until(
+        &tab,
+        "window.__viewportHistory.states.some(function (e) { return e.t >= window.__t0; })",
+        "a transaction after the second clamp",
+        Duration::from_secs(10),
+        read,
+    );
+    // Past the two seconds the tail waits, well short of a second lapse.
+    std::thread::sleep(Duration::from_millis(3000));
+    let lapsed = harness::probe(&tab, read);
+    harness::eval(
+        &tab,
+        "(function(){ window.removeEventListener('scroll', window.__hold, true); return 'ok'; })()",
+    );
+    let violations = harness::probe(
+        &tab,
+        "JSON.stringify((window.__viewportViolations || []).slice(0, 4))",
+    );
+    drop(monitor);
+    assert!(
+        before["gap"].as_i64().unwrap_or(9999).abs() <= 2
+            && before["following"] == serde_json::json!(true),
+        "the reader follows the session at its end: {before}"
+    );
+    assert!(
+        moved["clamped"].as_i64().unwrap_or(0) < moved["top"].as_i64().unwrap_or(0) - 100
+            && moved["gap"].as_i64().unwrap_or(0) > 100,
+        "the browser clamped the offset well above the end the content came back to: {moved}"
+    );
+    assert!(
+        moved_again["clamped"].as_i64().unwrap_or(0)
+            < moved_again["top"].as_i64().unwrap_or(0) - 100,
+        "the browser clamped the offset again: {moved_again}"
+    );
+    assert!(
+        lapsed["gap"].as_i64().unwrap_or(9999).abs() <= 2
+            && lapsed["following"] == serde_json::json!(true)
+            && lapsed["lapsed"] == serde_json::json!(1)
+            && lapsed["verdicts"].as_array().is_some_and(|v| !v.is_empty() && v.iter().all(|x| x == "wait")),
+        "with no event the wait lapses once and the follower is put back at the end: moved {moved_again}, lapsed {lapsed}"
+    );
+    assert!(
+        measured["causes"].as_array().is_some_and(|c| !c.is_empty()),
+        "the engine transacted before the clamp's scroll event reached it: {measured}"
+    );
+    assert_eq!(
+        measured["following"],
+        serde_json::json!(true),
+        "a move the reader did not make leaves them following: moved {moved}, measured {measured}"
+    );
+    assert!(
+        measured["gap"].as_i64().unwrap_or(0) > 100
+            && measured["verdicts"].as_array().is_some_and(|v| !v.is_empty() && v.iter().all(|x| x == "wait")),
+        "until the clamp's event arrives the tail waits for it, the follower where the clamp left them: moved {moved}, measured {measured}"
+    );
+    assert!(
+        after["gap"].as_i64().unwrap_or(9999).abs() <= 2
+            && after["following"] == serde_json::json!(true)
+            && after["lapsed"] == serde_json::json!(0),
+        "once the event arrives the follower is at the end again, by the event and not by the wait's lapse: moved {moved}, measured {measured}, after {after}"
+    );
+    assert_eq!(
+        violations,
+        serde_json::json!("[]"),
+        "the engine broke none of its invariants"
+    );
+}
+
+/// #s481, the other half of the rule: a follower's own move that a transaction meets before its scroll
+/// event lets go of the end. Their wheel, then a transaction that knows the offset again, then the move
+/// it made (a scroll the browser animates lands after transactions that ran since its input), then
+/// another transaction, all inside the intent window: the reader is moving the view, so that
+/// transaction reads the move as theirs at once. Read as the browser's because a transaction had run
+/// since their input, follow stood, and the tail placement that waits for them to rest put them back
+/// at the end before their event came. The transactions are the code size stepped up and back, which
+/// the keymap runs in the key's own handler, so nothing here waits on a frame (a headless tab draws
+/// lazily, two frames measured at 1 to 2 seconds) and all of it is one task.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_reader_s_move_a_transaction_meets_unheard_lets_go_of_the_end() {
+    late_move_leaves_the_end(3128, "late-move-in-window", false);
+}
+
+/// The same past the intent window: the move comes within it, its event after a transaction that runs
+/// once the window has passed (#213 measured an event up to a second late). That transaction cannot
+/// tell the reader's move from the browser's, so the tail waits for the event, whose stamp is the
+/// move's, and the event lets go of the end. Read as the browser's, the reader was put back at the end
+/// before their event came.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_reader_s_move_whose_event_comes_late_lets_go_of_the_end() {
+    late_move_leaves_the_end(3130, "late-move-late-event", true);
+}
+
+fn late_move_leaves_the_end(port: u16, case: &str, past_the_window: bool) {
+    let _serial = serial();
+    let base = base(case);
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000003a6".to_string();
+    stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1280.0, 800.0);
+    monitor.open(&tab, &format!("?ui=app&session={sid}&trace=viewport"));
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.virtual-window .turn.user') && {VIEW_CAUGHT_UP}"),
+        "the session drawn",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let surface = harness::Surface::AppShell;
+    let rest = || {
+        harness::eval(&tab, TWO_FRAMES);
+        std::thread::sleep(Duration::from_millis(900));
+    };
+    harness::jump_to_end(&tab, surface);
+    rest();
+    let read = "(function(){ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; var t = (window.__viewportTrace || []).filter(function (e) { return e.t >= (window.__t0 || 0); }); return { gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), following: h.length ? h[h.length - 1].following : null, held: (window.__heldEvents || []).length, stamps: (window.__heldEvents || []).map(function (e) { return Math.round(e.timeStamp - window.__t0); }), causes: h.filter(function (e) { return e.t >= (window.__t0 || 0); }).map(function (e) { return e.cause + '@' + Math.round(e.t - window.__t0) + (e.following ? '' : '!'); }), verdicts: t.filter(function (e) { return e.event === 'follow:unheard'; }).map(function (e) { return e.verdict; }), lapsed: t.filter(function (e) { return e.event === 'unheard:lapsed'; }).length }; })()";
+    let before = harness::probe(&tab, read);
+    // The transcript's scroll events held from the engine, kept to be dispatched again as themselves
+    // (each keeps its stamp, as a late event does), then their wheel. A key on the document is no input
+    // the engine hears: its input listeners are on the transcript.
+    let hold = "var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; window.__t0 = performance.now(); window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var press = function (k) { document.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); }; var start = h.length; s.dispatchEvent(new WheelEvent('wheel', { deltaY: -600, bubbles: true }));";
+    let moved = if past_the_window {
+        // The move their wheel made at once; past the window, a mounted unit a few pixels taller, so a
+        // transaction runs in a frame and meets the move unheard.
+        let moved: serde_json::Value = serde_json::from_str(
+            harness::eval(
+                &tab,
+                &format!("(async function(){{ {hold} var top = s.scrollTop; s.scrollTop = top - 600; var movedAt = performance.now() - window.__t0; window.__start = h.length; await new Promise(function (done) {{ setTimeout(done, 450); }}); s.querySelector('.virtual-window > [data-unit-index]').style.paddingBottom = '7px'; return JSON.stringify({{ top: Math.round(top), movedAt: Math.round(movedAt), waited: Math.round(performance.now() - window.__t0) }}); }})()"),
+            )
+            .as_str()
+            .unwrap_or("null"),
+        )
+        .unwrap_or(serde_json::Value::Null);
+        harness::until(
+            &tab,
+            "window.__viewportHistory.states.length > window.__start",
+            "a transaction after the move",
+            Duration::from_secs(10),
+            read,
+        );
+        // Read well inside the two seconds the tail waits for the event.
+        std::thread::sleep(Duration::from_millis(400));
+        moved
+    } else {
+        // In the same task: the code size a step up (a transaction that ends knowing the offset), the
+        // move their wheel made, and the size back (another transaction, which meets the move unheard).
+        // The keys stamp no intent, so the wheel at the start is what makes the move the reader's:
+        // split across tasks, the second transaction could run past the intent window.
+        let moved = harness::probe(
+            &tab,
+            &format!("(function(){{ {hold} press('+'); var between = h.length - start; var followingBetween = h[h.length - 1].following; var top = s.scrollTop; s.scrollTop = top - 600; press('-'); return {{ between: between, followingBetween: followingBetween, after: h.length - start, following: h[h.length - 1].following, top: Math.round(top), lastAt: Math.round(performance.now() - window.__t0) }}; }})()"),
+        );
+        rest();
+        moved
+    };
+    let rested = harness::probe(&tab, read);
+    harness::eval(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); window.removeEventListener('scroll', window.__hold, true); window.__heldEvents.forEach(function (e) { s.dispatchEvent(e); }); return 'ok'; })()",
+    );
+    rest();
+    let after = harness::probe(&tab, read);
+    let violations = harness::probe(
+        &tab,
+        "JSON.stringify((window.__viewportViolations || []).slice(0, 4))",
+    );
+    drop(monitor);
+    assert!(
+        before["gap"].as_i64().unwrap_or(9999).abs() <= 2
+            && before["following"] == serde_json::json!(true),
+        "the reader follows the session at its end: {before}"
+    );
+    let verdicts = |v: &serde_json::Value| {
+        v["verdicts"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    if past_the_window {
+        let first_at = rested["causes"]
+            .as_array()
+            .and_then(|c| c.first())
+            .and_then(|c| c.as_str())
+            .and_then(|c| c.split('@').nth(1))
+            .and_then(|c| c.trim_end_matches('!').parse::<i64>().ok())
+            .unwrap_or(-1);
+        assert!(
+            moved["movedAt"].as_i64().unwrap_or(9999) < 100 && first_at > 400,
+            "the move inside the intent window, the first transaction after it past the window: moved {moved}, rested {rested}"
+        );
+        assert!(
+            rested["held"].as_i64().unwrap_or(0) > 0
+                && rested["following"] == serde_json::json!(true)
+                && rested["gap"].as_i64().unwrap_or(0) > 400
+                && verdicts(&rested).iter().all(|v| v == "wait")
+                && !verdicts(&rested).is_empty(),
+            "the tail waits for the move's event, the reader where they moved: moved {moved}, rested {rested}"
+        );
+    } else {
+        assert!(
+            moved["between"].as_i64().unwrap_or(0) > 0
+                && moved["after"].as_i64().unwrap_or(0) > moved["between"].as_i64().unwrap_or(0)
+                && moved["followingBetween"] == serde_json::json!(true)
+                && (0..300).contains(&moved["lastAt"].as_i64().unwrap_or(-1)),
+            "a transaction after the wheel that leaves the reader following, then the move, then another transaction, inside the intent window: {moved}"
+        );
+        assert!(
+            moved["following"] == serde_json::json!(false)
+                && verdicts(&rested) == vec!["unfollow".to_string()],
+            "the transaction that meets the move reads it as the reader's and lets go of the end: moved {moved}, rested {rested}"
+        );
+        assert!(
+            rested["following"] == serde_json::json!(false) && rested["gap"].as_i64().unwrap_or(0) > 400,
+            "the reader stays where they moved before its event arrives: moved {moved}, rested {rested}"
+        );
+    }
+    assert!(
+        after["following"] == serde_json::json!(false)
+            && after["gap"].as_i64().unwrap_or(0) > 400
+            && after["lapsed"] == serde_json::json!(0),
+        "once the event arrives the reader has let go of the end, where they moved: moved {moved}, rested {rested}, after {after}"
+    );
+    assert_eq!(
+        violations,
+        serde_json::json!("[]"),
+        "the engine broke none of its invariants"
+    );
+}
+
+/// #s431, from the iOS Simulator walk: a click on the transcript's text leaves the focus on the page's
+/// body, and the browser still scrolls the transcript with a Page Up from there, but the key never
+/// passes through the transcript, where the engine heard keys. The move read as the browser's, and
+/// the follower was put back at the end. A key on the body is the reader's only where the browser
+/// scrolls the transcript with it, so the other scenes hold the rule's other halves (the review of
+/// 500ae62b): a key the browser does not scroll with, a scroll key a handler took, and a scroll key
+/// after a press in the session list are no move of the reader's. In each the key comes before the
+/// code size's step, a transaction the keymap runs in its key's own handler, which meets a move the
+/// browser made (the clamp of `a_follower_the_browser_moves_with_no_input_keeps_following`) before
+/// its event. The tail waits for the event, and the event puts the follower back at the end; read as
+/// the reader's, the transaction let go of the end at once. The clicks are the mouse's own. A key is
+/// sent where the browser sends it, to the body, and for the Page Up the transcript is moved as the
+/// browser moves it (a key Chrome's DevTools protocol sends here repeats until the page stops it,
+/// #270).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchMouseEvent, DispatchMouseEventTypeOption as Mouse, MouseButton,
+    };
+    let _serial = serial();
+    let base = base("page-up-on-body");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000003a7".to_string();
+    stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3131, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1280.0, 800.0);
+    monitor.open(&tab, &format!("?ui=app&session={sid}&trace=viewport"));
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.virtual-window .turn.user') && {VIEW_CAUGHT_UP}"),
+        "the session drawn",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let surface = harness::Surface::AppShell;
+    let rest = || {
+        harness::eval(&tab, TWO_FRAMES);
+        std::thread::sleep(Duration::from_millis(900));
+    };
+    harness::jump_to_end(&tab, surface);
+    rest();
+    let read = "(function(){ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; var a = document.activeElement; return { gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), top: Math.round(s.scrollTop), following: h.length ? h[h.length - 1].following : null, focus: a === document.body ? 'body' : a ? a.tagName.toLowerCase() + (a.id ? '#' + a.id : '') : null }; })()";
+    // In one task: the transcript's scroll events held, the last three units gone and the layout read
+    // (the browser clamps the offset), the units back, then the keys on the body. Then the held events
+    // dispatched again as themselves.
+    harness::eval(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); window.__clampWith = function (keys) { var h = window.__viewportHistory.states; window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); var start = h.length; keys.forEach(function (k) { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); }); return { top: Math.round(top), clamped: Math.round(clamped), ran: h.length - start, following: h[h.length - 1].following }; }; window.__release = function () { window.removeEventListener('scroll', window.__hold, true); window.__heldEvents.forEach(function (e) { s.dispatchEvent(e); }); if (!window.__heldEvents.length) s.dispatchEvent(new Event('scroll')); return 'ok'; }; return 'ok'; })()",
+    );
+    let clamp_with = |keys: &str| {
+        let sized = harness::probe(&tab, &format!("window.__clampWith({keys})"));
+        harness::eval(&tab, "window.__release()");
+        rest();
+        (sized, harness::probe(&tab, read))
+    };
+    let click = |x: f64, y: f64, what: &str| {
+        for kind in [Mouse::MousePressed, Mouse::MouseReleased] {
+            tab.call_method(DispatchMouseEvent {
+                Type: kind,
+                x,
+                y,
+                modifiers: None,
+                timestamp: None,
+                button: Some(MouseButton::Left),
+                buttons: None,
+                click_count: Some(1),
+                force: None,
+                tangential_pressure: None,
+                tilt_x: None,
+                tilt_y: None,
+                twist: None,
+                delta_x: None,
+                delta_y: None,
+                pointer_Type: None,
+            })
+            .unwrap_or_else(|e| panic!("the reader's click on {what}: {e}"));
+        }
+        // Past the click's intent window: a key is the only input behind what follows.
+        std::thread::sleep(Duration::from_millis(700));
+    };
+    // The text of the last prompt in sight, at a point where nothing else is drawn over it.
+    let at = harness::probe(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'), box = s.getBoundingClientRect(); var prompts = [...s.querySelectorAll('.virtual-window .turn.user')].reverse(); for (var u of prompts) { var walker = document.createTreeWalker(u, NodeFilter.SHOW_TEXT); for (var n = walker.nextNode(); n; n = walker.nextNode()) { if (n.textContent.trim().length < 8) continue; var range = document.createRange(); range.setStart(n, 2); range.setEnd(n, 6); var r = range.getBoundingClientRect(); var x = r.left + r.width / 2, y = r.top + r.height / 2; if (y < box.top + 60 || y > box.bottom - 60) continue; var hit = document.elementFromPoint(x, y); if (hit && hit.contains(n)) return { x: x, y: y }; } } return null; })()",
+    );
+    click(
+        at["x"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("a prompt's text in sight: {at}")),
+        at["y"].as_f64().unwrap(),
+        "the prompt's text",
+    );
+    let clicked = harness::probe(&tab, read);
+    // A key the browser does not scroll with, which nothing on the page takes, then the size a step up.
+    let (sized, sized_healed) = clamp_with("['Shift', '+']");
+    // A scroll key a handler on the page took (a host's own keymap), then the size a step down.
+    harness::eval(&tab, "(function(){ window.__take = function (e) { if (e.key === 'ArrowUp') e.preventDefault(); }; document.addEventListener('keydown', window.__take); return 'ok'; })()");
+    let (taken, taken_healed) = clamp_with("['ArrowUp', '-']");
+    harness::eval(
+        &tab,
+        "(function(){ document.removeEventListener('keydown', window.__take); return 'ok'; })()",
+    );
+    // The Page Up, and the move the browser makes for it.
+    harness::eval(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', code: 'PageUp', bubbles: true, cancelable: true })); s.scrollTop = s.scrollTop - Math.round(s.clientHeight * 0.85); return 'ok'; })()",
+    );
+    rest();
+    let pressed = harness::probe(&tab, read);
+    rest();
+    let rested = harness::probe(&tab, read);
+    // Back at the end, a click on the session list's empty space, then a scroll key, which the browser
+    // sends to the list, and the size a step up.
+    harness::jump_to_end(&tab, surface);
+    rest();
+    let back = harness::probe(&tab, read);
+    let blank = harness::probe(
+        &tab,
+        "(function(){ var l = document.getElementById('sessionList'); if (!l) return null; var r = l.getBoundingClientRect(); for (var y = r.bottom - 20; y > r.top + 20; y -= 20) { var x = r.left + Math.min(40, r.width / 2); var hit = document.elementFromPoint(x, y); if (hit && l.contains(hit) && !hit.closest('button, a, input, [tabindex], [data-session], .tree-row')) return { x: x, y: y }; } return null; })()",
+    );
+    click(
+        blank["x"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("empty space in the session list: {blank}")),
+        blank["y"].as_f64().unwrap(),
+        "the session list's empty space",
+    );
+    let listed = harness::probe(&tab, read);
+    let (elsewhere, elsewhere_healed) = clamp_with("['ArrowDown', '+']");
+    let violations = harness::probe(
+        &tab,
+        "JSON.stringify((window.__viewportViolations || []).slice(0, 4))",
+    );
+    drop(monitor);
+    let at_end = |v: &serde_json::Value| {
+        v["gap"].as_i64().unwrap_or(9999).abs() <= 2 && v["following"] == serde_json::json!(true)
+    };
+    let kept = |v: &serde_json::Value| {
+        v["clamped"].as_i64().unwrap_or(0) < v["top"].as_i64().unwrap_or(0) - 100
+            && v["ran"].as_i64().unwrap_or(0) > 0
+            && v["following"] == serde_json::json!(true)
+    };
+    assert!(
+        at_end(&clicked) && clicked["focus"] == serde_json::json!("body"),
+        "the reader clicked the prompt's text and follows the session at its end, the focus on the body: {clicked}"
+    );
+    assert!(
+        kept(&sized) && at_end(&sized_healed),
+        "a key the browser does not scroll with is no move of the reader's: the clamp's event put the follower back at the end: {sized}, then {sized_healed}"
+    );
+    assert!(
+        kept(&taken) && at_end(&taken_healed),
+        "nor is a scroll key a handler took: {taken}, then {taken_healed}"
+    );
+    assert!(
+        pressed["following"] == serde_json::json!(false)
+            && pressed["gap"].as_i64().unwrap_or(0) > 400,
+        "the Page Up is the reader's: they let go of the end where it took them: {pressed}"
+    );
+    assert!(
+        rested["following"] == serde_json::json!(false) && rested["top"] == pressed["top"],
+        "and stay there: pressed {pressed}, rested {rested}"
+    );
+    assert!(
+        at_end(&back) && at_end(&listed) && listed["focus"] == serde_json::json!("body"),
+        "back at the end, the reader clicked the session list's empty space, the focus on the body: {back}, then {listed}"
+    );
+    assert!(
+        kept(&elsewhere) && at_end(&elsewhere_healed),
+        "a scroll key after a press in the list moves the list, not the transcript: {elsewhere}, then {elsewhere_healed}"
+    );
+    assert_eq!(
+        violations,
+        serde_json::json!("[]"),
+        "the engine broke none of its invariants"
+    );
+}
+
+/// #s431, from the iOS Simulator walk: a touch's events go to the element it began on, wherever that
+/// element is by then. The live turn is redrawn as it grows, so a reader's drag that began on it ended
+/// on an element no longer in the transcript, whose touchend the view never heard: it still counted a
+/// finger down, the glide never ended, and the tail waited for good, the view going blank as the
+/// session grew. Here the element is taken out under a finger that has moved, the finger lifts, and
+/// the session grows: the follower is carried to the new end. Then a thumb resting on the session
+/// list while a finger drags the transcript, the thumb lifting last: its lift, out of the transcript,
+/// was never heard either (the review of 500ae62b). On an iPad's width,
+/// where the session is laid out as on a desktop (no dock over the foot).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn an_ipad_follower_s_touch_on_an_element_taken_out_under_the_finger_still_ends() {
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchTouchEvent, DispatchTouchEventTypeOption as Touch, TouchPoint,
+    };
+    let _serial = serial();
+    let base = base("touch-target-taken-out");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000003a8".to_string();
+    let src = stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3132, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::phone(&tab, 834, 1194);
+    monitor.open(&tab, &format!("?ui=app&session={sid}&trace=viewport"));
+    harness::until(
+        &tab,
+        &format!("innerWidth === 834 && !!document.querySelector('.virtual-window .turn.user') && {VIEW_CAUGHT_UP}"),
+        "the session drawn",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let surface = harness::Surface::AppShell;
+    let rest = || {
+        harness::eval(&tab, TWO_FRAMES);
+        std::thread::sleep(Duration::from_millis(900));
+    };
+    harness::jump_to_end(&tab, surface);
+    rest();
+    let read = "(function(){ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; return { gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), height: Math.round(s.scrollHeight), following: h.length ? h[h.length - 1].following : null, began: window.__touchBegan || null, ended: window.__touchEnded || null }; })()";
+    let before = harness::probe(&tab, read);
+    // An element inside the transcript the finger lands on, drawn over the text so the session's layout
+    // does not change; each of its touches' events is noted where it arrives.
+    let at = harness::probe(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'), box = s.getBoundingClientRect(); var e = document.createElement('span'); e.id = 'underFinger'; e.style.cssText = 'position:fixed;width:120px;height:60px;z-index:2147483647;left:' + Math.round(box.left + box.width / 2 - 60) + 'px;top:' + Math.round(box.top + box.height / 2 - 30) + 'px'; s.querySelector('.virtual-window > [data-unit-index]:last-child').appendChild(e); window.addEventListener('touchstart', function (t) { window.__touchBegan = t.target === e ? 'on it' : 'elsewhere'; }, true); e.addEventListener('touchend', function (t) { window.__touchEnded = (e.isConnected ? 'in the page' : 'taken out') + ', ' + t.touches.length + ' down'; }); var r = e.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2; return { x: x, y: y, hit: document.elementFromPoint(x, y) === e, inside: s.contains(e) }; })()",
+    );
+    let (x, y) = (at["x"].as_f64().unwrap(), at["y"].as_f64().unwrap());
+    let point = |x: f64| TouchPoint {
+        x,
+        y,
+        radius_x: None,
+        radius_y: None,
+        rotation_angle: None,
+        force: None,
+        tangential_pressure: None,
+        tilt_x: None,
+        tilt_y: None,
+        twist: None,
+        id: Some(0.0),
+    };
+    let send = |kind: Touch, points: Vec<TouchPoint>| {
+        tab.call_method(DispatchTouchEvent {
+            Type: kind,
+            touch_points: points,
+            modifiers: None,
+            timestamp: None,
+        })
+        .expect("touch event");
+    };
+    // Down, then across (the transcript does not scroll sideways, so the follower stays at the end),
+    // then the element taken out, as the page's redraw takes it, then the lift.
+    send(Touch::TouchStart, vec![point(x)]);
+    for step in 1..=4 {
+        std::thread::sleep(Duration::from_millis(16));
+        send(Touch::TouchMove, vec![point(x + 15.0 * f64::from(step))]);
+    }
+    harness::eval(
+        &tab,
+        "document.getElementById('underFinger').remove(); 'ok'",
+    );
+    send(Touch::TouchEnd, Vec::new());
+    rest();
+    let lifted = harness::probe(&tab, read);
+    append(&src, &user("asked after the lift", 50));
+    append(
+        &src,
+        &assistant(
+            &"the answer grows the session past the screen. ".repeat(60),
+            50,
+        ),
+    );
+    let grew = format!(
+        "(function(){{ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; return s.scrollHeight > {} + 400 && h.length && h[h.length - 1].following && Math.abs(s.scrollHeight - s.clientHeight - s.scrollTop) <= 2; }})()",
+        lifted["height"].as_i64().unwrap_or(0)
+    );
+    let carried = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        harness::until(
+            &tab,
+            &grew,
+            "the follower carried to the session's new end",
+            Duration::from_secs(10),
+            read,
+        )
+    }));
+    rest();
+    let after = harness::probe(&tab, read);
+    // A finger on the transcript, then a thumb on the session list's empty space; both move together
+    // (a pan, never a pinch) and lift. The protocol lifts every finger on a touch end, and sends their
+    // touchends in the order they landed (measured: a move that leaves one out lifts nothing), so the
+    // thumb's, out of the transcript, is the last finger's.
+    let thumb = harness::probe(
+        &tab,
+        "(function(){ var l = document.getElementById('sessionList'), s = document.querySelector('.transcript'); if (!l) return null; window.addEventListener('touchend', function (t) { window.__lastEnd = (s.contains(t.target) ? 'in the transcript' : 'outside it') + ', ' + t.touches.length + ' down'; }, true); window.__touchLog = []; ['touchstart', 'touchmove', 'touchend', 'touchcancel'].forEach(function (k) { window.addEventListener(k, function (t) { window.__touchLog.push(k.slice(5) + ':' + (s.contains(t.target) ? 'T' : 'O') + t.touches.length + '/' + t.changedTouches.length); }, true); }); var r = l.getBoundingClientRect(); for (var y = r.bottom - 20; y > r.top + 20; y -= 20) { var x = r.left + Math.min(40, r.width / 2); var hit = document.elementFromPoint(x, y); if (hit && l.contains(hit) && !s.contains(hit) && !hit.closest('button, a, input, [data-session], .tree-row')) return { x: x, y: y }; } return null; })()",
+    );
+    let (tx, ty) = (
+        thumb["x"]
+            .as_f64()
+            .unwrap_or_else(|| panic!("empty space in the session list: {thumb}")),
+        thumb["y"].as_f64().unwrap(),
+    );
+    let at2 = |px: f64, py: f64, id: f64| TouchPoint {
+        x: px,
+        y: py,
+        radius_x: None,
+        radius_y: None,
+        rotation_angle: None,
+        force: None,
+        tangential_pressure: None,
+        tilt_x: None,
+        tilt_y: None,
+        twist: None,
+        id: Some(id),
+    };
+    send(Touch::TouchStart, vec![at2(x, y, 0.0)]);
+    std::thread::sleep(Duration::from_millis(16));
+    send(Touch::TouchStart, vec![at2(x, y, 0.0), at2(tx, ty, 1.0)]);
+    for step in 1..=4 {
+        std::thread::sleep(Duration::from_millis(16));
+        let d = 15.0 * f64::from(step);
+        send(
+            Touch::TouchMove,
+            vec![at2(x + d, y, 0.0), at2(tx + d, ty, 1.0)],
+        );
+    }
+    send(Touch::TouchEnd, Vec::new());
+    rest();
+    let thumb_lifted = harness::probe(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; return { gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), height: Math.round(s.scrollHeight), following: h.length ? h[h.length - 1].following : null, lastEnd: window.__lastEnd || null, log: (window.__touchLog || []).join(' ') }; })()",
+    );
+    append(&src, &user("asked after the thumb lifted", 51));
+    append(
+        &src,
+        &assistant(&"a second answer grows the session again. ".repeat(60), 51),
+    );
+    let grew2 = format!(
+        "(function(){{ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; return s.scrollHeight > {} + 400 && h.length && h[h.length - 1].following && Math.abs(s.scrollHeight - s.clientHeight - s.scrollTop) <= 2; }})()",
+        thumb_lifted["height"].as_i64().unwrap_or(0)
+    );
+    let carried2 = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        harness::until(
+            &tab,
+            &grew2,
+            "the follower carried to the session's new end, after the thumb",
+            Duration::from_secs(10),
+            read,
+        )
+    }));
+    rest();
+    let after2 = harness::probe(&tab, read);
+    let violations = harness::probe(
+        &tab,
+        "JSON.stringify((window.__viewportViolations || []).slice(0, 4))",
+    );
+    drop(monitor);
+    assert!(
+        before["gap"].as_i64().unwrap_or(9999).abs() <= 2
+            && before["following"] == serde_json::json!(true),
+        "the reader follows the session at its end: {before}"
+    );
+    assert!(
+        at["hit"] == serde_json::json!(true) && at["inside"] == serde_json::json!(true),
+        "the finger lands on an element inside the transcript: {at}"
+    );
+    assert!(
+        lifted["began"] == serde_json::json!("on it")
+            && lifted["ended"] == serde_json::json!("taken out, 0 down")
+            && lifted["following"] == serde_json::json!(true),
+        "the touch began on the element and ended on it, out of the page, the follower still following: {lifted}"
+    );
+    assert!(
+        carried.is_ok(),
+        "the session grew and the follower was carried to its new end: lifted {lifted}, after {after}"
+    );
+    assert!(
+        thumb_lifted["lastEnd"] == serde_json::json!("outside it, 0 down")
+            && thumb_lifted["following"] == serde_json::json!(true),
+        "the thumb lifted last, outside the transcript, the follower still following: {thumb_lifted}"
+    );
+    assert!(
+        carried2.is_ok(),
+        "the session grew again and the follower was carried to its new end: lifted {thumb_lifted}, after {after2}"
+    );
+    assert_eq!(
+        violations,
+        serde_json::json!("[]"),
+        "the engine broke none of its invariants"
+    );
+}
+
+/// #s431, from a suite run: another session chosen while the reader follows this one opens at its end
+/// at once, without waiting for a scroll event. Choosing it empties the transcript first, and the
+/// browser clamps the offset to 0 with no write of the engine's to say so; the engine's belief stayed
+/// at the old session's end, so the new session's records read the clamp as a move nobody heard, and
+/// its tail waited for that scroll event, which a lazy tab delivered a second later (the reader looked
+/// at the head of an empty window meanwhile). Here the transcript's scroll events are held from before
+/// the click until the new session is drawn, as a lazy tab holds them.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_follower_s_next_session_opens_at_its_end_before_any_scroll_event() {
+    let _serial = serial();
+    let base = base("next-session-at-end");
+    let stores = Stores::new(&base);
+    let first = "cccccccc-0000-4000-8000-0000000003a9";
+    let second = "cccccccc-0000-4000-8000-0000000003aa";
+    for sid in [first, second] {
+        stores.claude_session(sid, &harness::long_session(30, harness::Shape::default()));
+    }
+    let monitor = Monitor::spawn(Kind::V1, 3133, &base, Some(&stores), true);
+    let port = monitor.port;
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1280.0, 800.0);
+    harness::show_every_session(
+        &tab,
+        &format!("http://127.0.0.1:{port}/?ui=app&session={first}&trace=viewport"),
+    );
+    let row = format!("#tree .tree-row.session[data-session=\"{second}\"]");
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector({row:?}) && !!document.querySelector('.virtual-window .turn.user') && {VIEW_CAUGHT_UP}"),
+        "the list drawn and the first session at its end",
+        Duration::from_secs(30),
+        "JSON.stringify({ tree: (document.getElementById('tree') || {}).innerText, turns: document.querySelectorAll('.virtual-window .turn.user').length })",
+    );
+    let read = "(function(){ var s = document.querySelector('.transcript'); var h = window.__viewportHistory.states; var t = (window.__viewportTrace || []).filter(function (e) { return e.t >= (window.__t0 || 0); }); return { gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), height: Math.round(s.scrollHeight), following: h.length ? h[h.length - 1].following : null, held: (window.__heldEvents || []).length, waits: t.filter(function (e) { return e.event === 'follow:unheard' || e.event === 'tail:deferred' || e.event === 'unheard:lapsed'; }).map(function (e) { return e.event + (e.verdict ? ':' + e.verdict : ''); }) }; })()";
+    let before = harness::probe(&tab, read);
+    // From here the transcript's scroll events are held, as a lazy tab holds them, and kept to be
+    // dispatched again as themselves once the new session is drawn.
+    harness::eval(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); return 'ok'; })()",
+    );
+    harness::click_when_settled(&tab, &row, "the second session's row");
+    harness::until(
+        &tab,
+        &format!("location.search.indexOf('{second}') >= 0 && !!document.querySelector({row:?} + '.selected') && !!document.querySelector('.virtual-window .turn.user') && window.__viewportHistory.states.some(function (s) {{ return s.t >= window.__t0 && s.count > 0 && s.cause === 'records'; }})"),
+        "the second session drawn",
+        Duration::from_secs(30),
+        read,
+    );
+    let drawn = harness::probe(&tab, read);
+    harness::eval(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); window.removeEventListener('scroll', window.__hold, true); window.__heldEvents.forEach(function (e) { s.dispatchEvent(e); }); return 'ok'; })()",
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    std::thread::sleep(Duration::from_millis(900));
+    let after = harness::probe(&tab, read);
+    let violations = harness::probe(
+        &tab,
+        "JSON.stringify((window.__viewportViolations || []).slice(0, 4))",
+    );
+    drop(monitor);
+    assert!(
+        before["gap"].as_i64().unwrap_or(9999).abs() <= 2
+            && before["following"] == serde_json::json!(true),
+        "the reader follows the first session at its end: {before}"
+    );
+    // Whether the browser has sent the switch's scroll event yet varies (a lazy tab may not have); held
+    // or not sent, the engine has heard none.
+    assert!(
+        drawn["gap"].as_i64().unwrap_or(9999).abs() <= 2
+            && drawn["height"].as_i64().unwrap_or(0) > 2000
+            && drawn["following"] == serde_json::json!(true)
+            && drawn["waits"] == serde_json::json!([]),
+        "the second session is placed at its end as it is drawn, with no wait for the held event: {drawn}"
+    );
+    assert!(
+        after["gap"].as_i64().unwrap_or(9999).abs() <= 2
+            && after["following"] == serde_json::json!(true)
+            && after["waits"] == serde_json::json!([]),
+        "the held event, once it arrives, changes nothing: drawn {drawn}, after {after}"
+    );
+    assert_eq!(
+        violations,
+        serde_json::json!("[]"),
+        "the engine broke none of its invariants"
+    );
+}
+
+/// #s464 with #s431 (the review of 28f51ad9): a smooth move the host's hide stopped never arrives. The
+/// engine knows a smooth write is travelling until the scroll event that reaches its end (`inFlight`),
+/// and while one travels every placement is issued smooth again. Hidden mid-travel, that event never
+/// comes: back from hidden the first transaction drops the write and places the reader outright, and
+/// a move of the reader's that a transaction meets before its event is theirs again (a travelling
+/// write reads no drift).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_smooth_move_the_hide_stopped_is_over_once_the_view_is_shown() {
+    let _serial = serial();
+    let base = base("host-hidden-smooth");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000003a7".to_string();
+    stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3129, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1280.0, 800.0);
+    monitor.open(&tab, &format!("?ui=app&session={sid}&trace=viewport"));
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.virtual-window .turn.user') && {VIEW_CAUGHT_UP}"),
+        "the session drawn",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let rest = |ms: u64| {
+        harness::eval(&tab, TWO_FRAMES);
+        std::thread::sleep(Duration::from_millis(ms));
+    };
+    // Up in the session, not following, nothing focused.
+    harness::eval(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); s.dispatchEvent(new WheelEvent('wheel', { deltaY: -1 })); s.scrollTop = Math.round(s.scrollHeight / 2); return 'ok'; })()",
+    );
+    harness::until_reader_owns_the_view(&tab);
+    rest(900);
+    // What the trace says since a mark: each placement's smoothness, and whether a smooth write arrived.
+    let traced = |mark: &str| {
+        harness::probe(
+            &tab,
+            &format!("(function(){{ var t = (window.__viewportTrace || []).filter(function (e) {{ return e.t >= (window.{mark} || 0); }}); return {{ smooth: t.filter(function (e) {{ return e.event === 'place'; }}).map(function (e) {{ return !!e.smooth; }}), arrived: t.filter(function (e) {{ return e.event === 'arrived'; }}).length }}; }})()"),
+        )
+    };
+    // A head step that has to move (`stepHead`: the first head, above the view, brought to 160px,
+    // smoothly), and the view hidden while it travels.
+    harness::eval(&tab, "window.__t0 = performance.now(); 'ok'");
+    harness::key(&tab, "j", false);
+    harness::eval(
+        &tab,
+        "(function(){ var a = document.activeElement, u = a && a.closest ? a.closest('[data-unit-key]') : null; window.__headKey = u ? u.dataset.unitKey : null; window.__headIdx = u ? [...u.querySelectorAll('button.renderer-head')].indexOf(a) : -1; document.getElementById('sessionView').hidden = true; return 'ok'; })()",
+    );
+    let stepped = traced("__t0");
+    harness::until(
+        &tab,
+        "document.getElementById('sessionView').getBoundingClientRect().width === 0",
+        "the view hidden by its host",
+        Duration::from_secs(5),
+        "document.getElementById('sessionView').hidden",
+    );
+    rest(900);
+    harness::eval(
+        &tab,
+        "window.__t2 = performance.now(); document.getElementById('sessionView').hidden = false; 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('sessionView').getBoundingClientRect().width > 0",
+        "the view shown again",
+        Duration::from_secs(5),
+        "document.getElementById('sessionView').hidden",
+    );
+    rest(900);
+    let back = traced("__t2");
+    let head = harness::probe(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); var u = [...s.querySelectorAll('[data-unit-key]')].find(function (e) { return e.dataset.unitKey === window.__headKey; }); if (!u) return 'not mounted'; var h = u.querySelectorAll('button.renderer-head')[window.__headIdx]; return h ? Math.round(h.getBoundingClientRect().top - s.getBoundingClientRect().top) : 'no head'; })()",
+    );
+    // The reader's own move, which a transaction meets before its event: their wheel and the move in
+    // one task, the event held, a mounted unit a few pixels taller so the engine transacts next frame.
+    let moved: serde_json::Value = serde_json::from_str(
+        harness::eval(
+            &tab,
+            "(async function(){ var s = document.querySelector('.transcript'); var frames = function () { return new Promise(function (done) { requestAnimationFrame(function () { requestAnimationFrame(function () { done(); }); }); }); }; window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var top = s.scrollTop; s.dispatchEvent(new WheelEvent('wheel', { deltaY: -600, bubbles: true })); s.scrollTop = top - 600; units[0].style.paddingBottom = '7px'; await frames(); var now = s.scrollTop; window.removeEventListener('scroll', window.__hold, true); window.__heldEvents.forEach(function (e) { s.dispatchEvent(e); }); return JSON.stringify({ top: Math.round(top), moved: Math.round(now) }); })()",
+        )
+        .as_str()
+        .unwrap_or("null"),
+    )
+    .unwrap_or(serde_json::Value::Null);
+    rest(900);
+    let after = harness::probe(
+        &tab,
+        "(function(){ var s = document.querySelector('.transcript'); return { top: Math.round(s.scrollTop), violations: (window.__viewportViolations || []).length }; })()",
+    );
+    drop(monitor);
+    assert!(
+        stepped["smooth"]
+            .as_array()
+            .is_some_and(|all| all.iter().any(|s| s == &serde_json::json!(true)))
+            && stepped["arrived"] == serde_json::json!(0),
+        "the head step travels smoothly and the hide stops it before it arrives: {stepped}"
+    );
+    assert!(
+        back["smooth"]
+            .as_array()
+            .is_some_and(|all| all.iter().all(|s| s == &serde_json::json!(false)))
+            && (head.as_i64().unwrap_or(9999) - 160).abs() <= 3,
+        "shown again, the reader is placed outright, never smoothly, the stepped head at 160px: head {head}, {back}"
+    );
+    let want = moved["top"].as_i64().unwrap_or(0) - 600;
+    assert!(
+        (after["top"].as_i64().unwrap_or(0) - want).abs() <= 20
+            && after["violations"] == serde_json::json!(0),
+        "the reader's move after it stays theirs: moved {moved}, after {after}"
+    );
+}
+
+/// #s464 with #s431: a view its host mounts while hidden has no box, and its layout's first decision,
+/// at 0×0, says nothing of what the view is (the review of ddcac874). The outline's default (open,
+/// except on the phone reader) waits for the first decision that sees the box: on a desktop the
+/// outline opens as the view is shown, the host hears it, and nothing is remembered as the reader's
+/// choice. Decided at 0×0, the view took the phone's default, and the outline stayed folded.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_view_its_host_mounts_hidden_takes_its_outline_default_once_shown() {
+    let _serial = serial();
+    let base = base("host-hidden-mount");
+    let monitor = Monitor::spawn(Kind::V1, 3123, &base, None, true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::resize(&tab, 1400.0, 900.0);
+    harness::open_host_page(&tab, &monitor, "mount=0");
+    let state = "(function(){ var v = document.getElementById('sessionView'); var outline = window.__host.events.filter(function (e) { return e.name === 'onOutline'; }).map(function (e) { return e.args[0].wanted; }); return { width: v ? Math.round(v.getBoundingClientRect().width) : null, folded: v ? v.classList.contains('pl-outline-glyphs') || !!v.querySelector('.workspace.navigator-off') : null, phone: v ? v.classList.contains('pl-phone') : null, said: outline, stored: localStorage.getItem('am-demo-navigator') }; })()";
+    harness::eval(
+        &tab,
+        "localStorage.removeItem('am-demo-navigator'); document.getElementById('hostPane').hidden = true; window.__host.mount(); 'ok'",
+    );
+    let hidden = harness::probe(&tab, state);
+    harness::eval(&tab, TWO_FRAMES);
+    std::thread::sleep(Duration::from_millis(300));
+    let still = harness::probe(&tab, state);
+    harness::eval(
+        &tab,
+        "document.getElementById('hostPane').hidden = false; 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('sessionView').getBoundingClientRect().width > 0",
+        "the view shown",
+        Duration::from_secs(5),
+        state,
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    std::thread::sleep(Duration::from_millis(300));
+    let shown = harness::probe(&tab, state);
+    drop(monitor);
+    assert_eq!(
+        hidden["width"], 0,
+        "the view is mounted with no box: {hidden}"
+    );
+    assert_eq!(
+        still["said"],
+        serde_json::json!([]),
+        "hidden, the view says no outline default it cannot know: {still}"
+    );
+    assert_eq!(
+        (shown["phone"].clone(), shown["folded"].clone()),
+        (serde_json::json!(false), serde_json::json!(false)),
+        "shown on a desktop, the view is the desktop layout with its outline open: hidden {hidden}, shown {shown}"
+    );
+    assert_eq!(
+        shown["said"],
+        serde_json::json!([true]),
+        "the host hears the default once, as the view has a box: {shown}"
+    );
+    assert!(
+        shown["stored"].is_null(),
+        "a default is not remembered as the reader's choice: {shown}"
+    );
+}
+
+/// The session view's unmount (#s429 stage 7): mounted in the test host and taken away, it leaves
+/// the page's window and document with exactly the listeners they had before it (as the browser
+/// lists them), the host's element empty with its own attributes, nothing of its own in the page's
+/// layer, the host's own value put back where the view wrote over it (`--preview` on the page's root)
+/// and a value the view never wrote left where the host put it (its box's transform, moved while the
+/// view was mounted), no global of its engine left on the window, and it asks the monitor
+/// nothing more (its `/pull` polls stop). Every member of its handle then does nothing, and a key or
+/// a press on the page reaches nothing of it; nothing throws. Mounted
+/// again in the same element it is whole once, not twice: the same listeners as the first mount, one
+/// turn strip, one copy menu, one task card, and one press of `w` toggles wrapping once. The page
+/// around it (the root's and the body's attributes and the root's style, what the body and the head
+/// hold, the host's box) is as it was before each mount: after an unmount, after a mount and an
+/// unmount in one task, and on a phone, where the view measures its sheets onto the root, with a
+/// session and with none ever opened.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_unmounts_and_mounts_again() {
+    let _serial = serial();
+    let base = base("host-unmount");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000000f9".to_string();
+    let mut jsonl = harness::user_at("first question", &harness::at("00:01"));
+    jsonl += &harness::assistant_at("first answer", &harness::at("00:02"));
+    jsonl += &harness::user_at("second question", &harness::at("00:03"));
+    jsonl += &harness::assistant_at("second answer", &harness::at("00:04"));
+    stores.claude_session(&sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3107, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    // The page around the view, whatever the view might have touched: the root's and the body's
+    // attributes, the root's inline style, what the body and the head hold, and the host's box.
+    let page = "(function(){ var attrs = function (e) { return [].map.call(e.attributes, function (a) { return a.name + '=' + a.value; }).sort(); }; return { html: attrs(document.documentElement), body: attrs(document.body), rootStyle: document.documentElement.style.cssText, bodyKids: document.body.children.length, headKids: document.head.children.length, pane: document.getElementById('hostPane').getAttribute('style'), globals: ['__viewportHistory', '__viewportViolations'].filter(function (k) { return k in window; }), errors: window.__host.errors }; })()";
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}&mount=0"));
+    // The host's own values where the view writes too: the view must put them back, not clear them.
+    let host_styles = "document.documentElement.style.setProperty('--preview', '510px'); document.getElementById('hostPane').style.transform = 'translateX(0px)'; 'ok'";
+    harness::eval(&tab, host_styles);
+    let before = harness::page_listeners(&tab);
+    let page_before = harness::probe(&tab, page);
+    let drawn = |tab: &headless_chrome::Tab| {
+        harness::until(
+            tab,
+            "!!document.querySelector('.transcript') && /second answer/.test(document.querySelector('.transcript').innerText)",
+            "the session in the host's view",
+            std::time::Duration::from_secs(20),
+            "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+        );
+    };
+    let shape = "({ strips: document.querySelectorAll('#turnStickyBar').length, menus: document.querySelectorAll('#sessionCopyMenu').length, cards: document.querySelectorAll('.task-popover').length, scrims: document.querySelectorAll('.task-scrim').length, children: document.querySelector('.host-view').children.length, attributes: [].map.call(document.querySelector('.host-view').attributes, function (a) { return a.name + '=' + a.value; }), preview: document.documentElement.style.getPropertyValue('--preview'), errors: window.__host.errors })";
+    let wrapped = "document.querySelector('.host-view').classList.contains('wrap-code')";
+    let press_w = format!("(function(){{ document.getElementById('transcript').dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }})); var was = {wrapped}; var taken = {PRESS}('w'); return {{ was: was, taken: taken, now: {wrapped} }}; }})()");
+    harness::eval(&tab, "window.__host.mount()");
+    drawn(&tab);
+    let first = harness::page_listeners(&tab);
+    let first_shape = harness::probe(&tab, shape);
+    // The host moves its own box while the view is mounted: the view never wrote that, so the
+    // unmount leaves it where the host put it.
+    harness::eval(
+        &tab,
+        "document.getElementById('hostPane').style.transform = 'translateX(3px)'; 'ok'",
+    );
+    let mounted_globals = harness::eval(
+        &tab,
+        "['__viewportHistory', '__viewportViolations'].filter(function (k) { return k in window; }).join(',')",
+    );
+    let first_w = harness::probe(&tab, &press_w);
+    // Let a record poll or two go by, then take the view away.
+    std::thread::sleep(std::time::Duration::from_millis(1500));
+    let polled = harness::eval(
+        &tab,
+        "window.__host.requests.filter(function (r) { return /\\/pull\\?/.test(r.url); }).length",
+    );
+    harness::eval(
+        &tab,
+        "window.__unmountedAt = performance.now(); window.__view.unmount(); 'ok'",
+    );
+    let after = harness::page_listeners(&tab);
+    let after_shape = harness::probe(&tab, shape);
+    let page_after = harness::probe(&tab, page);
+    // …and puts it back as it was before the mount for what follows.
+    harness::eval(
+        &tab,
+        "document.getElementById('hostPane').style.transform = 'translateX(0px)'; 'ok'",
+    );
+    // Every member of the handle, after the unmount: nothing done, nothing thrown, nothing answered.
+    let members = harness::probe(
+        &tab,
+        &format!("(function(){{ var v = window.__view, thrown = []; [function () {{ return v.open({sid:?}); }}, function () {{ return v.select({sid:?}); }}, function () {{ return v.indexChanged(); }}, function () {{ return v.writeChanged(); }}, function () {{ return v.resized(); }}, function () {{ return v.close('gone', 'gone'); }}, function () {{ return v.keys.wrap(); }}, function () {{ return v.persist(); }}, function () {{ return v.session(); }}, function () {{ return v.controls; }}, function () {{ return v.unmount(); }}].forEach(function (f, i) {{ try {{ var r = f(); if (r !== undefined) thrown.push(i + ' answered ' + r); }} catch (e) {{ thrown.push(i + ': ' + e.message); }} }}); return {{ thrown: thrown, children: document.querySelector('.host-view').children.length }}; }})()"),
+    );
+    let after_key = harness::probe(&tab, &format!("(function(){{ document.querySelector('.host-view').dispatchEvent(new MouseEvent('mousedown', {{ bubbles: true }})); document.body.dispatchEvent(new PointerEvent('pointerdown', {{ bubbles: true }})); return {{ w: {PRESS}('w'), escape: {PRESS}('Escape'), slash: {PRESS}('/') }}; }})()"));
+    std::thread::sleep(std::time::Duration::from_millis(3000));
+    let late = harness::probe(&tab, "({ requests: window.__host.requests.filter(function (r) { return r.at > window.__unmountedAt; }).map(function (r) { return r.url; }), errors: window.__host.errors })");
+    // Mounted and taken away again in one task, twice, as a host's framework may: what the mount
+    // held back for the host goes nowhere, and nothing throws.
+    harness::eval(
+        &tab,
+        "window.__host.mount(); window.__view.unmount(); window.__host.mount(); window.__view.unmount(); 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let same_task = (harness::page_listeners(&tab), harness::probe(&tab, page));
+    // Again, in the same element.
+    harness::eval(&tab, "window.__host.mount()");
+    drawn(&tab);
+    let second = harness::page_listeners(&tab);
+    let second_shape = harness::probe(&tab, shape);
+    let second_w = harness::probe(&tab, &press_w);
+    // On a phone, where the view measures its sheets onto the page's root and listens to the visual
+    // viewport, with a session and with none ever opened.
+    harness::phone(&tab, 390, 844);
+    let mut phone = Vec::new();
+    for query in [format!("session={sid}&mount=0"), "mount=0".to_string()] {
+        harness::open_host_page(&tab, &monitor, &query);
+        let listeners = harness::page_listeners(&tab);
+        let shape_before = harness::probe(&tab, page);
+        harness::eval(&tab, "window.__host.mount()");
+        if query.contains("session") {
+            drawn(&tab);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let measured = harness::eval(
+            &tab,
+            "document.documentElement.style.getPropertyValue('--phone-top') !== ''",
+        );
+        harness::eval(&tab, "window.__view.unmount(); 'ok'");
+        phone.push((
+            query,
+            measured,
+            listeners == harness::page_listeners(&tab),
+            shape_before,
+            harness::probe(&tab, page),
+        ));
+    }
+    drop(monitor);
+    assert_eq!(
+        mounted_globals,
+        serde_json::json!("__viewportHistory,__viewportViolations"),
+        "the mounted view's engine puts its bug report on the window"
+    );
+    let mut moved_before = page_before.clone();
+    moved_before["pane"] = serde_json::json!("transform: translateX(3px);");
+    assert_eq!(
+        page_after, moved_before,
+        "the page around the view is as it was before the mount: the host's own --preview put back, the transform the host moved while mounted left where it put it, the engine's globals gone"
+    );
+    assert_eq!(
+        members,
+        serde_json::json!({ "thrown": [], "children": 0 }),
+        "after the unmount every member of the handle does nothing and answers nothing"
+    );
+    assert_eq!(
+        same_task,
+        (before.clone(), page_before.clone()),
+        "mounted and unmounted in one task, twice, the page is as it was, and nothing threw"
+    );
+    for (query, measured, listeners, shape_before, shape_after) in &phone {
+        assert_eq!(
+            (measured.clone(), *listeners, shape_after),
+            (serde_json::json!(true), true, shape_before),
+            "on a phone ({query}), what the view measured on the root goes, and the listeners are as they were"
+        );
+    }
+    assert!(
+        first.len() > before.len(),
+        "the mounted view listens on the page: {first:?}"
+    );
+    assert!(
+        polled.as_u64().unwrap_or(0) > 0,
+        "the mounted view polls the monitor (`/pull`): {polled}"
+    );
+    assert_eq!(
+        (
+            first_shape["strips"].clone(),
+            first_shape["menus"].clone(),
+            first_shape["cards"].clone(),
+            first_shape["scrims"].clone()
+        ),
+        (
+            serde_json::json!(1),
+            serde_json::json!(1),
+            serde_json::json!(1),
+            serde_json::json!(1)
+        ),
+        "one of each, mounted: {first_shape}"
+    );
+    assert_eq!(
+        (first_w["taken"].clone(), first_w["now"] != first_w["was"]),
+        (serde_json::json!(true), true),
+        "one press of w toggles wrapping: {first_w}"
+    );
+    assert_eq!(
+        after, before,
+        "unmounted, the window and the document have exactly the listeners they had before the view"
+    );
+    assert_eq!(
+        after_shape,
+        serde_json::json!({ "strips": 0, "menus": 0, "cards": 0, "scrims": 0, "children": 0, "attributes": ["class=host-view"], "preview": "510px", "errors": [] }),
+        "and nothing of the view is left: the element as the host gave it, no layer of its own, the root's property the host's"
+    );
+    assert_eq!(
+        after_key,
+        serde_json::json!({ "w": false, "escape": false, "slash": false }),
+        "a key on the page reaches nothing of the old view"
+    );
+    assert_eq!(
+        late,
+        serde_json::json!({ "requests": [], "errors": [] }),
+        "and it asks the monitor nothing more, and nothing throws"
+    );
+    assert_eq!(
+        second, first,
+        "mounted again, the page has exactly the listeners of the first mount"
+    );
+    assert_eq!(
+        (
+            second_shape["strips"].clone(),
+            second_shape["menus"].clone(),
+            second_shape["cards"].clone(),
+            second_shape["scrims"].clone(),
+            second_shape["errors"].clone()
+        ),
+        (
+            serde_json::json!(1),
+            serde_json::json!(1),
+            serde_json::json!(1),
+            serde_json::json!(1),
+            serde_json::json!([])
+        ),
+        "and one of each again: {second_shape}"
+    );
+    assert_eq!(
+        (
+            second_w["taken"].clone(),
+            second_w["now"] != second_w["was"]
+        ),
+        (serde_json::json!(true), true),
+        "one press of w toggles wrapping once, the old view hearing nothing: {second_w}"
     );
 }
 
@@ -1343,6 +8136,7 @@ fn the_app_shell_composes_one_scroller_under_fixed_chrome() {
     let sid = "cccccccc-0000-4000-8000-000000000001".to_string();
     stores.claude_session(&sid, &harness::long_session(80, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2836, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let eval = |tab: &headless_chrome::Tab, js: &str| -> serde_json::Value {
@@ -1351,7 +8145,7 @@ fn the_app_shell_composes_one_scroller_under_fixed_chrome() {
             .and_then(|r| r.value)
             .unwrap_or(serde_json::Value::Null)
     };
-    tab.navigate_to(&format!("http://127.0.0.1:2836/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "(function(){ var s=document.querySelector('.transcript'); return !!s && document.querySelector('.virtual-window').children.length > 0 && s.scrollHeight > s.clientHeight * 2; })()", "the fixture session to be tall enough to scroll", std::time::Duration::from_secs(20), "document.querySelector('.virtual-window') ? document.querySelector('.virtual-window').children.length : -1");
@@ -1553,6 +8347,7 @@ fn app_shell_lists_a_session_started_in_another_s_scratch_under_its_project() {
     let wt = format!("/tmp/claude-502/-w-knack/{parent}/scratchpad/wt-1");
     stores.claude_session(child, &session(child, &wt, 400, "fix t1 in this worktree"));
     let monitor = Monitor::spawn(Kind::V1, 2960, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let probe = |js: &str| -> serde_json::Value {
@@ -1565,7 +8360,7 @@ fn app_shell_lists_a_session_started_in_another_s_scratch_under_its_project() {
     };
 
     // The app shell: a row belongs to the project header above it.
-    harness::show_every_session(&tab, "http://127.0.0.1:2960/?ui=app");
+    harness::show_every_session(&tab, &format!("http://127.0.0.1:{port}/?ui=app"));
     harness::until(
         &tab,
         &format!("!!document.querySelector('.tree-row.session[data-session=\"{child}\"]')"),
@@ -1717,9 +8512,10 @@ fn the_app_shell_collapses_the_sidebar_into_a_rail() {
     let sid = "cccccccc-0000-4000-8000-000000000054".to_string();
     stores.claude_session(&sid, &harness::long_session(30, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2843, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let url = format!("http://127.0.0.1:2843/?ui=app&session={sid}");
+    let url = format!("http://127.0.0.1:{port}/?ui=app&session={sid}");
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
     let mounted = "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0";
@@ -2494,9 +9290,10 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
     let sid = "cccccccc-0000-4000-8000-000000000055".to_string();
     stores.claude_session(&sid, &harness::long_session(60, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2844, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let url = format!("http://127.0.0.1:2844/?ui=app&session={sid}");
+    let url = format!("http://127.0.0.1:{port}/?ui=app&session={sid}");
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
     let mounted = "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0 && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3";
@@ -2527,7 +9324,7 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
         "…and nothing is remembered for it: {retired}"
     );
 
-    let widths = "(function(){ var t = document.querySelector('.transcript').getBoundingClientRect(), m = document.querySelector('.session-main').getBoundingClientRect(), n = document.querySelector('.session-navigator'); var nr = n.getBoundingClientRect(); return { transcript: Math.round(t.width), main: Math.round(m.width), navigator: getComputedStyle(n).display === 'none' ? 0 : Math.round(nr.width) }; })()";
+    let widths = "(function(){ var t = document.querySelector('.transcript').getBoundingClientRect(), m = document.querySelector('.sv-session-main').getBoundingClientRect(), n = document.querySelector('.session-navigator'); var nr = n.getBoundingClientRect(); return { transcript: Math.round(t.width), main: Math.round(m.width), navigator: getComputedStyle(n).display === 'none' ? 0 : Math.round(nr.width) }; })()";
     let open = harness::probe(&tab, widths);
     assert!(
         open["navigator"].as_f64().unwrap_or(0.0) > 150.0,
@@ -2614,7 +9411,9 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
     // retire the third state rested on. Hit-tested: a control that cannot be reached still
     // reports a perfect rectangle.
     let hittable = r#"function (el) { if (!el) return false; var r = el.getBoundingClientRect(); if (r.width < 4 || r.height < 4) return false; var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!(hit && (hit === el || el.contains(hit) || hit.contains(el))); }"#;
-    for (label, w) in [("wide", 1500.0), ("narrow", 820.0)] {
+    // #s431 stage 3: the narrow window is 1040px, where the owner's order narrows the list to make
+    // room for the outline (1012–1079px at the defaults); below 1012 the outline cannot open.
+    for (label, w) in [("wide", 1500.0), ("narrow", 1040.0)] {
         harness::resize(&tab, w, 900.0);
         harness::until(
             &tab,
@@ -2680,6 +9479,44 @@ fn the_app_shell_walks_the_outline_between_its_two_states() {
         // The next leg resizes, so leave the pane settled rather than mid-collapse.
         harness::until_navigator_reflow(&tab, opened_w);
     }
+    // An 820px window has no room for the outline beside the session and the list at its least: the
+    // rail's expand is still there and says why it does nothing, and a press leaves the outline shut.
+    harness::resize(&tab, 820.0, 900.0);
+    harness::until(
+        &tab,
+        "innerWidth === 820",
+        "an 820px window",
+        std::time::Duration::from_secs(5),
+        "innerWidth",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('navigatorRailExpand').getAttribute('aria-disabled') === 'true'",
+        "the window's decision to hold the outline shut",
+        std::time::Duration::from_secs(5),
+        "document.getElementById('navigatorRailExpand').outerHTML.slice(0, 300)",
+    );
+    let expand = format!("(function(){{ var hittable = {hittable}; var e = document.getElementById('navigatorRailExpand'); return {{ off: {off}, reachable: hittable(e), disabled: e.getAttribute('aria-disabled'), title: e.title }}; }})()");
+    let blocked = harness::probe(&tab, &expand);
+    assert!(
+        blocked["off"] == true
+            && blocked["reachable"] == true
+            && blocked["disabled"] == "true"
+            && blocked["title"]
+                .as_str()
+                .is_some_and(|t| t.contains("Too narrow")),
+        "at an 820px window the rail's expand is there, disabled, and says why: {blocked}"
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('navigatorRailExpand').click(); 'ok'",
+    );
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    assert_eq!(
+        harness::eval(&tab, off),
+        true,
+        "…and a press there leaves the outline shut"
+    );
     drop(monitor);
 }
 
@@ -2705,9 +9542,10 @@ fn the_app_shell_orders_tasks_by_group_then_id() {
         ],
     );
     let monitor = Monitor::spawn(Kind::V1, 2845, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2845/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -2770,9 +9608,10 @@ fn the_app_shell_turns_pane_scrolls_itself() {
     let sid = "cccccccc-0000-4000-8000-000000000058".to_string();
     stores.claude_session(&sid, &harness::long_session(160, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2848, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2848/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(
@@ -2853,9 +9692,10 @@ fn the_app_shell_tasks_pane_scrolls_itself() {
         .collect();
     stores.claude_tasks(&sid, &borrowed);
     let monitor = Monitor::spawn(Kind::V1, 2849, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2849/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -2928,7 +9768,7 @@ fn the_app_shell_centers_the_tasks_pane_on_the_running_tasks() {
     let monitor = Monitor::spawn(Kind::V1, 2846, &base, Some(&stores), true);
     let (browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2846/?ui=app&session={sid}"))
+    tab.navigate_to(&monitor.url(&format!("?ui=app&session={sid}")))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -3122,7 +9962,7 @@ fn the_app_shell_centers_the_tasks_pane_on_the_running_tasks() {
     let monitor2 = Monitor::spawn(Kind::V1, 2847, &base2, Some(&stores2), true);
     let tab2 = browser.new_tab().unwrap();
     monitor2.pair(&tab2);
-    tab2.navigate_to(&format!("http://127.0.0.1:2847/?ui=app&session={sid2}"))
+    tab2.navigate_to(&monitor2.url(&format!("?ui=app&session={sid2}")))
         .unwrap();
     tab2.wait_until_navigated().unwrap();
     harness::until(&tab2, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the second shell to mount", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -3185,9 +10025,10 @@ fn the_app_shell_opens_a_task_details_popover() {
     // Give the running task a two-paragraph description and a dependency, as taskq writes them.
     std::fs::write(dir.join("2.json"), r#"{"id":"2","subject":"two, running","description":"First paragraph of the task.\n\nSecond paragraph, with detail.","activeForm":"Doing two","status":"in_progress","blocks":["3"],"blockedBy":["1"]}"#).unwrap();
     let monitor = Monitor::spawn(Kind::V1, 2867, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2867/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -3218,7 +10059,7 @@ fn the_app_shell_opens_a_task_details_popover() {
     );
     // The popover shows the shared task card (#125): a glyph, chips and labelled sections,
     // where it used to show a definition list of facts.
-    let shown = harness::probe(&tab, "(function(){ var p = document.getElementById('taskPopover'); var c = p.querySelector('.task-card'); return { subject: p.querySelector('.task-popover-head strong').textContent, glyph: (c.querySelector('.task-card-glyph')||{}).textContent, chips: [...c.querySelectorAll('.task-chip')].map(function (e) { return e.textContent.trim(); }), sections: [...c.querySelectorAll('.task-card-label')].map(function (e) { return e.textContent; }), jumpDisabled: p.querySelector('.task-popover-jump').disabled, transcriptTop: document.querySelector('.transcript').scrollTop, focusInside: p.contains(document.activeElement) }; })()");
+    let shown = harness::probe(&tab, "(function(){ var p = document.getElementById('taskPopover'); var c = p.querySelector('.sv-task-card'); return { subject: p.querySelector('.task-popover-head strong').textContent, glyph: (c.querySelector('.sv-task-card-glyph')||{}).textContent, chips: [...c.querySelectorAll('.task-chip')].map(function (e) { return e.textContent.trim(); }), sections: [...c.querySelectorAll('.sv-task-card-label')].map(function (e) { return e.textContent; }), jumpDisabled: p.querySelector('.task-popover-jump').disabled, transcriptTop: document.querySelector('.transcript').scrollTop, focusInside: p.contains(document.activeElement) }; })()");
     assert_eq!(shown["subject"], "two, running", "{shown}");
     assert_eq!(
         shown["glyph"], "◐",
@@ -3302,9 +10143,10 @@ fn the_app_shell_agents_pane_switches_to_the_sub_agent() {
         &harness::long_session(6, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(Kind::V1, 2850, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let url = format!("http://127.0.0.1:2850/?ui=app&session={parent}");
+    let url = format!("http://127.0.0.1:{port}/?ui=app&session={parent}");
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the parent to mount", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -3383,6 +10225,7 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
         .collect();
     stores.claude_tasks(&sid, &borrowed);
     let monitor = Monitor::spawn(Kind::V1, 2869, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     tab.set_bounds(headless_chrome::types::Bounds::Normal {
         left: Some(0),
@@ -3392,7 +10235,7 @@ fn the_app_shell_outline_panes_toggle_independently_and_stack() {
     })
     .unwrap();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2869/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(
@@ -4030,9 +10873,10 @@ fn the_app_shell_info_and_turns_panes_show_the_compaction() {
     }
     stores.claude_session(&sid, &transcript);
     let monitor = Monitor::spawn(Kind::V1, 2868, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2868/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(
@@ -4152,9 +10996,10 @@ fn the_app_shell_theme_toggle_is_visible_and_works() {
     let sid = "cccccccc-0000-4000-8000-000000000075".to_string();
     stores.claude_session(&sid, &harness::long_session(6, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2870, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2870/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(
@@ -4180,7 +11025,7 @@ fn the_app_shell_theme_toggle_is_visible_and_works() {
     // its contrast against what lies behind it is read in each theme.
     harness::show_every_session(
         &tab,
-        &format!("http://127.0.0.1:2870/?ui=app&session={sid}"),
+        &format!("http://127.0.0.1:{port}/?ui=app&session={sid}"),
     );
     harness::until(
         &tab,
@@ -4243,6 +11088,7 @@ fn the_app_shell_s_browser_colours_follow_its_theme_not_the_os() {
     let sid = "cccccccc-0000-4000-8000-000000014100".to_string();
     stores.claude_session(&sid, &harness::long_session(4, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 3080, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let os = |scheme: &str| {
@@ -4263,7 +11109,7 @@ fn the_app_shell_s_browser_colours_follow_its_theme_not_the_os() {
         ("light", "light"),
     ] {
         os(os_scheme);
-        tab.navigate_to(&format!("http://127.0.0.1:3080/?ui=app&session={sid}"))
+        tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
             .unwrap();
         tab.wait_until_navigated().unwrap();
         harness::until(
@@ -4321,7 +11167,8 @@ fn the_app_shell_collapses_a_prompt_only_when_that_hides_several_lines() {
     jsonl += &assistant("Done.", 6);
     stores.claude_session(&sid, &jsonl);
     let monitor = Monitor::spawn(Kind::V1, 3084, &base, Some(&stores), true);
-    let url = format!("http://127.0.0.1:3084/?ui=app&session={sid}");
+    let port = monitor.port;
+    let url = format!("http://127.0.0.1:{port}/?ui=app&session={sid}");
     let probe = "(function(){ var out = {}; document.querySelectorAll('.turn.user').forEach(function(t){ var p = t.querySelector('.user-prompt'), sh = t.querySelector('.prompt-copy-shell'), b = sh.firstElementChild, e = t.querySelector('.prompt-expand'), cs = getComputedStyle(b), r = null, hit = null; if (e) { e.scrollIntoView({block: 'center'}); r = e.getBoundingClientRect(); var at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); hit = !!at && e.contains(at); } out[t.dataset.turn] = { collapsible: p.classList.contains('prompt-collapsible'), collapsed: sh.classList.contains('collapsed'), label: e ? e.textContent : null, expanded: e ? e.getAttribute('aria-expanded') : null, h: b.getBoundingClientRect().height, lines: (b.scrollHeight - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom)) / parseFloat(cs.lineHeight), lh: parseFloat(cs.lineHeight), padTop: parseFloat(cs.paddingTop), padBottom: parseFloat(cs.paddingBottom), btnH: r ? r.height : null, hit: hit, font: e ? getComputedStyle(e).fontFamily : null }; }); return out; })()";
     let open = |tab: &headless_chrome::Tab| {
         monitor.pair(tab);
@@ -4497,9 +11344,10 @@ fn the_app_shell_open_counts_nothing_as_new() {
     let sid = "cccccccc-0000-4000-8000-000000000084".to_string();
     let path = stores.claude_session(&sid, &harness::long_session(40, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2871, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let url = format!("http://127.0.0.1:2871/?ui=app&session={sid}");
+    let url = format!("http://127.0.0.1:{port}/?ui=app&session={sid}");
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
     let mounted = "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0 && document.querySelector('.transcript').scrollHeight > document.querySelector('.transcript').clientHeight * 3";
@@ -4604,10 +11452,13 @@ fn the_app_shell_finds_the_parent_from_a_child_opened_first() {
         &harness::long_session(6, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(Kind::V1, 2872, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to("http://127.0.0.1:2872/?ui=app&session=aExplore-82")
-        .unwrap();
+    tab.navigate_to(&format!(
+        "http://127.0.0.1:{port}/?ui=app&session=aExplore-82"
+    ))
+    .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the child to mount from its deep link", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 160)");
     harness::until(&tab, "document.getElementById('sessionParent').classList.contains('is-live')", "the parent control to appear", std::time::Duration::from_secs(15), "JSON.stringify({cls: document.getElementById('sessionParent').className, crumb: document.getElementById('sessionCrumb').textContent})");
@@ -4649,9 +11500,10 @@ fn the_app_shell_expands_every_group_again() {
         );
     }
     let monitor = Monitor::spawn(Kind::V1, 2874, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let url = "http://127.0.0.1:2874/?ui=app";
+    let url = &format!("http://127.0.0.1:{port}/?ui=app");
     tab.navigate_to(url).unwrap();
     tab.wait_until_navigated().unwrap();
     let toggles = "document.querySelectorAll('[data-toggle]').length";
@@ -4720,9 +11572,10 @@ fn the_app_shell_resizes_the_session_list() {
     let sid = "cccccccc-0000-4000-8000-000000000096".to_string();
     stores.claude_session(&sid, &harness::long_session(10, harness::Shape::default()));
     let monitor = Monitor::spawn(Kind::V1, 2876, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let url = format!("http://127.0.0.1:2876/?ui=app&session={sid}");
+    let url = format!("http://127.0.0.1:{port}/?ui=app&session={sid}");
     tab.navigate_to(&url).unwrap();
     tab.wait_until_navigated().unwrap();
     let mounted = "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0";
@@ -4733,7 +11586,7 @@ fn the_app_shell_resizes_the_session_list() {
         std::time::Duration::from_secs(30),
         "document.body.innerText.slice(0, 120)",
     );
-    let state = "(function(){ var side = document.querySelector('.sidebar'), head = document.querySelector('.side-head'); var handle = document.getElementById('sidebarResizer'); var hr = handle ? handle.getBoundingClientRect() : null; var sr = side.getBoundingClientRect(); var brand = head.querySelector('.brand').getBoundingClientRect(), acts = head.querySelector('.head-actions').getBoundingClientRect(); return { width: Math.round(sr.width), handle: hr ? [Math.round(hr.right - sr.right), Math.round(hr.width)] : null, sameRow: Math.abs(acts.top - brand.top) <= 10, actionsInside: acts.right <= sr.right + 0.5, controls: [].slice.call(head.querySelector('.head-actions').children).map(function (e) { var b = e.getBoundingClientRect(); var mid = document.elementFromPoint(Math.round(b.left + b.width / 2), Math.round(b.top + b.height / 2)); return { id: e.id || '?', inside: b.left >= sr.left - 0.5 && b.right <= sr.right + 0.5, hit: mid === e || e.contains(mid) }; }), tight: document.getElementById('app').classList.contains('sidebar-tight'), stored: localStorage.getItem('am-sidebar-width'), role: handle ? handle.getAttribute('role') : '' }; })()";
+    let state = "(function(){ var side = document.querySelector('.sidebar'), head = document.querySelector('.side-head'); var handle = document.getElementById('sidebarResizer'); var hr = handle ? handle.getBoundingClientRect() : null; var sr = side.getBoundingClientRect(); var brand = head.querySelector('.brand').getBoundingClientRect(), acts = head.querySelector('.head-actions').getBoundingClientRect(); return { width: Math.round(sr.width), handle: hr ? [Math.round(hr.right - sr.right), Math.round(hr.width)] : null, sameRow: Math.abs(acts.top - brand.top) <= 10, actionsInside: acts.right <= sr.right + 0.5, controls: [].concat.apply([], [].map.call(head.querySelector('.head-actions').children, function (e) { return e.classList.contains('session-list-controls') ? [].slice.call(e.children) : [e]; })).map(function (e) { var b = e.getBoundingClientRect(); var mid = document.elementFromPoint(Math.round(b.left + b.width / 2), Math.round(b.top + b.height / 2)); return { id: e.id || '?', inside: b.left >= sr.left - 0.5 && b.right <= sr.right + 0.5, hit: mid === e || e.contains(mid) }; }), tight: document.getElementById('app').classList.contains('sidebar-tight'), stored: localStorage.getItem('am-sidebar-width'), role: handle ? handle.getAttribute('role') : '' }; })()";
     let start = harness::probe(&tab, state);
     assert_eq!(
         start["width"], 300,
@@ -4867,6 +11720,984 @@ fn the_app_shell_resizes_the_session_list() {
     drop(monitor);
 }
 
+/// #s431 stage 1: the right pane's tracks are the session view's own, and a drag of its resizer
+/// moves them with the pointer. The view glides its tracks when the pane opens or shuts, and that
+/// glide must not run under a drag (as `.app.resizing` kept it off when the tracks were the app's),
+/// or every move lags the pointer by a fifth of a second. Measured with the button still held: a
+/// real pointer, since the resizer captures it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_resizes_the_pane_with_the_pointer() {
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchMouseEvent, DispatchMouseEventTypeOption, MouseButton,
+    };
+    let _serial = serial();
+    let (monitor, _browser, tab) = shell_with_a_session("appshell-pane-resize", 2876);
+    harness::resize(&tab, 1440.0, 900.0);
+    harness::eval(&tab, "document.getElementById('previewBtn').click(); 'ok'");
+    let settled = "(function(){ var v = document.getElementById('sessionView'); return !v.classList.contains('preview-off') && v.getAnimations().length === 0 && document.getElementById('resizer').getBoundingClientRect().width > 0; })()";
+    harness::until(
+        &tab,
+        settled,
+        "the pane to open and its glide to end",
+        Duration::from_secs(10),
+        "document.getElementById('sessionView').className",
+    );
+    let x0 = harness::eval(&tab, "(function(){ var r = document.getElementById('resizer').getBoundingClientRect(); return r.left + r.width / 2; })()")
+        .as_f64()
+        .expect("the resizer's place");
+    // #s431 stage 3: the drag sets the pane's share of the slack, and each side keeps M, so a drag
+    // stays under the pointer only within the slack (at 1440px, beside the list, 101px of it).
+    let x1 = x0 - 40.0;
+    let mouse = |kind: DispatchMouseEventTypeOption, x: f64, buttons: u32| {
+        tab.call_method(DispatchMouseEvent {
+            Type: kind,
+            x,
+            y: 400.0,
+            modifiers: None,
+            timestamp: None,
+            button: Some(MouseButton::Left),
+            buttons: Some(buttons),
+            click_count: Some(1),
+            force: None,
+            tangential_pressure: None,
+            tilt_x: None,
+            tilt_y: None,
+            twist: None,
+            delta_x: None,
+            delta_y: None,
+            pointer_Type: None,
+        })
+        .unwrap();
+    };
+    mouse(DispatchMouseEventTypeOption::MouseMoved, x0, 0);
+    mouse(DispatchMouseEventTypeOption::MousePressed, x0, 1);
+    mouse(DispatchMouseEventTypeOption::MouseMoved, x1, 1);
+    // Read at once, the button held: no frame waited for, as a reader's next move would not wait.
+    let held = harness::probe(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'), r = document.getElementById('resizer').getBoundingClientRect(); return { resizing: v.classList.contains('resizing'), glides: v.getAnimations().filter(function(a){ return a instanceof CSSTransition; }).map(function(a){ return a.transitionProperty; }), resizer: r.left + r.width / 2 }; })()",
+    );
+    mouse(DispatchMouseEventTypeOption::MouseReleased, x1, 0);
+    assert_eq!(held["resizing"], true, "the drag is under way: {held}");
+    assert_eq!(
+        held["glides"],
+        serde_json::json!([]),
+        "no glide runs on the view's tracks under a drag: {held}"
+    );
+    let at = held["resizer"].as_f64().unwrap_or(f64::NAN);
+    assert!(
+        (at - x1).abs() <= 1.0,
+        "the resizer is under the pointer at {x1}, not on its way there: {held}"
+    );
+    let after = harness::probe(
+        &tab,
+        "({ resizing: document.getElementById('sessionView').classList.contains('resizing'), share: Number(localStorage.getItem('am-demo-pane-share')), width: localStorage.getItem('am-demo-preview') })",
+    );
+    assert_eq!(after["resizing"], false, "the drag ended: {after}");
+    let share = after["share"].as_f64().unwrap_or(f64::NAN);
+    assert!(
+        share > 0.5 && share < 1.0,
+        "the pane's new share of the slack is remembered, more than half for a pane dragged wider: {after}"
+    );
+    assert_eq!(
+        after["width"],
+        serde_json::Value::Null,
+        "and no width is: the drag keeps a share (#s473): {after}"
+    );
+    drop(monitor);
+}
+
+/// #s431 stage 3 (design/pane-layout.md, "The owner's order"): mounted alone in a host whose box is
+/// the window, the session view lays out its parts by the owner's order from its own width: the
+/// session at M (480px), then the right pane beside it at M, then the outline's glyphs in their
+/// column, then the outline; what is left goes to the session and the pane, equally until the reader
+/// drags. Where the glyphs have no column they join the top bar, with the outline's control and Info,
+/// and each opens its list as a 290px panel over the transcript's right edge. The outline's control
+/// keeps the reader's choice apart from what the width forces, and the host hears only the choice
+/// (`onOutline`): once as the mount returns, and on each press that changes it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
+    let _serial = serial();
+    let base = base("host-owners-order");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000003a1".to_string();
+    let transcript =
+        stores.claude_session(&sid, &harness::long_session(6, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3120, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    // A host's element does not start with the pane shut: the pane shuts itself as the view is built,
+    // and the view is arranged for that before the mount returns (the review of 33ba93fb: the shut
+    // took no decision, so at 1100px the mount drew the outline folded to glyphs, arranged for an
+    // open pane, and a host's toggle of the outline right after the mount was refused).
+    harness::resize(&tab, 1100.0, 900.0);
+    harness::open_host_page(&tab, &monitor, &format!("mount=0&session={sid}"));
+    harness::until(
+        &tab,
+        "!!(window.__host && window.__host.mounted && window.__host.mount)",
+        "the host page, ready to mount",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let built = harness::probe(
+        &tab,
+        "(function(){ window.__host.mount(); var v = document.getElementById('sessionView'); return { width: Math.round(v.getBoundingClientRect().width), shut: v.classList.contains('preview-off'), open: v.classList.contains('pl-outline-open'), glyphs: v.classList.contains('pl-outline-glyphs') }; })()",
+    );
+    assert!(
+        built["width"] == 1100 && built["shut"] == true && built["open"] == true && built["glyphs"] == false,
+        "the view as its mount returns, at 1100px, is arranged for its shut pane, its outline open: {built}"
+    );
+    harness::resize(&tab, 1400.0, 900.0);
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window .turn.user')",
+        "the session in the host's view",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let probe = "(function(){ var v = document.getElementById('sessionView'), r = v.getBoundingClientRect(); var box = function (e) { if (!e) return null; var b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 ? { left: Math.round(b.left), right: Math.round(b.right), top: Math.round(b.top), width: Math.round(b.width) } : null; }; var shown = function (e) { return !!e && e.getBoundingClientRect().width > 0; }; var bar = v.querySelector('.workspace>.topbar'); var expand = document.getElementById('navigatorRailExpand'); return { width: Math.round(r.width), classes: ['pl-pane-column', 'pl-pane-over', 'pl-outline-open', 'pl-outline-glyphs', 'pl-outline-bar', 'pl-outline-dock', 'pl-phone'].filter(function (c) { return v.classList.contains(c); }), workspace: box(v.querySelector('.workspace')), preview: v.classList.contains('preview-off') ? null : box(v.querySelector('.preview')), transcript: box(v.querySelector('.sv-session-main>.transcript')), inBar: [...bar.querySelectorAll('.phone-pane')].filter(shown).length, barInfo: shown(bar.querySelector('#phoneInfo')), barExpand: !!expand && expand.parentElement === bar && shown(expand), footer: box(document.getElementById('outlineFooter')), rail: box(v.querySelector('.session-navigator>.outline-rail')), pressed: expand ? expand.getAttribute('aria-pressed') : null, disabled: expand ? expand.getAttribute('aria-disabled') : null }; })()";
+    let outline_said = "window.__host.events.filter(function (e) { return e.name === 'onOutline'; }).map(function (e) { return e.args[0].wanted; })";
+    let at = |width: f64, open: bool| -> serde_json::Value {
+        if width < 500.0 {
+            harness::mouse_window(&tab, width as u32, 900);
+        } else {
+            harness::clear_metrics(&tab);
+            harness::resize(&tab, width, 900.0);
+        }
+        let toggle = format!("(function(){{ var v = document.getElementById('sessionView'); if (v.classList.contains('preview-off') === {open}) document.getElementById('previewBtn').click(); return true; }})()");
+        harness::eval(&tab, &toggle);
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && {VIEW_CAUGHT_UP} && document.getElementById('sessionView').classList.contains('preview-off') === {} && document.getElementById('sessionView').getAnimations({{ subtree: true }}).filter(function (a) {{ return a instanceof CSSTransition; }}).length === 0", !open),
+            &format!("the view at {width}px, the pane {}", if open { "open" } else { "shut" }),
+            Duration::from_secs(10),
+            "({ w: innerWidth, cls: document.getElementById('sessionView').className })",
+        );
+        harness::probe(&tab, probe)
+    };
+    let near = |seen: &serde_json::Value, key: &str, field: &str, want: f64| {
+        let got = seen[key][field].as_f64().unwrap_or(f64::NAN);
+        assert!(
+            (got - want).abs() <= 2.0,
+            "{key}.{field} is {want}px (got {got}): {seen}"
+        );
+    };
+    let has = |seen: &serde_json::Value, class: &str| {
+        seen["classes"]
+            .as_array()
+            .is_some_and(|c| c.iter().any(|x| x == class))
+    };
+    // #s521: the outline's footer (its cost and Info) is drawn where its column is, under the glyphs
+    // where they have their column, and not at all where they are in the bar, whose Info opens the card.
+    let footer_under_glyphs = |seen: &serde_json::Value| {
+        let (footer, rail) = (&seen["footer"], &seen["rail"]);
+        assert!(
+            !footer.is_null() && !rail.is_null(),
+            "the footer and the glyphs are both drawn: {seen}"
+        );
+        let gap =
+            footer["left"].as_f64().unwrap_or(f64::NAN) - rail["left"].as_f64().unwrap_or(f64::NAN);
+        assert!(
+            gap.abs() <= 1.0,
+            "the footer stands under the glyphs, its left edge on theirs (off by {gap}px): {seen}"
+        );
+    };
+    let no_footer = |seen: &serde_json::Value| {
+        assert!(
+            seen["footer"].is_null(),
+            "nothing of the outline's footer is drawn while its glyphs are in the bar: {seen}"
+        );
+    };
+    let mounted = harness::probe(&tab, outline_said);
+
+    // 1400px, the pane open: the outline open (1261px holds the session, the pane and it), the 139px
+    // of slack split equally, 69 to the session and 70 to the pane.
+    let wide = at(1400.0, true);
+    assert!(
+        has(&wide, "pl-pane-column") && has(&wide, "pl-outline-open"),
+        "{wide}"
+    );
+    near(&wide, "transcript", "width", 549.0);
+    assert!(
+        !wide["footer"].is_null(),
+        "the open outline keeps its footer: {wide}"
+    );
+    near(&wide, "preview", "width", 550.0);
+    assert!(
+        wide["preview"]["right"].as_f64().unwrap_or(f64::NAN) <= 1400.0,
+        "the pane ends inside the window: {wide}"
+    );
+    // 1100px: the outline gives way to its glyphs' column (1039px), 61px of slack.
+    let glyphs = at(1100.0, true);
+    assert!(
+        has(&glyphs, "pl-pane-column") && has(&glyphs, "pl-outline-glyphs"),
+        "{glyphs}"
+    );
+    near(&glyphs, "transcript", "width", 510.0);
+    footer_under_glyphs(&glyphs);
+    near(&glyphs, "preview", "width", 511.0);
+    // 1000px: the glyphs leave their column for the top bar (971px), with the outline's control and Info.
+    let bar = at(1000.0, true);
+    assert!(
+        has(&bar, "pl-pane-column") && has(&bar, "pl-outline-bar"),
+        "{bar}"
+    );
+    assert_eq!(
+        (
+            bar["inBar"].clone(),
+            bar["barInfo"].clone(),
+            bar["barExpand"].clone()
+        ),
+        (
+            serde_json::json!(3),
+            serde_json::json!(true),
+            serde_json::json!(true)
+        ),
+        "{bar}"
+    );
+    near(&bar, "transcript", "width", 494.0);
+    no_footer(&bar);
+    near(&bar, "preview", "width", 495.0);
+    // 900px: too narrow for the pane beside the session; it covers the view, and the session beneath
+    // keeps its own layout, the outline open (780px).
+    let over = at(900.0, true);
+    assert!(
+        has(&over, "pl-pane-over") && has(&over, "pl-outline-open"),
+        "{over}"
+    );
+    assert!(
+        over["transcript"]["width"].as_f64().unwrap_or(0.0) >= 480.0,
+        "the session keeps M under the pane: {over}"
+    );
+    // 700px, the pane shut: the outline is wanted and the width holds it to its glyphs, so its control
+    // is pressed, and a press folds it for good: the host hears that, and the control is then disabled,
+    // since the outline cannot open here. A press on it then does nothing.
+    let held = at(700.0, false);
+    assert!(has(&held, "pl-outline-glyphs"), "{held}");
+    footer_under_glyphs(&held);
+    assert_eq!(
+        (held["pressed"].clone(), held["disabled"].clone()),
+        (serde_json::json!("true"), serde_json::json!("false")),
+        "{held}"
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('navigatorRailExpand').click(); 'ok'",
+    );
+    let folded = harness::probe(&tab, probe);
+    assert_eq!(
+        (folded["pressed"].clone(), folded["disabled"].clone()),
+        (serde_json::json!("false"), serde_json::json!("true")),
+        "{folded}"
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('navigatorRailExpand').click(); 'ok'",
+    );
+    let refused = harness::probe(&tab, probe);
+    assert_eq!(
+        refused["pressed"], "false",
+        "a disabled control opens nothing: {refused}"
+    );
+    // Wider, the reader's fold holds: a wider window never undoes it, and the control opens it.
+    let kept = at(1400.0, false);
+    assert!(
+        has(&kept, "pl-outline-glyphs"),
+        "the reader's fold holds at 1400px: {kept}"
+    );
+    assert_eq!(
+        kept["disabled"], "false",
+        "and the control may open it there: {kept}"
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('navigatorRailExpand').click(); 'ok'",
+    );
+    let reopened = harness::probe(&tab, probe);
+    assert!(has(&reopened, "pl-outline-open"), "{reopened}");
+    // 520px: no column for the glyphs; Turns opens its list as a panel under the bar at the
+    // transcript's right edge, 290px wide; Esc closes it; Info opens its card there too.
+    let narrow = at(520.0, false);
+    assert!(
+        has(&narrow, "pl-outline-bar") && !has(&narrow, "pl-phone"),
+        "{narrow}"
+    );
+    no_footer(&narrow);
+    harness::eval(
+        &tab,
+        "document.getElementById('phonePane-turns').click(); 'ok'",
+    );
+    let panel = harness::probe(&tab, "(function(){ var m = document.getElementById('phonePaneMenu'), w = document.querySelector('#sessionView .workspace'), b = m.getBoundingClientRect(), wb = w.getBoundingClientRect(), bar = w.querySelector('.topbar').getBoundingClientRect(); return { shown: !m.hidden && b.width > 0, inCard: m.parentElement === w, width: Math.round(b.width), gap: Math.round(wb.right - b.right), below: b.top >= bar.bottom, rows: m.querySelectorAll('.outline-turn-row').length }; })()");
+    assert_eq!(panel["shown"], true, "{panel}");
+    assert_eq!(panel["inCard"], true, "{panel}");
+    assert!(
+        panel["width"]
+            .as_f64()
+            .is_some_and(|w| (w - 290.0).abs() <= 1.0),
+        "{panel}"
+    );
+    assert!(
+        panel["gap"]
+            .as_f64()
+            .is_some_and(|g| (g - 8.0).abs() <= 1.0),
+        "{panel}"
+    );
+    assert_eq!(panel["below"], true, "{panel}");
+    assert!(
+        panel["rows"].as_u64().unwrap_or(0) >= 6,
+        "the turns are listed: {panel}"
+    );
+    harness::eval(&tab, "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); 'ok'");
+    let closed = harness::probe(&tab, "document.getElementById('phonePaneMenu').hidden");
+    assert_eq!(closed, true, "Esc closes the panel");
+    harness::eval(&tab, "document.getElementById('phoneInfo').click(); 'ok'");
+    let info = harness::probe(&tab, "(function(){ var c = document.getElementById('infoPopover'), b = c.getBoundingClientRect(); return { open: c.classList.contains('open'), inCard: c.parentElement === document.querySelector('#sessionView .workspace'), width: Math.round(b.width), visible: getComputedStyle(c).visibility }; })()");
+    assert_eq!(
+        info,
+        serde_json::json!({ "open": true, "inCard": true, "width": 290, "visible": "visible" }),
+        "Info opens its card under the bar"
+    );
+    // Hidden by its host (#s464) the view's box is 0×0, and the window may change meanwhile: the view
+    // keeps the layout it had and remeasures nothing, and shown again at the width it had, it is laid
+    // out as it was.
+    at(1400.0, false);
+    let classes = "(function(){ return (document.getElementById('sessionView').className.match(/pl-[a-z0-9-]+/g) || []).sort().join(' '); })()";
+    let remeasured = "window.__viewportHistory.states.filter(function (s) { return s.cause === 'remeasure' && s.t >= window.__t0; }).length";
+    let before = harness::probe(&tab, classes);
+    harness::eval(&tab, "window.__t0 = performance.now(); document.getElementById('sessionView').hidden = true; 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('sessionView').getBoundingClientRect().width === 0",
+        "the view hidden by its host",
+        Duration::from_secs(5),
+        classes,
+    );
+    // Two frames after each size: the browser says a resize only in a frame, and only for a size it
+    // has not said, so without them the two could reach the page as no resize at all.
+    harness::resize(&tab, 1300.0, 900.0);
+    harness::until(
+        &tab,
+        "innerWidth === 1300",
+        "the window narrowed while the view is hidden",
+        Duration::from_secs(5),
+        classes,
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    harness::resize(&tab, 1400.0, 900.0);
+    harness::until(
+        &tab,
+        "innerWidth === 1400",
+        "the window back to 1400px",
+        Duration::from_secs(5),
+        classes,
+    );
+    harness::eval(&tab, TWO_FRAMES);
+    std::thread::sleep(Duration::from_millis(500));
+    let hidden = harness::probe(&tab, classes);
+    harness::eval(
+        &tab,
+        "document.getElementById('sessionView').hidden = false; 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('sessionView').getBoundingClientRect().width > 0",
+        "the view shown again",
+        Duration::from_secs(5),
+        classes,
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    let shown = harness::probe(&tab, classes);
+    let count = harness::probe(&tab, remeasured);
+    assert_eq!(hidden, before, "hidden, the view keeps the layout it had");
+    assert_eq!(
+        shown, before,
+        "shown again at its width, the view is laid out as it was"
+    );
+    assert_eq!(
+        count, 0,
+        "nor did hiding it, a resize meanwhile, or showing it remeasure the transcript"
+    );
+    // The outline column's box changes with no window resize, and its heads are stacked again (#s431
+    // stage 3; the review of e986cd8f). A width folds the outline to its glyphs (at 1140px the open
+    // pane leaves it no room); a record arriving then renders it with every card hidden, which stacks
+    // them at no height; and the pane shut, it opens again with nothing rendered.
+    let holds = |js: &str| -> bool {
+        let t0 = std::time::Instant::now();
+        while t0.elapsed() < Duration::from_secs(5) {
+            if harness::eval(&tab, js).as_bool() == Some(true) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        false
+    };
+    let turns = "(function(){ var c = document.querySelector('#sessionNavigator > [data-nav-card=\"turns\"]'); var b = c && c.querySelector(':scope > .outline-card-body'), l = b && b.querySelector(':scope > .navigator-list'); return { off: document.querySelector('#sessionView .workspace').classList.contains('navigator-off'), body: b ? Math.round(b.getBoundingClientRect().height) : -1, list: l ? l.offsetHeight : -1, appended: !!l && l.textContent.indexOf('appended while the outline is folded') >= 0 }; })()";
+    let folded = at(1140.0, true);
+    assert!(
+        has(&folded, "pl-outline-glyphs"),
+        "at 1140px the open pane folds the outline to its glyphs: {folded}"
+    );
+    harness::append(
+        &transcript,
+        &(harness::user_at(
+            "a question appended while the outline is folded",
+            &harness::now_minus(20),
+        ) + &harness::assistant_at("its answer", &harness::now_minus(19))),
+    );
+    harness::until(
+        &tab,
+        &format!("{turns}.appended && {turns}.off"),
+        "the appended turn in the Turns pane, the outline still folded",
+        Duration::from_secs(20),
+        turns,
+    );
+    harness::eval(&tab, "document.getElementById('previewBtn').click(); 'ok'");
+    let reopened = holds(&format!(
+        "(function(){{ var t = {turns}; return !t.off && t.list > 0 && Math.abs(t.body - t.list) <= 1; }})()"
+    ));
+    let reopened_seen = harness::probe(&tab, turns);
+    // Then the host makes the view shorter, and taller again, the window as it was: whether the heads
+    // fit is decided against the column, so the breathing room goes, and comes back, with it.
+    let tight = "document.getElementById('sessionNavigator').classList.contains('heads-tight')";
+    let column = format!(
+        "({{ tight: {tight}, column: document.getElementById('sessionNavigator').clientHeight }})"
+    );
+    let roomy = holds(&format!("!{tight}"));
+    harness::eval(&tab, "var p = document.getElementById('hostPane'); p.style.bottom = 'auto'; p.style.height = '300px'; 'ok'");
+    let short = holds(tight);
+    let short_seen = harness::probe(&tab, &column);
+    harness::eval(&tab, "var p = document.getElementById('hostPane'); p.style.bottom = ''; p.style.height = ''; 'ok'");
+    let tall = holds(&format!("!{tight}"));
+    let tall_seen = harness::probe(&tab, &column);
+    assert!(
+        reopened && roomy && short && tall,
+        "the outline opened again shows its Turns pane at its list's height: {reopened_seen}; the view \
+         made 300px tall by its host takes the breathing room away: {short_seen}; and given back its \
+         height, gives it back: {tall_seen}"
+    );
+    // 480px: the phone reader.
+    let phone = at(480.0, false);
+    assert!(
+        has(&phone, "pl-phone") && has(&phone, "pl-outline-dock"),
+        "{phone}"
+    );
+    let said = harness::probe(&tab, outline_said);
+    drop(monitor);
+    assert_eq!(
+        mounted,
+        serde_json::json!([true]),
+        "the host hears the remembered choice once as the mount returns"
+    );
+    assert_eq!(
+        said,
+        serde_json::json!([true, false, true]),
+        "then each press that changed it, and nothing for a fold the width forced"
+    );
+}
+
+/// #s431 stage 3 (design/pane-layout.md, "The owner's order"): the app lays out its list from the
+/// window by the owner's order, beside what the view needs. With a mouse and the pane shut: the list
+/// at the reader's 300px down to 858px, narrowing toward 232 below it, the rail from 789px (its expand
+/// disabled, since the list cannot open there), the drawer below 554px, shut as the window narrows into
+/// it, opened by its handle and closed by Esc, and the phone reader under 490px. A fold the width
+/// forced comes back with the room; the reader's collapse is remembered across a wider window. The
+/// pane opening at 1200px folds the list to its rail without cutting the pane's glide, and shutting it
+/// brings the list back. On an 834px touch window (an iPad upright) the list keeps 276px beside the
+/// phone reader (#s475, #s478). Its scrollbars take room, as Linux's do, so each remeasure's ratio is
+/// read from the column the reader saw on every system (#s431: on Linux the transcript's scrollbar
+/// appeared after the engine's last remeasure and the next one scaled from the wider column).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_lays_out_its_list_by_the_owners_order() {
+    const MARK: &str = "window.__mark = function () { window.__t0 = performance.now(); window.__w0 = document.querySelector('.virtual-window').getBoundingClientRect().width; return true; };";
+    const REMEASURES: &str = "(function(){ var w = document.querySelector('.virtual-window').getBoundingClientRect().width; var rs = window.__viewportHistory.states.filter(function (s) { return s.cause === 'remeasure' && s.t >= window.__t0; }).map(function (s) { return s.ratio; }); return { count: rs.length, ratio: rs[0], expected: Math.round(window.__w0 / w * 1000) / 1000, from: Math.round(window.__w0), to: Math.round(w) }; })()";
+    let _serial = serial();
+    let (monitor, _browser, tab) =
+        shell_with_a_session_in("appshell-owners-order", 3121, harness::classic_scrollbars);
+    assert!(
+        harness::eval(&tab, "(function(){ var t = document.querySelector('#sessionView .transcript'); return t.getBoundingClientRect().width - t.clientWidth >= 14.5; })()") == serde_json::json!(true),
+        "the transcript's scrollbar takes room"
+    );
+    let probe = "(function(){ var app = document.getElementById('app'), v = document.getElementById('sessionView'), side = document.querySelector('.sidebar'), handle = document.getElementById('drawerHandle'), expand = document.getElementById('sidebarMiniExpand'); var shown = function (e) { if (!e) return false; var r = e.getBoundingClientRect(); return r.width > 0 && r.right > 0 && r.left < innerWidth && getComputedStyle(e).visibility !== 'hidden'; }; var outline = ['open', 'glyphs', 'bar', 'dock'].find(function (k) { return v.classList.contains('pl-outline-' + k); }) || ''; return { drawer: app.classList.contains('app-drawer'), rail: app.classList.contains('sidebar-off'), shut: app.classList.contains('mobile-detail'), list: shown(side) ? Math.round(side.getBoundingClientRect().width) : 0, view: Math.round(v.getBoundingClientRect().width), outline: outline, phone: v.classList.contains('pl-phone'), handle: shown(handle), expandDisabled: expand.getAttribute('aria-disabled') }; })()";
+    let quiet = "document.getElementById('app').getAnimations().length === 0 && document.getElementById('sessionView').getAnimations({ subtree: true }).filter(function (a) { return a instanceof CSSTransition; }).length === 0";
+    let at = |width: f64| -> serde_json::Value {
+        if width < 500.0 {
+            harness::mouse_window(&tab, width as u32, 900);
+        } else {
+            harness::clear_metrics(&tab);
+            harness::resize(&tab, width, 900.0);
+        }
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && {VIEW_CAUGHT_UP} && {quiet}"),
+            &format!("a {width}px window at rest"),
+            Duration::from_secs(10),
+            probe,
+        );
+        harness::probe(&tab, probe)
+    };
+    let want = |seen: &serde_json::Value, expected: serde_json::Value, what: &str| {
+        for (key, value) in expected.as_object().unwrap() {
+            assert_eq!(&seen[key], value, "{what}: {key} in {seen}");
+        }
+    };
+    want(
+        &at(1400.0),
+        serde_json::json!({ "drawer": false, "rail": false, "list": 300, "view": 1100, "outline": "open" }),
+        "1400px: the list and the outline",
+    );
+    want(
+        &at(1000.0),
+        serde_json::json!({ "rail": false, "list": 300, "view": 700, "outline": "glyphs" }),
+        "1000px: the outline gives way to its glyphs, the list keeps 300",
+    );
+    // The glyphs' Info opens the session's card where the reader can read it.
+    harness::eval(
+        &tab,
+        "document.getElementById('outlineRailInfo').click(); 'ok'",
+    );
+    harness::until(&tab, "document.getElementById('infoPopover').classList.contains('open') && document.getElementById('infoPopover').getAnimations().length === 0", "the Info card to open", Duration::from_secs(5), "document.getElementById('infoPopover').className");
+    let card = harness::probe(&tab, "(function(){ var card = document.getElementById('infoPopover'), r = card.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + Math.min(20, r.height / 2)); return { inside: r.width > 0 && r.left >= 0 && r.right <= innerWidth && r.top >= 0 && r.bottom <= innerHeight, hit: !!hit && card.contains(hit) }; })()");
+    assert_eq!(
+        card,
+        serde_json::json!({ "inside": true, "hit": true }),
+        "the glyphs' Info opens its card on screen"
+    );
+    // A second press unpins it, and it closes as the pointer's leave does (after 140ms).
+    harness::eval(
+        &tab,
+        "document.getElementById('outlineRailInfo').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "!document.getElementById('infoPopover').classList.contains('open')",
+        "the Info card to shut",
+        Duration::from_secs(5),
+        "document.getElementById('infoPopover').className",
+    );
+    want(
+        &at(820.0),
+        serde_json::json!({ "rail": false, "list": 262, "view": 558, "outline": "glyphs" }),
+        "820px: the list narrows for the glyphs' column",
+    );
+    // The arrow keys move the list from its width as drawn: a press past what the window draws keeps
+    // the reader's 300, one inward takes the list from there, and the double-click names 300 again.
+    let key = |key: &str| {
+        harness::probe(&tab, &format!("(function(){{ document.getElementById('sidebarResizer').dispatchEvent(new KeyboardEvent('keydown', {{ key: '{key}', bubbles: true, cancelable: true }})); return {{ stored: localStorage.getItem('am-sidebar-width'), list: Math.round(document.querySelector('.sidebar').getBoundingClientRect().width) }}; }})()"))
+    };
+    assert_eq!(
+        key("ArrowRight"),
+        serde_json::json!({ "stored": "300", "list": 262 }),
+        "a press outward past what the window draws keeps the reader's width"
+    );
+    assert_eq!(
+        key("ArrowLeft"),
+        serde_json::json!({ "stored": "254", "list": 254 }),
+        "a press inward moves the list from its width as drawn"
+    );
+    let reset = harness::probe(&tab, "(function(){ document.getElementById('sidebarResizer').dispatchEvent(new MouseEvent('dblclick', { bubbles: true })); return { stored: localStorage.getItem('am-sidebar-width'), list: Math.round(document.querySelector('.sidebar').getBoundingClientRect().width) }; })()");
+    assert_eq!(
+        reset,
+        serde_json::json!({ "stored": "300", "list": 262 }),
+        "the double-click names 300, drawn as the window allows"
+    );
+    want(
+        &at(700.0),
+        serde_json::json!({ "rail": true, "view": 636, "outline": "glyphs", "expandDisabled": "true" }),
+        "700px: the rail, its expand disabled",
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('sidebarMiniExpand').click(); 'ok'",
+    );
+    want(
+        &harness::probe(&tab, probe),
+        serde_json::json!({ "rail": true }),
+        "a disabled expand opens nothing",
+    );
+    // Nor does the list's key, which saves no collapse the reader never saw (a wider window shows the list).
+    harness::eval(&tab, "document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '\\\\', bubbles: true, cancelable: true })); 'ok'");
+    want(
+        &harness::probe(&tab, probe),
+        serde_json::json!({ "rail": true, "expandDisabled": "true" }),
+        "the key on a rail the width holds changes nothing",
+    );
+    want(
+        &at(600.0),
+        serde_json::json!({ "drawer": false, "rail": true, "view": 536, "outline": "bar", "phone": false }),
+        "600px: the rail and the glyphs in the top bar, a desktop's view",
+    );
+    // In the bar the outline's expand control stands after the title and before Info.
+    let order = harness::probe(&tab, "(function(){ var t = document.getElementById('sessionTitle').getBoundingClientRect(), e = document.getElementById('navigatorRailExpand').getBoundingClientRect(), i = document.getElementById('phoneInfo').getBoundingClientRect(); return { afterTitle: e.left >= t.right - 0.5, beforeInfo: e.right <= i.left + 0.5, shown: e.width > 0 }; })()");
+    assert_eq!(
+        order,
+        serde_json::json!({ "afterTitle": true, "beforeInfo": true, "shown": true }),
+        "the expand control's place in the top bar"
+    );
+    want(
+        &at(520.0),
+        serde_json::json!({ "drawer": true, "shut": true, "handle": true, "view": 520, "phone": false }),
+        "520px: the drawer, shut, under its handle",
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('drawerHandle').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        &format!("!document.getElementById('app').classList.contains('mobile-detail') && {quiet}"),
+        "the drawer to open",
+        Duration::from_secs(5),
+        probe,
+    );
+    want(
+        &harness::probe(&tab, probe),
+        serde_json::json!({ "shut": false, "list": 360 }),
+        "the handle opens the drawer",
+    );
+    harness::eval(&tab, "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); 'ok'");
+    want(
+        &harness::probe(&tab, probe),
+        serde_json::json!({ "shut": true }),
+        "Esc closes it",
+    );
+    want(
+        &at(480.0),
+        serde_json::json!({ "drawer": true, "phone": true, "outline": "dock" }),
+        "480px: the phone reader",
+    );
+    want(
+        &at(1400.0),
+        serde_json::json!({ "drawer": false, "rail": false, "list": 300, "outline": "open" }),
+        "the folds the width forced come back with the room",
+    );
+    // The list's key folds the list to its rail and opens it again where it fits.
+    harness::eval(&tab, "document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '\\\\', bubbles: true, cancelable: true })); 'ok'");
+    want(
+        &at(1400.0),
+        serde_json::json!({ "rail": true }),
+        "the key folds the list",
+    );
+    harness::eval(&tab, "document.body.dispatchEvent(new KeyboardEvent('keydown', { key: '\\\\', bubbles: true, cancelable: true })); 'ok'");
+    want(
+        &at(1400.0),
+        serde_json::json!({ "rail": false, "list": 300 }),
+        "and opens it",
+    );
+    // The reader's collapse is remembered, and a wider window never undoes it.
+    harness::eval(
+        &tab,
+        "document.getElementById('sidebarCollapse').click(); 'ok'",
+    );
+    want(
+        &at(1600.0),
+        serde_json::json!({ "rail": true, "expandDisabled": "false" }),
+        "the reader's collapse holds at 1600px",
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('sidebarMiniExpand').click(); 'ok'",
+    );
+    want(
+        &at(1400.0),
+        serde_json::json!({ "rail": false, "list": 300 }),
+        "and the expand opens it",
+    );
+    // The pane at 1200px: the session and the pane at M each and the glyphs' column leave no room for
+    // the list, so it folds to the rail, at once, while the pane glides open whole; shut, it comes back.
+    harness::eval(&tab, "window.__mark = function () { window.__t0 = performance.now(); window.__w0 = document.querySelector('.virtual-window').getBoundingClientRect().width; return true; }; window.__cancelled = 0; window.__ran = 0; window.__tlog = []; var sv = document.getElementById('sessionView'); var nameOf = function (e) { var t = e.target; return (t.id ? '#' + t.id : t.tagName.toLowerCase() + '.' + String(t.className).split(' ')[0]) + ' ' + e.propertyName + ' ' + Math.round(performance.now()); }; sv.addEventListener('transitioncancel', function (e) { window.__cancelled++; window.__tlog.push('cancel ' + nameOf(e)); }, true); sv.addEventListener('transitionrun', function (e) { window.__tlog.push('run ' + nameOf(e)); if (e.target === sv && e.propertyName === 'grid-template-columns') window.__ran++; }, true); 'ok'");
+    at(1200.0);
+    harness::eval(
+        &tab,
+        "window.__mark(); document.getElementById('previewBtn').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        &format!(
+            "!document.getElementById('sessionView').classList.contains('preview-off') && {quiet}"
+        ),
+        "the pane to open",
+        Duration::from_secs(10),
+        probe,
+    );
+    let opened = harness::probe(&tab, probe);
+    let glide = harness::probe(
+        &tab,
+        "({ ran: window.__ran, cancelled: window.__cancelled })",
+    );
+    let tlog = harness::probe(&tab, "window.__tlog");
+    want(
+        &opened,
+        serde_json::json!({ "rail": true, "view": 1136, "outline": "glyphs" }),
+        "1200px with the pane open: the list folds to its rail",
+    );
+    assert_eq!(
+        glide,
+        serde_json::json!({ "ran": 1, "cancelled": 0 }),
+        "and the pane glided open, whole: {opened}; the transitions: {tlog}"
+    );
+    // The transcript is remeasured once, at the width it settles at, scaling the heights it keeps from
+    // the width before; never at a width read mid-glide, nor twice.
+    let settled = |what: &str, within: f64| {
+        harness::until(
+            &tab,
+            &format!("{REMEASURES}.count > 0"),
+            what,
+            Duration::from_secs(5),
+            REMEASURES,
+        );
+        let seen = harness::probe(&tab, REMEASURES);
+        let (ratio, expected) = (
+            seen["ratio"].as_f64().unwrap_or(f64::NAN),
+            seen["expected"].as_f64().unwrap_or(f64::NAN),
+        );
+        assert!(
+            seen["count"] == 1 && (ratio - expected).abs() <= within,
+            "{what}: one remeasure, from the width before to the width settled: {seen}"
+        );
+    };
+    settled("the transcript remeasured as the pane opened", 0.01);
+    harness::eval(
+        &tab,
+        "window.__mark(); document.getElementById('previewBtn').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        &format!(
+            "document.getElementById('sessionView').classList.contains('preview-off') && {quiet}"
+        ),
+        "the pane to shut",
+        Duration::from_secs(10),
+        probe,
+    );
+    settled("the transcript remeasured as the pane shut", 0.01);
+    want(
+        &harness::probe(&tab, probe),
+        serde_json::json!({ "rail": false, "list": 300 }),
+        "the pane shut, the list comes back",
+    );
+    // Every other change of the transcript's width remeasures once too, at the width it settles at, the
+    // view's own decision taken first (the review of 740a4cfa): the list's key beside the open pane
+    // (which read the width before the view rewrote the pane's), the outline folded and opened (which
+    // remeasured at the glide's start, at the same width, throwing every height away), and a resize
+    // that leaves the width alone remeasures nothing.
+    at(1600.0);
+    harness::eval(&tab, "document.getElementById('previewBtn').click(); 'ok'");
+    harness::until(
+        &tab,
+        &format!(
+            "!document.getElementById('sessionView').classList.contains('preview-off') && {quiet}"
+        ),
+        "the pane to open at 1600px",
+        Duration::from_secs(10),
+        probe,
+    );
+    want(
+        &harness::probe(&tab, probe),
+        serde_json::json!({ "rail": false, "list": 300, "outline": "open" }),
+        "1600px with the pane open: the list and the outline beside the session and the pane",
+    );
+    harness::eval(&tab, "window.__mark(); document.getElementById('sidebarResizer').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', shiftKey: true, bubbles: true, cancelable: true })); 'ok'");
+    harness::until(
+        &tab,
+        &format!("Math.round(document.querySelector('.sidebar').getBoundingClientRect().width) === 268 && {quiet}"),
+        "the list to narrow to 268px",
+        Duration::from_secs(5),
+        probe,
+    );
+    settled(
+        "the transcript remeasured as the list narrowed beside the open pane",
+        0.003,
+    );
+    let outline_key = "document.body.focus(); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'o', bubbles: true, cancelable: true })); 'ok'";
+    for (state, what) in [("glyphs", "folded"), ("open", "opened")] {
+        harness::eval(&tab, "window.__mark(); 'ok'");
+        harness::eval(&tab, outline_key);
+        harness::until(
+            &tab,
+            &format!("{probe}.outline === '{state}' && {quiet}"),
+            &format!("the outline {what}"),
+            Duration::from_secs(5),
+            probe,
+        );
+        settled(
+            &format!("the transcript remeasured as the outline {what}"),
+            0.003,
+        );
+    }
+    harness::eval(&tab, "window.__mark(); 'ok'");
+    harness::resize(&tab, 1600.0, 800.0);
+    harness::until(
+        &tab,
+        &format!("innerHeight < 900 && {quiet}"),
+        "a shorter window",
+        Duration::from_secs(5),
+        "innerHeight",
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    let none = harness::probe(&tab, REMEASURES);
+    assert_eq!(
+        none["count"], 0,
+        "a resize that leaves the transcript's width alone remeasures nothing: {none}"
+    );
+    // With the pane shut the text column is at its measure's cap (820px): the list's key moves the
+    // session's column and leaves the transcript's own width alone, which remeasures nothing (the
+    // review of 60313ca5: it read the column, and cleared every height at the same width).
+    harness::eval(&tab, "document.getElementById('previewBtn').click(); 'ok'");
+    harness::until(
+        &tab,
+        &format!(
+            "document.getElementById('sessionView').classList.contains('preview-off') && {quiet}"
+        ),
+        "the pane to shut at 1600px",
+        Duration::from_secs(10),
+        probe,
+    );
+    harness::eval(&tab, "window.__mark(); document.getElementById('sidebarResizer').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', shiftKey: true, bubbles: true, cancelable: true })); 'ok'");
+    harness::until(
+        &tab,
+        &format!("Math.round(document.querySelector('.sidebar').getBoundingClientRect().width) === 300 && {quiet}"),
+        "the list to widen to 300px",
+        Duration::from_secs(5),
+        probe,
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    let capped = harness::probe(&tab, REMEASURES);
+    assert!(
+        capped["count"] == 0 && capped["from"] == capped["to"],
+        "the list's key beside a text column at its cap leaves its width and remeasures nothing: {capped}"
+    );
+    // A reader who folded the outline, back at a 1050px window: the app lays its list out for the
+    // outline wanted (270px) before the view mounts, and at 300px once the view says it is folded. The
+    // view hears that change of its box, so the next change scales the heights from the width the
+    // reader saw, not the one before the list moved (60313ca5 heard nothing of it).
+    harness::eval(&tab, outline_key);
+    harness::until(
+        &tab,
+        &format!("{probe}.outline === 'glyphs' && {quiet}"),
+        "the outline folded at 1600px",
+        Duration::from_secs(5),
+        probe,
+    );
+    at(1050.0);
+    monitor.open(&tab, "?ui=app&session=cccccccc-0000-4000-8000-000000000160");
+    harness::until(
+        &tab,
+        &format!("innerWidth === 1050 && !!document.querySelector('.virtual-window') && {VIEW_CAUGHT_UP} && {quiet} && {probe}.list === 300"),
+        "the reloaded 1050px window with the outline folded and the list at 300px",
+        Duration::from_secs(20),
+        probe,
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    harness::eval(&tab, &format!("{MARK} window.__mark(); document.getElementById('sidebarResizer').dispatchEvent(new KeyboardEvent('keydown', {{ key: 'ArrowLeft', shiftKey: true, bubbles: true, cancelable: true }})); 'ok'"));
+    harness::until(
+        &tab,
+        &format!("Math.round(document.querySelector('.sidebar').getBoundingClientRect().width) === 268 && {quiet}"),
+        "the list to narrow to 268px after the reload",
+        Duration::from_secs(5),
+        probe,
+    );
+    settled(
+        "the transcript remeasured from the width the reader saw after the reload",
+        0.003,
+    );
+    // A fresh reader at a 770px window: the view is laid out beside the list as the order puts it before
+    // it decides, so its outline's default is a desktop's (wanted), which a wider window then opens.
+    harness::eval(&tab, "localStorage.clear(); 'ok'");
+    harness::resize(&tab, 770.0, 900.0);
+    monitor.open(&tab, "?ui=app&session=cccccccc-0000-4000-8000-000000000160");
+    harness::until(&tab, &format!("innerWidth === 770 && !!document.querySelector('.virtual-window') && {VIEW_CAUGHT_UP} && {quiet}"), "a fresh 770px window to draw the session", Duration::from_secs(20), probe);
+    want(
+        &harness::probe(&tab, probe),
+        serde_json::json!({ "rail": true, "phone": false, "outline": "glyphs" }),
+        "a fresh 770px window",
+    );
+    want(
+        &at(1400.0),
+        serde_json::json!({ "rail": false, "list": 300, "outline": "open" }),
+        "and the outline opens with the room: the reader never folded it",
+    );
+    // An iPad upright: a touch window of 834px keeps the list at 276px beside the phone reader.
+    harness::phone(&tab, 834, 1194);
+    monitor.open(&tab, "?ui=app&session=cccccccc-0000-4000-8000-000000000160");
+    harness::until(
+        &tab,
+        &format!(
+            "innerWidth === 834 && !!document.querySelector('.virtual-window') && {VIEW_CAUGHT_UP}"
+        ),
+        "the iPad to draw the session",
+        Duration::from_secs(20),
+        probe,
+    );
+    let ipad = harness::probe(&tab, probe);
+    drop(monitor);
+    want(
+        &ipad,
+        serde_json::json!({ "drawer": false, "rail": false, "list": 276, "view": 558, "phone": true, "outline": "dock" }),
+        "an 834px iPad upright",
+    );
+}
+
+/// #s431 stage 1: the session list and its rail swap at once where the window is 1180px or narrower,
+/// and glide above it, as they did before the app's grid held two tracks either way. Before, the
+/// list's grid there had two tracks and the rail's four, which no transition joins; with two tracks
+/// in both the swap glided over .22s at every width until the app said otherwise.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_swaps_the_list_and_its_rail_at_once_where_the_pane_overlays() {
+    let _serial = serial();
+    let (monitor, _browser, tab) = shell_with_a_session("appshell-rail-swap", 2876);
+    // Press the control in sight (collapse on the list, expand on the rail) and read at once: getAnimations
+    // flushes the style change, so a glide the press started is already there.
+    let press = "(function(){ var app = document.getElementById('app'); var on = !app.classList.contains('sidebar-off'); document.getElementById(on ? 'sidebarCollapse' : 'sidebarMiniExpand').click(); return { rail: app.classList.contains('sidebar-off'), glides: app.getAnimations().filter(function(a){ return a instanceof CSSTransition && a.transitionProperty === 'grid-template-columns'; }).length, first: getComputedStyle(app).gridTemplateColumns.split(' ')[0] }; })()";
+    for (width, glide) in [(1000.0, false), (1440.0, true)] {
+        harness::resize(&tab, width, 800.0);
+        let quiet = format!("innerWidth === {width} && !document.getElementById('app').classList.contains('sidebar-off') && document.getElementById('app').getAnimations().length === 0");
+        harness::until(
+            &tab,
+            &quiet,
+            "the window at its width with the list shown and nothing gliding",
+            Duration::from_secs(10),
+            "({ w: innerWidth, rail: document.getElementById('app').classList.contains('sidebar-off') })",
+        );
+        for rail in [true, false] {
+            let seen = harness::probe(&tab, press);
+            assert_eq!(
+                seen["rail"], rail,
+                "the press swapped them at {width}px: {seen}"
+            );
+            if glide {
+                assert!(
+                    seen["glides"].as_u64() == Some(1),
+                    "above 1180px the swap glides, as before (rail={rail}): {seen}"
+                );
+            } else {
+                assert_eq!(
+                    seen["glides"], 0,
+                    "at {width}px the swap is at once, as before (rail={rail}): {seen}"
+                );
+                if rail {
+                    assert_eq!(
+                        seen["first"], "64px",
+                        "the rail is in place at once: {seen}"
+                    );
+                }
+            }
+            harness::until(
+                &tab,
+                "document.getElementById('app').getAnimations().length === 0",
+                "the swap to end",
+                Duration::from_secs(10),
+                "document.getElementById('app').className",
+            );
+        }
+    }
+    drop(monitor);
+}
+
 /// #78 / #95: the roster of what the session published lives in the right pane — one row per
 /// URL, the republish counted, in a new-tab link — with the count on the pane's button while
 /// the pane is hidden, and a jump that lands the transcript on the publishing record.
@@ -4927,9 +12758,10 @@ fn the_app_shell_lists_the_published_artifacts() {
     }
     stores.claude_session(&sid, &transcript);
     let monitor = Monitor::spawn(Kind::V1, 2875, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    tab.navigate_to(&format!("http://127.0.0.1:2875/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(&tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -4966,7 +12798,7 @@ fn the_app_shell_lists_the_published_artifacts() {
     harness::eval(&tab, "document.getElementById('previewBtn').click(); 'ok'");
     harness::until(
         &tab,
-        "!document.getElementById('app').classList.contains('preview-off') && !!document.querySelector('#previewTabs .preview-tab.pinned.on')",
+        "!document.getElementById('app').classList.contains('preview-off') && !!document.querySelector('#previewTabs .preview-tab.sv-pinned.on')",
         "the pane to open on its pinned roster tab",
         std::time::Duration::from_secs(10),
         "document.getElementById('previewTabs').innerText",
@@ -4974,7 +12806,7 @@ fn the_app_shell_lists_the_published_artifacts() {
     assert_eq!(
         harness::probe(
             &tab,
-            "document.querySelector('#previewTabs .preview-tab.pinned').innerText.trim()"
+            "document.querySelector('#previewTabs .preview-tab.sv-pinned').innerText.trim()"
         ),
         "Artifacts (2)",
         "the pinned tab counts them"
@@ -5331,6 +13163,19 @@ fn shell_with_a_session(
     headless_chrome::Browser,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
+    shell_with_a_session_in(name, port, |_| {})
+}
+
+/// `shell_with_a_session`, with `prepare` given the tab before the shell's first load.
+fn shell_with_a_session_in(
+    name: &str,
+    port: u16,
+    prepare: impl FnOnce(&headless_chrome::Tab),
+) -> (
+    Monitor,
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+) {
     let base = base(name);
     let stores = Stores::new(&base);
     let sid = "cccccccc-0000-4000-8000-000000000160".to_string();
@@ -5343,6 +13188,7 @@ fn shell_with_a_session(
     stores.claude_session(&sid, &transcript);
     let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
     let (browser, tab) = harness::chrome_tab();
+    prepare(&tab);
     monitor.pair(&tab);
     monitor.open(&tab, &format!("?ui=app&session={sid}"));
     harness::until(
@@ -6344,10 +14190,11 @@ fn the_app_shell_panes_open_on_what_is_live() {
         ],
     );
     let monitor = Monitor::spawn(Kind::V1, 2885, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let open = |tab: &headless_chrome::Tab| {
-        tab.navigate_to(&format!("http://127.0.0.1:2885/?ui=app&session={sid}"))
+        tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
             .unwrap();
         tab.wait_until_navigated().unwrap();
         harness::until(tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", std::time::Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
@@ -6839,6 +14686,7 @@ fn app_shell_favicon(kind: Kind, port: u16, label: &str) {
         &harness::long_session(3, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(kind, port, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
@@ -6851,12 +14699,12 @@ fn app_shell_favicon(kind: Kind, port: u16, label: &str) {
         std::time::Duration::from_secs(30),
         "document.readyState + ' ' + document.head.innerHTML.length",
     );
-    let href = harness::eval(
-        &tab,
-        "document.querySelector('link[rel~=\"icon\"]').getAttribute('href')",
-    );
+    // The page writes its links relative to where it was served (#s426), so a host's prefix
+    // keeps them; what the browser resolves the link to is the served icon.
+    let href = harness::eval(&tab, "document.querySelector('link[rel~=\"icon\"]').href");
     assert_eq!(
-        href, "/favicon.svg",
+        href,
+        format!("http://127.0.0.1:{port}/favicon.svg").as_str(),
         "{label}: the link points at the served icon"
     );
     for name in ["/favicon.svg", "/favicon.ico"] {
@@ -6891,6 +14739,7 @@ fn home_screen_icon(kind: Kind, port: u16, label: &str) {
         &harness::long_session(3, harness::Shape::default()),
     );
     let monitor = Monitor::spawn(kind, port, &base, Some(&stores), true);
+    let port = monitor.port;
 
     // Never paired: the icon and the manifest are read, as the bytes they are.
     let (_stranger, tab) = harness::chrome_tab();
@@ -6932,16 +14781,19 @@ fn home_screen_icon(kind: Kind, port: u16, label: &str) {
     );
     let seen = harness::eval(
         &tab,
-        "(async function(){ var q = function (s) { var e = document.querySelector(s); return e ? (e.getAttribute('href') || e.getAttribute('content')) : null; }; var load = function (src) { return new Promise(function (ok) { var i = new Image(); i.onload = function () { ok(i.naturalWidth + 'x' + i.naturalHeight); }; i.onerror = function () { ok('error'); }; i.src = src; }); }; var touch = q('link[rel=\"apple-touch-icon\"]'), manifest = q('link[rel=\"manifest\"]'); var m = manifest ? await (await fetch(manifest)).json() : null; var sizes = []; for (var icon of (m ? m.icons : [])) sizes.push(icon.sizes + '=' + await load(icon.src)); return JSON.stringify({ touch: touch, touchLoads: touch ? await load(touch) : null, manifest: manifest, name: m && m.name, display: m && m.display, icons: sizes, title: q('meta[name=\"apple-mobile-web-app-title\"]'), standalone: !!document.querySelector('meta[name=\"apple-mobile-web-app-capable\"], meta[name=\"mobile-web-app-capable\"]') }); })()",
+        "(async function(){ var q = function (s) { var e = document.querySelector(s); return e ? (e.href || e.getAttribute('content')) : null; }; var load = function (src) { return new Promise(function (ok) { var i = new Image(); i.onload = function () { ok(i.naturalWidth + 'x' + i.naturalHeight); }; i.onerror = function () { ok('error'); }; i.src = src; }); }; var touch = q('link[rel=\"apple-touch-icon\"]'), manifest = q('link[rel=\"manifest\"]'); var m = manifest ? await (await fetch(manifest)).json() : null; var sizes = []; for (var icon of (m ? m.icons : [])) sizes.push(icon.sizes + '=' + await load(icon.src)); return JSON.stringify({ touch: touch, touchLoads: touch ? await load(touch) : null, manifest: manifest, name: m && m.name, display: m && m.display, icons: sizes, title: q('meta[name=\"apple-mobile-web-app-title\"]'), standalone: !!document.querySelector('meta[name=\"apple-mobile-web-app-capable\"], meta[name=\"mobile-web-app-capable\"]') }); })()",
     );
     let seen: serde_json::Value = serde_json::from_str(seen.as_str().unwrap()).unwrap();
+    // Written relative to where the page was served (#s426); resolved, they are the root's.
     assert_eq!(
-        seen["touch"], "/apple-touch-icon.png",
+        seen["touch"],
+        format!("http://127.0.0.1:{port}/apple-touch-icon.png").as_str(),
         "{label} {ui}: {seen}"
     );
     assert_eq!(seen["touchLoads"], "180x180", "{label} {ui}: {seen}");
     assert_eq!(
-        seen["manifest"], "/manifest.webmanifest",
+        seen["manifest"],
+        format!("http://127.0.0.1:{port}/manifest.webmanifest").as_str(),
         "{label} {ui}: {seen}"
     );
     assert_eq!(seen["name"], "Agent Monitor", "{label} {ui}: {seen}");
@@ -7098,8 +14950,10 @@ fn the_app_shell_counts_the_blocked_sessions() {
     let base = base("appshell-buckets");
     let world = bucket_world(&base);
     let monitor = Monitor::spawn(Kind::V1, 2916, &base, Some(&world.stores), false);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
-    tab.navigate_to("http://127.0.0.1:2916/?ui=app").unwrap();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     // A wait publishes at once, an ended turn after one stable tick, the process probe runs
     // every 10 s and the shell polls every 5 s: wait for every verdict to settle, not only
@@ -7222,8 +15076,10 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
     let base = base("appshell-filter");
     let world = bucket_world(&base);
     let monitor = Monitor::spawn(Kind::V1, 2917, &base, Some(&world.stores), false);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
-    tab.navigate_to("http://127.0.0.1:2917/?ui=app").unwrap();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     let settled = |v: &serde_json::Value| {
         let st = |k: &str| {
@@ -7297,7 +15153,7 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
         s0["lit"], true,
         "the default leaves Idle out, so the glyph is lit: {s0}"
     );
-    let order = eval(&tab, "Array.from(document.querySelectorAll('.head-actions > button')).map(function (b) { return b.id; }).join(',')", false);
+    let order = eval(&tab, "Array.from(document.querySelectorAll('.head-actions > button, .head-actions > .session-list-controls > button')).map(function (b) { return b.id; }).join(',')", false);
     assert!(
         order
             .as_str()
@@ -7374,7 +15230,8 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
     click("#sessionFilter [data-bucket=\"recent\"]");
     click("#sessionFilter [data-bucket=\"idle\"]");
     assert_eq!(tree(), "123", "blocked alone");
-    tab.navigate_to("http://127.0.0.1:2917/?ui=app").unwrap();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app"))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline && tree() != "123" {
@@ -7438,6 +15295,160 @@ fn the_app_shell_filters_the_sessions_by_bucket() {
     drop(world);
 }
 
+/// A GET on the loopback, answered within `wait`: the reply as text (status line first), or why not.
+fn loopback_get(port: u16, path: &str, wait: Duration) -> String {
+    use std::io::{Read, Write};
+    let Ok(mut s) = std::net::TcpStream::connect(("127.0.0.1", port)) else {
+        return format!("nothing listens on {port}");
+    };
+    s.set_read_timeout(Some(wait)).unwrap();
+    let _ = write!(
+        s,
+        "GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+    );
+    let mut out = String::new();
+    match s.read_to_string(&mut out) {
+        Ok(_) => out,
+        Err(e) => format!("no reply within {wait:?} ({e}): {out}"),
+    }
+}
+
+/// #s495: a case's port held by another listener — aries-black's ssh tunnel on 2728 — moves the
+/// case's monitor to a port the kernel has free, and the handle says where it went. The harness
+/// used to wait for anything to answer on the port, so it handed the case the tunnel: the monitor
+/// had exited on its bind, and the case failed later as a page that never came. The listener here
+/// accepts nothing, as a tunnel with nothing behind it would; the case asks the monitor itself
+/// (its public manifest) on the port the handle names.
+#[test]
+#[ignore = "needs a built agent-monitor"]
+fn a_case_whose_port_is_held_gets_its_monitor_on_another() {
+    let _serial = serial();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let base = harness::base("held-port-moves");
+    let stores = harness::Stores::new(&base);
+    let m = harness::Monitor::spawn(harness::Kind::V1, port, &base, Some(&stores), true);
+    assert_ne!(
+        m.port, port,
+        "the monitor serves somewhere other than the held port"
+    );
+    assert_eq!(m.key, port, "its scratch keeps the case's port in its name");
+    assert!(
+        m.state.ends_with(format!("state-{port}")),
+        "the state dir is named for the case's port: {}",
+        m.state.display()
+    );
+    let reply = loopback_get(m.port, "/manifest.webmanifest", Duration::from_secs(10));
+    assert!(
+        reply.starts_with("HTTP/1.1 200") && reply.contains("Agent Monitor"),
+        "the monitor answers on the port its handle names: {reply}"
+    );
+}
+
+/// #s495: a monitor that must serve on one port (a page is open on that origin,
+/// `Monitor::respawn`) and finds it held fails AT ONCE, naming the port and what holds it — here
+/// this test process, by `lsof` (or `ss`) — rather than handing the case to the listener there.
+#[test]
+#[ignore = "needs a built agent-monitor"]
+fn a_monitor_held_off_its_exact_port_names_the_holder_at_once() {
+    let _serial = serial();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let base = harness::base("held-port-exact");
+    let stores = harness::Stores::new(&base);
+    let started = std::time::Instant::now();
+    let spawned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        harness::Monitor::spawn_exact(harness::Kind::V1, port, port, &base, Some(&stores), true)
+    }));
+    let took = started.elapsed();
+    let why = match spawned {
+        Ok(m) => panic!("a monitor came up on the held port {}", m.port),
+        Err(payload) => payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_default(),
+    };
+    assert!(
+        took < Duration::from_secs(5),
+        "it fails at once, not after a wait: {took:?}"
+    );
+    let me = std::process::id();
+    assert!(
+        why.contains(&format!("port {port} is held by")) && why.contains(&format!("pid {me}")),
+        "the panic names the port and its holder (pid {me}): {why}"
+    );
+    drop(held);
+}
+
+/// #s495: a restart under an open page (`Monitor::respawn`) brings the same monitor back where the
+/// page is — the port the first one was MOVED to when the case's was held — and with what its
+/// spawn was given: a remote case's monitor still trusts `phone.test` on that port, and extra
+/// arguments come back too. It once kept only the port, so a remote case's restart would have
+/// refused its own phone.
+#[test]
+#[ignore = "needs a built agent-monitor"]
+fn a_respawned_monitor_keeps_its_port_its_environment_and_its_arguments() {
+    let _serial = serial();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = held.local_addr().unwrap().port();
+    let base = harness::base("held-port-respawn");
+    let stores = harness::Stores::new(&base);
+    let environment = |m: &harness::Monitor| {
+        let out = std::process::Command::new("ps")
+            .args(["eww", "-o", "command=", "-p", &m.pid().to_string()])
+            .output()
+            .expect("ps runs");
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    };
+    let first = harness::Monitor::spawn_remote(harness::Kind::V1, port, &base, Some(&stores));
+    let moved = first.port;
+    assert_ne!(moved, port, "the held port moved the first monitor");
+    let trusted = format!(
+        "AGENT_MONITOR_TRUSTED_HOSTS={}:{moved}",
+        harness::REMOTE_HOST
+    );
+    assert!(
+        environment(&first).contains(&trusted),
+        "the first monitor trusts the name on its port: {}",
+        environment(&first)
+    );
+    let again = harness::Monitor::respawn(first, &base, Some(&stores), true);
+    assert_eq!(again.port, moved, "the restart serves where the page is");
+    assert_eq!(again.key, port, "over the same scratch");
+    let said = environment(&again);
+    assert!(
+        said.contains(&trusted),
+        "the restart keeps its environment: {said}"
+    );
+    let reply = loopback_get(again.port, "/manifest.webmanifest", Duration::from_secs(10));
+    assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
+    drop(again);
+
+    let base = harness::base("held-port-respawn-args");
+    let stores = harness::Stores::new(&base);
+    let first = harness::Monitor::spawn_with_args(
+        harness::Kind::V1,
+        port,
+        &base,
+        Some(&stores),
+        true,
+        &[("CR_RESPAWN_MARK", "kept")],
+        &["--agents", "claude,codex"],
+    );
+    let again = harness::Monitor::respawn(first, &base, Some(&stores), true);
+    let said = environment(&again);
+    assert!(
+        said.contains("CR_RESPAWN_MARK=kept"),
+        "the restart keeps the spawn's extra environment: {said}"
+    );
+    assert!(
+        said.contains("--agents claude,codex"),
+        "the restart keeps the spawn's extra arguments: {said}"
+    );
+    drop(held);
+}
+
 /// #309 — the owner saw `agent-monitor --pair` print `session 72b570af…: no such transcript` right
 /// after it started, for a valid transcript: a tab left open on it polled before any page had
 /// fetched the session list, and the service can only serve ids a scan has SHOWN it. A `/pull` for
@@ -7453,7 +15464,7 @@ fn a_fresh_monitor_serves_a_session_before_any_page_lists_them() {
     let m = harness::Monitor::spawn(harness::Kind::V1, 2819, &base, Some(&stores), false);
     let get = |path: &str| -> (u16, String) {
         use std::io::{Read, Write};
-        let mut s = std::net::TcpStream::connect(("127.0.0.1", 2819)).unwrap();
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", m.port)).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(30))).unwrap();
         write!(
             s,
@@ -7507,8 +15518,8 @@ fn a_phone_pairs_by_a_one_time_code() {
         "aaaa1111-0000-4000-8000-000000000011",
         &harness::long_session(3, harness::Shape::default()),
     );
-    let port = 2820u16;
-    let m = harness::Monitor::spawn(harness::Kind::V1, port, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 2820, &base, Some(&stores), true);
+    let port = m.port;
     // The CLI, in the monitor's own state and cache (where its token and the codes file live).
     let bin =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../target/release/agent-monitor");
@@ -7526,8 +15537,11 @@ fn a_phone_pairs_by_a_one_time_code() {
         ])
         .arg(format!("http://127.0.0.1:{port}/"))
         .env("XDG_CACHE_HOME", &base)
-        .env("CLAUDE_MONITOR_CACHE", base.join(format!("cache-{port}")))
-        .env("CLAUDE_MONITOR_STATE", base.join(format!("state-{port}")))
+        .env(
+            "CLAUDE_MONITOR_CACHE",
+            base.join(format!("cache-{}", m.key)),
+        )
+        .env("CLAUDE_MONITOR_STATE", &m.state)
         .output()
         .expect("run agent-monitor --pair-phone");
     let printed = String::from_utf8_lossy(&out.stdout).to_string();
@@ -7546,8 +15560,8 @@ fn a_phone_pairs_by_a_one_time_code() {
         printed.contains('▀') || printed.contains('▄') || printed.contains('█'),
         "a QR code is drawn"
     );
-    let token = std::fs::read_to_string(base.join(format!("state-{port}")).join("auth-token"))
-        .expect("a paired monitor has a token");
+    let token =
+        std::fs::read_to_string(m.state.join("auth-token")).expect("a paired monitor has a token");
     assert!(
         !token.trim().is_empty() && !printed.contains(token.trim()),
         "the long-lived token is never shown: {printed}"
@@ -7585,8 +15599,8 @@ fn refusal_pairing_actions_are_readable_and_tappable() {
     let _serial = serial();
     let base = harness::base("refusal-pairing-actions");
     let stores = harness::Stores::new(&base);
-    let port = 2987;
-    let _monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let monitor = Monitor::spawn(Kind::V1, 2987, &base, Some(&stores), true);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     for (layout, width, height, mobile) in [
         ("portrait", 390, 844, true),
@@ -7880,17 +15894,21 @@ const DRAWER_STATE: &str = "(function(){ var s = document.querySelector('#app > 
 /// its rows in place. It used to rewrite the whole list each time, and a press that straddled the
 /// write, down on a row and up on its replacement, made no click: a session chosen from the drawer
 /// just then was not chosen, which is how the drawer case above failed one run in four. Here a row is
-/// marked, two refreshes go by, and the marked row must still be the one in the list.
+/// marked, two refreshes go by, and the marked row must still be the one in the list. #s482: the
+/// collapsed rail's agent marks too. Rewritten on every refresh, they were new buttons on the screen
+/// every 5 s, and on an iPad a tap on the rail's expand that met one was spent by WebKit as a hover
+/// (no click), so the list opened only on a second tap.
 #[test]
 #[ignore]
 fn a_session_list_refresh_that_changes_nothing_keeps_its_rows() {
     let _serial = serial();
     let (_m, _b, tab) = phone_world(2820, "list-keeps-rows", 390, 844);
     let row = format!(".tree-row.session[data-session=\"{PHONE_OTHER}\"]");
+    let mark = "#sidebarMiniAgents [data-mini-agent]";
     let refreshes = "performance.getEntriesByType('resource').filter(function (e) { return /\\/api\\/sessions(\\?|$)/.test(e.name); }).length";
     let before = harness::eval(
         &tab,
-        &format!("(function () {{ document.querySelector({row:?}).__kept = true; return {refreshes}; }})()"),
+        &format!("(function () {{ document.querySelector({row:?}).__kept = true; document.querySelector({mark:?}).__kept = true; return {refreshes}; }})()"),
     )
     .as_u64()
     .expect("the refreshes so far");
@@ -7908,6 +15926,14 @@ fn a_session_list_refresh_that_changes_nothing_keeps_its_rows() {
         ),
         true,
         "an unchanged refresh keeps the row the reader may be pressing"
+    );
+    assert_eq!(
+        harness::eval(
+            &tab,
+            &format!("(function () {{ var r = document.querySelector({mark:?}); return !!(r && r.__kept); }})()"),
+        ),
+        true,
+        "an unchanged refresh keeps the rail's marks, which a tap on the rail's expand may be meeting"
     );
 }
 
@@ -8657,14 +16683,10 @@ fn a_phone_over_the_tailnet_sees_secrets_masked_and_the_desktop_does_not() {
     ]);
     harness::phone(&phone, 390, 844);
     let token = m.token().map(|t| format!("?token={t}")).unwrap_or_default();
-    phone
-        .navigate_to(&format!("http://phone.test:2737/{token}"))
-        .unwrap();
+    phone.navigate_to(&m.remote_url(&token)).unwrap();
     phone.wait_until_navigated().unwrap();
     phone
-        .navigate_to(&format!(
-            "http://phone.test:2737/?ui=app&session={PHONE_SID}"
-        ))
+        .navigate_to(&m.remote_url(&format!("?ui=app&session={PHONE_SID}")))
         .unwrap();
     phone.wait_until_navigated().unwrap();
     let on_phone = read(&phone, "the prompt over the tailnet name");
@@ -8717,13 +16739,10 @@ fn a_phone_over_the_tailnet_reads_the_session_gzipped() {
     ]);
     harness::phone(&tab, 390, 844);
     let token = m.token().map(|t| format!("?token={t}")).unwrap_or_default();
-    tab.navigate_to(&format!("http://phone.test:2805/{token}"))
-        .unwrap();
+    tab.navigate_to(&m.remote_url(&token)).unwrap();
     tab.wait_until_navigated().unwrap();
-    tab.navigate_to(&format!(
-        "http://phone.test:2805/?ui=app&session={PHONE_SID}"
-    ))
-    .unwrap();
+    tab.navigate_to(&m.remote_url(&format!("?ui=app&session={PHONE_SID}")))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     harness::until(
         &tab,
@@ -8967,27 +16986,17 @@ fn a_paired_phone_over_the_tailnet_reads_a_file() {
     .concat()
     .replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
     stores.claude_session(PHONE_SID, &transcript);
-    let m = harness::Monitor::spawn_with(
-        harness::Kind::V1,
-        2714,
-        &base,
-        Some(&stores),
-        true,
-        &[("AGENT_MONITOR_TRUSTED_HOSTS", "phone.test:2714")],
-    );
+    let m = harness::Monitor::spawn_remote(harness::Kind::V1, 2714, &base, Some(&stores));
     let (_browser, tab) = harness::chrome_with_tab(&[
         "--host-resolver-rules=MAP phone.test 127.0.0.1",
         "--no-proxy-server",
     ]);
     harness::phone(&tab, 390, 844);
     let token = m.token().map(|t| format!("?token={t}")).unwrap_or_default();
-    tab.navigate_to(&format!("http://phone.test:2714/{token}"))
-        .unwrap();
+    tab.navigate_to(&m.remote_url(&token)).unwrap();
     tab.wait_until_navigated().unwrap();
-    tab.navigate_to(&format!(
-        "http://phone.test:2714/?ui=app&session={PHONE_SID}"
-    ))
-    .unwrap();
+    tab.navigate_to(&m.remote_url(&format!("?ui=app&session={PHONE_SID}")))
+        .unwrap();
     tab.wait_until_navigated().unwrap();
     let offered = "document.querySelector('[data-reference-path][data-reference-fsig]:not([data-reference-fsig=\"\"])')";
     harness::until(
@@ -9321,6 +17330,123 @@ fn a_phone_task_card_dims_what_is_behind_it() {
         "a tap on the dimmed view to close the card and lift the scrim",
         Duration::from_secs(5),
         "document.getElementById('taskPopover').hidden",
+    );
+}
+
+/// #s510, seen on #s496's walk: a wide phone held sideways, its list column showing Tasks, a task's
+/// card open, and a tap on the dim where the sidebar handle lies beneath it. The card closed and the
+/// column hid as well: the dim went at the touch, and the tap's click then landed on the handle. A
+/// tap on the dim is spent closing the card, as the pane's dim's is (#s55). A tap on the dim
+/// elsewhere still closes the card, and the handle answers the next tap.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_wide_phone_s_task_card_dim_spends_its_tap_on_closing_the_card() {
+    let _serial = serial();
+    let base = harness::base("wide-phone-task-dim");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        PHONE_SID,
+        &harness::long_session(8, harness::Shape::default()),
+    );
+    stores.claude_tasks(
+        PHONE_SID,
+        &[
+            (
+                "1",
+                "count the tern nests on the north shore",
+                "in_progress",
+            ),
+            ("2", "count the skua burrows by the cliff", "pending"),
+            ("3", "map the petrel colony", "pending"),
+        ],
+    );
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3141, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    harness::phone(&tab, 956, 440);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    m.pair(&tab);
+    harness::eval(&tab, "localStorage.removeItem('am-phone-column'); 'ok'");
+    m.open(&tab, &format!("?ui=app&session={PHONE_SID}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user') && innerWidth === 956 && !!document.querySelector('#columnSwitch [data-column-tab=tasks]') && getComputedStyle(document.getElementById('columnSwitch')).display !== 'none'",
+        "the session beside its list column at the phone's size",
+        Duration::from_secs(20),
+        "innerWidth + 'x' + innerHeight + ' ' + document.getElementById('app').className",
+    );
+    const COLUMN: &str = "JSON.stringify({ stored: localStorage.getItem('am-phone-column'), off: document.getElementById('app').classList.contains('phone-column-off'), expanded: document.getElementById('drawerHandle').getAttribute('aria-expanded') })";
+    let column = || -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, COLUMN).as_str().unwrap_or("{}"))
+            .unwrap_or_default()
+    };
+    assert_eq!(column()["off"], false, "the column is shown: {}", column());
+    let tasks = page_point(&tab, "the column's Tasks tab", "(function(){ var b = document.querySelector('#columnSwitch [data-column-tab=tasks]').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); })()");
+    harness::finger_tap(&tab, tasks[0], tasks[1]);
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#columnPane .work-task-head').length === 3",
+        "the column to list the session's three tasks",
+        Duration::from_secs(10),
+        "document.querySelectorAll('#columnPane .work-task-head').length",
+    );
+    let open_card = || {
+        let row = page_point(&tab, "a task row in the column", "(function(){ var r = [...document.querySelectorAll('#columnPane .work-task-head')].map(function (h) { return h.getBoundingClientRect(); }).find(function (b) { var e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!e && !!e.closest('#columnPane .work-task-head'); }); return r ? JSON.stringify([r.left + r.width / 2, r.top + r.height / 2]) : 'none'; })()");
+        harness::finger_tap(&tab, row[0], row[1]);
+        harness::until(
+            &tab,
+            "!document.getElementById('taskPopover').hidden",
+            "the task's card to open",
+            Duration::from_secs(5),
+            "document.getElementById('taskPopover').hidden",
+        );
+        std::thread::sleep(Duration::from_millis(600));
+    };
+    // The dim is gone once the card is closed and the scrim neither shown nor catching.
+    let closed = |what: &str| {
+        harness::until(
+            &tab,
+            "document.getElementById('taskPopover').hidden && getComputedStyle(document.getElementById('taskScrim')).display === 'none'",
+            what,
+            Duration::from_secs(6),
+            "document.getElementById('taskPopover').hidden + ' ' + document.getElementById('taskScrim').className + ' ' + getComputedStyle(document.getElementById('taskScrim')).display",
+        );
+    };
+    open_card();
+    let handle = page_point(&tab, "the sidebar handle", "(function(){ var b = document.getElementById('drawerHandle').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); })()");
+    let under = harness::eval(&tab, &format!("(function(){{ var e = document.elementFromPoint({}, {}); return e ? (e.id || e.className) : null; }})()", handle[0], handle[1]));
+    assert_eq!(
+        under,
+        serde_json::Value::String("taskScrim".into()),
+        "the card's dim lies over the handle"
+    );
+    harness::finger_tap(&tab, handle[0], handle[1]);
+    closed("a tap on the dim over the handle to close the card and lift the dim");
+    std::thread::sleep(Duration::from_millis(300));
+    let after = column();
+    assert_eq!(
+        (after["off"].clone(), after["stored"].clone()),
+        (serde_json::Value::Bool(false), serde_json::Value::Null),
+        "the tap closed the card and nothing else: the column is still shown: {after}"
+    );
+    // A tap on the dim elsewhere still closes the card.
+    open_card();
+    let elsewhere = page_point(&tab, "a point on the dim away from the card and the handle", "(function(){ var s = document.getElementById('taskScrim'), h = document.getElementById('drawerHandle').getBoundingClientRect(); var p = [[innerWidth - 90, 50], [innerWidth / 2, 50], [innerWidth - 90, innerHeight / 3]].find(function (q) { return document.elementFromPoint(q[0], q[1]) === s && (q[0] > h.right + 40 || q[1] > h.bottom + 40); }); return p ? JSON.stringify(p) : 'none'; })()");
+    harness::finger_tap(&tab, elsewhere[0], elsewhere[1]);
+    closed("a tap on the dim elsewhere to close the card and lift the dim");
+    assert_eq!(
+        column()["off"],
+        false,
+        "…and leave the column shown: {}",
+        column()
+    );
+    // And the handle answers the next tap.
+    harness::finger_tap(&tab, handle[0], handle[1]);
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('phone-column-off') && localStorage.getItem('am-phone-column') === '0'",
+        "the next tap on the handle to hide the column",
+        Duration::from_secs(5),
+        COLUMN,
     );
 }
 
@@ -10186,7 +18312,7 @@ fn a_phone_jumps_to_the_latest_from_the_bottom_centre() {
     );
     let corner = harness::eval(
         &desk,
-        "(function(){ var r = document.querySelector('.jump-to-bottom').getBoundingClientRect(), m = document.querySelector('.session-main').getBoundingClientRect(); return JSON.stringify({ fromRight: Math.round(m.right - r.right), w: Math.round(r.width) }); })()",
+        "(function(){ var r = document.querySelector('.jump-to-bottom').getBoundingClientRect(), m = document.querySelector('.sv-session-main').getBoundingClientRect(); return JSON.stringify({ fromRight: Math.round(m.right - r.right), w: Math.round(r.width) }); })()",
     );
     assert_eq!(
         corner.as_str(),
@@ -10663,12 +18789,12 @@ fn a_phone_pane_counts_its_open_files_and_steps_through_their_tabs() {
     assert_eq!(
         harness::eval(
             &tab,
-            "document.querySelector('#previewTabs .preview-tab.pinned').innerText.trim()"
+            "document.querySelector('#previewTabs .preview-tab.sv-pinned').innerText.trim()"
         ),
         "Artifacts (1)",
         "the pinned roster tab still counts what was published"
     );
-    let strip = "(function(){ var s = document.getElementById('previewTabs'), box = s.getBoundingClientRect(), tabs = [].slice.call(s.querySelectorAll('.preview-tab:not(.pinned)')), on = s.querySelector('.preview-tab.on'), label = on && on.querySelector('.preview-tab-label'), r = on ? on.getBoundingClientRect() : {}; return JSON.stringify({ n: tabs.length, over: s.scrollWidth > s.clientWidth + 1, narrowest: Math.round(Math.min.apply(null, tabs.filter(function (t) { return t !== on; }).map(function (t) { return t.getBoundingClientRect().width; }))), on: label ? label.textContent : '', whole: !!label && label.scrollWidth <= label.clientWidth + 1, inView: r.left >= box.left - 1 && r.right <= box.right + 1, onW: Math.round(r.width || 0) }); })()";
+    let strip = "(function(){ var s = document.getElementById('previewTabs'), box = s.getBoundingClientRect(), tabs = [].slice.call(s.querySelectorAll('.preview-tab:not(.sv-pinned)')), on = s.querySelector('.preview-tab.on'), label = on && on.querySelector('.preview-tab-label'), r = on ? on.getBoundingClientRect() : {}; return JSON.stringify({ n: tabs.length, over: s.scrollWidth > s.clientWidth + 1, narrowest: Math.round(Math.min.apply(null, tabs.filter(function (t) { return t !== on; }).map(function (t) { return t.getBoundingClientRect().width; }))), on: label ? label.textContent : '', whole: !!label && label.scrollWidth <= label.clientWidth + 1, inView: r.left >= box.left - 1 && r.right <= box.right + 1, onW: Math.round(r.width || 0) }); })()";
     let s: serde_json::Value =
         serde_json::from_str(harness::eval(&tab, strip).as_str().unwrap_or("{}")).unwrap();
     assert_eq!(
@@ -10719,7 +18845,7 @@ fn a_phone_pane_counts_its_open_files_and_steps_through_their_tabs() {
     }
     harness::eval(
         &tab,
-        "document.querySelector('#previewTabs .preview-tab.pinned').click(); 'ok'",
+        "document.querySelector('#previewTabs .preview-tab.sv-pinned').click(); 'ok'",
     );
     phone_tap(&tab, "[data-preview-tab-step=\"-1\"]");
     std::thread::sleep(Duration::from_millis(250));
@@ -11354,7 +19480,7 @@ fn a_paired_browser_arriving_by_a_link_from_another_site_is_let_in() {
     tab.find_element("#go").unwrap().click().unwrap();
     harness::until(
         &tab,
-        "location.port === '2724' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')",
+        &format!("location.port === '{}' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')", m.port),
         "a paired browser arriving by a link from another site to land on the session",
         Duration::from_secs(20),
         "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
@@ -11381,7 +19507,7 @@ fn a_paired_browser_arriving_by_a_link_from_another_site_is_let_in() {
     tab.find_element("a.again").unwrap().click().unwrap();
     harness::until(
         &tab,
-        "location.port === '2724' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')",
+        &format!("location.port === '{}' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')", m.port),
         "Try again to land the paired browser on the session",
         Duration::from_secs(20),
         "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
@@ -11491,7 +19617,7 @@ fn a_browser_paired_with_two_servers_on_one_host_stays_paired_with_both() {
     first.open(&tab, &format!("?ui=app&session={PHONE_SID}"));
     harness::until(
         &tab,
-        "location.port === '2725' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')",
+        &format!("location.port === '{}' && !!document.getElementById('app') && !!document.querySelector('.transcript .turn.user')", first.port),
         "the first server to let the browser in after the second paired it",
         Duration::from_secs(20),
         "location.href + ' | ' + (document.body ? document.body.innerText.slice(0, 160) : '')",
@@ -11510,11 +19636,34 @@ const PHONE_WHOLLY_IN: &str = "function (el, box) { if (!el || !box) return fals
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_search_box_shows_whole_chips_and_clears_in_one_tap() {
     let _serial = serial();
+    search_box_shows_whole_chips(2728);
+}
+
+/// The same case with its port held by another listener (#s495): on aries-black an ssh tunnel
+/// keeps port 2728 on the loopback, and the case timed out "waiting for the phone to open on a session"
+/// while its monitor, refused the port, had already exited. The listener here never answers, as
+/// a tunnel with nothing behind it would not. It holds a port of the case's own, never 2728
+/// itself: the tunnel exits when its forward fails, so a case holding 2728 while the tunnel
+/// restarts would take the tunnel down.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_search_box_shows_whole_chips_with_its_port_held() {
+    let _serial = serial();
+    let held = std::net::TcpListener::bind("127.0.0.1:0").expect("a port for the case to hold");
+    let port = held.local_addr().expect("the held port").port();
+    assert!(
+        !harness::port_is_free(port),
+        "the case's listener holds port {port} on the loopback"
+    );
+    search_box_shows_whole_chips(port);
+}
+
+fn search_box_shows_whole_chips(port: u16) {
     // 440 wide, the owner's phone: since #s41 the funnel stays in the find pill while typing (iOS
     // focuses the field as the search opens, so hiding it then hid it always), and at 390 two chips
     // and a word then overflow the strip, which scrolls as a whole (#353,
     // `a_phone_search_strip_scrolls_whole_and_counts_beside_the_box`).
-    let (_m, _b, tab) = phone_world(2728, "phone-search-chips", 440, 956);
+    let (_m, _b, tab) = phone_world(port, "phone-search-chips", 440, 956);
     let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + 16, r.top + r.height / 2]; })()");
     phone_tap_at(&tab, gx, gy);
     harness::until(
@@ -12401,7 +20550,12 @@ fn a_phone_held_sideways_gets_the_phone_layout_in_one_row() {
 
 /// #s32, part 2: between the phone and 1180px the preview is an overlay; it covered 72vw of a
 /// session still laid out at full width and left a sliver no one could read. An open preview now
-/// covers the whole session area beside the sidebar — and all of it with the sidebar closed.
+/// covers the whole session area beside the sidebar. Since #s431 stage 3 the owner's order decides
+/// where: a pane that cannot sit beside the session at `M` covers the whole view, and the list keeps
+/// its rail (554–1034px windows at the defaults). So a 1000px window and an 800px one each fold the
+/// list to its rail as the pane opens, and the pane covers the view from the rail's edge to the
+/// window's (its rule was dead in stage 2's first cut, which left the pane at its 72% width); an
+/// 1100px window has room for both at `M`, and the pane is a column beside the session.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_narrow_window_s_preview_covers_the_session_rather_than_leaving_a_sliver() {
@@ -12419,22 +20573,32 @@ fn a_narrow_window_s_preview_covers_the_session_rather_than_leaving_a_sliver() {
         "''",
     );
     harness::eval(&tab, &format!("{link}.click(); 'ok'"));
-    let edges = "(function(){ var p = document.getElementById('preview').getBoundingClientRect(); var s = document.querySelector('.sidebar').getBoundingClientRect(); var off = document.getElementById('app').classList.contains('sidebar-off'); return JSON.stringify({ left: Math.round(p.left), right: Math.round(innerWidth - p.right), sidebar: off ? 0 : Math.round(s.right) }); })()";
+    let beside = "(function(){ var v = document.getElementById('sessionView').getBoundingClientRect(), p = document.getElementById('preview').getBoundingClientRect(), w = document.querySelector('#sessionView>.workspace').getBoundingClientRect(); return JSON.stringify({ viewLeft: Math.round(v.left), viewWidth: Math.round(v.width), paneLeft: Math.round(p.left), paneRight: Math.round(innerWidth - p.right), sessionLeft: Math.round(w.left), sessionRight: Math.round(w.right), position: getComputedStyle(document.getElementById('preview')).position }); })()";
     harness::until(
         &tab,
-        &format!("(function(){{ var e = JSON.parse({edges}); return e.left <= e.sidebar + 12 && e.right <= 12; }})()"),
-        "the preview from the sidebar's edge to the window's",
+        &format!("document.getElementById('app').classList.contains('sidebar-off') && {VIEW_CAUGHT_UP} && (function(){{ var e = JSON.parse({beside}); return e.viewWidth === innerWidth - 64 && e.paneLeft >= e.viewLeft && e.paneLeft <= e.viewLeft + 12 && e.paneRight <= 12; }})()"),
+        "in a 1000px window the list on its rail and the pane from the rail's edge to the window's",
         Duration::from_secs(15),
-        edges,
+        beside,
     );
-    // The sidebar closed: the preview takes the whole window.
-    harness::eval(&tab, "(function(){ document.getElementById('app').classList.add('sidebar-off'); return 'ok'; })()");
+    // An 800px window on the rail: the view is 736px, and the pane covers it from the rail's edge.
+    harness::resize(&tab, 800.0, 800.0);
     harness::until(
         &tab,
-        &format!("(function(){{ var e = JSON.parse({edges}); return e.left <= 12 && e.right <= 12; }})()"),
-        "the preview across the whole window with the sidebar closed",
+        &format!("innerWidth === 800 && {VIEW_CAUGHT_UP} && (function(){{ var e = JSON.parse({beside}); return e.viewWidth === 736 && e.paneLeft >= e.viewLeft && e.paneLeft <= e.viewLeft + 12 && e.paneRight <= 12; }})()"),
+        "on the rail in an 800px window the pane from the rail's edge to the window's",
         Duration::from_secs(15),
-        edges,
+        beside,
+    );
+    // An 1100px window: the session and the pane at `M` each fit beside the rail, so the pane is a
+    // column, a card 10px in from the window's edge as at any wide window (its margin).
+    harness::resize(&tab, 1100.0, 800.0);
+    harness::until(
+        &tab,
+        &format!("innerWidth === 1100 && {VIEW_CAUGHT_UP} && (function(){{ var e = JSON.parse({beside}); return e.viewWidth === 1036 && e.position !== 'fixed' && e.paneRight <= 12 && e.sessionRight <= e.paneLeft + 1 && e.sessionRight - e.sessionLeft >= 480; }})()"),
+        "in an 1100px window the pane a column beside a session of M, its card's margin from the window's edge",
+        Duration::from_secs(15),
+        beside,
     );
 }
 
@@ -12511,7 +20675,7 @@ fn drawer_world(
 
 /// #s33: where the session view and the drawer are, and whether the drawer's list can be reached:
 /// the first session row wholly on screen is hit-tested at its middle.
-const DRAWER_FACTS: &str = "(function(){ var app = document.getElementById('app'); var ws = document.querySelector('#app>.workspace').getBoundingClientRect(); var sb = document.querySelector('#app>.sidebar'); var s = sb.getBoundingClientRect(); var tree = sb.querySelector('.tree'); var rows = [...sb.querySelectorAll('.tree-row.session')]; var row = rows.find(function (r) { var b = r.getBoundingClientRect(); return b.height > 0 && b.top >= 0 && b.bottom <= innerHeight && b.left >= 0; }); var hit = false; if (row) { var b = row.getBoundingClientRect(); var e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); hit = !!e && row.contains(e); } var title = document.getElementById('sessionTitle').getBoundingClientRect(); var th = document.elementFromPoint(title.left + Math.min(title.width / 2, 20), title.top + title.height / 2); return JSON.stringify({ open: !app.classList.contains('mobile-detail'), rail: app.classList.contains('sidebar-off'), wsTop: Math.round(ws.top), wsLeft: Math.round(ws.left), wsHeight: Math.round(ws.height), h: innerHeight, sbPosition: getComputedStyle(sb).position, sbRight: Math.round(s.right), rowHit: hit, treeShown: !!tree && getComputedStyle(tree).display !== 'none', treeScroll: tree ? tree.scrollHeight - tree.clientHeight : -1, treeTop: tree ? tree.scrollTop : -1, titleOnTop: !!th && document.getElementById('sessionTitle').contains(th) }); })()";
+const DRAWER_FACTS: &str = "(function(){ var app = document.getElementById('app'); var ws = document.querySelector('#sessionView>.workspace').getBoundingClientRect(); var sb = document.querySelector('#app>.sidebar'); var s = sb.getBoundingClientRect(); var tree = sb.querySelector('.tree'); var rows = [...sb.querySelectorAll('.tree-row.session')]; var row = rows.find(function (r) { var b = r.getBoundingClientRect(); return b.height > 0 && b.top >= 0 && b.bottom <= innerHeight && b.left >= 0; }); var hit = false; if (row) { var b = row.getBoundingClientRect(); var e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); hit = !!e && row.contains(e); } var title = document.getElementById('sessionTitle').getBoundingClientRect(); var th = document.elementFromPoint(title.left + Math.min(title.width / 2, 20), title.top + title.height / 2); return JSON.stringify({ open: !app.classList.contains('mobile-detail'), rail: app.classList.contains('sidebar-off'), wsTop: Math.round(ws.top), wsLeft: Math.round(ws.left), wsHeight: Math.round(ws.height), h: innerHeight, sbPosition: getComputedStyle(sb).position, sbRight: Math.round(s.right), rowHit: hit, treeShown: !!tree && getComputedStyle(tree).display !== 'none', treeScroll: tree ? tree.scrollHeight - tree.clientHeight : -1, treeTop: tree ? tree.scrollTop : -1, titleOnTop: !!th && document.getElementById('sessionTitle').contains(th) }); })()";
 
 fn drawer_facts(tab: &headless_chrome::Tab) -> serde_json::Value {
     serde_json::from_str(harness::eval(tab, DRAWER_FACTS).as_str().unwrap_or("{}"))
@@ -12727,7 +20891,7 @@ fn safe_area_facts(
             if (r.left < L - 1 || r.top < T - 1 || r.right > W - R + 1 || r.bottom > H - B + 1)
                 bad.push(String(e.id || e.getAttribute('aria-label') || e.className || e.tagName).slice(0, 40) + ' @' + [r.left, r.top, r.right, r.bottom].map(Math.round).join(','));
         }});
-        var inner = document.querySelector('#app .session-main .transcript-inner').getBoundingClientRect();
+        var inner = document.querySelector('#app .sv-session-main .transcript-inner').getBoundingClientRect();
         var tree = document.querySelector('#app>.sidebar .tree');
         var t = tree && getComputedStyle(tree).display !== 'none' ? tree.getBoundingClientRect() : null;
         return JSON.stringify({{ bad: bad, inner: [Math.round(inner.left), Math.round(W - inner.right)], tree: t && t.right > 0 ? Math.round(t.left) : null, insets: [T, R, B, L], size: [W, H] }});
@@ -12927,12 +21091,12 @@ fn a_wide_phone_held_sideways_shows_the_session_list_beside_the_session() {
     harness::finger_tap(&tab, handle[0], handle[1]);
     harness::until(
         &tab,
-        "document.getElementById('app').classList.contains('phone-column-off') && document.querySelector('#app>.workspace').getBoundingClientRect().left === 0",
+        "document.getElementById('app').classList.contains('phone-column-off') && document.querySelector('#sessionView>.workspace').getBoundingClientRect().left === 0",
         "the column hidden and the session across the screen",
         Duration::from_secs(10),
         DRAWER_FACTS,
     );
-    let centred = harness::eval(&tab, "(function(){ var t = document.querySelector('#app .transcript').getBoundingClientRect(), i = document.querySelector('#app .session-main .transcript-inner').getBoundingClientRect(); return JSON.stringify([Math.round(i.width), Math.round(i.left - t.left), Math.round(t.right - i.right)]); })()");
+    let centred = harness::eval(&tab, "(function(){ var t = document.querySelector('#app .transcript').getBoundingClientRect(), i = document.querySelector('#app .sv-session-main .transcript-inner').getBoundingClientRect(); return JSON.stringify([Math.round(i.width), Math.round(i.left - t.left), Math.round(t.right - i.right)]); })()");
     let centred: Vec<i64> =
         serde_json::from_str(centred.as_str().unwrap_or("[]")).unwrap_or_default();
     assert!(
@@ -12990,7 +21154,7 @@ fn a_wide_phone_held_sideways_shows_the_session_list_beside_the_session() {
     harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
     harness::until(
         &tab,
-        "innerWidth === 956 && document.getElementById('app').classList.contains('phone-column-off') && document.querySelector('#app>.workspace').getBoundingClientRect().left === 0",
+        "innerWidth === 956 && document.getElementById('app').classList.contains('phone-column-off') && document.querySelector('#sessionView>.workspace').getBoundingClientRect().left === 0",
         "sideways again, the column still hidden",
         Duration::from_secs(10),
         DRAWER_FACTS,
@@ -12999,7 +21163,7 @@ fn a_wide_phone_held_sideways_shows_the_session_list_beside_the_session() {
     harness::finger_tap(&tab, handle[0], handle[1]);
     harness::until(
         &tab,
-        "!document.getElementById('app').classList.contains('phone-column-off') && document.querySelector('#app>.workspace').getBoundingClientRect().left > 300",
+        "!document.getElementById('app').classList.contains('phone-column-off') && document.querySelector('#sessionView>.workspace').getBoundingClientRect().left > 300",
         "the handle shows the column again",
         Duration::from_secs(10),
         DRAWER_FACTS,
@@ -13030,7 +21194,7 @@ fn a_narrow_phone_held_sideways_reads_at_a_measure() {
         (40..=78).contains(&chars),
         "about 70 characters a line, not ~119: {chars}"
     );
-    let centred = harness::eval(&tab, "(function(){ var t = document.querySelector('#app .transcript'), r = t.getBoundingClientRect(), cs = getComputedStyle(t), i = document.querySelector('#app .session-main .transcript-inner').getBoundingClientRect(); var left = r.left + parseFloat(cs.paddingLeft), right = r.right - parseFloat(cs.paddingRight); return JSON.stringify([Math.round(i.width), Math.round(i.left - left), Math.round(right - i.right)]); })()");
+    let centred = harness::eval(&tab, "(function(){ var t = document.querySelector('#app .transcript'), r = t.getBoundingClientRect(), cs = getComputedStyle(t), i = document.querySelector('#app .sv-session-main .transcript-inner').getBoundingClientRect(); var left = r.left + parseFloat(cs.paddingLeft), right = r.right - parseFloat(cs.paddingRight); return JSON.stringify([Math.round(i.width), Math.round(i.left - left), Math.round(right - i.right)]); })()");
     let centred: Vec<i64> =
         serde_json::from_str(centred.as_str().unwrap_or("[]")).unwrap_or_default();
     assert!(
@@ -13048,7 +21212,7 @@ fn a_narrow_phone_held_sideways_reads_at_a_measure() {
         Duration::from_secs(5),
         "document.getElementById('readingOptions').className",
     );
-    let inner = "Math.round(document.querySelector('#app .session-main .transcript-inner').getBoundingClientRect().width)";
+    let inner = "Math.round(document.querySelector('#app .sv-session-main .transcript-inner').getBoundingClientRect().width)";
     phone_tap(&tab, "#readingOptions [data-reading-toggle=wide]");
     harness::until(
         &tab,
@@ -13131,7 +21295,7 @@ fn a_phone_held_sideways_opens_the_pane_as_a_second_column() {
         8,
         Some(harness::SIDEWAYS_INSETS),
     );
-    let facts = "(function(){ var w = document.querySelector('#app>.workspace').getBoundingClientRect(), p = document.getElementById('preview').getBoundingClientRect(), s = document.querySelector('#app>.sidebar').getBoundingClientRect(), d = document.getElementById('phoneDock'), e = document.querySelector('.preview-expand'); return JSON.stringify({ ws: Math.round(w.width), pane: Math.round(p.left), paneW: Math.round(p.width), col: Math.round(s.right), dock: getComputedStyle(d).display === 'none' ? -1 : Math.round(d.getBoundingClientRect().right), w: innerWidth, expand: getComputedStyle(e).display, full: document.getElementById('app').classList.contains('preview-full') }); })()";
+    let facts = "(function(){ var w = document.querySelector('#sessionView>.workspace').getBoundingClientRect(), p = document.getElementById('preview').getBoundingClientRect(), s = document.querySelector('#app>.sidebar').getBoundingClientRect(), d = document.getElementById('phoneDock'), e = document.querySelector('.preview-expand'); return JSON.stringify({ ws: Math.round(w.width), pane: Math.round(p.left), paneW: Math.round(p.width), col: Math.round(s.right), dock: getComputedStyle(d).display === 'none' ? -1 : Math.round(d.getBoundingClientRect().right), w: innerWidth, expand: getComputedStyle(e).display, full: document.getElementById('app').classList.contains('preview-full') }); })()";
     let read = || -> serde_json::Value {
         serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
             .unwrap_or_default()
@@ -13335,6 +21499,120 @@ fn a_phone_s_filter_and_keyboard_never_share_the_screen() {
     );
 }
 
+/// #s546, found on the iPad Simulator and true of a mouse too: off the phone only the funnel and
+/// Escape closed the filter menu, so a press into the transcript left it open over what it filters.
+/// It now closes on a press outside the search cluster, as Aa's menu does, and the query, its count
+/// and its marks stay; a press inside the menu keeps it open. Pressed with a real mouse (CDP) and
+/// a real finger (Chrome's synthesized tap), each at a point the page says holds nothing to press.
+/// The phone keeps its own rule, the top layer first
+/// (`a_phone_s_filter_and_keyboard_never_share_the_screen`).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn off_the_phone_a_press_outside_closes_the_filter_menu_and_keeps_the_query() {
+    let _serial = serial();
+    let (_monitor, _browser, tab) = shell_with_a_session("appshell-filter-outside", 3144);
+    harness::resize(&tab, 1400.0, 900.0);
+    let open = "document.getElementById('navigatorOptions').classList.contains('open')";
+    let state = "(function(){ var i = document.getElementById('transcriptSearchInput'); return { open: document.getElementById('navigatorOptions').classList.contains('open'), value: i.value, count: document.getElementById('transcriptSearchCount').textContent.trim(), marks: document.querySelectorAll('#transcript mark.search-mark').length, phone: document.getElementById('sessionView').classList.contains('pl-phone') }; })()";
+    harness::until(
+        &tab,
+        &format!("innerWidth === 1400 && {VIEW_CAUGHT_UP}"),
+        "a 1400px window at rest",
+        Duration::from_secs(15),
+        state,
+    );
+    harness::eval(
+        &tab,
+        "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'noted'; b.dispatchEvent(new Event('input', { bubbles: true })); return 1; })()",
+    );
+    harness::until(
+        &tab,
+        "(parseInt(document.getElementById('transcriptSearchCount').textContent, 10) || 0) > 0 && document.querySelectorAll('#transcript mark.search-mark').length > 0",
+        "the query to count and mark its matches",
+        Duration::from_secs(10),
+        state,
+    );
+    let before = harness::probe(&tab, state);
+    assert_eq!(
+        before["phone"], false,
+        "the view is not the phone reader: {before}"
+    );
+    // A point inside `selector` whose element has nothing to press between it and `selector` (no
+    // control, link, fold or field), so a real press there presses nothing but the place.
+    let plain_point = |selector: &str| -> (f64, f64) {
+        // `probe`, not `eval`: an array comes back from CDP by reference, which `eval` reads as null.
+        let found = harness::probe(
+            &tab,
+            &format!("(function(){{ var box = document.querySelector('{selector}'); if (!box) return null; var r = box.getBoundingClientRect(), seen = []; for (var fy = 0.15; fy < 0.95; fy += 0.07) for (var fx = 0.05; fx < 0.95; fx += 0.06) {{ var x = r.left + r.width * fx, y = r.top + r.height * fy, e = document.elementFromPoint(x, y); if (!e || !box.contains(e)) continue; var c = e.closest('button, a, input, label, select, textarea, summary, mark, [role=button], [data-scope], [data-tool], [data-fold], [data-reference-path], [tabindex]'); if (c && c !== box && box.contains(c)) {{ seen.push((c.id || c.className || c.tagName) + ''); continue; }} return [x, y]; }} return {{ none: seen.slice(0, 8) }}; }})()"),
+        );
+        let x = found[0]
+            .as_f64()
+            .unwrap_or_else(|| panic!("no plain point inside {selector}: {found}"));
+        (x, found[1].as_f64().unwrap())
+    };
+    // Each press's pointer type, as the window's capture phase hears it, ahead of the page's own.
+    harness::eval(
+        &tab,
+        "(function(){ window.__pressTypes = []; addEventListener('pointerdown', function (e) { window.__pressTypes.push(e.pointerType); }, true); return 1; })()",
+    );
+    let press = |(x, y): (f64, f64), finger: bool| {
+        harness::eval(&tab, "window.__pressTypes.length = 0; 1");
+        if finger {
+            harness::finger_tap(&tab, x, y);
+        } else {
+            tab.click_point(headless_chrome::browser::tab::point::Point { x, y })
+                .expect("a mouse press");
+        }
+    };
+    // The press that pressed first was of its kind: a finger tap whose click never came gets a
+    // CDP mouse press from `finger_tap`, and that one would close the menu without a touch.
+    let pressed_as = |kind: &str, want: &str| {
+        let first = harness::eval(&tab, "window.__pressTypes[0] || null");
+        assert_eq!(
+            first, want,
+            "the {kind} press reached the page as {want}: {first}"
+        );
+    };
+    for (kind, finger) in [("mouse", false), ("finger", true)] {
+        harness::eval(
+            &tab,
+            "document.getElementById('filterTranscriptBtn').click(); 'ok'",
+        );
+        let why = format!("the funnel to open the filter menu ({kind})");
+        harness::until(&tab, open, &why, Duration::from_secs(5), state);
+        // A press inside the menu is not a press outside: on its Scope heading, the one place in it
+        // that is not a row or a control.
+        let want = if finger { "touch" } else { "mouse" };
+        press(
+            plain_point("#navigatorOptions .scope-menu-head strong"),
+            finger,
+        );
+        pressed_as(kind, want);
+        std::thread::sleep(Duration::from_millis(300));
+        let inside = harness::probe(&tab, state);
+        assert_eq!(
+            inside["open"], true,
+            "a press inside the menu keeps it open ({kind}): {inside}"
+        );
+        // A press in the transcript closes it, and the query, its count and its marks stay.
+        press(plain_point("#transcript"), finger);
+        pressed_as(kind, want);
+        harness::until(
+            &tab,
+            &format!("!{open}"),
+            &format!("a press in the transcript to close the filter menu ({kind})"),
+            Duration::from_secs(3),
+            state,
+        );
+        let after = harness::probe(&tab, state);
+        assert_eq!(
+            (&after["value"], &after["count"], &after["marks"]),
+            (&before["value"], &before["count"], &before["marks"]),
+            "the query, its count and its marks outlive the menu closing ({kind}): {after}"
+        );
+    }
+}
+
 /// #s39 (design/phone-landscape.md §3.5c, approved by the owner on 2026-10-08): on a phone the compose
 /// box is the dock's third mode, as Messages does it. With write mode on, a ✎ circle joins the dock in
 /// place of the floating compose button; a tap turns the dock into the reply box, which rides the
@@ -13358,7 +21636,7 @@ fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
     phone_tap(&tab, "#dockCompose");
     harness::until(
         &tab,
-        "document.getElementById('app').classList.contains('composing') && document.getElementById('composer').classList.contains('production-show')",
+        "document.getElementById('sessionView').classList.contains('composing') && document.getElementById('composer').classList.contains('production-show')",
         "✎ to open the reply box",
         Duration::from_secs(5),
         "document.getElementById('app').className",
@@ -13397,7 +21675,7 @@ fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
     phone_tap(&tab, "#closeComposer");
     harness::until(
         &tab,
-        "!document.getElementById('app').classList.contains('composing') && document.getElementById('dockCompose').classList.contains('has-draft') && getComputedStyle(document.querySelector('#dockCompose .dock-compose-dot')).display !== 'none'",
+        "!document.getElementById('sessionView').classList.contains('composing') && document.getElementById('dockCompose').classList.contains('has-draft') && getComputedStyle(document.querySelector('#dockCompose .dock-compose-dot')).display !== 'none'",
         "✕ to close the box, the dock back with a draft dot on ✎",
         Duration::from_secs(5),
         "document.getElementById('app').className + ' ' + document.getElementById('dockCompose').className",
@@ -13405,7 +21683,7 @@ fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
     phone_tap(&tab, "#dockCompose");
     harness::until(
         &tab,
-        "document.getElementById('app').classList.contains('composing') && /^Run the tests again/.test(document.getElementById('composeInput').value)",
+        "document.getElementById('sessionView').classList.contains('composing') && /^Run the tests again/.test(document.getElementById('composeInput').value)",
         "✎ to reopen the box with the draft",
         Duration::from_secs(5),
         "document.getElementById('composeInput').value.slice(0, 20)",
@@ -13416,7 +21694,7 @@ fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
     phone_tap(&tab, "#sendBtn");
     harness::until(
         &tab,
-        "window.__sends === 1 && !document.getElementById('sendBtn').disabled && document.getElementById('app').classList.contains('composing') && /^Run the tests again/.test(document.getElementById('composeInput').value)",
+        "window.__sends === 1 && !document.getElementById('sendBtn').disabled && document.getElementById('sessionView').classList.contains('composing') && /^Run the tests again/.test(document.getElementById('composeInput').value)",
         "a refused send to keep the box and the draft",
         Duration::from_secs(5),
         "window.__sends + ' ' + document.getElementById('composeInput').value.slice(0, 20)",
@@ -13425,7 +21703,7 @@ fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
     phone_tap(&tab, "#sendBtn");
     harness::until(
         &tab,
-        "window.__sends === 2 && document.getElementById('composeInput').value === '' && document.getElementById('app').classList.contains('composing') && document.getElementById('composer').classList.contains('production-show')",
+        "window.__sends === 2 && document.getElementById('composeInput').value === '' && document.getElementById('sessionView').classList.contains('composing') && document.getElementById('composer').classList.contains('production-show')",
         "a sent message to empty the field and keep the box open",
         Duration::from_secs(5),
         "window.__sends + ' ' + document.getElementById('app').className",
@@ -13488,7 +21766,7 @@ fn a_phone_writes_from_the_dock_and_keeps_the_draft() {
 /// #s245: where the desktop's compose box sits against the session's column — the box, the
 /// transcript (the column it must keep inside), the outline beside it, the field and how much of its
 /// draft it shows, the last record drawn, and how far the transcript is from its end.
-const DESKTOP_COMPOSE_GEOMETRY: &str = "(function(){ var R = function (e) { if (!e) return null; var b = e.getBoundingClientRect(); return { l: Math.round(b.left), t: Math.round(b.top), r: Math.round(b.right), b: Math.round(b.bottom), h: Math.round(b.height) }; }; var c = document.getElementById('composer'), t = document.querySelector('.session-main>.transcript'), n = document.getElementById('sessionNavigator'), i = document.getElementById('composeInput'), w = document.querySelector('.transcript .virtual-window'), cs = getComputedStyle(i); var rows = w ? [...w.children].filter(function (e) { return e.getBoundingClientRect().height > 0; }) : []; return JSON.stringify({ w: innerWidth, h: innerHeight, shown: c.classList.contains('production-show'), box: R(c), col: R(t), nav: R(n), field: R(i), fieldH: i.clientHeight, fieldScroll: i.scrollHeight, lh: parseFloat(cs.lineHeight), last: R(rows[rows.length - 1]), gap: Math.round(t.scrollHeight - t.clientHeight - t.scrollTop), jump: R(document.getElementById('jumpToBottom')) }); })()";
+const DESKTOP_COMPOSE_GEOMETRY: &str = "(function(){ var R = function (e) { if (!e) return null; var b = e.getBoundingClientRect(); return { l: Math.round(b.left), t: Math.round(b.top), r: Math.round(b.right), b: Math.round(b.bottom), h: Math.round(b.height) }; }; var c = document.getElementById('composer'), t = document.querySelector('.sv-session-main>.transcript'), n = document.getElementById('sessionNavigator'), i = document.getElementById('composeInput'), w = document.querySelector('.transcript .virtual-window'), cs = getComputedStyle(i); var rows = w ? [...w.children].filter(function (e) { return e.getBoundingClientRect().height > 0; }) : []; return JSON.stringify({ w: innerWidth, h: innerHeight, shown: c.classList.contains('production-show'), box: R(c), col: R(t), nav: R(n), field: R(i), fieldH: i.clientHeight, fieldScroll: i.scrollHeight, lh: parseFloat(cs.lineHeight), last: R(rows[rows.length - 1]), gap: Math.round(t.scrollHeight - t.clientHeight - t.scrollTop), jump: R(document.getElementById('jumpToBottom')) }); })()";
 
 /// #s245 (Hong, 2026-10-25, a screenshot at about 2000px wide): the open compose box on a desktop
 /// spanned the outline column to the right edge and stood tall over the transcript's last lines.
@@ -13601,10 +21879,10 @@ fn a_desktop_compose_box_keeps_to_the_session_column_and_grows_with_its_draft() 
         harness::jump_to_end(&tab, harness::Surface::AppShell);
         harness::until(
             &tab,
-            "(function(){ var t = document.querySelector('.session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop <= 2; })()",
+            "(function(){ var t = document.querySelector('.sv-session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop <= 2; })()",
             "the reader to be at the end",
             Duration::from_secs(5),
-            "(function(){ var t = document.querySelector('.session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop; })()",
+            "(function(){ var t = document.querySelector('.sv-session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop; })()",
         );
         type_lines(0);
         let empty = geometry("the box to settle empty");
@@ -13666,7 +21944,7 @@ fn a_desktop_compose_box_keeps_to_the_session_column_and_grows_with_its_draft() 
             jump,
         );
         // And the box growing does not move them: only a reader following the end is kept at it.
-        let offset = "(function(){ var t = document.querySelector('.session-main>.transcript'); return JSON.stringify([Math.round(t.scrollTop), Math.round(t.scrollHeight - t.clientHeight - t.scrollTop)]); })()";
+        let offset = "(function(){ var t = document.querySelector('.sv-session-main>.transcript'); return JSON.stringify([Math.round(t.scrollTop), Math.round(t.scrollHeight - t.clientHeight - t.scrollTop)]); })()";
         let before = harness::eval(&tab, offset);
         type_lines(8);
         let grown = geometry("the box to grow under a reader who scrolled up");
@@ -13686,10 +21964,10 @@ fn a_desktop_compose_box_keeps_to_the_session_column_and_grows_with_its_draft() 
         harness::jump_to_end(&tab, harness::Surface::AppShell);
         harness::until(
             &tab,
-            "(function(){ var t = document.querySelector('.session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop <= 2; })()",
+            "(function(){ var t = document.querySelector('.sv-session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop <= 2; })()",
             "the reader to be back at the end",
             Duration::from_secs(5),
-            "(function(){ var t = document.querySelector('.session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop; })()",
+            "(function(){ var t = document.querySelector('.sv-session-main>.transcript'); return t.scrollHeight - t.clientHeight - t.scrollTop; })()",
         );
         // A long draft: the field stops at its cap and scrolls inside.
         type_lines(60);
@@ -13947,7 +22225,7 @@ fn a_desktop_search_step_never_leaves_a_match_under_the_compose_box() {
     // Its record's head then sits above the column: the landing alone (the head near the top)
     // would have left the match under the box, so only the reveal can have put it in sight.
     harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
-    let seen = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'), c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.session-main>.transcript').getBoundingClientRect(); if (!m) return 'none'; var r = m.getBoundingClientRect(), rec = m.closest('[data-block-index]').getBoundingClientRect(); return JSON.stringify({ above: r.bottom <= c.top + 0.5 && r.top >= t.top - 0.5, revealed: rec.top < t.top - 0.5, mark: [Math.round(r.top), Math.round(r.bottom)], record: Math.round(rec.top), box: Math.round(c.top), col: [Math.round(t.top), Math.round(t.bottom)] }); })()";
+    let seen = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'), c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(); if (!m) return 'none'; var r = m.getBoundingClientRect(), rec = m.closest('[data-block-index]').getBoundingClientRect(); return JSON.stringify({ above: r.bottom <= c.top + 0.5 && r.top >= t.top - 0.5, revealed: rec.top < t.top - 0.5, mark: [Math.round(r.top), Math.round(r.bottom)], record: Math.round(rec.top), box: Math.round(c.top), col: [Math.round(t.top), Math.round(t.bottom)] }); })()";
     harness::until(
         &tab,
         &format!("(function(){{ var g = {seen}; return g !== 'none' && JSON.parse(g).above && JSON.parse(g).revealed; }})()"),
@@ -14019,7 +22297,7 @@ fn a_desktop_search_first_step_lands_on_a_first_hit_under_the_compose_box() {
     );
     harness::pause("the query to settle", Duration::from_millis(400));
     harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
-    let seen = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'), c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.session-main>.transcript').getBoundingClientRect(); if (!m) return 'none'; var r = m.getBoundingClientRect(); return JSON.stringify({ text: m.closest('[data-block-index]').textContent.match(/needle \\w+/)[0], above: r.bottom <= c.top + 0.5 && r.top >= t.top - 0.5, mark: Math.round(r.top), box: Math.round(c.top) }); })()";
+    let seen = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'), c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(); if (!m) return 'none'; var r = m.getBoundingClientRect(); return JSON.stringify({ text: m.closest('[data-block-index]').textContent.match(/needle \\w+/)[0], above: r.bottom <= c.top + 0.5 && r.top >= t.top - 0.5, mark: Math.round(r.top), box: Math.round(c.top) }); })()";
     harness::until(
         &tab,
         &format!("(function(){{ var g = {seen}; if (g === 'none') return false; g = JSON.parse(g); return g.text === 'needle one' && g.above; }})()"),
@@ -14071,10 +22349,10 @@ fn a_search_step_after_an_unheard_move_enters_at_the_nearest_hit() {
     assert!(first >= 0, "the first step lands a hit");
     // Far from it, by script: no wheel, no key, nothing the engine hears as the reader.
     let to = if first < 5 { 0.7 } else { 0.25 };
-    harness::eval(&tab, &format!("(function(){{ var s = document.querySelector('.session-main>.transcript'); s.scrollTo({{ top: s.scrollHeight * {to}, behavior: 'instant' }}); return 'ok'; }})()"));
+    harness::eval(&tab, &format!("(function(){{ var s = document.querySelector('.sv-session-main>.transcript'); s.scrollTo({{ top: s.scrollHeight * {to}, behavior: 'instant' }}); return 'ok'; }})()"));
     harness::pause("the move to settle", Duration::from_millis(700));
     // The nearest hit: the first at or below the unit at the top, as the page reads the top.
-    let nearest = "(function(){ var t = document.querySelector('.session-main>.transcript'), line = t.getBoundingClientRect().top + (parseFloat(getComputedStyle(t).scrollPaddingTop) || 18) + 8; var kids = [...document.querySelector('.virtual-window').children], at = 0; kids.forEach(function (c, i) { if (c.getBoundingClientRect().top <= line) at = i; }); for (var i = at; i < kids.length; i++) { var m = kids[i].textContent.match(/answer (\\d+) holds the needle/); if (m) return Number(m[1]); } return -1; })()";
+    let nearest = "(function(){ var t = document.querySelector('.sv-session-main>.transcript'), line = t.getBoundingClientRect().top + (parseFloat(getComputedStyle(t).scrollPaddingTop) || 18) + 8; var kids = [...document.querySelector('.virtual-window').children], at = 0; kids.forEach(function (c, i) { if (c.getBoundingClientRect().top <= line) at = i; }); for (var i = at; i < kids.length; i++) { var m = kids[i].textContent.match(/answer (\\d+) holds the needle/); if (m) return Number(m[1]); } return -1; })()";
     let want = harness::eval(&tab, nearest).as_i64().unwrap_or(-1);
     assert!(
         want >= 0 && want != (first + 1) % 10 && want != first,
@@ -14139,7 +22417,7 @@ fn a_search_step_in_a_short_space_leaves_the_match_below_the_turn_bar() {
     // (at most 25) left it well behind the bar's 31. Walked down to, measured at each height, since
     // how much of the window the browser's frame takes differs between platforms; a 5px step moves
     // the space about 3px, inside the band.
-    let space = "(function(){ var c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.session-main>.transcript').getBoundingClientRect(); return Math.round(c.top - t.top); })()";
+    let space = "(function(){ var c = document.getElementById('composer').getBoundingClientRect(), t = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(); return Math.round(c.top - t.top); })()";
     let mut seen = Vec::new();
     for h in (300..=600).rev().step_by(5) {
         harness::resize(&tab, 1280.0, h as f64);
@@ -14409,13 +22687,16 @@ fn a_herdr_session_takes_images_from_the_compose_box() {
     );
     // Codex native mode shares the composer and sends its own images: neither control shows.
     let shown = "(function(){ var v = function (id) { var e = document.getElementById(id); return getComputedStyle(e).display !== 'none' && e.getBoundingClientRect().width > 0; }; return v('composeAttach') + '|' + v('composeImages'); })()";
-    harness::eval(&desk, "document.body.dataset.sharedCodex = 'true'; 'ok'");
+    // Native mode marks the page's body and the view's own element (`markShared`): since #s429 stage
+    // 5b the view's stylesheet reads the mark on #sessionView, the app and native mode's own rules on
+    // body. The case marks both, as native mode does.
+    harness::eval(&desk, "document.body.dataset.sharedCodex = 'true'; document.getElementById('sessionView').dataset.sharedCodex = 'true'; 'ok'");
     assert_eq!(
         harness::eval(&desk, shown).as_str(),
         Some("false|false"),
         "hidden under native mode"
     );
-    harness::eval(&desk, "delete document.body.dataset.sharedCodex; 'ok'");
+    harness::eval(&desk, "delete document.body.dataset.sharedCodex; delete document.getElementById('sessionView').dataset.sharedCodex; 'ok'");
     assert_eq!(harness::eval(&desk, shown).as_str(), Some("true|true"));
     // And a desktop send carries both images and leaves the box open and empty.
     harness::eval(&desk, "(function(){ window.__sent = []; document.getElementById('sendBtn').click(); return 'ok'; })()");
@@ -14425,6 +22706,140 @@ fn a_herdr_session_takes_images_from_the_compose_box() {
         "a desktop send with both images to empty the strip and keep the box open",
         Duration::from_secs(5),
         "JSON.stringify(window.__sent).slice(0, 120)",
+    );
+}
+
+/// The app's own confirm layer grants a live pane, passcode and all (#s429 stage 7: the view asks
+/// through its `write` option, and the app answers with its confirm layer). A send to a herdr pane
+/// with no grant asks first, and the app's Cancel closes it with nothing granted or sent; asked again,
+/// the monitor wants a passcode, so the app draws its passcode field in the
+/// layer (styled by the app's stylesheet), reads what the reader typed and sends it with the grant; a
+/// refused passcode is asked again in the same field; the right one grants, and the text is sent.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_grants_a_live_pane_through_its_own_confirm_layer_and_passcode_field() {
+    let _serial = serial();
+    let base = harness::base("app-confirm-passcode");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        PHONE_SID,
+        &harness::long_session(4, harness::Shape::default()),
+    );
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3108, &base, Some(&stores), true);
+    let (_b, tab) = desktop_tab(&m);
+    // The session in a herdr pane with no grant yet; the monitor's grant answers stubbed in the page:
+    // a passcode wanted, then refused, then granted. Every grant's body (its passcode) is kept.
+    let stub = STUB_HERDR.replace("__SID__", PHONE_SID).replace("v.consented = true;", "v.consented = false;").replace(
+        "if (u.indexOf('/api/sessions') === 0)",
+        "if (u.indexOf('/api/consent') === 0) { window.__consents.push(String(init && init.body || '')); return Promise.resolve(new Response(JSON.stringify(window.__consentAnswers.shift() || { ok: true }), { status: 200, headers: { 'Content-Type': 'application/json' } })); } if (u.indexOf('/api/sessions') === 0)",
+    );
+    assert!(
+        stub.contains("/api/consent") && stub.contains("v.consented = false;"),
+        "the stub was rewritten"
+    );
+    harness::eval(&tab, "window.__consents = []; window.__consentAnswers = [{ code: 'passcode-required' }, { code: 'bad-passcode' }, { ok: true }]; 'ok'");
+    harness::eval(&tab, &stub);
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "window.__herdrRow === true && document.getElementById('composeFab').classList.contains('show')",
+        "the session in herdr pane w1:p2, with write mode on",
+        Duration::from_secs(15),
+        "String(window.__herdrRow) + ' ' + document.getElementById('composeFab').className",
+    );
+    harness::eval(&tab, "document.getElementById('composeFab').click(); (function(){ var i = document.getElementById('composeInput'); i.value = 'hello pane'; i.dispatchEvent(new Event('input', { bubbles: true })); })(); document.getElementById('sendBtn').click(); 'ok'");
+    let layer = "(function(){ var l = document.getElementById('confirmLayer'), f = l.querySelector('.passcode-input'); return { open: l.classList.contains('production-open'), title: l.querySelector('h3').textContent, text: document.getElementById('confirmText').textContent, field: !!f, focused: !!f && document.activeElement === f, height: f ? getComputedStyle(f).height : null, beforeActions: !!f && f.nextElementSibling === l.querySelector('.dialog-actions'), consents: window.__consents, sent: window.__sent.length }; })()";
+    let wait_open = |what: &str, text: &str| {
+        harness::until(
+            &tab,
+            &format!("document.getElementById('confirmLayer').classList.contains('production-open') && document.getElementById('confirmText').textContent.indexOf({text:?}) >= 0"),
+            what,
+            Duration::from_secs(10),
+            "document.getElementById('confirmText').textContent",
+        );
+        harness::probe(&tab, layer)
+    };
+    let grant = wait_open("the grant asked first", "herdr pane w1:p2");
+    // The app's Cancel: the layer closes and nothing is granted or sent.
+    harness::eval(&tab, "document.getElementById('cancelSend').click(); 'ok'");
+    harness::pause(
+        "a cancelled grant to send nothing",
+        Duration::from_millis(800),
+    );
+    let cancelled = harness::probe(&tab, layer);
+    harness::eval(&tab, "document.getElementById('sendBtn').click(); 'ok'");
+    let again = wait_open("the grant asked again after the cancel", "herdr pane w1:p2");
+    harness::eval(&tab, "document.getElementById('confirmSend').click(); 'ok'");
+    let wanted = wait_open("the passcode asked for", "requires a passcode");
+    harness::eval(&tab, "(function(){ var f = document.querySelector('#confirmLayer .passcode-input'); f.value = 'wrong'; document.getElementById('confirmSend').click(); return 'ok'; })()");
+    let refused = wait_open("a refused passcode asked again", "Passcode incorrect");
+    harness::eval(&tab, "(function(){ var f = document.querySelector('#confirmLayer .passcode-input'); f.value = '1234'; document.getElementById('confirmSend').click(); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "window.__sent.length === 1",
+        "the text sent once the grant goes through",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__consents) + ' ' + window.__sent.length",
+    );
+    let done = harness::probe(&tab, &format!("(function(){{ var v = {layer}; v.prompt = window.__sent[0].body; v.fields = document.querySelectorAll('.passcode-input').length; return v; }})()"));
+    drop(m);
+    assert_eq!(
+        (grant["open"].clone(), grant["title"].clone(), grant["field"].clone(), grant["consents"].clone()),
+        (serde_json::json!(true), serde_json::json!("Allow typing into this pane?"), serde_json::json!(false), serde_json::json!([])),
+        "the send asks the app's confirm layer for the grant first, with no passcode field: {grant}"
+    );
+    assert_eq!(
+        (
+            cancelled["open"].clone(),
+            cancelled["consents"].clone(),
+            cancelled["sent"].clone()
+        ),
+        (
+            serde_json::json!(false),
+            serde_json::json!([]),
+            serde_json::json!(0)
+        ),
+        "the app's Cancel closes the layer, and nothing is granted or sent: {cancelled}"
+    );
+    assert_eq!(
+        (again["open"].clone(), again["consents"].clone()),
+        (serde_json::json!(true), serde_json::json!([])),
+        "a send after it asks again: {again}"
+    );
+    assert_eq!(
+        (wanted["field"].clone(), wanted["focused"].clone(), wanted["height"].clone(), wanted["beforeActions"].clone(), wanted["consents"].clone()),
+        (serde_json::json!(true), serde_json::json!(true), serde_json::json!("38px"), serde_json::json!(true), serde_json::json!([""])),
+        "the monitor wants a passcode: the app draws its field above the buttons, styled and focused: {wanted}"
+    );
+    assert_eq!(
+        (
+            refused["field"].clone(),
+            refused["consents"].clone(),
+            refused["sent"].clone()
+        ),
+        (
+            serde_json::json!(true),
+            serde_json::json!(["", "wrong"]),
+            serde_json::json!(0)
+        ),
+        "the passcode typed is what the grant carries, and a refused one is asked again: {refused}"
+    );
+    assert_eq!(
+        (
+            done["open"].clone(),
+            done["consents"].clone(),
+            done["fields"].clone()
+        ),
+        (
+            serde_json::json!(false),
+            serde_json::json!(["", "wrong", "1234"]),
+            serde_json::json!(1)
+        ),
+        "the right one grants, the layer closes, and one field was ever drawn: {done}"
+    );
+    assert!(
+        done["prompt"].as_str().unwrap_or("").contains("hello pane"),
+        "and the text goes to the pane: {done}"
     );
 }
 
@@ -14561,12 +22976,12 @@ fn a_herdr_dialog_is_answered_from_the_compose_box() {
     harness::eval(&tab, &format!("document.activeElement.blur(); window.__dialogReply = {{ ok: false, code: 'no-consent' }}; window.__dialog = {DIALOG_ONE}; window.__asking = true; window.__since = '2'; 'ok'"));
     harness::until(
         &tab,
-        "(function(){ var b = document.querySelector('#composeDialog .dialog-choice.primary'); return !!b && b.textContent === 'Allow'; })()",
+        "(function(){ var b = document.querySelector('#composeDialog .dialog-choice.sv-primary'); return !!b && b.textContent === 'Allow'; })()",
         "the card to ask for the pane's grant",
         Duration::from_secs(15),
         "document.getElementById('composeDialog').textContent",
     );
-    phone_tap(&tab, "#composeDialog .dialog-choice.primary");
+    phone_tap(&tab, "#composeDialog .dialog-choice.sv-primary");
     harness::until(
         &tab,
         "document.getElementById('confirmLayer').classList.contains('production-open') && /reads the dialog in herdr pane w1:p2/.test(document.getElementById('confirmText').textContent)",
@@ -14715,6 +23130,18 @@ fn a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_wh
     )
     .as_i64()
     .unwrap_or(9999);
+    // The shut right pane is off the screen, not over the session's right (#s431 stage 2: it takes
+    // the view's width, so it moves from the view's edge).
+    let shut = harness::eval(
+        &tab,
+        "Math.round(document.getElementById('preview').getBoundingClientRect().left) - innerWidth",
+    )
+    .as_i64()
+    .unwrap_or(-1);
+    assert!(
+        shut >= 0,
+        "the shut right pane lies past the screen's right edge, {shut}px beyond it"
+    );
     // The handle by the title wears the sidebar glyph; the Sessions tab does not.
     assert_eq!(
         harness::eval(&tab, "!!document.querySelector('#drawerHandle svg rect') && !document.querySelector('#columnSwitch [data-column-tab=sessions] svg rect')"),
@@ -14795,7 +23222,7 @@ fn a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_wh
         Duration::from_secs(10),
         "document.querySelector('.jump-to-bottom').className",
     );
-    let jump = harness::eval(&tab, "(function(){ var j = document.querySelector('.jump-to-bottom').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(), w = document.querySelector('#app>.workspace').getBoundingClientRect(); return JSON.stringify({ dy: Math.round(Math.abs((j.top + j.bottom) / 2 - (d.top + d.bottom) / 2)), dx: Math.round(Math.abs((j.left + j.right) / 2 - (w.left + w.right) / 2)) }); })()");
+    let jump = harness::eval(&tab, "(function(){ var j = document.querySelector('.jump-to-bottom').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(), w = document.querySelector('#sessionView>.workspace').getBoundingClientRect(); return JSON.stringify({ dy: Math.round(Math.abs((j.top + j.bottom) / 2 - (d.top + d.bottom) / 2)), dx: Math.round(Math.abs((j.left + j.right) / 2 - (w.left + w.right) / 2)) }); })()");
     let jump: serde_json::Value = serde_json::from_str(jump.as_str().unwrap_or("{}")).unwrap();
     assert!(
         jump["dy"].as_i64().unwrap_or(99) <= 4 && jump["dx"].as_i64().unwrap_or(99) <= 2,
@@ -14842,6 +23269,36 @@ fn a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_wh
         "the ✕ to end the search and close its filter",
         Duration::from_secs(5),
         "document.getElementById('navigatorOptions').className + ' ' + document.querySelector('.header-searchbox').className",
+    );
+    // #s431 stage 2: beside the column the view is a 676px phone held sideways, by its own width, so
+    // its dock spans it and the session's menu opens at its left; both stay beside the column.
+    let dock_left = harness::eval(
+        &tab,
+        "Math.round(document.getElementById('phoneDock').getBoundingClientRect().left)",
+    )
+    .as_i64()
+    .unwrap_or(0);
+    assert!(
+        dock_left >= column_right,
+        "the dock sits beside the column: {dock_left} ≥ {column_right}"
+    );
+    phone_tap(&tab, "#sessionTitle");
+    harness::until(
+        &tab,
+        "document.getElementById('sessionCopyMenu').classList.contains('open')",
+        "the session's menu open",
+        Duration::from_secs(5),
+        "document.getElementById('sessionCopyMenu').className",
+    );
+    let menu_left = harness::eval(
+        &tab,
+        "Math.round(document.getElementById('sessionCopyMenu').getBoundingClientRect().left)",
+    )
+    .as_i64()
+    .unwrap_or(0);
+    assert!(
+        menu_left >= column_right,
+        "the session's menu opens beside the column: {menu_left} ≥ {column_right}"
     );
 }
 
@@ -14913,6 +23370,40 @@ fn a_phone_find_pill_rides_the_keyboard() {
         Duration::from_secs(5),
         "document.getElementById('app').style.transform",
     );
+    // #s431 stage 4: the view, moved 300px down with the app, is placed for the keyboard, not by a
+    // host, so it reads no gap at its top and is not boxed (boxed, it would drop the island's and the
+    // status bar's insets while the reader types).
+    // A decision the ride must take, and one that shows: the app 4px shorter while the keyboard is up.
+    let tall = harness::eval(
+        &tab,
+        "document.getElementById('sessionView').style.getPropertyValue('--pl-h')",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('app').style.height = 'calc(100dvh - 4px)'; return true; })()",
+    );
+    harness::until(
+        &tab,
+        &format!(
+            "document.getElementById('sessionView').style.getPropertyValue('--pl-h') !== {tall}"
+        ),
+        "the view to decide again at its new height while the keyboard ride moves it",
+        Duration::from_secs(5),
+        "document.getElementById('sessionView').style.getPropertyValue('--pl-h')",
+    );
+    let riding = harness::eval(
+        &tab,
+        "(function(){ var v = document.getElementById('sessionView'); return JSON.stringify({ boxed: v.classList.contains('pl-boxed'), paneY: v.style.getPropertyValue('--pane-y'), top: Math.round(v.getBoundingClientRect().top) }); })()",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('app').style.height = ''; return true; })()",
+    );
+    assert_eq!(
+        riding,
+        serde_json::json!("{\"boxed\":false,\"paneY\":\"0px\",\"top\":300}"),
+        "the view the keyboard ride moves keeps the window's top"
+    );
     assert_eq!(
         harness::eval(
             &tab,
@@ -14941,6 +23432,70 @@ fn a_phone_find_pill_rides_the_keyboard() {
         Duration::from_secs(5),
         facts,
     );
+}
+
+/// #s451: a short visual viewport is the keyboard only while a field that takes one has focus.
+/// Measured on the iOS 26.4 Simulator: once the software keyboard had been up, a fresh Safari tab
+/// with nothing focused and no keyboard on screen reported `visualViewport.height` 336 against an
+/// `innerHeight` of 714, and the dock floated 378px up the screen. Here the page is given that
+/// shortfall with nothing focused, and the dock stays at its resting place; the find field focused
+/// under the same shortfall (no resize: a keyboard rising into a stale shortfall leaves the height
+/// as it was) and the find pill rides it; the field blurred, the shortfall left in place and no
+/// resize, and the dock goes back.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_with_nothing_focused_takes_no_short_viewport_for_the_keyboard() {
+    let _serial = serial();
+    let (_m, _b, tab, _path) = phone_world_at(3109, "phone-stale-viewport", 390, 844, "");
+    let facts = "(function(){ var d = document.getElementById('phoneDock').getBoundingClientRect(), a = document.activeElement; return JSON.stringify({ kb: getComputedStyle(document.documentElement).getPropertyValue('--phone-kb').trim(), up: document.getElementById('sessionView').classList.contains('keyboard-up'), dockBottom: Math.round(d.bottom), h: innerHeight, focus: a ? a.localName + (a.id ? '#' + a.id : '') : null }); })()";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default()
+    };
+    harness::eval(
+        &tab,
+        "(function(){ if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur(); return 'ok'; })()",
+    );
+    let rest = read();
+    assert!(
+        rest["focus"] == "body" && rest["kb"] == "0px" && rest["up"] == false,
+        "the page opens with nothing focused and no keyboard: {rest}"
+    );
+    // Safari's stale shortfall, with nothing focused: no keyboard is on screen.
+    harness::eval(&tab, "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 378; } }); visualViewport.dispatchEvent(new Event('resize')); return 'ok'; })()");
+    harness::pause("the ride to answer the resize", Duration::from_millis(400));
+    let stale = read();
+    assert!(
+        stale["kb"] == "0px" && stale["up"] == false && stale["dockBottom"] == rest["dockBottom"],
+        "a short viewport with nothing focused leaves the dock at its resting place: {rest} → {stale}"
+    );
+    // The find field focused (as a tap on the search does): iOS raises its keyboard, and the find
+    // pill rides the shortfall.
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, gx, gy);
+    harness::until(
+        &tab,
+        "(function(){ var d = document.getElementById('phoneDock').getBoundingClientRect(); return document.activeElement === document.getElementById('transcriptSearchInput') && getComputedStyle(document.documentElement).getPropertyValue('--phone-kb').trim() === '378px' && document.getElementById('sessionView').classList.contains('keyboard-up') && Math.abs(d.bottom - (innerHeight - 378 - 8)) <= 1; })()",
+        "the find pill to ride the shortfall once its field has focus",
+        Duration::from_secs(5),
+        facts,
+    );
+    // The field blurred, the shortfall left in place and no resize: the dock goes back.
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('transcriptSearchInput').blur(); return 'ok'; })()",
+    );
+    harness::until(
+        &tab,
+        &format!(
+            "(function(){{ var g = JSON.parse({facts}); return g.kb === '0px' && !g.up && g.dockBottom === {}; }})()",
+            rest["dockBottom"]
+        ),
+        "the dock back at its resting place once the field has lost focus",
+        Duration::from_secs(5),
+        facts,
+    );
+    harness::eval(&tab, "(function(){ delete visualViewport.height; visualViewport.dispatchEvent(new Event('resize')); return 'ok'; })()");
 }
 
 /// #s287: a phone held sideways in Safari with its tab bar keeps about 16px of the page above the
@@ -15247,7 +23802,7 @@ fn a_phone_reaches_a_session_s_workers_from_its_agents_sheet() {
 fn a_phone_dims_behind_a_pane_sheet_and_keeps_a_margin_upright() {
     let _serial = serial();
     let (_m, _b, tab) = phone_world(2734, "phone-dim", 440, 956);
-    let gutter = "(function(){ var r = document.querySelector('#app .session-main .transcript-inner').getBoundingClientRect(); return JSON.stringify([Math.round(r.left), Math.round(innerWidth - r.right)]); })()";
+    let gutter = "(function(){ var r = document.querySelector('#app .sv-session-main .transcript-inner').getBoundingClientRect(); return JSON.stringify([Math.round(r.left), Math.round(innerWidth - r.right)]); })()";
     let read = |js: &str| -> Vec<i64> {
         serde_json::from_str(harness::eval(&tab, js).as_str().unwrap()).unwrap()
     };
@@ -15260,7 +23815,7 @@ fn a_phone_dims_behind_a_pane_sheet_and_keeps_a_margin_upright() {
     phone_tap(&tab, "#phonePane-turns");
     harness::until(
         &tab,
-        "!document.getElementById('phonePaneMenu').hidden && getComputedStyle(document.querySelector('#app>.pane-scrim')).opacity === '1'",
+        "!document.getElementById('phonePaneMenu').hidden && getComputedStyle(document.querySelector('#sessionView>.pane-scrim')).opacity === '1'",
         "the Turns sheet, the session dimmed",
         Duration::from_secs(5),
         "document.getElementById('app').className",
@@ -15277,11 +23832,11 @@ fn a_phone_dims_behind_a_pane_sheet_and_keeps_a_margin_upright() {
     );
     // Another pane's icon switches the sheet, through the dim.
     phone_tap(&tab, "#phonePane-tasks");
-    harness::until(&tab, "document.querySelector('#phonePaneMenu .phone-pane-head strong').textContent === 'Tasks' && document.getElementById('app').classList.contains('pane-open')", "the Tasks sheet, still dimmed", Duration::from_secs(5), "document.querySelector('#phonePaneMenu .phone-pane-head strong').textContent");
+    harness::until(&tab, "document.querySelector('#phonePaneMenu .phone-pane-head strong').textContent === 'Tasks' && document.getElementById('sessionView').classList.contains('pane-open')", "the Tasks sheet, still dimmed", Duration::from_secs(5), "document.querySelector('#phonePaneMenu .phone-pane-head strong').textContent");
     // A tap on the dim closes the sheet, and reaches nothing beneath it.
     harness::eval(&tab, "(function(){ window.__clicked = 0; document.querySelector('#app .transcript').addEventListener('click', function () { window.__clicked++; }, true); return 1; })()");
     harness::finger_tap(&tab, 220.0, 200.0);
-    harness::until(&tab, "document.getElementById('phonePaneMenu').hidden && !document.getElementById('app').classList.contains('pane-open')", "the sheet closed by a tap on the dim", Duration::from_secs(5), "document.getElementById('app').className");
+    harness::until(&tab, "document.getElementById('phonePaneMenu').hidden && !document.getElementById('sessionView').classList.contains('pane-open')", "the sheet closed by a tap on the dim", Duration::from_secs(5), "document.getElementById('app').className");
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
         harness::eval(&tab, "window.__clicked"),
@@ -15293,13 +23848,13 @@ fn a_phone_dims_behind_a_pane_sheet_and_keeps_a_margin_upright() {
     phone_tap(&tab, "#phonePane-turns");
     harness::until(
         &tab,
-        "document.getElementById('app').classList.contains('pane-open')",
+        "document.getElementById('sessionView').classList.contains('pane-open')",
         "the Turns sheet again",
         Duration::from_secs(5),
         "document.getElementById('app').className",
     );
     harness::finger_tap_late_click(&tab, 220.0, 200.0, Duration::from_millis(600));
-    harness::until(&tab, "document.getElementById('phonePaneMenu').hidden && !document.getElementById('app').classList.contains('pane-open')", "the sheet closed by a tap on the dim", Duration::from_secs(5), "document.getElementById('app').className");
+    harness::until(&tab, "document.getElementById('phonePaneMenu').hidden && !document.getElementById('sessionView').classList.contains('pane-open')", "the sheet closed by a tap on the dim", Duration::from_secs(5), "document.getElementById('app').className");
     std::thread::sleep(Duration::from_millis(300));
     assert_eq!(
         harness::eval(&tab, "window.__clicked"),
@@ -15309,7 +23864,7 @@ fn a_phone_dims_behind_a_pane_sheet_and_keeps_a_margin_upright() {
     assert_eq!(
         harness::eval(
             &tab,
-            "document.querySelector('#app>.pane-scrim').classList.contains('catching')"
+            "document.querySelector('#sessionView>.pane-scrim').classList.contains('catching')"
         ),
         serde_json::json!(false),
         "and the dim let go once that click had passed"
@@ -15321,7 +23876,7 @@ fn a_phone_dims_behind_a_pane_sheet_and_keeps_a_margin_upright() {
     phone_tap(&tab, "[data-reading-toggle=\"wide\"]");
     harness::until(
         &tab,
-        "document.getElementById('app').classList.contains('wide')",
+        "document.getElementById('sessionView').classList.contains('wide')",
         "wide on",
         Duration::from_secs(5),
         "document.getElementById('app').className",
@@ -15414,7 +23969,7 @@ const FLAT_QW: &str = "f1a7f1a7-0000-4000-8000-000000000006";
 /// The list as the reader sees it: the order of its session rows (title, the project and agent
 /// the row names, whether it is the selected one), the group heads, whether the two group controls
 /// and the flat toggle are shown and checked, and the app's mode class.
-const FLAT_LIST_JS: &str = "(function () { var t = document.getElementById('tree'); var shown = function (id) { var el = document.getElementById(id); return !!el && getComputedStyle(el).display !== 'none'; }; var flat = document.querySelector('#sessionFilter [data-flat]'); return { rows: Array.from(t.querySelectorAll('.tree-row.session[data-session]')).map(function (r) { var p = r.querySelector('.tree-project'), a = r.querySelector('.tree-agent'), m = a && a.querySelector('.agent-monogram text'), ink = a && (a.querySelector('.brand-icon [fill]:not([fill=none])') || m); return [r.querySelector('.tree-title').textContent, p ? p.textContent : null, a ? a.getAttribute('aria-label') : null, r.classList.contains('selected'), m ? m.textContent : null, ink ? getComputedStyle(ink).fill : a ? getComputedStyle(a.querySelector('.brand-icon')).stroke : null, a ? getComputedStyle(a).color : null]; }), heads: t.querySelectorAll('.agent-label, .tree-row.project').length, collapse: shown('collapseBtn'), expand: shown('expandBtn'), filter: shown('filterBtn'), toggle: flat ? flat.getAttribute('aria-checked') : 'missing', mode: document.getElementById('app').classList.contains('sessions-flat') }; })()";
+const FLAT_LIST_JS: &str = "(function () { var t = document.getElementById('tree'); var shown = function (id) { var el = document.getElementById(id); return !!el && getComputedStyle(el).display !== 'none'; }; var flat = document.querySelector('#sessionFilter [data-flat]'); return { rows: Array.from(t.querySelectorAll('.tree-row.session[data-session]')).map(function (r) { var p = r.querySelector('.tree-project'), a = r.querySelector('.tree-agent'), m = a && a.querySelector('.agent-monogram text'), ink = a && (a.querySelector('.brand-icon [fill]:not([fill=none])') || m); return [r.querySelector('.tree-title').textContent, p ? p.textContent : null, a ? a.getAttribute('aria-label') : null, r.classList.contains('selected'), m ? m.textContent : null, ink ? getComputedStyle(ink).fill : a ? getComputedStyle(a.querySelector('.brand-icon')).stroke : null, a ? getComputedStyle(a).color : null]; }), heads: t.querySelectorAll('.agent-label, .tree-row.project').length, collapse: shown('collapseBtn'), expand: shown('expandBtn'), filter: shown('filterBtn'), toggle: flat ? flat.getAttribute('aria-checked') : 'missing', mode: document.getElementById('sessionList').classList.contains('sessions-flat') }; })()";
 
 /// #s340 (Hong's yes on #s342): a session the Claude desktop app records as started from another
 /// (`spawnedFrom` in its own session store) is drawn under its starter, marked as a side session,
@@ -15456,9 +24011,10 @@ fn the_app_shell_nests_a_desktop_side_session_under_its_starter() {
     stores.desktop_session("local_aaaa", starter, None);
     stores.desktop_session("local_bbbb", side, Some("local_aaaa"));
     stores.desktop_session("local_cccc", other, None);
-    let _monitor = Monitor::spawn(Kind::V1, 3205, &base, Some(&stores), false);
+    let monitor = Monitor::spawn(Kind::V1, 3205, &base, Some(&stores), false);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
-    let url = "http://127.0.0.1:3205/?ui=app";
+    let url = &format!("http://127.0.0.1:{port}/?ui=app");
     tab.navigate_to(url).unwrap();
     tab.wait_until_navigated().unwrap();
     // Each listed row: its id, whether it is a side session, and whether it wears the mark.
@@ -15540,7 +24096,7 @@ fn the_app_shell_nests_a_desktop_side_session_under_its_starter() {
     click("#sessionFilter [data-flat]");
     harness::until(
         &tab,
-        "document.getElementById('app').classList.contains('sessions-flat')",
+        "document.getElementById('sessionList').classList.contains('sessions-flat')",
         "the flat list is on",
         Duration::from_secs(10),
         "document.getElementById('app').className",
@@ -15595,8 +24151,9 @@ fn the_app_shell_lists_the_sessions_by_activity_alone() {
     let base = base("appshell-flat");
     let stores = flat_world(&base);
     let monitor = Monitor::spawn(Kind::V1, 3196, &base, Some(&stores), false);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
-    let url = "http://127.0.0.1:3196/?ui=app";
+    let url = &format!("http://127.0.0.1:{port}/?ui=app");
     tab.navigate_to(url).unwrap();
     tab.wait_until_navigated().unwrap();
     harness::show_every_session(&tab, url);
@@ -15911,7 +24468,7 @@ fn a_phone_lists_the_sessions_by_activity_in_its_drawer_and_its_column() {
         phone_tap(&tab, "#sessionFilter [data-flat]");
         harness::until(
             &tab,
-            "!document.getElementById('app').classList.contains('sessions-flat') && document.querySelectorAll('#app>.sidebar .agent-label').length > 0",
+            "!document.getElementById('sessionList').classList.contains('sessions-flat') && document.querySelectorAll('#app>.sidebar .agent-label').length > 0",
             "the toggle to bring the tree back",
             Duration::from_secs(10),
             "document.getElementById('app').className",
@@ -15981,9 +24538,10 @@ fn the_turns_pane_stays_where_the_reader_scrolled_it_until_they_go_back_to_the_s
         .collect();
     let path = stores.claude_session(sid, &body);
     let monitor = Monitor::spawn(Kind::V1, 3199, &base, Some(&stores), false);
+    let port = monitor.port;
     let (_browser, tab) = harness::chrome_tab();
     harness::resize(&tab, 1400.0, 760.0);
-    tab.navigate_to(&format!("http://127.0.0.1:3199/?ui=app&session={sid}"))
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/?ui=app&session={sid}"))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     let pane = || -> serde_json::Value {
@@ -16135,6 +24693,7 @@ fn a_phone_s_turns_list_stays_where_the_finger_left_it() {
             .collect();
         let path = stores.claude_session(sid, &body);
         let monitor = Monitor::spawn(Kind::V1, port, &base, Some(&stores), false);
+        let port = monitor.port;
         let (_browser, tab) = harness::chrome_tab();
         harness::phone(&tab, w, h);
         if let Some(insets) = insets {
@@ -16279,7 +24838,7 @@ fn a_search_step_deep_inside_a_tall_unit_enters_at_the_record_there() {
     );
     // Where each output's record row sits against the line the page reads the top by, and which
     // unit holds it: all four must be ONE unit, taller than the view, or the case tests nothing.
-    let rows = "(function(){ var t = document.querySelector('.session-main>.transcript'), r = t.getBoundingClientRect(), line = r.top + (parseFloat(getComputedStyle(t).scrollPaddingTop) || 18) + 8; var out = { line: Math.round(line), view: [Math.round(r.top), Math.round(r.bottom)], rows: {} }; [...document.querySelectorAll('.virtual-window [data-block-index]')].forEach(function (e) { var m = e.textContent.match(/output (\\d) holds the needle/); if (!m || e.querySelector('[data-block-index]')) return; var b = e.getBoundingClientRect(), u = e.closest('[data-unit-key]'); var rec = e; while (rec && !Number.isInteger(Number(rec.dataset.blockIndex))) rec = rec.parentElement && rec.parentElement.closest('[data-block-index]'); out.rows[m[1]] = { top: Math.round(b.top), bottom: Math.round(b.bottom), record: rec && rec.dataset.blockIndex, unit: u && u.dataset.unitKey, unitHeight: u && Math.round(u.getBoundingClientRect().height) }; }); return JSON.stringify(out); })()";
+    let rows = "(function(){ var t = document.querySelector('.sv-session-main>.transcript'), r = t.getBoundingClientRect(), line = r.top + (parseFloat(getComputedStyle(t).scrollPaddingTop) || 18) + 8; var out = { line: Math.round(line), view: [Math.round(r.top), Math.round(r.bottom)], rows: {} }; [...document.querySelectorAll('.virtual-window [data-block-index]')].forEach(function (e) { var m = e.textContent.match(/output (\\d) holds the needle/); if (!m || e.querySelector('[data-block-index]')) return; var b = e.getBoundingClientRect(), u = e.closest('[data-unit-key]'); var rec = e; while (rec && !Number.isInteger(Number(rec.dataset.blockIndex))) rec = rec.parentElement && rec.parentElement.closest('[data-block-index]'); out.rows[m[1]] = { top: Math.round(b.top), bottom: Math.round(b.bottom), record: rec && rec.dataset.blockIndex, unit: u && u.dataset.unitKey, unitHeight: u && Math.round(u.getBoundingClientRect().height) }; }); return JSON.stringify(out); })()";
     let read = |tab: &headless_chrome::Tab| -> serde_json::Value {
         serde_json::from_str(harness::eval(tab, rows).as_str().unwrap_or("null")).unwrap()
     };
@@ -16335,7 +24894,7 @@ fn a_search_step_deep_inside_a_tall_unit_enters_at_the_record_there() {
     );
     // Back to the first output by script, which the engine never hears: still inside the unit.
     let dy = to_row(&tab, "0");
-    harness::eval(&tab, &format!("(function(){{ var s = document.querySelector('.session-main>.transcript'); s.scrollTo({{ top: s.scrollTop + ({dy}), behavior: 'instant' }}); return 'ok'; }})()"));
+    harness::eval(&tab, &format!("(function(){{ var s = document.querySelector('.sv-session-main>.transcript'); s.scrollTo({{ top: s.scrollTop + ({dy}), behavior: 'instant' }}); return 'ok'; }})()"));
     harness::pause("the move to settle", Duration::from_millis(700));
     let g = read(&tab);
     assert!(
@@ -16406,7 +24965,7 @@ fn a_phone_search_held_sideways_lands_a_match_below_its_process_head() {
         );
         // The keyboard as the keyboard-wrap case raises it, sized from the space with none, so the
         // space is the target whatever the platform's chrome: the find pill rides it one for one.
-        let space = "(function(){ var d = document.getElementById('phoneDock').getBoundingClientRect(), t = document.querySelector('.session-main>.transcript').getBoundingClientRect(); return Math.round(d.top - t.top); })()";
+        let space = "(function(){ var d = document.getElementById('phoneDock').getBoundingClientRect(), t = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(); return Math.round(d.top - t.top); })()";
         let open = harness::eval(&tab, space).as_i64().unwrap_or(0);
         let kb = open - target;
         harness::eval(&tab, &format!("(function(){{ Object.defineProperty(visualViewport, 'height', {{ configurable: true, get: function () {{ return innerHeight - {kb}; }} }}); visualViewport.dispatchEvent(new Event('resize')); return 'ok'; }})()"));

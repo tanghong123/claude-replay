@@ -7,10 +7,12 @@ import { OutgoingMessages } from "./outgoing.js";
 import { DeliveryJournal } from "./delivery-journal.js";
 import { ProjectPicker } from "./project-picker.js";
 import { SessionConflict, isThreadInUse } from "./session-conflict.js";
-import { PHONE_QUERY } from "/monitor-ui/shared/capabilities.js";
-import { controlState, indexState, selectedRow } from "/monitor-ui/state.js";
+import { controlState, indexState, selectedRow } from "../monitor-ui/state.js";
 
 const byId = id => document.getElementById(id);
+// Native mode's composer and runtime panel sit inside the session view, so their phone layout follows the
+// view's own family (its pl-* classes, #s431 stage 2), never the window.
+const viewIs = (...names) => { const view = byId("sessionView"); return !!view && names.every(name => view.classList.contains(name)); };
 const make = (tag, className, text) => { const node = document.createElement(tag); node.className = className; if (text) node.textContent = text; return node; };
 const FAST_ICON = '<svg class="icon shared-fast-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="m13.5 3-8 10h6l-1 8 8-10h-6l1-8Z"/></svg>';
 const effortLabel = value => ({ xhigh: "Extra High", max: "Maximum", ultra: "Ultra" })[value] || value.replace(/^./, letter => letter.toUpperCase());
@@ -21,7 +23,7 @@ const effortLabel = value => ({ xhigh: "Extra High", max: "Maximum", ultra: "Ult
  */
 export class MonitorControls {
   constructor(actions) {
-    this.active = true; this.actions = actions; this.api = new GatewayApi(); this.state = freshWorkspace(); this.projects = []; this.models = [];
+    this.active = true; this.actions = actions; this.api = new GatewayApi(actions?.backend?.fetch); this.state = freshWorkspace(); this.projects = []; this.models = [];
     this.browserAccess = "paired"; this.catalogEpoch = null; this.observedEpoch = null; this.connectionEpoch = null; this.latestError = null;
     this.initialThread = new URL(location.href).searchParams.get("thread");
     this.threads = []; this.drafts = new Map(); this.draftRevisions = new Map(); this.imageErrors = new Map(); this.uncertainSendPayloads = new Map(); this.sendDrafts = new Map(); this.requestDrafts = new Map(); this.uncertainActions = new Map(); this.selected = null; this.generation = 0; this.pending = false; this.creating = false; this.archived = false; this.projectId = "";
@@ -150,8 +152,12 @@ export class MonitorControls {
         && !byId("composer").contains(event.target) && !this.dialog.contains(event.target)) this.setComposerExpanded(false);
     });
     matchMedia("(orientation:landscape)").addEventListener("change", () => this.composerOrientationChanged());
-    const reposition = () => { if (this.active === false) return; if (!matchMedia(PHONE_QUERY).matches) this.setReaderTools(false); this.fitComposer(); if (this.dialog.matches(":popover-open")) this.positionSettings(); };
+    const reposition = () => { if (this.active === false) return; if (!viewIs("pl-phone")) this.setReaderTools(false); this.fitComposer(); if (this.dialog.matches(":popover-open")) this.positionSettings(); };
     window.addEventListener("resize", reposition); window.visualViewport?.addEventListener("resize", reposition); window.visualViewport?.addEventListener("scroll", reposition);
+    // The view's family can change with no resize of the window (the sidebar dragged, a pane beside it).
+    let phone = viewIs("pl-phone");
+    const view = byId("sessionView");
+    if (view) new MutationObserver(() => { if (viewIs("pl-phone") !== phone) { phone = !phone; reposition(); } }).observe(view, { attributes: true, attributeFilter: ["class"] });
     this.newDialog = make("dialog", "shared-dialog shared-new-dialog"); this.newDialog.id = "sharedNewDialog"; this.newDialog.setAttribute("aria-label", "New Codex session"); document.body.append(this.newDialog); this.newDialog.oncancel = event => { if (this.creating) event.preventDefault(); }; this.newDialog.addEventListener("close", () => { this.newProjectPicker?.destroy(); this.actions.nativeNewClosed?.(); });
   }
   /** Release the native view without terminating the shared server or an accepted action. */
@@ -247,13 +253,13 @@ export class MonitorControls {
   }
   /** Toggle the original phone reader dock without duplicating its search or pane controls. */
   setReaderTools(open) {
-    document.body.toggleAttribute("data-shared-reader-open", open && matchMedia(PHONE_QUERY).matches);
+    document.body.toggleAttribute("data-shared-reader-open", open && viewIs("pl-phone"));
     this.readerButton.setAttribute("aria-expanded", String(document.body.hasAttribute("data-shared-reader-open")));
     this.fitComposer();
   }
   reserveComposerSpace(height) {
     document.body.style.setProperty("--shared-composer-height", `${height}px`);
-    const extra = matchMedia(PHONE_QUERY).matches ? document.body.hasAttribute("data-shared-reader-open") && !byId("app").classList.contains("composing") ? 100 : 24 : 30;
+    const extra = viewIs("pl-phone") ? document.body.hasAttribute("data-shared-reader-open") && !byId("sessionView").classList.contains("composing") ? 100 : 24 : 30;
     byId("transcript").style.paddingBottom = `${height + extra}px`;
   }
   open() { byId("composer").classList.add("production-show"); byId("composer").classList.remove("live"); byId("composeFab").classList.remove("show"); byId("composeFab").hidden = true; }
@@ -262,9 +268,9 @@ export class MonitorControls {
     this.composerExpanded = expanded;
     this.fitComposer();
   }
-  // Match the shell's short coarse-pointer viewport, never visualViewport height:
+  // Match the view's own short touch layout (#s431 stage 2), never visualViewport height:
   // a portrait keyboard must not enable the sideways one-line variant.
-  sidewaysComposer() { return matchMedia("(pointer:coarse) and (max-height:500px)").matches; }
+  sidewaysComposer() { return viewIs("pl-coarse", "pl-max-h-500"); }
   composerOrientationChanged() {
     if (this.active === false) return;
     if (document.activeElement !== byId("composeInput")) this.composerExpanded = false;
@@ -285,14 +291,19 @@ export class MonitorControls {
     const collapsed = this.sidewaysComposer() && !this.composerExpanded;
     composer.setAttribute("data-shared-collapsed", String(collapsed));
     let limit = collapsed ? 24 : 132;
-    if (matchMedia(PHONE_QUERY).matches) {
+    if (viewIs("pl-phone")) {
       const view = window.visualViewport, style = getComputedStyle(composer);
       const safe = edge => parseFloat(style.getPropertyValue(`--shared-safe-${edge}`)) || 0;
       // Safari scrolls the page as the keyboard opens. The shell already moves
       // the app over that scroll, so every edge must use the same app box.
       const app = byId("app").getBoundingClientRect();
       const top = app.top + safe("top");
-      const bottom = app.top + Math.min(app.height, view?.height || app.height) - safe("bottom") - 8;
+      // The keyboard is the session view's `--phone-kb`, which the composer is placed by too: the
+      // view counts a short visual viewport as the keyboard only while a field that takes one has
+      // focus (#s451), and Safari can report a viewport 378px short with nothing focused (#s455).
+      // While a field is focused it is the app's height less the visible one, as before.
+      const keyboard = parseFloat(style.getPropertyValue("--phone-kb")) || 0;
+      const bottom = app.top + app.height - keyboard - safe("bottom") - 8;
       const box = composer.getBoundingClientRect(), field = input.getBoundingClientRect();
       const header = document.querySelector(".workspace>.topbar")?.getBoundingClientRect().bottom || top;
       let available = Math.max(0, Math.min(box.bottom, bottom) - Math.max(top, header) - 4);
@@ -766,7 +777,7 @@ export class MonitorControls {
   connectEvents() {
     if (this.active === false) return;
     this.events?.close();
-    const events = this.events = new EventSource("/api/codex/events", { withCredentials: true });
+    const events = this.events = new EventSource(this.actions?.backend ? this.actions.backend.url("/api/codex/events") : "/api/codex/events", { withCredentials: true });
     events.onmessage = message => {
       if (this.events !== events) return;
       try {

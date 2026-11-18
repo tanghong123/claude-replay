@@ -52,11 +52,15 @@ pub mod shared;
 pub(crate) mod sig; // capability signatures for the local-file routes
 mod turn_index; // the record log's map: turns and summaries for a page awaiting its head (#s276)
 pub use bundle::{dump_all_html, dump_html};
-pub use mdrev::{install as install_mdrev, version as mdrev_version, Kit as MdrevKit};
+pub use mdrev::{
+    install as install_mdrev, this_users_state_dir as mdrev_state_dir, version as mdrev_version,
+    Kit as MdrevKit,
+};
 pub use serve::{
-    existing_server, get_request, handoff_url, mint_token, query_get, serve, service_routes,
-    spawn_listener, spawn_listener_gated, spawn_streaming_listener_gated, start_server, AuthGate,
-    EventStream, HostCheck, HttpReply, HttpResponse, LiveServer, Request, RootLock, RouteHandler,
+    existing_server, finish_reply, get_request, handoff_url, mint_token, query_get, serve,
+    service_body_limit, service_routes, spawn_listener, spawn_listener_gated,
+    spawn_streaming_listener_gated, start_server, AuthGate, EventStream, HostCheck, HttpReply,
+    HttpResponse, LiveServer, RelayCheck, ReplyClient, Request, RootLock, RouteHandler,
     ServiceConfig, SessionService, StaleEpoch, StreamingRouteHandler,
 };
 
@@ -1627,6 +1631,29 @@ impl Emitter<'_> {
                 }
                 body.push(pre_part(note));
             }
+            // #s500: a reply the client withdrew for a broken tool call, under the note it wrote
+            // in its place. Drawn like the mark above: one line as the name, and folded under it
+            // the withdrawn reply's thinking and text, in order, as body parts both pages already
+            // draw (a nested record would be a card of its own inside the mark), then the
+            // client's note to the model.
+            Block::Withdrawn { note, reply } => {
+                o.insert("id".into(), json!(self.block_id()));
+                head.insert("name".into(), json!(crate::model::WITHDRAWN_LINE));
+                for b in reply {
+                    match b {
+                        Block::Thinking { text, .. } if !text.trim().is_empty() => {
+                            body.push(json!({ "p": "think", "h": md_html(text) }));
+                        }
+                        Block::AssistantText(t)
+                        | Block::AssistantCutOff(t)
+                        | Block::AssistantMessage { text: t, .. } => {
+                            body.push(json!({ "p": "md", "h": md_html(t) }));
+                        }
+                        _ => {}
+                    }
+                }
+                body.push(pre_part(note));
+            }
             Block::ToolUse {
                 name,
                 target,
@@ -1912,6 +1939,11 @@ impl Emitter<'_> {
                             body.push(
                                 json!({ "p": "note", "x": crate::present::send_receipt(out) }),
                             );
+                            // #s456: a resumed sub-agent's report, brought back by the send, is
+                            // the reply under the receipt — Markdown, as on its Agent card.
+                            if let Some(reply) = crate::present::send_reply(out) {
+                                body.push(json!({ "p": "md", "h": md_html(reply) }));
+                            }
                         }
                     }
                     _ => {
@@ -2413,7 +2445,7 @@ fn build_page(
     </div>
     <div class="searchbox">
       <span class="mag">⌕</span>
-      <input id="q" placeholder="Search transcript  ( / )" title="⏎ next · ⇧⏎ previous · a uatow: prefix scopes by type — o(…) narrows the tools, e.g. o(B): for Bash; w requires whole words (e.g. tw:) · a leading : searches the literal text" autocomplete="off">
+      <input id="q" placeholder="Search transcript" title="⏎ next · ⇧⏎ previous · a uatow: prefix scopes by type — o(…) narrows the tools, e.g. o(B): for Bash; w requires whole words (e.g. tw:) · a leading : searches the literal text" autocomplete="off">
       <span id="qcount"></span>
       <span id="qprev" class="qnav" title="Previous match (⇧⏎)">▲</span>
       <span id="qnext" class="qnav" title="Next match (⏎)">▼</span>

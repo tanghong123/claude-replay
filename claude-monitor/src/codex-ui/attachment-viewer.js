@@ -1,4 +1,6 @@
 import { revealQuery } from "./shared/capabilities.js";
+import { backend } from "./backend.js";
+import { viewRoot } from "./view-root.js";
 
 const escapeName = value => String(value || "attachment").replace(/[\\/:*?"<>|]/g, "-");
 
@@ -24,6 +26,9 @@ export class AttachmentViewer {
   constructor(actions) {
     this.actions = actions;
   }
+  /** The view is unmounted (#s429 stage 7): a download still being read stops, and nothing it would
+   *  still do (a save, the share sheet, a toast) happens. */
+  destroy() { this.ended = true; this.controller?.abort(); this.ready = null; }
 
   /** Ask the server to show the file in the file manager. It acts only on a path it offered
    *  with a reveal stamp and that still sits inside a hosted session's roots; it hands over
@@ -31,7 +36,7 @@ export class AttachmentViewer {
   async reveal(item) {
     if (!item?.path || !item?.sig) { this.actions.toast?.("This path was not offered for reveal"); return; }
     try {
-      const response = await fetch(revealQuery({ path: item.path, sig: item.sig }), { cache: "no-store" });
+      const response = await backend().fetch(revealQuery({ path: item.path, sig: item.sig }), { cache: "no-store" });
       if (response.ok) { this.actions.toast?.("Revealed in the file manager"); return; }
       this.actions.toast?.(response.status === 404 ? "Nothing to reveal — the path is gone" : `Could not reveal: HTTP ${response.status}`);
     } catch (error) { this.actions.toast?.(`Could not reveal: ${error.message}`); }
@@ -59,10 +64,12 @@ export class AttachmentViewer {
       // #s29: text the transcript carried, with no file stamp to fetch the file by, is its own bytes.
       else if (item.text != null && !(item.path && item.fsig)) response = new Response(new Blob([item.text], { type: "text/plain;charset=utf-8" }));
       else {
-        fileUrl = `/file?path=${encodeURIComponent(item.path || "")}&sig=${encodeURIComponent(item.fsig || "")}`;
-        controller = new AbortController();
-        response = await fetch(fileUrl, { cache: "no-store", signal: controller.signal });
+        const filePath = `/file?path=${encodeURIComponent(item.path || "")}&sig=${encodeURIComponent(item.fsig || "")}`;
+        fileUrl = backend().url(filePath);
+        controller = this.controller = new AbortController();
+        response = await backend().fetch(filePath, { cache: "no-store", signal: controller.signal });
       }
+      if (this.ended) { controller?.abort(); return; }
       if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status });
       // Too large to hold: the refusal checks above are done, so the browser streams it to disk.
       if (fileUrl && Number(response.headers.get("Content-Length") || 0) > IN_MEMORY_MAX) {
@@ -72,6 +79,7 @@ export class AttachmentViewer {
         return;
       }
       const blob = await response.blob();
+      if (this.ended) return;
       if (shareHere()) {
         const file = new File([blob], name, { type: blob.type || "application/octet-stream" });
         if (navigator.canShare?.({ files: [file] })) {
@@ -84,6 +92,7 @@ export class AttachmentViewer {
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       this.actions.toast?.("Download started");
     } catch (error) {
+      if (this.ended) return;
       // #s7: say which — a file that is gone (410, or a fetch that failed outright) is not one this
       // monitor may not read (403).
       const why = error?.status === 403 ? "This monitor may not read that file" : error?.status && error.status !== 410 ? `Could not download (HTTP ${error.status})` : "The original file is gone";
@@ -97,7 +106,7 @@ export class AttachmentViewer {
   /** A link the browser follows as a download: the bytes, or /file's stream, saved under `name`. */
   save(href, name) {
     const link = document.createElement("a");
-    link.href = href; link.download = name; document.body.append(link); link.click(); link.remove();
+    link.href = href; link.download = name; viewRoot.layer().append(link); link.click(); link.remove();
   }
 
   /** The system share sheet for `file`. True once shared or dismissed by the reader; "ready" when the

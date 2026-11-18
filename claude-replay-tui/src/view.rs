@@ -2765,6 +2765,15 @@ fn block_occurrences(b: &Block, needle: &str, whole: bool) -> usize {
             count(&crate::model::safety_stop_line(category.as_deref()), needle)
                 + count(note, needle)
         }
+        // #s500: the line, the withdrawn reply folded under it, and the note.
+        Block::Withdrawn { note, reply } => {
+            count(crate::model::WITHDRAWN_LINE, needle)
+                + reply
+                    .iter()
+                    .map(|c| block_occurrences(c, needle, whole))
+                    .sum::<usize>()
+                + count(note, needle)
+        }
         Block::AssistantMessage { text, .. } => count(text, needle),
         Block::QueueEvent { text } => count(text, needle),
         Block::PeerText { from, text, .. } => count(from, needle) + count(text, needle),
@@ -3962,6 +3971,33 @@ mod tests {
             buf[(w - 1, yo)].style().bg,
             bg,
             "output not filled to right edge"
+        );
+    }
+
+    /// #s500: by default the mark on a withdrawn reply shows its line and keeps the reply and the
+    /// note folded, as a result does; expanded, both are there.
+    #[test]
+    fn a_withdrawn_reply_shows_its_line_and_folds_the_reply() {
+        let withdrawn = || {
+            vec![Block::Withdrawn {
+                note: "The previous response failed to produce a valid tool call.".into(),
+                reply: vec![Block::AssistantText("I will call the tool now.".into())],
+            }]
+        };
+        let screen = |policy| {
+            let mut v = View::new(withdrawn(), "t", false, policy);
+            let buf = draw(&mut v, 80, 8);
+            (0..8).map(|y| row(&buf, y)).collect::<Vec<_>>().join("\n")
+        };
+        let folded = screen(FoldPolicy::default());
+        assert!(folded.contains(crate::model::WITHDRAWN_LINE), "{folded}");
+        assert!(!folded.contains("I will call the tool now."), "{folded}");
+        let open = screen(FoldPolicy::none());
+        assert!(
+            open.contains(crate::model::WITHDRAWN_LINE)
+                && open.contains("I will call the tool now.")
+                && open.contains("The previous response failed to produce a valid tool call."),
+            "{open}"
         );
     }
 

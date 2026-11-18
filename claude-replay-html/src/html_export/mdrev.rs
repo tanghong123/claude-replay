@@ -34,7 +34,7 @@ use super::serve::{
 };
 use super::sig::{self, Cap};
 use serde_json::{json, Value};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::ffi::OsString;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -63,20 +63,41 @@ pub(super) struct Release {
     kit: Option<Kit>,
     dir: PathBuf,
     cli: OnceLock<Option<Vec<OsString>>>,
+    /// mdrev's state directory, where its viewer and notes keys are (#s426): this user's for the
+    /// monitor, a host's own or none. Its files are read on every request; only the place is fixed.
+    #[cfg_attr(any(test, feature = "hermetic-tests"), allow(dead_code))]
+    state: Option<PathBuf>,
 }
 
 static INSTALLED: OnceLock<Release> = OnceLock::new();
 
-/// Serve `kit`, writing its CLI under `dir` when a route first needs it. Once per process: a
-/// binary carries exactly one kit, so a second call is ignored.
-pub fn install(kit: Kit, dir: PathBuf) {
+/// Serve `kit`, writing its CLI under `dir` when a route first needs it, with mdrev's keys read
+/// from `state` ([`this_users_state_dir`] for the monitor; `None` files no notes and serves no
+/// shared review). Once per process: a binary carries exactly one kit, so a second call is ignored.
+pub fn install(kit: Kit, dir: PathBuf, state: Option<PathBuf>) {
     let _ = INSTALLED.set(Release {
         version: kit.version,
         bundle: kit.bundle,
         kit: Some(kit),
         dir,
         cli: OnceLock::new(),
+        state,
     });
+}
+
+/// This user's mdrev state directory: `MDREV_STATE_DIR` when absolute, else `~/.mdrev`.
+pub fn this_users_state_dir() -> Option<PathBuf> {
+    state_dir_from(
+        std::env::var_os("MDREV_STATE_DIR"),
+        std::env::var_os("HOME"),
+    )
+}
+
+fn state_dir_from(named: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    named
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| home.map(|h| PathBuf::from(h).join(".mdrev")))
 }
 
 /// The kit this process serves. `None` in a server that installed none (`agent-replay --html`),
@@ -226,11 +247,13 @@ pub(super) struct Viewer {
     kind: KeyKind,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum KeyKind {
     /// The review prefix's: shared review — threads, hide, Share, pairing, Push.
     Viewer,
     /// The pane's: the person's own notes, nothing shared.
+    // A dependent's test build (`hermetic-tests`) reads no key, so nothing makes this one there.
+    #[cfg_attr(feature = "hermetic-tests", allow(dead_code))]
     Notes,
 }
 
@@ -239,22 +262,32 @@ fn shares(viewer: Option<&Viewer>) -> bool {
     viewer.is_some_and(|v| v.kind == KeyKind::Viewer)
 }
 
-/// mdrev's state directory: `MDREV_STATE_DIR` when absolute, else `~/.mdrev`.
-#[cfg(not(test))]
+/// mdrev's state directory, as installed with the kit: none without a kit, or when the host
+/// gave none.
+#[cfg(not(any(test, feature = "hermetic-tests")))]
 fn state_dir() -> Option<PathBuf> {
-    std::env::var_os("MDREV_STATE_DIR")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".mdrev")))
+    release()?.state.clone()
 }
 
 /// The viewer key, read on every request to the review prefix (mdrev mints it on its first run,
-/// which may come after the monitor's): `MDREV_STATE_DIR` when absolute, else `~/.mdrev`, file
-/// `token`. `None` without one. Fixed to `None` in a test build, which hands its own to
-/// [`contract`] and never reads this machine's.
-#[cfg(not(test))]
+/// which may come after the monitor's): file `token` in the state directory installed with the
+/// kit. `None` without one. Fixed to `None` in a test build, which hands its own to
+/// [`contract`] and never reads this machine's, and in a dependent's test build
+/// (`hermetic-tests`, #s421): claude-monitor's tests reach the review prefix through the route
+/// table, and the notes key below would otherwise be minted into this machine's `~/.mdrev`.
+#[cfg(not(any(test, feature = "hermetic-tests")))]
 fn viewer() -> Option<Viewer> {
-    let state_dir = state_dir()?;
+    viewer_in(state_dir()?)
+}
+
+#[cfg(any(test, feature = "hermetic-tests"))]
+fn viewer() -> Option<Viewer> {
+    None
+}
+
+/// The viewer key in `state_dir`, if mdrev has made one there.
+#[cfg_attr(all(feature = "hermetic-tests", not(test)), allow(dead_code))]
+fn viewer_in(state_dir: PathBuf) -> Option<Viewer> {
     let key = std::fs::read_to_string(state_dir.join("token")).ok()?;
     let key = key.trim().to_string();
     (!key.is_empty()).then_some(Viewer {
@@ -264,22 +297,27 @@ fn viewer() -> Option<Viewer> {
     })
 }
 
-#[cfg(test)]
-fn viewer() -> Option<Viewer> {
+/// The notes key, read on every request to the pane's prefix: file `notes-token` in mdrev's state
+/// directory ([`notes_key_in`]). Fixed to `None` in a test build, like [`viewer`].
+#[cfg(not(any(test, feature = "hermetic-tests")))]
+fn notes_key() -> Option<Viewer> {
+    notes_key_in(state_dir()?)
+}
+
+#[cfg(any(test, feature = "hermetic-tests"))]
+fn notes_key() -> Option<Viewer> {
     None
 }
 
-/// The notes key, read on every request to the pane's prefix: file `notes-token` in mdrev's state
-/// directory. mdrev's own viewer makes it beside the viewer key; where mdrev has a state directory
-/// and none is there yet, the host makes it the contract's way — 32 random bytes as 64 lowercase
-/// hex characters and a newline, mode 0600, never replacing one (`create_new`, so a race with
-/// mdrev leaves whichever came first). No state directory, no key: mdrev has not run here, and the
-/// pane stays keyless as before. Fixed to `None` in a test build, like [`viewer`].
-#[cfg(not(test))]
-fn notes_key() -> Option<Viewer> {
+/// The notes key in `state_dir`. mdrev's own viewer makes it beside the viewer key; where mdrev
+/// has a state directory and none is there yet, the host makes it the contract's way — 32 random
+/// bytes as 64 lowercase hex characters and a newline, mode 0600, never replacing one
+/// (`create_new`, so a race with mdrev leaves whichever came first). No such directory, no key:
+/// mdrev has not run here, and the pane stays keyless as before.
+#[cfg_attr(all(feature = "hermetic-tests", not(test)), allow(dead_code))]
+fn notes_key_in(state_dir: PathBuf) -> Option<Viewer> {
     use std::io::Write as _;
     use std::os::unix::fs::OpenOptionsExt as _;
-    let state_dir = state_dir()?;
     let file = state_dir.join("notes-token");
     if !file.exists() && state_dir.is_dir() {
         if let Some(fresh) = super::serve::mint_token() {
@@ -300,11 +338,6 @@ fn notes_key() -> Option<Viewer> {
         key,
         kind: KeyKind::Notes,
     })
-}
-
-#[cfg(test)]
-fn notes_key() -> Option<Viewer> {
-    None
 }
 
 /// The largest body `hold` takes: a document at the artifact cap, plus its JSON framing.
@@ -747,7 +780,7 @@ fn local_route(
         ("GET", "text") => text(rel, &d, req),
         ("GET", "revisions") => revisions(rel, &d),
         ("GET", "asset") => asset(&d),
-        ("GET", "snapshot") => snapshot(&d, req),
+        ("GET", "snapshot") => snapshot(rel, &d, req, viewer),
         ("GET", "stat") => stat(&d),
         ("GET", "annotations") => notes_list(rel, &d, viewer),
         ("POST", "annotations") => notes_add(rel, &d, req, viewer),
@@ -1018,15 +1051,98 @@ fn resolve_body(req: &Request) -> Option<(Referrer, Vec<Value>)> {
     Some(((path, cap), targets))
 }
 
-/// The text a note was taken on, for placing it exactly. `blob` must be hex.
-fn snapshot(d: &Doc, req: &Request) -> HttpResponse {
+/// The text a note was taken on, for placing it exactly: only a blob a note on THIS document names,
+/// the `blob` its listing carries, compared whole and read as a blob (mdrev's contract since 1.1.84;
+/// #s558). Any other id answers what a missing object does, and the viewer then places the note by
+/// its quote. It used to `cat-file -p` whatever id of four or more hex digits it was given, so a
+/// reader allowed one document could read any object of its repository: other files, deleted ones,
+/// trees and commits, and a short prefix walked the store. A note the page files names the
+/// document's own text at a revision: mdrev-cli makes the blob, and `notes_add` drops any `blob` a
+/// request sends. The pane lists no shared thread, so it never reads a blob only a thread names.
+fn snapshot(rel: &Release, d: &Doc, req: &Request, viewer: Option<&Viewer>) -> HttpResponse {
     let blob = param(req, "blob").unwrap_or_default();
     if !is_hex(&blob, 4) {
         return status("400 Bad Request", error("blob must be an object id"));
     }
-    match git(&d.root, &["cat-file", "-p", &blob]) {
+    if !a_note_names(rel, d, viewer, &blob) {
+        return HttpResponse::not_found("no such blob");
+    }
+    match git(&d.root, &["cat-file", "blob", &blob]) {
         Some(bytes) => text_reply(bytes),
         None => HttpResponse::not_found("no such blob"),
+    }
+}
+
+/// A document's notes as the blob cache keys them: the collection, the path, and whether it was the
+/// detached tab's listing, which carries shared threads the pane's does not (`shares`).
+type BlobKey = (String, String, bool);
+type NoteBlobs = Mutex<HashMap<BlobKey, HashSet<String>>>;
+
+/// The blobs each document's notes name, as its last listing gave them (#s558), by `BlobKey`. The
+/// viewer lists a document's notes before it asks for their snapshots, so the listing it already
+/// made answers them, with no `mdrev-cli` run per snapshot.
+fn note_blobs() -> &'static NoteBlobs {
+    static BLOBS: OnceLock<NoteBlobs> = OnceLock::new();
+    BLOBS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn remember_blobs(d: &Doc, viewer: Option<&Viewer>, records: &[Value]) {
+    let named = records
+        .iter()
+        .filter_map(|r| r.get("blob").and_then(Value::as_str))
+        // A whole id: 40 hex digits, or 64 in a SHA-256 repository.
+        .filter(|b| is_hex(b, 40))
+        .map(str::to_string)
+        .collect();
+    let mut g = note_blobs().lock().unwrap_or_else(|e| e.into_inner());
+    if g.len() > 256 {
+        g.clear();
+    }
+    g.insert(blob_key(d, viewer), named);
+}
+
+fn blob_key(d: &Doc, viewer: Option<&Viewer>) -> BlobKey {
+    (d.root.clone(), d.rel.clone(), shares(viewer))
+}
+
+/// Whether a note on `d` names `blob`: by the last listing, else by a fresh one, since a note filed
+/// after it (from the page, or by an agent) names a blob that listing could not.
+fn a_note_names(rel: &Release, d: &Doc, viewer: Option<&Viewer>, blob: &str) -> bool {
+    let key = blob_key(d, viewer);
+    let known = |g: &HashMap<_, HashSet<String>>| g.get(&key).is_some_and(|s| s.contains(blob));
+    if known(&note_blobs().lock().unwrap_or_else(|e| e.into_inner())) {
+        return true;
+    }
+    let Ok((records, _)) = list_records(rel, d, viewer) else {
+        return false;
+    };
+    remember_blobs(d, viewer, &records);
+    known(&note_blobs().lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+/// The document's notes, closed ones included, as mdrev's records and the bytes they came in; or
+/// the reply that says why not.
+fn list_records(
+    rel: &Release,
+    d: &Doc,
+    viewer: Option<&Viewer>,
+) -> Result<(Vec<Value>, Vec<u8>), HttpResponse> {
+    let mut args = vec!["notes", "list", "--path", &d.rel, "--all", "--records"];
+    // #s10: with the viewer key, the listing carries the shared threads too (`shr-` ids); with the
+    // pane's notes key (#s231) it comes without them.
+    if viewer.is_some() {
+        args.push("--viewer");
+    }
+    let out = cli_as(rel, &d.root, &args, None, viewer);
+    if out.code != 0 {
+        return Err(cli_error(&out));
+    }
+    match serde_json::from_slice::<Vec<Value>>(&out.out) {
+        Ok(records) => Ok((records, out.out)),
+        Err(_) => Err(status(
+            "502 Bad Gateway",
+            error("mdrev-cli answered something other than a list"),
+        )),
     }
 }
 
@@ -1047,23 +1163,14 @@ fn stat(d: &Doc) -> HttpResponse {
 /// which the viewer never reads and which costs a word diff per snapshot: seconds on a document
 /// with a few dozen notes, after every note, every reply and every poll.
 fn notes_list(rel: &Release, d: &Doc, viewer: Option<&Viewer>) -> HttpResponse {
-    let mut args = vec!["notes", "list", "--path", &d.rel, "--all", "--records"];
-    // #s10: with the viewer key, the listing carries the shared threads too (`shr-` ids); with the
-    // pane's notes key (#s231) it comes without them.
-    if viewer.is_some() {
-        args.push("--viewer");
+    match list_records(rel, d, viewer) {
+        Ok((records, raw)) => {
+            remember_blobs(d, viewer, &records);
+            // The CLI's own bytes, as before: parsed only to read the blobs.
+            HttpResponse::json(String::from_utf8_lossy(&raw).into_owned())
+        }
+        Err(r) => r,
     }
-    let out = cli_as(rel, &d.root, &args, None, viewer);
-    if out.code != 0 {
-        return cli_error(&out);
-    }
-    if serde_json::from_slice::<Vec<Value>>(&out.out).is_err() {
-        return status(
-            "502 Bad Gateway",
-            error("mdrev-cli answered something other than a list"),
-        );
-    }
-    HttpResponse::json(String::from_utf8_lossy(&out.out).into_owned())
 }
 
 /// `POST annotations`: file a note — the viewer's record on stdin, the stored note back, 201.
@@ -1071,26 +1178,39 @@ fn notes_add(rel: &Release, d: &Doc, req: &Request, viewer: Option<&Viewer>) -> 
     if let Some(r) = req.deny_mutation("POST") {
         return r;
     }
+    // The record must be a JSON object read whole here (#s558): what this side cannot read, it
+    // cannot check, so it goes no further than this.
+    let Ok(Value::Object(record)) = serde_json::from_slice::<Value>(req.body) else {
+        return status("400 Bad Request", error("a note is a JSON object"));
+    };
     // A note filed `shared: true` opens a thread in the review store (#s10) — the detached tab's to
     // do, never the pane's, whatever a request says (mdrev-cli refuses it under the notes key too).
-    if !shares(viewer)
-        && serde_json::from_slice::<Value>(req.body)
-            .ok()
-            .and_then(|b| b.get("shared").and_then(Value::as_bool))
-            == Some(true)
-    {
+    if !shares(viewer) && record.get("shared").and_then(Value::as_bool) == Some(true) {
         return HttpResponse::forbidden("shared review is not offered here");
     }
+    // The viewer never sends a `blob`: mdrev-cli makes it from the document's text. One a request
+    // sends is dropped (#s558), since `snapshot` reads the blob a note names.
+    let body = without_blob(req.body, record);
     let _one_at_a_time = document_lock(d);
     let mut args = vec!["notes", "add", "--path", &d.rel];
     if viewer.is_some() {
         args.push("--viewer");
     }
-    let out = cli_as(rel, &d.root, &args, Some(req.body), viewer);
+    let out = cli_as(rel, &d.root, &args, Some(&body), viewer);
     if out.code != 0 {
         return cli_error(&out);
     }
     status("201 Created", out.out)
+}
+
+/// A note's record (`body`, read as `record`) with any `blob` taken out: written again only when it
+/// carried one, else the bytes as they came.
+fn without_blob(body: &[u8], mut record: serde_json::Map<String, Value>) -> Vec<u8> {
+    if record.remove("blob").is_some() {
+        Value::Object(record).to_string().into_bytes()
+    } else {
+        body.to_vec()
+    }
 }
 
 /// `PATCH annotations/{id}` (close / reopen), `POST …/{id}/replies`, `DELETE …/{id}`,
@@ -1685,8 +1805,59 @@ mod tests {
                 kit: None,
                 dir: PathBuf::new(),
                 cli: OnceLock::from(argv),
+                state: None,
             }
         }
+    }
+
+    /// #s426: the keys come from the state directory given at install, and from nowhere else. A
+    /// directory mdrev has run in gives its viewer key and a notes key, made there once; one it
+    /// has not (no such directory) gives neither and makes nothing.
+    #[test]
+    fn the_keys_come_from_the_given_state_directory() {
+        let dir = scratch("keys");
+        let state = dir.join("state");
+        assert!(viewer_in(state.clone()).is_none());
+        assert!(notes_key_in(state.clone()).is_none());
+        assert!(!state.exists(), "no directory is made");
+
+        std::fs::create_dir_all(&state).unwrap();
+        assert!(viewer_in(state.clone()).is_none(), "no token yet");
+        std::fs::write(state.join("token"), "viewer-key\n").unwrap();
+        let viewer = viewer_in(state.clone()).expect("the viewer key");
+        assert_eq!(
+            (viewer.key.as_str(), viewer.kind),
+            ("viewer-key", KeyKind::Viewer)
+        );
+        assert_eq!(viewer.state_dir, state);
+
+        let notes = notes_key_in(state.clone()).expect("a notes key, made");
+        assert_eq!(notes.kind, KeyKind::Notes);
+        assert_eq!(notes.key.len(), 64, "{}", notes.key);
+        let again = notes_key_in(state.clone()).expect("the same one");
+        assert_eq!(again.key, notes.key, "never replaced");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #s426: this user's mdrev state directory is `MDREV_STATE_DIR` when it is absolute, else
+    /// `~/.mdrev`; with neither, none. The monitor installs it; a host passes its own or none.
+    #[test]
+    fn this_users_mdrev_state_is_the_named_directory_or_home_s() {
+        let os = |s: &str| Some(OsString::from(s));
+        assert_eq!(
+            state_dir_from(os("/srv/mdrev"), os("/Users/tern")),
+            Some(PathBuf::from("/srv/mdrev"))
+        );
+        assert_eq!(
+            state_dir_from(os("relative/mdrev"), os("/Users/tern")),
+            Some(PathBuf::from("/Users/tern/.mdrev")),
+            "a relative name is not taken"
+        );
+        assert_eq!(
+            state_dir_from(None, os("/Users/tern")),
+            Some(PathBuf::from("/Users/tern/.mdrev"))
+        );
+        assert_eq!(state_dir_from(None, None), None);
     }
 
     /// An executable script at `at` — the stand-in CLI, or a stand-in node.
@@ -1738,7 +1909,7 @@ case "$1" in
   notes)
     case "$2" in
       list) case "$*" in
-          *--records*) echo '[{"id":"ann-1","body":"hi"}]' ;;
+          *--records*) if [ -f "$here/blob" ]; then echo '[{"id":"ann-1","body":"hi","blob":"'"$(cat "$here/blob")"'"}]'; else echo '[{"id":"ann-1","body":"hi"}]'; fi ;;
           *) echo '[{"path":"docs/doc.md","annotation":{"id":"ann-1","body":"hi"},"state":"exact"}]' ;;
         esac ;;
       add) cat > "$here/stdin.json"; echo '{"id":"ann-2","body":"filed"}' ;;
@@ -2823,6 +2994,174 @@ esac
             );
             assert_eq!(r.code, "400 Bad Request", "rev {bad:?} never reaches git");
         }
+    }
+
+    /// #s558: `snapshot` reads a blob only when a note on the asked document names it, compared
+    /// whole and read as a blob (mdrev's contract since 1.1.84). It used to `cat-file -p` any id of
+    /// four or more hex digits in the checkout, so one document's stamp read the whole repository.
+    /// The viewer lists the notes before it asks for their snapshots, and that listing answers them;
+    /// a blob it did not carry is listed for once more, which is how a note filed since is found.
+    #[test]
+    fn snapshot_reads_only_a_blob_a_note_on_the_document_names() {
+        let f = fx("snapshot");
+        let held = Mutex::new(Held::default());
+        let q = doc_query(&f, "docs/doc.md");
+        let rev_parse = |what: &str| -> String {
+            let out = Command::new("git")
+                .arg("-C")
+                .arg(&f.repo)
+                .args(["rev-parse", what])
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git rev-parse {what}");
+            String::from_utf8(out.stdout).unwrap().trim().to_string()
+        };
+        // A note was taken on the first revision ("# One"); a file committed beside the document is
+        // in the same object store, and no note names it.
+        let noted = rev_parse(&format!("{}:docs/doc.md", f.first));
+        std::fs::write(f.repo.join("docs/secret.txt"), "not offered\n").unwrap();
+        git_in(&f.repo, &["add", "docs/secret.txt"]);
+        git_in(&f.repo, &["commit", "-qm", "beside"]);
+        let unnamed = rev_parse("HEAD:docs/secret.txt");
+        let later = rev_parse("HEAD:docs/doc.md");
+        std::fs::write(f.kit.join("blob"), &noted).unwrap();
+        let snap = |blob: &str| {
+            call(
+                &f,
+                &held,
+                "snapshot",
+                &req("GET", &format!("{q}&blob={blob}"), b"", true),
+            )
+        };
+        let listings = || calls(&f).matches("notes list").count();
+
+        let listed = call(&f, &held, "annotations", &req("GET", &q, b"", true));
+        assert_eq!(listed.code, "200 OK");
+        assert_eq!(
+            String::from_utf8_lossy(&listed.body),
+            format!("[{{\"id\":\"ann-1\",\"body\":\"hi\",\"blob\":\"{noted}\"}}]\n"),
+            "the listing is the CLI's own bytes"
+        );
+        let after_list = listings();
+        let named = snap(&noted);
+        assert_eq!(
+            (named.code, named.body.as_slice()),
+            ("200 OK", b"# One\n".as_slice()),
+            "the blob a note on the document names"
+        );
+        assert_eq!(
+            listings(),
+            after_list,
+            "answered from the listing the viewer made, with no mdrev-cli run"
+        );
+
+        for (what, id) in [
+            ("another file's blob", unnamed.clone()),
+            ("a commit", rev_parse("HEAD")),
+            ("a tree", rev_parse("HEAD^{tree}")),
+            ("a prefix of the named blob", noted[..8].to_string()),
+            ("the document's text no note names", later.clone()),
+        ] {
+            let r = snap(&id);
+            assert_eq!(
+                r.code,
+                "404 Not Found",
+                "{what} is not offered: {}",
+                String::from_utf8_lossy(&r.body)
+            );
+        }
+        assert!(
+            listings() > after_list,
+            "a blob the last listing did not carry is listed for again"
+        );
+
+        // A note filed since the listing names a blob the route finds by listing again.
+        std::fs::write(f.kit.join("blob"), &later).unwrap();
+        let found = snap(&later);
+        assert_eq!(
+            (found.code, found.body.as_slice()),
+            ("200 OK", b"# Two\n".as_slice()),
+            "a note filed after the listing"
+        );
+        assert_eq!(
+            snap(&noted).code,
+            "404 Not Found",
+            "the listing now names only the later blob"
+        );
+        assert_eq!(
+            snap("not-hex").code,
+            "400 Bad Request",
+            "an id that is not hex never reaches git"
+        );
+
+        // A note can only name a blob: a listing naming a tree still reads nothing.
+        let tree = rev_parse("HEAD^{tree}");
+        std::fs::write(f.kit.join("blob"), &tree).unwrap();
+        assert_eq!(
+            snap(&tree).code,
+            "404 Not Found",
+            "read as a blob, a tree is no blob"
+        );
+
+        // A `blob` a request sends with a note never reaches mdrev-cli: snapshot reads the blob a
+        // note names, which is the document's own text only when mdrev-cli made it.
+        let planted =
+            format!("{{\"body\":\"x\",\"anchor\":{{\"exact\":\"One\"}},\"blob\":\"{unnamed}\"}}");
+        let added = call(
+            &f,
+            &held,
+            "annotations",
+            &req("POST", &q, planted.as_bytes(), true),
+        );
+        assert_eq!(added.code, "201 Created");
+        let sent: Value =
+            serde_json::from_slice(&std::fs::read(f.kit.join("stdin.json")).unwrap()).unwrap();
+        assert_eq!(
+            sent,
+            json!({"body":"x","anchor":{"exact":"One"}}),
+            "the record on stdin, without the blob"
+        );
+        // A body this side cannot read whole is refused, never passed on with what it holds: a
+        // number out of range, a byte that is not UTF-8, a list, no JSON at all.
+        let out_of_range =
+            format!("{{\"body\":\"x\",\"anchor\":{{\"exact\":\"One\"}},\"blob\":\"{unnamed}\",\"n\":1e400}}");
+        let mut not_utf8 = format!("{{\"body\":\"x\",\"blob\":\"{unnamed}\"}}").into_bytes();
+        not_utf8[9] = 0xff; // the `x` of the body
+        for (what, bad) in [
+            ("a number out of range", out_of_range.into_bytes()),
+            ("a byte that is not UTF-8", not_utf8),
+            ("a list", br#"[{"body":"x"}]"#.to_vec()),
+            ("no JSON", b"body=x".to_vec()),
+        ] {
+            let r = call(&f, &held, "annotations", &req("POST", &q, &bad, true));
+            assert_eq!(r.code, "400 Bad Request", "{what}");
+        }
+        assert_eq!(
+            serde_json::from_slice::<Value>(&std::fs::read(f.kit.join("stdin.json")).unwrap())
+                .unwrap(),
+            sent,
+            "none of them reached mdrev-cli"
+        );
+    }
+
+    /// #s558: the blobs the detached tab's listing names (its shared threads among them) never
+    /// answer the pane's snapshot, whose listing carries no shared thread: the two keep apart, and
+    /// the pane's notes key reads as no key at all.
+    #[test]
+    fn the_pane_and_the_detached_tab_keep_their_note_blobs_apart() {
+        let d = Doc {
+            root: "/repo".to_string(),
+            rel: "docs/doc.md".to_string(),
+            real: PathBuf::from("/repo/docs/doc.md"),
+        };
+        let key = |kind| Viewer {
+            state_dir: PathBuf::new(),
+            key: "k".to_string(),
+            kind,
+        };
+        let (notes, viewer) = (key(KeyKind::Notes), key(KeyKind::Viewer));
+        assert_ne!(blob_key(&d, Some(&notes)), blob_key(&d, Some(&viewer)));
+        assert_eq!(blob_key(&d, Some(&notes)), blob_key(&d, None));
     }
 
     #[test]

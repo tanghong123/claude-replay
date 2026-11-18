@@ -414,19 +414,14 @@ fn open_on_monitor(surface: Surface, fx: &Fixture, port: u16) -> Opened {
 
 /// Kill the page's monitor and start a new one on the same port over the same state and
 /// stores — a server restart under a watching page.
-fn restart_monitor(page: &mut Opened, surface: Surface, fx: &Fixture, port: u16) {
+fn restart_monitor(page: &mut Opened, fx: &Fixture) {
     let stores = Stores {
         root: fx.base.join("stores"),
     };
-    page.monitor = None; // reaped
-    std::thread::sleep(Duration::from_millis(800));
-    page.monitor = Some(Monitor::spawn(
-        monitor_kind(surface),
-        port,
-        &fx.base,
-        Some(&stores),
-        true,
-    ));
+    // The page keeps asking the origin it is on: the new monitor serves where the old one did
+    // (#s495), which is not the case's port when that one was held.
+    let previous = page.monitor.take().expect("a page on a monitor");
+    page.monitor = Some(Monitor::respawn(previous, &fx.base, Some(&stores), true));
 }
 
 // The pages THIS case opened (#351): a settle waits on every one of them, so a case that drives
@@ -1835,7 +1830,7 @@ fn app_shell_keeps_the_tail_through_a_resize() {
 
 /// The server dies and comes back on the same port. A page pinned at the tail is at the tail
 /// again with every record back; a page scrolled up keeps the turn it was reading.
-fn scenario_restart_resumes(page: &mut Opened, surface: Surface, fx: &Fixture, port: u16) {
+fn scenario_restart_resumes(page: &mut Opened, surface: Surface, fx: &Fixture) {
     let tab = page.tab.clone();
     jump_to_end(&tab, surface);
     await_tail(&tab, surface, "a fresh open to land at the tail");
@@ -1845,7 +1840,7 @@ fn scenario_restart_resumes(page: &mut Opened, surface: Surface, fx: &Fixture, p
         "the whole fixture is there before the restart ({last} of {})",
         fx.turns
     );
-    restart_monitor(page, surface, fx, port);
+    restart_monitor(page, fx);
     let t0 = std::time::Instant::now();
     let mut back = false;
     while t0.elapsed() < Duration::from_secs(25) {
@@ -1862,7 +1857,7 @@ fn scenario_restart_resumes(page: &mut Opened, surface: Surface, fx: &Fixture, p
     settle();
     let held = turn_at_top(&tab, surface);
     assert!(held >= 0 && held < last, "the reader scrolled up ({held})");
-    restart_monitor(page, surface, fx, port);
+    restart_monitor(page, fx);
     std::thread::sleep(Duration::from_millis(6000));
     let after = turn_at_top(&tab, surface);
     assert!(
@@ -1877,7 +1872,7 @@ fn app_shell_resumes_after_a_server_restart() {
     let _serial = serial();
     let fx = fixture("scenario-restart-app", 40);
     let mut page = open_on_monitor(Surface::AppShell, &fx, 2860);
-    scenario_restart_resumes(&mut page, Surface::AppShell, &fx, 2860);
+    scenario_restart_resumes(&mut page, Surface::AppShell, &fx);
 }
 
 // ── scenario: an unpinned reader holds to the PIXEL through growth (#51's reproduced part) ──
@@ -3291,7 +3286,7 @@ fn scenario_wrap_reaches_every_rendering(
         // by keyboard only (`w`, shared/keymap.js:21), which is the route this drives; the bars on
         // the blocks set per-block overrides and would answer only for their own block.
         Surface::AppShell => {
-            if eval(tab, "document.getElementById('app').classList.contains('wrap-code')")
+            if eval(tab, "document.getElementById('sessionView').classList.contains('wrap-code')")
                 .as_bool()
                 != Some(true)
             {
@@ -3299,7 +3294,7 @@ fn scenario_wrap_reaches_every_rendering(
                 key(tab, "w", false);
                 settle();
             }
-            eval(tab, "document.getElementById('app').classList.contains('wrap-code') ? 'wrapping' : 'still off'")
+            eval(tab, "document.getElementById('sessionView').classList.contains('wrap-code') ? 'wrapping' : 'still off'")
         }
     };
     assert_eq!(
@@ -4672,7 +4667,7 @@ fn scenario_a_task_reads_like_the_board(
     settle();
     let card = match surface {
         Surface::Classic => "(function(){ var c = document.querySelector('#taskbox .tcard'); if (!c) return null; return { glyph: (c.querySelector('.tcard-glyph')||{}).textContent, id: (c.querySelector('.tcard-id')||{}).textContent, chips: [...c.querySelectorAll('.tchip')].map(e => e.textContent.trim()), dates: (c.querySelector('.tcard-dates')||{}).textContent, labels: [...c.querySelectorAll('.tcard-label')].map(e => e.textContent), log: [...c.querySelectorAll('.tcard-lt')].map(e => e.textContent), meta: [...document.querySelectorAll('#taskbox .task-meta')].map(e => e.textContent) }; })()",
-        Surface::AppShell => "(function(){ var c = document.querySelector('.task-card'); if (!c) return null; return { glyph: (c.querySelector('.task-card-glyph')||{}).textContent, id: (c.querySelector('.task-card-id')||{}).textContent, chips: [...c.querySelectorAll('.task-chip')].map(e => e.textContent.trim()), dates: (c.querySelector('.task-card-dates')||{}).textContent, labels: [...c.querySelectorAll('.task-card-label')].map(e => e.textContent), log: [...c.querySelectorAll('.task-card-log-time')].map(e => e.textContent), meta: [...document.querySelectorAll('#navigatorWork .work-task-meta')].map(e => e.textContent) }; })()",
+        Surface::AppShell => "(function(){ var c = document.querySelector('.sv-task-card'); if (!c) return null; return { glyph: (c.querySelector('.sv-task-card-glyph')||{}).textContent, id: (c.querySelector('.sv-task-card-id')||{}).textContent, chips: [...c.querySelectorAll('.task-chip')].map(e => e.textContent.trim()), dates: (c.querySelector('.sv-task-card-dates')||{}).textContent, labels: [...c.querySelectorAll('.sv-task-card-label')].map(e => e.textContent), log: [...c.querySelectorAll('.sv-task-card-log-time')].map(e => e.textContent), meta: [...document.querySelectorAll('#navigatorWork .work-task-meta')].map(e => e.textContent) }; })()",
     };
     let seen = probe(tab, card);
     assert!(
@@ -4844,7 +4839,7 @@ fn scenario_a_task_with_no_title_says_why(
     }
     let card = match surface {
         Surface::Classic => "(function(){ var c = document.querySelector('#taskbox .tcard'); if (!c) return null; return { rows: document.querySelectorAll('#taskbox .task-item').length, id: (c.querySelector('.tcard-id')||{}).textContent, title: (c.querySelector('.tcard-title')||{}).textContent, gap: (c.querySelector('.tcard-gap')||{}).textContent || '', labels: [...c.querySelectorAll('.tcard-label')].map(e => e.textContent), row: (document.querySelector('#taskbox .task-subj')||{}).textContent }; })()",
-        Surface::AppShell => "(function(){ var c = document.querySelector('.task-card'); if (!c) return null; return { rows: document.querySelectorAll('#navigatorWork .work-task').length, id: (c.querySelector('.task-card-id')||{}).textContent, title: (c.querySelector('.task-card-title')||{}).textContent, gap: (c.querySelector('.task-card-gap')||{}).textContent || '', labels: [...c.querySelectorAll('.task-card-label')].map(e => e.textContent), row: (document.querySelector('#navigatorWork .work-copy strong')||{}).textContent }; })()",
+        Surface::AppShell => "(function(){ var c = document.querySelector('.sv-task-card'); if (!c) return null; return { rows: document.querySelectorAll('#navigatorWork .work-task').length, id: (c.querySelector('.sv-task-card-id')||{}).textContent, title: (c.querySelector('.sv-task-card-title')||{}).textContent, gap: (c.querySelector('.sv-task-card-gap')||{}).textContent || '', labels: [...c.querySelectorAll('.sv-task-card-label')].map(e => e.textContent), row: (document.querySelector('#navigatorWork .work-copy strong')||{}).textContent }; })()",
     };
     let seen = probe(tab, card);
     assert!(
@@ -4892,7 +4887,7 @@ fn scenario_a_task_with_no_title_says_why(
     // and a sentence explaining an absence is worthless if it renders as a column of letters.
     let gapbox = match surface {
         Surface::Classic => probe(tab, "(function(){ var e = document.querySelector('#taskbox .tcard-gap'); if (!e) return null; var r = e.getBoundingClientRect(); var cs = getComputedStyle(e); var line = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.5; var hit = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + Math.min(r.height / 2, line / 2))); return { w: Math.round(r.width), lines: Math.round(r.height / line), chars: e.textContent.length, own: !!hit && e.contains(hit) }; })()"),
-        Surface::AppShell => probe(tab, "(function(){ var e = document.querySelector('#taskPopover .task-card-gap'); if (!e) return null; var r = e.getBoundingClientRect(); var cs = getComputedStyle(e); var line = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.5; var hit = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + Math.min(r.height / 2, line / 2))); return { w: Math.round(r.width), lines: Math.round(r.height / line), chars: e.textContent.length, own: !!hit && e.contains(hit) }; })()"),
+        Surface::AppShell => probe(tab, "(function(){ var e = document.querySelector('#taskPopover .sv-task-card-gap'); if (!e) return null; var r = e.getBoundingClientRect(); var cs = getComputedStyle(e); var line = parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.5; var hit = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + Math.min(r.height / 2, line / 2))); return { w: Math.round(r.width), lines: Math.round(r.height / line), chars: e.textContent.length, own: !!hit && e.contains(hit) }; })()"),
     };
     let chars = gapbox["chars"].as_f64().unwrap_or(0.0);
     let lines = gapbox["lines"].as_f64().unwrap_or(999.0);
@@ -6687,7 +6682,18 @@ fn scenario_a_pasted_image_opens(tab: &headless_chrome::Tab, surface: Surface, _
         // looking the record up again by id is a second, weaker path to the same bytes, and when
         // it misses — a tail rewrite replacing records, a stale id in a DOM that has not
         // re-rendered — an embedded image has no path or stamp to fall back on. Simulate the miss
-        // exactly: point the card at a record id that is not in the stream, and click it.
+        // exactly: point the card at a record id that is not in the stream, and click it. First the
+        // view finishes laying itself out for the open pane: it remeasures once the pane's glide
+        // has ended (#s431), which `settle()` cannot see, and the render after it would replace the
+        // card the miss is written on.
+        until(
+            tab,
+            "document.getAnimations().every(function (a) { return a.playState !== 'running'; })",
+            "the pane's glide to end",
+            Duration::from_secs(10),
+            "document.getAnimations().length",
+        );
+        settle();
         eval(
             tab,
             "document.querySelector('.prompt-image').dataset.attachment = 'no-such-record'; 'ok'",
@@ -7579,14 +7585,14 @@ fn scenario_wide_is_one_click_from_the_header(
 ///
 /// The two pages express it differently and neither is guessable from geometry: the classic page
 /// sets `#main`'s inline `max-width` ("820px" off, "none" on — `applyWide` in export.js); the app
-/// shell toggles a `wide` class on its root (`applyReading` in app.js) and caps nothing with
+/// shell toggles a `wide` class on its root (`applyReading` in session-view.js) and caps nothing with
 /// max-width at all. Walking the ancestry for a max-width change found "none" at every level in
 /// both states, which is how that assertion passed on one page and failed on the other while
 /// both controls were working perfectly.
 fn wide_is_on(tab: &headless_chrome::Tab, surface: Surface) -> bool {
     let js = match surface {
         Surface::Classic => "(function(){ var m = document.getElementById('main'); return { on: !!m && m.style.maxWidth === 'none' }; })()",
-        Surface::AppShell => "(function(){ var a = document.getElementById('app'); return { on: !!a && a.classList.contains('wide') }; })()",
+        Surface::AppShell => "(function(){ var a = document.getElementById('sessionView'); return { on: !!a && a.classList.contains('wide') }; })()",
     };
     probe(tab, js)["on"].as_bool().unwrap_or(false)
 }
@@ -14209,7 +14215,12 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
          return JSON.stringify({scroll:Math.round(n.scrollTop), gaps:gaps, \
            minGap:gaps.length?Math.min.apply(null,gaps):999, cards:cards.length, \
            open:n.querySelectorAll('.outline-card.open').length, \
-           headsReachable:heads.every(Boolean), tight:n.classList.contains('heads-tight')});})()";
+           headsReachable:heads.every(Boolean), tight:n.classList.contains('heads-tight'), \
+           box:[Math.round(v.width),Math.round(v.height),n.clientHeight], \
+           chain:Math.round(cards.reduce(function(t,c){var b=c.querySelector(':scope > .outline-card-body'); \
+             return t+c.getBoundingClientRect().height-(b?b.getBoundingClientRect().height:0)+(parseFloat(getComputedStyle(c).marginBottom)||0);}, \
+             (n.querySelector(':scope > .outline-caption')||{getBoundingClientRect:function(){return {height:0};}}).getBoundingClientRect().height)), \
+           arranged:(document.getElementById('sessionView').className.match(/pl-outline-[a-z]+|pl-pane-[a-z]+/g)||[]).join(' ')});})()";
     let read = |tab: &headless_chrome::Tab| -> serde_json::Value {
         eval(tab, COLUMN)
             .as_str()
@@ -14252,8 +14263,9 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
         settle();
     };
     // Ordinary windows and one no reader would choose. 1366x768 is SHORTER than 1280x800, so the
-    // sweep is by height as much as by width; 950x520 is the corner where the breathing room has
-    // to go for the shut chain to fit at all.
+    // sweep is by height as much as by width; 1100x520 is the corner where the breathing room has
+    // to go for the shut chain to fit at all. (It was 950x520 until the owner's order, #s431 stage
+    // 3: with a mouse the outline is a column only from a 1012px window, and at 950 it is its glyphs.)
     for (w, h, corner) in [
         (1680.0, 1050.0, false),
         (1440.0, 900.0, false),
@@ -14261,7 +14273,7 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
         (1280.0, 800.0, false),
         (1152.0, 720.0, false),
         (1024.0, 640.0, false),
-        (950.0, 520.0, true),
+        (1100.0, 520.0, true),
     ] {
         harness::resize(&page.tab, w, h);
         harness::until_preview_parked(&page.tab);
@@ -14337,6 +14349,34 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
              corner case and stays one: {seen}"
         );
     }
+    // A resize that leaves the transcript's width alone renders nothing (#s431): the window's resize
+    // and the column's own box stack the heads again, so the breathing room follows the height alone,
+    // both ways. The window's height is read off the column itself: the resize sets the window's
+    // outer size.
+    let tight = "document.getElementById('sessionNavigator').classList.contains('heads-tight')";
+    let column = "document.getElementById('sessionNavigator').clientHeight";
+    let short = eval(&page.tab, column).as_f64().unwrap_or(0.0);
+    assert!(
+        eval(&page.tab, tight) == serde_json::json!(true),
+        "the sweep ends at the corner, the breathing room gone: {}",
+        read(&page.tab)
+    );
+    harness::resize(&page.tab, 1100.0, 900.0);
+    until(
+        &page.tab,
+        &format!("{column} > {short} + 100 && !{tight}"),
+        "the breathing room back in a taller column at 1100px, the width unchanged",
+        Duration::from_secs(5),
+        COLUMN,
+    );
+    harness::resize(&page.tab, 1100.0, 520.0);
+    until(
+        &page.tab,
+        &format!("{column} === {short} && {tight}"),
+        "the breathing room gone again at 1100x520, the width unchanged",
+        Duration::from_secs(5),
+        COLUMN,
+    );
 }
 
 /// A compaction that put five files BACK INTO CONTEXT, each with its bytes and its line count.
@@ -14817,7 +14857,7 @@ fn scenario_a_five_digit_line_number_stays_on_one_line() {
             eval(
                 &page.tab,
                 &format!(
-                    "(function(){{ var a = document.getElementById('app'); \
+                    "(function(){{ var a = document.getElementById('sessionView'); \
                        if (a) {{ a.classList.add('wrap-code'); a.style.setProperty('--code-size', '{size}px'); }} \
                        else {{ document.documentElement.style.setProperty('--code-size', '{size}px'); }} \
                        return 'ok'; }})()"
@@ -15225,6 +15265,393 @@ fn app_shell_escape_leaves_the_search_box() {
     scenario_escape_leaves_the_search_box(&page.tab, Surface::AppShell);
 }
 
+/// #s509 — Hong's ruling on #s508: "⌘F opens the session's own search (a second ⌘F goes to the
+/// browser)". The browser's find sees only the mounted records, and the engine heals its move back
+/// to the end (#s490); the page's own search reads every record. The platform's command key (⌘ on
+/// Apple platforms, Ctrl elsewhere, so CI's Linux runner presses Ctrl) and F, nothing else held:
+/// from the page it puts the reader in the box with the query selected and the browser's find
+/// prevented; in the box the same press is the browser's; the other modifier is not the key; `/`
+/// still opens the box. In the app shell it also opens the box from the compose box, where a
+/// reader who has just sent a prompt still has the focus, while `/` there is typing. Each press is
+/// dispatched on its target, whose event says whether the page cancelled it: an untrusted press
+/// cannot become the stuck key a CDP press the page leaves alone does (#270).
+fn scenario_command_f_opens_the_session_search(tab: &headless_chrome::Tab, surface: Surface) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let box_id = match surface {
+        Surface::Classic => "q",
+        Surface::AppShell => "transcriptSearchInput",
+    };
+    let the_box = format!("document.getElementById({box_id:?})");
+    // `modifier`: "command" (the platform's), "other" (the one that is not), or "" (none).
+    let press = |target: &str, key: &str, modifier: &str| -> serde_json::Value {
+        let seen = eval(
+            tab,
+            &format!("(function(){{ var t = {target}, b = {the_box}; var command = /Mac|iPhone|iPad|iPod/.test(navigator.platform) ? 'metaKey' : 'ctrlKey'; var held = {modifier:?} === 'command' ? command : {modifier:?} === 'other' ? (command === 'metaKey' ? 'ctrlKey' : 'metaKey') : null; var init = {{key: {key:?}, bubbles: true, cancelable: true}}; if (held) init[held] = true; var e = new KeyboardEvent('keydown', init); t.dispatchEvent(e); return JSON.stringify({{prevented: e.defaultPrevented, focused: document.activeElement === b, selected: b.value.length > 0 && b.selectionStart === 0 && b.selectionEnd === b.value.length}}); }})()"),
+        );
+        settle();
+        serde_json::from_str(seen.as_str().unwrap()).unwrap()
+    };
+    let leave_the_box = || {
+        eval(
+            tab,
+            &format!("(function(){{ {the_box}.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Escape', bubbles: true, cancelable: true}})); return 'left'; }})()"),
+        );
+        settle();
+        assert_eq!(
+            eval(tab, &format!("document.activeElement === {the_box}")),
+            false,
+            "{surface:?}: Escape takes the reader out of the box"
+        );
+    };
+    // A query in the box, then out of it: the next press must select it whole.
+    eval(
+        tab,
+        &format!("(function(){{ var b = {the_box}; b.focus(); b.value = 'needle'; b.dispatchEvent(new Event('input', {{bubbles: true}})); return 'typed'; }})()"),
+    );
+    settle();
+    leave_the_box();
+
+    let first = press("document.body", "f", "command");
+    assert_eq!(
+        first,
+        serde_json::json!({"prevented": true, "focused": true, "selected": true}),
+        "{surface:?}: ⌘F (Ctrl+F off a Mac) puts the reader in the session's box with its query \
+         selected, and the browser's find does not open"
+    );
+    let second = press(&the_box, "f", "command");
+    assert_eq!(
+        (second["prevented"].as_bool(), second["focused"].as_bool()),
+        (Some(false), Some(true)),
+        "{surface:?}: in the box a second ⌘F is the browser's: {second}"
+    );
+    leave_the_box();
+    let other = press("document.body", "f", "other");
+    assert_eq!(
+        (other["prevented"].as_bool(), other["focused"].as_bool()),
+        (Some(false), Some(false)),
+        "{surface:?}: the other modifier with F is not the key: {other}"
+    );
+    let slash = press("document.body", "/", "");
+    assert_eq!(
+        (slash["prevented"].as_bool(), slash["focused"].as_bool()),
+        (Some(true), Some(true)),
+        "{surface:?}: / still opens the box: {slash}"
+    );
+    let hint = eval(tab, &format!("{the_box}.placeholder"));
+    assert!(
+        hint.as_str()
+            .is_some_and(|h| h.contains("/ or ⌘F") || h.contains("/ or Ctrl+F")),
+        "{surface:?}: the box names both keys: {hint}"
+    );
+    if surface == Surface::AppShell {
+        leave_the_box();
+        let compose = "document.getElementById('composeInput')";
+        let typing = press(compose, "/", "");
+        assert_eq!(
+            (typing["prevented"].as_bool(), typing["focused"].as_bool()),
+            (Some(false), Some(false)),
+            "{surface:?}: / in the compose box is typing: {typing}"
+        );
+        let from_compose = press(compose, "f", "command");
+        assert_eq!(
+            (
+                from_compose["prevented"].as_bool(),
+                from_compose["focused"].as_bool()
+            ),
+            (Some(true), Some(true)),
+            "{surface:?}: ⌘F from the compose box opens the session's search: {from_compose}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_command_f_opens_the_session_search() {
+    let _serial = serial();
+    let fx = needle_fixture("command-f-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_command_f_opens_the_session_search(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_command_f_opens_the_session_search() {
+    let _serial = serial();
+    let fx = needle_fixture("command-f-app");
+    let page = open(Surface::AppShell, &fx, 3134);
+    scenario_command_f_opens_the_session_search(&page.tab, Surface::AppShell);
+}
+
+/// #s504 — a fold head the reader focused with `k` keeps the focus when the session grows. A prompt
+/// arriving commits the open turn, and the app shell redraws every unit from that turn's first one
+/// with identical markup; a head focused there is a node of the old markup. Where the focus is after
+/// the growth is read and printed; then the same head must have it, and `k` must go on from it to the
+/// head before it, not start over from the last one.
+fn scenario_a_focused_fold_head_keeps_its_focus_through_growth(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // A head by its record and its text, the record found the page's own way: the classic page's
+    // mounted item (`data-idx`), the app shell's record row (`data-block-index`).
+    let (heads, record) = match surface {
+        Surface::Classic => (".fold-h", "data-idx"),
+        Surface::AppShell => ("button.renderer-head", "data-block-index"),
+    };
+    let js = format!(
+        "window.__s504id = function (h) {{ var r = h && h.closest && h.closest('[{record}]'); return h ? {{ record: r ? r.getAttribute('{record}') : null, text: (h.textContent || '').trim().slice(0, 60) }} : null; }}; \
+         window.__s504heads = function () {{ return [...document.querySelectorAll({heads:?})].filter(function (h) {{ return h.offsetParent !== null; }}); }}; 'ok'"
+    );
+    eval(tab, &js);
+    // The focused element: which head (by record and text), its place among the visible heads, the
+    // head before it, and whether it is the very node focused before the growth.
+    let focus = "(function(){ var a = document.activeElement, hs = window.__s504heads(), at = hs.indexOf(a); \
+        return JSON.stringify({ tag: a ? a.tagName : null, head: at, of: hs.length, id: at >= 0 ? window.__s504id(a) : null, prev: at > 0 ? window.__s504id(hs[at - 1]) : null, \
+        same: !!window.__s504 && a === window.__s504, oldConnected: !!window.__s504 && window.__s504.isConnected }); })()";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(eval(tab, focus).as_str().expect("a reading")).expect("JSON")
+    };
+    // `k` as the reader presses it: on whatever has the focus, bubbling to the page's keymap.
+    let press_k = || {
+        eval(tab, "(document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'k', bubbles: true, cancelable: true })); 'ok'");
+        settle();
+    };
+    press_k();
+    let before = read();
+    assert!(
+        before["head"].as_i64().unwrap_or(-1) >= 1 && !before["prev"].is_null(),
+        "{surface:?}: k focuses the last head, with one before it: {before}"
+    );
+    eval(tab, "window.__s504 = document.activeElement; 'kept'");
+    let grown = format!("{}.scrollHeight", surface.scroller());
+    let height = eval(tab, &grown).as_i64().unwrap_or(0);
+    harness::append(
+        &fx.path,
+        &user_at("now count the skua burrows", &now_minus(20)),
+    );
+    harness::append(&fx.path, &assistant_at("Twelve burrows.", &now_minus(10)));
+    // The growth has landed once the reply is drawn or the column has grown by it (a reader the
+    // reveal took off the tail may not have it mounted).
+    until(
+        tab,
+        &format!(
+            "document.body.textContent.includes('Twelve burrows.') || {grown} > {height} + 40"
+        ),
+        "the prompt and the reply to arrive",
+        Duration::from_secs(20),
+        &grown,
+    );
+    settle();
+    settle();
+    let after = read();
+    eprintln!("s504 {surface:?}: before {before}; after the growth {after}");
+    assert_eq!(
+        after["oldConnected"],
+        serde_json::json!(false),
+        "{surface:?}: premise, the growth drew the head's unit again: {after}"
+    );
+    assert_eq!(
+        after["id"], before["id"],
+        "{surface:?}: after the growth the same head has the focus: before {before}, after {after}"
+    );
+    press_k();
+    let next = read();
+    eprintln!("s504 {surface:?}: k after the growth {next}");
+    assert_eq!(
+        next["id"], before["prev"],
+        "{surface:?}: k goes on from it to the head before it: before {before}, after k {next}"
+    );
+}
+
+/// The fixture for #s504: a short session whose last turn is still running, its steps a Bash call,
+/// a line of progress and a Read. The app shell draws the Bash call and the Read as process units
+/// either side of that prose, and a prompt arriving commits the running turn, so every unit from its
+/// prompt on is drawn again (`Projection.rebuild` from `committed_from`): the Read's head is the last
+/// head, the Bash call's the one before.
+fn growth_focus_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("tally the tern colony", &now_minus(90));
+    t += &harness::bash_call_at("wc -l nests.txt", "t-504-bash", &now_minus(85));
+    t += &tool_result_lines("t-504-bash", 3, &now_minus(84));
+    t += &assistant_at("Now the burrows.", &now_minus(80));
+    t += &read_tool_at("t-504-read", "/tmp/burrows.txt", &now_minus(75));
+    t += &tool_result_lines("t-504-read", 4, &now_minus(74));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_focused_fold_head_keeps_its_focus_through_growth() {
+    let _serial = serial();
+    let fx = growth_focus_fixture("growth-focus-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_focused_fold_head_keeps_its_focus_through_growth(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_a_focused_fold_head_keeps_its_focus_through_growth() {
+    let _serial = serial();
+    let fx = growth_focus_fixture("growth-focus-app");
+    let page = open(Surface::AppShell, &fx, 3136);
+    scenario_a_focused_fold_head_keeps_its_focus_through_growth(&page.tab, Surface::AppShell, &fx);
+}
+
+/// #s504's review, the restore's two wrong elements, in the app shell. A place in a unit is counted
+/// in its old markup and followed in the new one, so (1) the search's `<mark>`s, which the old
+/// markup has and the new one gets only after it is drawn, must not count, and (2) a queued prompt
+/// picked up moves the next one into its place (#165), which must not be given the focus. Either
+/// way the focus may stay on the body, as before #s504; it must never go to another element.
+/// `queued` ends the session with two queued prompts, for (2). (1) has none: a queued marker keeps
+/// its turn open, so a prompt that matches no marker only appends and the unit holding the links is
+/// not drawn again (measured: the old link still connected), while without them the prompt commits
+/// the turn and every unit from its prompt on is drawn again, which (1) needs.
+fn growth_focus_review_fixture(name: &str, queued: bool) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("tally the tern colony", &now_minus(90));
+    t += &harness::bash_call_at("wc -l nests.txt", "t-504-bash", &now_minus(85));
+    t += &tool_result_lines("t-504-bash", 3, &now_minus(84));
+    t += &assistant_at(
+        "see [the north spit](https://example.com/north) and [the south spit](https://example.com/south) first",
+        &now_minus(80),
+    );
+    t += &read_tool_at("t-504-read", "/tmp/burrows.txt", &now_minus(75));
+    t += &tool_result_lines("t-504-read", 4, &now_minus(74));
+    if queued {
+        t += &queued_at("queued one: count the skua burrows", &now_minus(70));
+        t += &queued_at("queued two: then the petrel nests", &now_minus(65));
+    }
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// What has the focus in the app shell: a link by its address, an element by its tag and its
+/// record's text, or the body.
+fn review_focus(tab: &headless_chrome::Tab) -> String {
+    let focus = "(function(){ var a = document.activeElement; if (!a || a === document.body) return 'body'; if (a.tagName === 'A') return 'link ' + a.getAttribute('href'); var r = a.closest('[data-block-index]'); return a.tagName + ' ' + (r ? r.textContent.replace(/\\s+/g, ' ').trim().slice(0, 80) : ''); })()";
+    eval(tab, focus).as_str().unwrap_or("").to_string()
+}
+
+/// The session grows by a prompt and its reply, and the page has drawn them.
+fn review_grow(tab: &headless_chrome::Tab, fx: &Fixture, prompt: &str, reply: &str, age: u64) {
+    let height = eval(tab, "document.getElementById('transcript').scrollHeight")
+        .as_i64()
+        .unwrap_or(0);
+    harness::append(&fx.path, &user_at(prompt, &now_minus(age)));
+    harness::append(&fx.path, &assistant_at(reply, &now_minus(age - 2)));
+    until(
+        tab,
+        &format!("document.body.textContent.includes({reply:?}) || document.getElementById('transcript').scrollHeight > {height} + 40"),
+        "the prompt and the reply to arrive",
+        Duration::from_secs(20),
+        "document.getElementById('transcript').scrollHeight",
+    );
+    settle();
+    settle();
+}
+
+/// (1) A search marks "see" before the first link of the reply's prose; the reader focuses that
+/// link; the session grows. The restored focus is that link, never the second one.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_a_focus_restored_after_growth_counts_no_search_mark() {
+    let _serial = serial();
+    let fx = growth_focus_review_fixture("growth-focus-marks-app", false);
+    let page = open(Surface::AppShell, &fx, 3137);
+    let tab = &page.tab;
+    jump_to_end(tab, Surface::AppShell);
+    await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
+    settle();
+    let hits = harness::search(tab, Surface::AppShell, "see");
+    assert!(
+        hits >= 1,
+        "premise, the search finds the reply's prose: {hits} hits"
+    );
+    settle();
+    let north = "#transcript a[href=\"https://example.com/north\"]";
+    eval(tab, &format!("(function(){{ var l = document.querySelector({north:?}); if (l) l.focus(); return 'ok'; }})()"));
+    let before = review_focus(tab);
+    let marked = eval(tab, &format!("(function(){{ var l = document.querySelector({north:?}); return !!l && !!l.parentElement.querySelector(':scope > mark'); }})()"));
+    assert!(
+        before == "link https://example.com/north" && marked == serde_json::json!(true),
+        "premise, the first link has the focus with a search mark before it: {before}, marked {marked}"
+    );
+    eval(tab, "window.__s504r = document.activeElement; 'kept'");
+    review_grow(tab, &fx, "now the burrows", "Twelve burrows.", 40);
+    let after = review_focus(tab);
+    let gone = eval(tab, "!window.__s504r.isConnected");
+    eprintln!(
+        "s504 review (1): before {before}; after the growth {after}, the old link gone {gone}"
+    );
+    assert_eq!(
+        gone,
+        serde_json::json!(true),
+        "premise, the growth drew the prose's unit again"
+    );
+    assert_eq!(
+        after, before,
+        "after the growth the same link has the focus, the search's marks counted for nothing"
+    );
+}
+
+/// (2) The reader focuses the first queued prompt's head; the agent picks that prompt up, and the
+/// next queued prompt moves into its place (#165). The focus must not go to that one.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_a_focus_restored_after_a_pickup_is_not_the_next_queued_prompt() {
+    let _serial = serial();
+    let fx = growth_focus_review_fixture("growth-focus-pickup-app", true);
+    let page = open(Surface::AppShell, &fx, 3138);
+    let tab = &page.tab;
+    jump_to_end(tab, Surface::AppShell);
+    await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
+    settle();
+    let heads = eval(tab, "(function(){ var hs = [...document.querySelectorAll('#transcript button.renderer-head')].filter(function (h) { var r = h.closest('[data-block-index]'); return r && r.textContent.includes('queued one'); }); if (hs[0]) hs[0].focus(); return hs.length; })()");
+    let queued = review_focus(tab);
+    assert!(
+        queued.starts_with("BUTTON") && queued.contains("queued one"),
+        "premise, the first queued prompt's head has the focus: {queued} ({heads} heads)"
+    );
+    eval(tab, "window.__s504r = document.activeElement; 'kept'");
+    review_grow(
+        tab,
+        &fx,
+        "queued one: count the skua burrows",
+        "Eleven burrows.",
+        20,
+    );
+    let picked = review_focus(tab);
+    let markers = eval(tab, "JSON.stringify({ gone: !window.__s504r.isConnected, one: [...document.querySelectorAll('#transcript .renderer-queue')].some(function (q) { return q.textContent.includes('queued one'); }), two: [...document.querySelectorAll('#transcript .renderer-queue')].some(function (q) { return q.textContent.includes('queued two'); }) })");
+    eprintln!("s504 review (2): before {queued}; after the pickup {picked}; {markers}");
+    assert_eq!(
+        markers.as_str().unwrap_or(""),
+        r#"{"gone":true,"one":false,"two":true}"#,
+        "premise, the pickup took the first queued prompt and drew its unit again, the second still queued"
+    );
+    assert!(
+        !picked.contains("queued two"),
+        "a pickup gave the focus to the next queued prompt's head: before {queued}, after {picked}"
+    );
+}
+
 /// #299 — the owner: "the icons for various agents are hardly recognizable, please use the
 /// official ones" (a screenshot of the collapsed rail: an asterisk, a knot, a robot). Claude
 /// sessions wear the official Claude mark — since #s209 the one Anthropic published to the Agent
@@ -15465,6 +15892,15 @@ fn app_shell_the_rail_opens_an_agent_s_sessions_and_the_filter_in_flyouts() {
         );
 
         // A click pins Codex's flyout; Escape closes it and gives the focus back to the mark.
+        // The mark is stamped before the click (#s482, below): stamped after it, a refresh landing
+        // while the flyout opened had rewritten the marks already and the stamp went on the new ones.
+        eval(
+            &tab,
+            &format!(
+                "(function () {{ {}.__kept = true; return 'ok'; }})()",
+                mark("Codex")
+            ),
+        );
         eval(&tab, &format!("{}.click(); 'ok'", mark("Codex")));
         until_open("the pinned flyout for Codex");
         let seen = read();
@@ -15475,6 +15911,78 @@ fn app_shell_the_rail_opens_an_agent_s_sessions_and_the_filter_in_flyouts() {
         assert!(
             ids.len() == 1 && ids[0].contains(codex),
             "at {width}px: Codex's flyout lists Codex's session only: {seen}"
+        );
+        // #s482: an index refresh while it is open leaves the rail's marks in place, the open one
+        // saying so. The open sets that mark's aria-expanded itself, and while the marks' HTML
+        // carried it, the next refresh rewrote them: new buttons on the screen, which on an iPad
+        // spend a tap that meets them as a hover. (The resource timings are cleared first, so a
+        // full buffer cannot hide the refresh.) #s493: the flyout's rows likewise, which a tap
+        // choosing a session from a pinned flyout meets.
+        let refreshes = "performance.getEntriesByType('resource').filter(function (e) { return /\\/api\\/sessions(\\?|$)/.test(e.name); }).length";
+        let codex_row = "document.querySelector('#railFlyout [data-session]')";
+        // A row carries its age ("just now", "1m") and its state, which move with the clock, so a
+        // refresh may find the body really changed and rightly write it again. The body is kept as
+        // it read at the stamp: a rewrite of a body that reads the same fails, one of a body that
+        // changed stamps again and waits for the next refresh.
+        let stamp_rows = format!("(function () {{ performance.clearResourceTimings(); var f = document.getElementById('railFlyout'); f.__body = f.innerHTML; {codex_row}.__kept = true; return 'ok'; }})()");
+        let rows_kept = format!("(function () {{ var f = document.getElementById('railFlyout'), r = {codex_row}; return JSON.stringify({{ kept: !!(r && r.__kept), same: f.innerHTML === f.__body }}); }})()");
+        eval(&tab, &stamp_rows);
+        for attempt in 0.. {
+            harness::until(
+                &tab,
+                &format!("{refreshes} >= 1"),
+                "an index refresh with the flyout open",
+                Duration::from_secs(15),
+                refreshes,
+            );
+            settle();
+            if attempt == 0 {
+                assert_eq!(
+                    eval(
+                        &tab,
+                        &format!("(function () {{ var m = {}; return JSON.stringify([!!(m && m.__kept), m && m.getAttribute('aria-expanded')]); }})()", mark("Codex")),
+                    ),
+                    "[true,\"true\"]",
+                    "at {width}px: a refresh with the flyout open keeps the rail's marks, the open one expanded"
+                );
+            }
+            let rows: serde_json::Value =
+                serde_json::from_str(eval(&tab, &rows_kept).as_str().unwrap_or("{}")).unwrap();
+            if rows["kept"] == true {
+                break;
+            }
+            assert!(
+                rows["same"] == false && attempt < 3,
+                "at {width}px: a refresh that changes nothing keeps the pinned flyout's rows (try {attempt}): {rows}"
+            );
+            eval(&tab, &stamp_rows);
+        }
+        // #s493: when the marks are drawn again while the flyout is open (the selection moving to
+        // Codex gives its mark the selected class), the next placing (a resize here) keeps the
+        // flyout beside the mark on the screen. It measured the mark the flyout opened from, gone
+        // from the page and so all zeros, and put the flyout at the window's corner.
+        eval(
+            &tab,
+            &format!("(function () {{ history.pushState({{}}, '', '?session=' + encodeURIComponent({:?})); dispatchEvent(new PopStateEvent('popstate')); return 'ok'; }})()", ids[0]),
+        );
+        harness::until(
+            &tab,
+            &format!("(function () {{ var m = {}; return !!m && m.classList.contains('selected') && !m.__kept; }})()", mark("Codex")),
+            "the rail's marks drawn again with Codex's selected",
+            Duration::from_secs(10),
+            "document.getElementById('sidebarMiniAgents').innerHTML.slice(0, 300)",
+        );
+        eval(&tab, "dispatchEvent(new Event('resize')); 'ok'");
+        settle();
+        let beside = eval(
+            &tab,
+            &format!("(function () {{ var m = {}.getBoundingClientRect(), f = document.getElementById('railFlyout'); var r = f.getBoundingClientRect(); return JSON.stringify({{ open: !f.hidden, beside: Math.abs(r.left - m.right - 8) <= 1, expanded: {}.getAttribute('aria-expanded'), at: [Math.round(r.left), Math.round(r.top), Math.round(m.right), Math.round(m.top)] }}); }})()", mark("Codex"), mark("Codex")),
+        );
+        let beside: serde_json::Value =
+            serde_json::from_str(beside.as_str().unwrap_or("{}")).unwrap();
+        assert!(
+            beside["open"] == true && beside["beside"] == true && beside["expanded"] == "true",
+            "at {width}px: with the marks drawn again, the flyout stays open beside its mark, which says it is open: {beside}"
         );
         fire(&mark("Codex"), "pointerleave");
         std::thread::sleep(Duration::from_millis(600));
@@ -16767,31 +17275,108 @@ fn hook_context_fixture(name: &str) -> Fixture {
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_a_hook_that_added_context_is_named_and_turns_keep_their_numbers() {
+    hook_note_keeps_the_turns(
+        hook_context_fixture,
+        ["hook-context-classic", "hook-context-app"],
+        3064,
+        "claude",
+        "SessionStart:startup added context: PROBE-371 main is 3 commits ahead",
+        "(+1 more line)",
+    );
+}
+
+/// The Qoder desktop app's SessionStart hook output (#s469, client 1.1.86): the QoderWork family's
+/// `hook_output` attachment, `{hookEventName, output}`, ahead of the first prompt in a Qoder-store
+/// session. Written by hand.
+fn hook_output_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = format!(
+        "{{\"type\":\"attachment\",\"version\":\"1.1.86\",\"timestamp\":\"{}\",\"attachment\":{{\"type\":\"hook_output\",\
+\"hookEventName\":\"SessionStart\",\"output\":\"# PROBE-S469 skua context\\n\\nThe east ridge holds 14 nests.\\n\"}}}}\n",
+        now_minus(300)
+    );
+    let answer = (0..60)
+        .map(|i| format!("Paragraph {i} of the answer."))
+        .collect::<Vec<_>>()
+        .join("\\n\\n");
+    for (i, q) in ["first prompt", "second prompt", "third prompt"]
+        .iter()
+        .enumerate()
+    {
+        let at = 290 - i as u64 * 20;
+        t += &user_at(q, &now_minus(at));
+        t += &assistant_at(&answer, &now_minus(at - 5));
+    }
+    let path = stores.qoder_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 3,
+    }
+}
+
+/// #s469 — the Qoder desktop app's hook output is named as #371's is, on both pages, read through
+/// the Qoder adapter, and the turns keep their numbers.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn scenario_a_hook_that_added_context_in_a_qoder_app_session_is_named() {
+    hook_note_keeps_the_turns(
+        hook_output_fixture,
+        ["hook-output-classic", "hook-output-app"],
+        3061,
+        "qoder",
+        "SessionStart added context: # PROBE-S469 skua context",
+        "(+2 more lines)",
+    );
+}
+
+/// A session whose SessionStart hook added context, ahead of three prompts: on both pages the
+/// note says `named` (a note is a fold whose head is its first 70 characters, so `named` is kept
+/// under that) and `more` (the count of further lines, in its body), the first prompt is still
+/// turn 1 of three, and the turn list numbers from it. On the app shell the monitor's row names
+/// `agent`, the adapter that read the session: every adapter here draws the note through Claude's
+/// decoder, so only the row says which store's reading the page shows.
+fn hook_note_keeps_the_turns(
+    fixture: fn(&str) -> Fixture,
+    names: [&str; 2],
+    app_port: u16,
+    agent: &str,
+    named: &str,
+    more: &str,
+) {
     let _serial = serial();
     for surface in [Surface::Classic, Surface::AppShell] {
-        let fx = hook_context_fixture(match surface {
-            Surface::Classic => "hook-context-classic",
-            Surface::AppShell => "hook-context-app",
+        let fx = fixture(match surface {
+            Surface::Classic => names[0],
+            Surface::AppShell => names[1],
         });
-        let port = if surface == Surface::Classic { 0 } else { 3064 };
-        // The reader stays at the top, where the note and the first prompt are. A note is a fold
-        // whose head is its first 70 characters; the count of further lines is in its body.
+        let port = if surface == Surface::Classic {
+            0
+        } else {
+            app_port
+        };
+        // The reader stays at the top, where the note and the first prompt are.
         let page = open_with(surface, &fx, port, "mountall=1");
         settle();
         open_everything(&page.tab, surface);
         settle();
         let seen: serde_json::Value = eval(
             &page.tab,
-            "(function(){ var t = document.body.innerText; \
+            &format!(
+                "(function(){{ var t = document.body.innerText; \
                var turns = Array.from(document.querySelectorAll('.uturn[data-turn], .turn.user[data-turn]')) \
-                 .map(function(e){ return [Number(e.dataset.turn), e.innerText.indexOf('first prompt') >= 0]; }); \
+                 .map(function(e){{ return [Number(e.dataset.turn), e.innerText.indexOf('first prompt') >= 0]; }}); \
                var side = Array.from(document.querySelectorAll('#turnlist .side-item, .outline-turn-row')) \
-                 .map(function(e){ return e.innerText.replace(/\\s+/g, ' ').trim(); }); \
+                 .map(function(e){{ return e.innerText.replace(/\\s+/g, ' ').trim(); }}); \
                var n = document.getElementById('navigatorTurnCount'); \
-               return JSON.stringify({ \
-                 named: t.indexOf('SessionStart:startup added context: PROBE-371 main is 3 commits ahead') >= 0, \
-                 more: t.indexOf('(+1 more line)') >= 0, \
-                 turns: turns, side: side, count: n ? n.textContent.trim() : null }); })()",
+               return JSON.stringify({{ \
+                 named: t.indexOf({named}) >= 0, \
+                 more: t.indexOf({more}) >= 0, \
+                 turns: turns, side: side, count: n ? n.textContent.trim() : null }}); }})()",
+                named = serde_json::to_string(named).unwrap(),
+                more = serde_json::to_string(more).unwrap(),
+            ),
         )
         .as_str()
         .and_then(|s| serde_json::from_str(s).ok())
@@ -16831,6 +17416,20 @@ fn scenario_a_hook_that_added_context_is_named_and_turns_keep_their_numbers() {
                 seen["count"],
                 serde_json::json!("3"),
                 "the Turns count: {seen}"
+            );
+            let read_by = eval(
+                &page.tab,
+                &format!(
+                    "fetch('/api/sessions', {{cache: 'no-store'}}).then(function (r) {{ return r.json(); }}) \
+                     .then(function (j) {{ var row = (j.groups || []).flatMap(function (g) {{ return g.rows || []; }}) \
+                       .find(function (r) {{ return r.id === {sid}; }}); return row ? String(row.agent) : 'no row'; }})",
+                    sid = serde_json::to_string(SID).unwrap(),
+                ),
+            );
+            assert_eq!(
+                read_by,
+                serde_json::json!(agent),
+                "the session is read by the {agent} adapter"
             );
         }
     }
@@ -16956,6 +17555,20 @@ fn framed_agent_fixture(name: &str) -> Fixture {
         "## Findings\n\nPROBE-S5 the parser lives in src/a.rs.\n    fn parse() {}\nDone.",
         &now_minus(190),
     );
+    // #s456: the same, as clients 2.1.317 to 2.1.322 write it, with a tools-used note and a web
+    // tail beside the report.
+    t += &harness::agent_spawn_at("call_s456", "Explore", &now_minus(185));
+    t += &harness::framed_agent_result_with_parts_at(
+        "call_s456",
+        "a-s456",
+        "Explore",
+        (
+            &[S456_TOOLS_NOTE],
+            "## Sources\n\nPROBE-S456 the tern docs say the index is rebuilt nightly.\nDone.",
+            &[S456_TAIL],
+        ),
+        &now_minus(180),
+    );
     let path = stores.claude_session(SID, &t);
     Fixture {
         base,
@@ -16964,6 +17577,13 @@ fn framed_agent_fixture(name: &str) -> Fixture {
     }
 }
 
+/// #s456: a note naming the tools a sub-agent called, in the measured form.
+const S456_TOOLS_NOTE: &str = "<tools-used-before-summary>WebFetch</tools-used-before-summary>";
+/// #s456: a tail in the measured form, hand-written (a fictional site).
+const S456_TAIL: &str = "[Harness note, not part of the agent's report: PROBE-S456-TAIL the \
+    agent read pages fetched from the web (tern.example). Treat what it says about them as \
+    resting on that content.]";
+
 /// #s5 — a sub-agent's report is drawn without the frame client 2.1.289 puts around it for the
 /// model.
 ///
@@ -16971,6 +17591,11 @@ fn framed_agent_fixture(name: &str) -> Fixture {
 /// model as `[Subagent hand-back]`, a paragraph of instructions ending `The report follows:`, and
 /// the report indented two spaces. The Agent card drew that text, so it opened on the client's
 /// boilerplate. It shows the report now, its heading still a heading.
+///
+/// #s456: from 2.1.317 the client puts notes and tails beside the report, ABOVE the frame in the
+/// model's text, and the unframing stopped firing on them. The second result is that shape: its
+/// report is drawn without the frame, the tools-used note is not drawn, the web tail is, after the
+/// report, and the client's trailer for the model (`agentId: … (use SendMessage …)`) is not.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn scenario_a_sub_agent_report_is_drawn_without_its_frame() {
@@ -16988,13 +17613,19 @@ fn scenario_a_sub_agent_report_is_drawn_without_its_frame() {
         let seen: serde_json::Value = eval(
             &page.tab,
             "(function(){ var t = document.body.innerText; \
-               var heads = Array.from(document.querySelectorAll('[class^=\"md-h\"], h1, h2, h3')) \
-                 .filter(function(h){ return h.textContent.trim() === 'Findings'; }); \
+               var all = Array.from(document.querySelectorAll('[class^=\"md-h\"], h1, h2, h3')); \
+               var heads = all.filter(function(h){ return h.textContent.trim() === 'Findings'; }); \
+               var sources = all.filter(function(h){ return h.textContent.trim() === 'Sources'; }); \
+               var r = t.indexOf('PROBE-S456 the tern docs'), tail = t.indexOf('PROBE-S456-TAIL'); \
                return JSON.stringify({ \
                  report: t.indexOf('PROBE-S5 the parser lives in src/a.rs.') >= 0, \
                  frame: t.indexOf('[Subagent hand-back]') >= 0, \
                  follows: t.indexOf('The report follows:') >= 0, \
-                 heading: heads.length }); })()",
+                 heading: heads.length, \
+                 report2: r >= 0, sources: sources.length, \
+                 tail: tail >= 0, tailAfter: r >= 0 && tail > r, \
+                 toolsNote: t.indexOf('tools-used-before-summary') >= 0, \
+                 trailer: t.indexOf('to continue this agent') >= 0 }); })()",
         )
         .as_str()
         .and_then(|s| serde_json::from_str(s).ok())
@@ -17013,6 +17644,21 @@ fn scenario_a_sub_agent_report_is_drawn_without_its_frame() {
             seen["heading"],
             serde_json::json!(1),
             "{surface:?}: the report's own heading is drawn as one: {seen}"
+        );
+        assert_eq!(
+            (&seen["report2"], &seen["sources"]),
+            (&serde_json::json!(true), &serde_json::json!(1)),
+            "{surface:?}: #s456: the report beside a note and a tail is drawn, its heading one: {seen}"
+        );
+        assert_eq!(
+            (&seen["tail"], &seen["tailAfter"]),
+            (&serde_json::json!(true), &serde_json::json!(true)),
+            "{surface:?}: #s456: the web tail is kept, after the report: {seen}"
+        );
+        assert_eq!(
+            (&seen["toolsNote"], &seen["trailer"]),
+            (&serde_json::json!(false), &serde_json::json!(false)),
+            "{surface:?}: #s456: neither the tools-used note nor the client's trailer: {seen}"
         );
     }
 }
@@ -17098,6 +17744,95 @@ fn scenario_diagnostics_after_a_tool_call_are_a_note() {
             seen["model"],
             serde_json::json!(false),
             "{surface:?}: never the reminder addressed to the model: {seen}"
+        );
+    }
+}
+
+/// A session whose second prompt was answered by the CLIENT (#s499): Claude Code 2.1.325's
+/// placeholder, model `<synthetic>`, `madeBy` "other", the one text "No response requested.",
+/// then a prompt the agent really answered.
+fn client_reply_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let answer = (0..60)
+        .map(|i| format!("Paragraph {i} of the answer."))
+        .collect::<Vec<_>>()
+        .join("\\n\\n");
+    let mut t = String::new();
+    t += &user_at("first prompt", &now_minus(300));
+    t += &assistant_at(&answer, &now_minus(295));
+    t += &user_at("count the tern nests", &now_minus(280));
+    let placeholder = serde_json::json!({
+        "type": "assistant", "version": "2.1.325", "cwd": "/r", "madeBy": "other",
+        "isApiErrorMessage": false, "timestamp": now_minus(279),
+        "message": {"id": "msg_s499", "role": "assistant", "model": "<synthetic>",
+            "stop_reason": "stop_sequence", "usage": {"input_tokens": 0, "output_tokens": 0},
+            "content": [{"type": "text", "text": "No response requested."}]}
+    });
+    t += &format!("{placeholder}\n");
+    t += &user_at("go on", &now_minus(270));
+    t += &assistant_at("Twelve nests on the north shore.", &now_minus(265));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 3,
+    }
+}
+
+/// #s499 — a reply the client wrote in the agent's place is drawn as the client's note (a bare
+/// result, with the ⎿ gutter), never as the agent's answer, on both pages. Found by the daily
+/// unknown review (`madeBy`, Claude Code 2.1.325); the placeholder used to read as the agent saying
+/// "No response requested.". The answer after it is still the agent's.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn scenario_a_reply_the_client_wrote_is_drawn_as_its_note() {
+    let _serial = serial();
+    for surface in [Surface::Classic, Surface::AppShell] {
+        let fx = client_reply_fixture(match surface {
+            Surface::Classic => "client-reply-classic",
+            Surface::AppShell => "client-reply-app",
+        });
+        let port = if surface == Surface::Classic { 0 } else { 3090 };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        settle();
+        open_everything(&page.tab, surface);
+        settle();
+        // Each text node holding the words, by what draws it: the agent's prose (the classic
+        // page's `data-kind="assistant"`, the app shell's `data-record-kind="assistant"`), or a
+        // bare result (`data-kind="tool"` there, a tool renderer here).
+        let seen: serde_json::Value = eval(
+            &page.tab,
+            "(function(){ \
+               var root = document.querySelector('#transcriptInner') || document.querySelector('#stream'); \
+               function where(word) { var w = document.createTreeWalker(root, NodeFilter.SHOW_TEXT), out = []; \
+                 for (var n = w.nextNode(); n; n = w.nextNode()) { if (n.nodeValue.indexOf(word) < 0) continue; var e = n.parentElement; \
+                   out.push(e.closest('[data-record-kind=\"assistant\"], #stream [data-kind=\"assistant\"]') ? 'prose' \
+                     : e.closest('.renderer-turn[data-record-kind=\"tool\"], #stream [data-kind=\"tool\"]') ? 'note' : 'other'); } \
+                 return out; } \
+               return JSON.stringify({ placeholder: where('No response requested.'), answer: where('Twelve nests on the north shore.') }); })()",
+        )
+        .as_str()
+        .and_then(|s| serde_json::from_str(s).ok())
+        .unwrap_or(serde_json::Value::Null);
+        let placeholder: Vec<String> =
+            serde_json::from_value(seen["placeholder"].clone()).unwrap_or_default();
+        assert!(
+            !placeholder.is_empty(),
+            "{surface:?}: the client's words are on the page: {seen}"
+        );
+        assert!(
+            !placeholder.iter().any(|w| w == "prose"),
+            "{surface:?}: never drawn as the agent's answer: {seen}"
+        );
+        assert!(
+            placeholder.iter().all(|w| w == "note"),
+            "{surface:?}: drawn as the client's note: {seen}"
+        );
+        assert_eq!(
+            seen["answer"],
+            serde_json::json!(["prose"]),
+            "{surface:?}: the answer after it is still the agent's: {seen}"
         );
     }
 }
@@ -18340,6 +19075,19 @@ fn scenario_a_bash_call_outside_the_sandbox_is_marked(
         let phone = poll("the marks still shown at a phone's width", &|v| {
             v["w"] == 390 && v["shown"] == 2
         });
+        // The view's rules read the classes its layout sets once a ResizeObserver reports the new
+        // box (#s431 stage 2): under load that comes after the marks show, so wait for it (1 of 343
+        // in a loaded suite read the pill before).
+        harness::until(
+            tab,
+            &format!(
+                "{} && document.getElementById('sessionView').classList.contains('pl-phone')",
+                harness::VIEW_CAUGHT_UP
+            ),
+            "the view to read its phone's box",
+            Duration::from_secs(10),
+            "document.getElementById('sessionView').className",
+        );
         let pill_hidden = eval(
             tab,
             "[...document.querySelectorAll('.renderer-state')].every(function(p){ return getComputedStyle(p).display === 'none'; })",
@@ -18515,7 +19263,9 @@ fn app_shell_marks_a_bash_call_outside_the_sandbox() {
 /// note as a plain "Result" line worded for the model, and nothing said the reply had been
 /// stopped. Hong on #s371: "Mark it: a line on the stopped reply naming the classifier and its
 /// category, the note folded under it." Now the note's place holds one head naming the classifier
-/// with the category beside it, the note folded under it until the reader opens it.
+/// with the category beside it, the note folded under it until the reader opens it. Claude Code
+/// 2.1.322 also records the stop as its API-error record naming the reply, drawn until #s470 as an
+/// "API Error" failure note after the reply: that record is the same mark, its text the note.
 fn scenario_a_reply_the_safety_classifier_stopped_is_marked(
     tab: &headless_chrome::Tab,
     surface: Surface,
@@ -18528,20 +19278,28 @@ fn scenario_a_reply_the_safety_classifier_stopped_is_marked(
         "(function(){{ \
            var names = [...document.querySelectorAll('.tool-name, .renderer-title')] \
              .filter(function(n){{ return n.textContent.trim() === {line:?}; }}); \
-           var prompt = [...document.querySelectorAll('p, .uturn, .user')] \
-             .find(function(p){{ return p.textContent.indexOf('Chart the skua burrows') >= 0; }}); \
-           var answer = [...document.querySelectorAll('p')] \
-             .find(function(p){{ return p.textContent.indexOf('The burrow map is in skua-notes.md') >= 0; }}); \
+           var find = function(sel, text){{ return [...document.querySelectorAll(sel)] \
+             .find(function(p){{ return p.textContent.indexOf(text) >= 0; }}); }}; \
+           var stops = {{ \
+             'cyber': {{ prompt: 'Chart the skua burrows', answer: 'The burrow map is in skua-notes.md', \
+                         note: 'Do not produce that content again' }}, \
+             'reasoning_extraction': {{ prompt: 'Count the petrel nests', answer: 'Forty nests on the north cliff', \
+                         note: 'API Error: the petrel count reply' }} \
+           }}; \
            var marks = names.map(function(n){{ \
              var head = n.closest('.fold-h, .renderer-head') || n.parentElement; \
              var target = head.querySelector('.tool-target, .renderer-target'); \
+             var category = target ? target.textContent.trim() : null; \
+             var stop = stops[category] || {{}}; \
+             var prompt = stop.prompt ? find('p, .uturn, .user', stop.prompt) : null; \
+             var answer = stop.answer ? find('p', stop.answer) : null; \
              var box = n.closest('.fold, .renderer'); \
-             var note = box ? [...box.querySelectorAll('pre, .renderer-output *')] \
-               .find(function(e){{ return e.textContent.indexOf('Do not produce that content again') >= 0; }}) : null; \
+             var note = box && stop.note ? [...box.querySelectorAll('pre, .renderer-output *')] \
+               .find(function(e){{ return e.textContent.indexOf(stop.note) >= 0; }}) : null; \
              var r = head.getBoundingClientRect(); \
              var nr = note ? note.getBoundingClientRect() : null; \
              return {{ \
-               target: target ? target.textContent.trim() : null, \
+               target: category, \
                shown: r.width > 0 && r.height > 0, \
                noteShown: !!nr && nr.width > 0 && nr.height > 0, \
                afterPrompt: !!prompt && !!(prompt.compareDocumentPosition(head) & Node.DOCUMENT_POSITION_FOLLOWING), \
@@ -18549,7 +19307,8 @@ fn scenario_a_reply_the_safety_classifier_stopped_is_marked(
              }}; \
            }}); \
            var loose = [...document.querySelectorAll('.tool-target, .renderer-target')] \
-             .filter(function(t){{ return t.textContent.indexOf('Your response above was stopped') >= 0; }}).length; \
+             .filter(function(t){{ return t.textContent.indexOf('Your response above was stopped') >= 0 \
+               || t.textContent.indexOf('API Error: the petrel count reply') >= 0; }}).length; \
            return JSON.stringify({{ marks: marks, loose: loose }}); \
          }})()"
     );
@@ -18565,48 +19324,61 @@ fn scenario_a_reply_the_safety_classifier_stopped_is_marked(
         }
         panic!("{surface:?}: {what}: {last}");
     };
-    let last = poll("one mark, drawn", &|v| {
+    let last = poll("two marks, drawn", &|v| {
         v["marks"]
             .as_array()
-            .is_some_and(|m| m.len() == 1 && m[0]["shown"] == true)
+            .is_some_and(|m| m.len() == 2 && m.iter().all(|m| m["shown"] == true))
     });
-    let mark = &last["marks"][0];
+    let marks = last["marks"].as_array().unwrap();
     assert_eq!(
-        mark["target"], "cyber",
-        "{surface:?}: the category beside it: {mark}"
+        marks
+            .iter()
+            .map(|m| m["target"].clone())
+            .collect::<Vec<_>>(),
+        ["cyber", "reasoning_extraction"],
+        "{surface:?}: each with its category beside it, the note form then the API-error form \
+         (#s470): {last}"
     );
-    assert_eq!(
-        mark["afterPrompt"], true,
-        "{surface:?}: after the prompt whose reply was stopped: {mark}"
-    );
-    assert_eq!(
-        mark["beforeAnswer"], true,
-        "{surface:?}: before the reply the agent went on to give: {mark}"
-    );
-    assert_eq!(
-        mark["noteShown"], false,
-        "{surface:?}: the note is folded under the line: {mark}"
-    );
+    for mark in marks {
+        assert_eq!(
+            mark["afterPrompt"], true,
+            "{surface:?}: after the prompt whose reply was stopped: {mark}"
+        );
+        assert_eq!(
+            mark["beforeAnswer"], true,
+            "{surface:?}: before the reply the agent went on to give: {mark}"
+        );
+        assert_eq!(
+            mark["noteShown"], false,
+            "{surface:?}: the note is folded under the line: {mark}"
+        );
+    }
     assert_eq!(
         last["loose"], 0,
-        "{surface:?}: the note no longer draws as a result line of its own: {last}"
+        "{surface:?}: neither the note nor the API error draws as a result line of its own: {last}"
     );
-    // Opening the mark shows the note, as opening any fold does.
-    let open = format!(
-        "(function(){{ \
-           var n = [...document.querySelectorAll('.tool-name, .renderer-title')] \
-             .find(function(n){{ return n.textContent.trim() === {line:?}; }}); \
-           (n.closest('.fold-h, .renderer-head') || n).click(); return true; }})()"
-    );
-    eval(tab, &open);
-    poll("the note shows once the mark is opened", &|v| {
-        v["marks"][0]["noteShown"] == true
-    });
+    // Opening a mark shows its note, as opening any fold does: the note under the first, the
+    // client's API-error text under the second.
+    for (i, which) in [(0, "the note"), (1, "the API error's text")] {
+        let open = format!(
+            "(function(){{ \
+               var n = [...document.querySelectorAll('.tool-name, .renderer-title')] \
+                 .filter(function(n){{ return n.textContent.trim() === {line:?}; }})[{i}]; \
+               (n.closest('.fold-h, .renderer-head') || n).click(); return true; }})()"
+        );
+        eval(tab, &open);
+        poll(&format!("{which} shows once its mark is opened"), &|v| {
+            v["marks"][i]["noteShown"] == true
+        });
+    }
 }
 
 /// Twelve turns, then a prompt whose reply the safety classifier stopped, as Claude Code 2.1.318
 /// writes it (the stopped reply's thinking, the notice for the person, the note naming the reply),
-/// then the reply the agent went on to give — #s378.
+/// then the reply the agent went on to give — #s378. Then a second such prompt as Claude Code
+/// 2.1.322 records it (#s470): the stopped reply's thinking and call under one message id, the
+/// client's synthetic API-error record naming the reply, the call's result, and the agent's
+/// answer. Every text here is the fixture's own.
 fn safety_stop_fixture(name: &str) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
@@ -18630,11 +19402,40 @@ fn safety_stop_fixture(name: &str) -> Fixture {
         "message": {"role": "user", "content": "Your response above was stopped by a safety classifier — this is not a tool or API error. The rest of it was withheld, and tool calls in it that had not finished did not run. Do not produce that content again, even reworded."}
     }));
     transcript += &assistant_at("The burrow map is in skua-notes.md.", &now_minus(50));
+    transcript += &user_at("Count the petrel nests.", &now_minus(40));
+    let stopped = |content: serde_json::Value| {
+        serde_json::json!({
+            "type": "assistant", "cwd": "/r", "timestamp": now_minus(38), "version": "2.1.322",
+            "message": {"id": "msg_s470", "role": "assistant", "model": "claude-opus-5", "stop_reason": "refusal",
+                        "stop_details": {"type": "refusal", "category": "reasoning_extraction", "explanation": "Flagged in a fixture."},
+                        "usage": {"input_tokens": 12, "output_tokens": 8},
+                        "content": [content]}
+        })
+    };
+    transcript += &line(stopped(serde_json::json!(
+        {"type": "thinking", "thinking": "The nests are on the north cliff.", "signature": "x"}
+    )));
+    transcript += &line(stopped(serde_json::json!(
+        {"type": "tool_use", "id": "toolu_s470", "name": "Bash", "input": {"command": "ls nests"}}
+    )));
+    transcript += &line(serde_json::json!({
+        "type": "assistant", "cwd": "/r", "timestamp": now_minus(37), "version": "2.1.322",
+        "isApiErrorMessage": true, "error": "invalid_request", "refusedMessageId": "msg_s470",
+        "message": {"id": "msg_s470e", "role": "assistant", "model": "<synthetic>", "stop_reason": "refusal",
+                    "stop_details": {"type": "refusal", "category": "reasoning_extraction", "explanation": "Flagged in a fixture."},
+                    "usage": {"input_tokens": 0, "output_tokens": 0},
+                    "content": [{"type": "text", "text": "API Error: the petrel count reply was stopped in this fixture."}]}
+    }));
+    transcript += &line(serde_json::json!({
+        "type": "user", "cwd": "/r", "timestamp": now_minus(36),
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_s470", "content": "the call did not run"}]}
+    }));
+    transcript += &assistant_at("Forty nests on the north cliff.", &now_minus(30));
     let path = stores.claude_session(SID, &transcript);
     Fixture {
         base,
         path,
-        turns: 13,
+        turns: 14,
     }
 }
 
@@ -18654,6 +19455,183 @@ fn app_shell_marks_a_reply_the_safety_classifier_stopped() {
     let fx = safety_stop_fixture("scenario-safety-stop-app");
     let page = open(Surface::AppShell, &fx, 3100);
     scenario_a_reply_the_safety_classifier_stopped_is_marked(&page.tab, Surface::AppShell);
+}
+
+// ── scenario: a reply the client withdrew for a broken tool call is marked (#s500)
+
+const WITHDRAWN_LINE: &str = "Retried: the reply gave no usable tool call";
+
+/// Claude Code 2.1.325 withdraws a reply whose tool call it cannot use and writes a note to the
+/// model naming the withdrawn records (`retractedMessageUuids`), then retries. Both pages drew the
+/// withdrawn reply as the agent's own (its thinking in the turn's run, its text as prose) and the
+/// note as a plain "Result" line worded for the model. Now the note's place holds one head saying
+/// the reply was retried, the withdrawn thinking and text and the note folded under it until the
+/// reader opens it; the retry after it is drawn as before.
+fn scenario_a_reply_the_client_withdrew_is_marked(tab: &headless_chrome::Tab, surface: Surface) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    // The mark's line as a literal, not `model::WITHDRAWN_LINE`, so this case compiles against the
+    // code before #s500 and is red there; `a_withdrawn_reply_reads_as_a_result` holds the two equal.
+    let line = WITHDRAWN_LINE;
+    let read = format!(
+        "(function(){{ \
+           var names = [...document.querySelectorAll('.tool-name, .renderer-title')] \
+             .filter(function(n){{ return n.textContent.trim() === {line:?}; }}); \
+           var find = function(sel, text){{ return [...document.querySelectorAll(sel)] \
+             .find(function(p){{ return p.textContent.indexOf(text) >= 0; }}); }}; \
+           var shown = function(e){{ var r = e && e.getBoundingClientRect(); return !!r && r.width > 0 && r.height > 0; }}; \
+           var withdrawn = ['The burrow log needs its path first.', 'Reading the burrow log now.', \
+                            'failed to produce a valid tool call']; \
+           var marks = names.map(function(n){{ \
+             var head = n.closest('.fold-h, .renderer-head') || n.parentElement; \
+             var box = n.closest('.fold, .renderer'); \
+             var prompt = find('p, .uturn, .user', 'Map the skua burrows'); \
+             var answer = find('p', 'Twelve burrows on the east slope'); \
+             var under = withdrawn.map(function(t){{ \
+               var e = box ? [...box.querySelectorAll('p, pre, div')] \
+                 .filter(function(e){{ return e !== head && !head.contains(e) && e.textContent.indexOf(t) >= 0; }}) \
+                 .pop() : null; \
+               return {{ inside: !!e, shown: shown(e) }}; \
+             }}); \
+             return {{ \
+               shown: shown(head), under: under, \
+               afterPrompt: !!prompt && !!(prompt.compareDocumentPosition(head) & Node.DOCUMENT_POSITION_FOLLOWING), \
+               beforeAnswer: !!answer && !!(answer.compareDocumentPosition(head) & Node.DOCUMENT_POSITION_PRECEDING) \
+             }}; \
+           }}); \
+           var boxes = names.map(function(n){{ return n.closest('.fold, .renderer'); }}); \
+           var outside = withdrawn.map(function(t){{ \
+             return [...document.querySelectorAll('p, pre, .tool-target, .renderer-target, .think-body')] \
+               .filter(function(e){{ return e.textContent.indexOf(t) >= 0 \
+                 && !boxes.some(function(b){{ return b && b.contains(e); }}); }}).length; \
+           }}); \
+           return JSON.stringify({{ marks: marks, outside: outside }}); \
+         }})()"
+    );
+    let poll = |what: &str, done: &dyn Fn(&serde_json::Value) -> bool| {
+        let mut last = serde_json::Value::Null;
+        for _ in 0..40 {
+            last = serde_json::from_str(eval(tab, &read).as_str().unwrap_or("null"))
+                .unwrap_or(serde_json::Value::Null);
+            if done(&last) {
+                return last;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        panic!("{surface:?}: {what}: {last}");
+    };
+    let last = poll("one mark, drawn", &|v| {
+        v["marks"]
+            .as_array()
+            .is_some_and(|m| m.len() == 1 && m[0]["shown"] == true)
+    });
+    let mark = &last["marks"][0];
+    assert_eq!(
+        mark["afterPrompt"], true,
+        "{surface:?}: after the prompt whose reply was withdrawn: {last}"
+    );
+    assert_eq!(
+        mark["beforeAnswer"], true,
+        "{surface:?}: before the answer the retry gave: {last}"
+    );
+    // Folded, a body may not be drawn at all (the classic page draws a fold's body as it opens),
+    // so what is asked here is only that none of it shows; once opened, that each is inside.
+    for (i, what) in ["the thinking", "the text", "the note"].iter().enumerate() {
+        assert_eq!(
+            mark["under"][i]["shown"], false,
+            "{surface:?}: {what} is folded under the line: {last}"
+        );
+    }
+    assert_eq!(
+        last["outside"],
+        serde_json::json!([0, 0, 0]),
+        "{surface:?}: nothing withdrawn draws outside the mark, nor the note as a result line of \
+         its own: {last}"
+    );
+    // Opening the mark shows what it folds, as opening any fold does.
+    let open = format!(
+        "(function(){{ \
+           var n = [...document.querySelectorAll('.tool-name, .renderer-title')] \
+             .filter(function(n){{ return n.textContent.trim() === {line:?}; }})[0]; \
+           (n.closest('.fold-h, .renderer-head') || n).click(); return true; }})()"
+    );
+    eval(tab, &open);
+    poll(
+        "the withdrawn thinking, its text and the note show inside the mark once it is opened",
+        &|v| {
+            v["marks"][0]["under"]
+                .as_array()
+                .is_some_and(|u| u.iter().all(|u| u["inside"] == true && u["shown"] == true))
+        },
+    );
+}
+
+/// Twelve turns, then a prompt whose reply Claude Code 2.1.325 withdrew (#s500): the reply as two
+/// records, its thinking and then its text, the client's note naming both, then the retry's call,
+/// its result and the answer. Every text here is the fixture's own.
+fn withdrawn_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    let line = |v: serde_json::Value| format!("{v}\n");
+    transcript += &user_at("Map the skua burrows.", &now_minus(60));
+    let withdrawn = |uuid: &str, content: serde_json::Value| {
+        serde_json::json!({
+            "type": "assistant", "cwd": "/r", "timestamp": now_minus(58), "version": "2.1.325", "uuid": uuid,
+            "message": {"id": "msg_s500", "role": "assistant", "model": "claude-opus-5", "stop_reason": "tool_use",
+                        "usage": {"input_tokens": 12, "output_tokens": 8},
+                        "content": [content]}
+        })
+    };
+    transcript += &line(withdrawn(
+        "w500a",
+        serde_json::json!({"type": "thinking", "thinking": "The burrow log needs its path first.", "signature": "x"}),
+    ));
+    transcript += &line(withdrawn(
+        "w500b",
+        serde_json::json!({"type": "text", "text": "Reading the burrow log now."}),
+    ));
+    transcript += &line(serde_json::json!({
+        "type": "user", "cwd": "/r", "timestamp": now_minus(57), "isMeta": true, "turnCompanion": true,
+        "uuid": "n500", "retractedMessageUuids": ["w500a", "w500b"],
+        "message": {"role": "user", "content": "The previous response failed to produce a valid tool call. Please retry the tool call now."}
+    }));
+    transcript += &line(serde_json::json!({
+        "type": "assistant", "cwd": "/r", "timestamp": now_minus(56), "version": "2.1.325", "uuid": "r500",
+        "message": {"id": "msg_s500r", "role": "assistant", "model": "claude-opus-5", "stop_reason": "tool_use",
+                    "usage": {"input_tokens": 12, "output_tokens": 8},
+                    "content": [{"type": "tool_use", "id": "toolu_s500", "name": "Bash", "input": {"command": "wc -l burrows.md"}}]}
+    }));
+    transcript += &line(serde_json::json!({
+        "type": "user", "cwd": "/r", "timestamp": now_minus(55),
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_s500", "content": "12 burrows.md"}]}
+    }));
+    transcript += &assistant_at("Twelve burrows on the east slope.", &now_minus(50));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_marks_a_reply_the_client_withdrew() {
+    let _serial = serial();
+    let fx = withdrawn_fixture("scenario-withdrawn-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_reply_the_client_withdrew_is_marked(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_marks_a_reply_the_client_withdrew() {
+    let _serial = serial();
+    let fx = withdrawn_fixture("scenario-withdrawn-app");
+    let page = open(Surface::AppShell, &fx, 3118);
+    scenario_a_reply_the_client_withdrew_is_marked(&page.tab, Surface::AppShell);
 }
 
 /// #s272: Hong's messages that aries-inbox types into the Aries pane arrive as one signed
@@ -18988,6 +19966,130 @@ fn sent_fixture(name: &str) -> Fixture {
         path,
         turns: 14,
     }
+}
+
+/// #s456: twelve turns, then a prompt whose answer sends a message to a sub-agent, resuming it and
+/// waiting for its report — the call and its inline hand-back as Claude Code 2.1.322 writes them,
+/// built by hand: the report carries a heading and a list, and a web tail beside it.
+fn handback_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    transcript += &user_at("ask the explorer again about the index", &now_minus(60));
+    transcript += &harness::send_handback_at(
+        "sm456",
+        "a-s456",
+        (
+            "Ask the explorer about the index",
+            "PROBE-S456-ASK when is the tern index rebuilt?",
+        ),
+        (
+            "## Index\n\n- PROBE-S456-REPLY rebuilt nightly\n- kept for `7` days",
+            &[S456_TAIL],
+        ),
+        &now_minus(55),
+    );
+    transcript += &assistant_at("the explorer answered", &now_minus(50));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 13,
+    }
+}
+
+/// #s456: a message sent to a sub-agent that brought its report back shows that report on its
+/// card under the receipt, as Markdown, with none of the frame the model was sent. The card drew
+/// the whole text: the receipt's JSON, the tail, the frame and the report indented. Written once,
+/// run on both pages: opened, the card carries the message it sent, the receipt's first sentence,
+/// the report (a heading and a list), and the tail kept after it; never the frame, the receipt's
+/// words for the agent ("follows this JSON") or its JSON.
+fn scenario_a_message_sent_shows_the_report_it_brought_back(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let head = match surface {
+        Surface::Classic => ".fold-h",
+        Surface::AppShell => "button.renderer-head",
+    };
+    let find = format!(
+        "[...document.querySelectorAll('{head}')].filter(function (h) {{ return /Ask the explorer about the index/.test(h.textContent); }}).pop()"
+    );
+    until(
+        tab,
+        &format!("!!({find})"),
+        "the SendMessage card's head, named by its summary",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(-400)",
+    );
+    for _ in 0..3 {
+        let shown = eval(
+            tab,
+            "[...document.querySelectorAll('li, p')].some(function (e) { return /PROBE-S456-REPLY/.test(e.textContent) && e.offsetParent !== null; })",
+        );
+        if shown.as_bool() == Some(true) {
+            break;
+        }
+        eval(
+            tab,
+            &format!("(function(){{ var h = {find}; if (h) h.click(); return 1; }})()"),
+        );
+        settle();
+    }
+    let card = harness::probe(
+        tab,
+        &format!(
+            "(function(){{ var h = {find}; if (!h) return null; \
+             var c = h.closest('.fold, .renderer-turn, .renderer-card, [data-tool]') || h.parentElement; \
+             var heads = [...c.querySelectorAll('[class^=\"md-h\"], h1, h2, h3')].filter(function (e) {{ return e.textContent.trim() === 'Index'; }}); \
+             return {{ text: c.innerText, item: [...c.querySelectorAll('li')].some(function (e) {{ return /PROBE-S456-REPLY/.test(e.textContent); }}), heading: heads.length }}; }})()"
+        ),
+    );
+    let text = card["text"].as_str().unwrap_or("").to_string();
+    assert!(
+        text.contains("PROBE-S456-ASK when is the tern index rebuilt?"),
+        "{surface:?}: the card carries the message it sent: {card}"
+    );
+    assert!(
+        text.contains("Resumed agent.") && !text.contains("follows this JSON"),
+        "{surface:?}: the receipt is its first sentence: {card}"
+    );
+    assert!(
+        card["item"] == true && card["heading"] == 1,
+        "{surface:?}: the report it brought back is drawn as Markdown (a heading, a list): {card}"
+    );
+    let (reply, tail) = (text.find("PROBE-S456-REPLY"), text.find("PROBE-S456-TAIL"));
+    assert!(
+        matches!((reply, tail), (Some(r), Some(t)) if t > r),
+        "{surface:?}: the web tail is kept, after the report: {card}"
+    );
+    assert!(
+        !text.contains("[Subagent hand-back]")
+            && !text.contains("The report follows:")
+            && !text.contains("\"success\""),
+        "{surface:?}: none of the frame or the receipt's JSON: {card}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_shows_the_report_a_message_sent_brought_back() {
+    let _serial = serial();
+    let fx = handback_fixture("scenario-handback-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_message_sent_shows_the_report_it_brought_back(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_shows_the_report_a_message_sent_brought_back() {
+    let _serial = serial();
+    let fx = handback_fixture("scenario-handback-app");
+    let page = open(Surface::AppShell, &fx, 3110);
+    scenario_a_message_sent_shows_the_report_it_brought_back(&page.tab, Surface::AppShell);
 }
 
 /// Twelve turns, a prompt with pasted text and its answer, then a message from another session and

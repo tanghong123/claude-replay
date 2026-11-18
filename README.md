@@ -121,8 +121,9 @@ address. If an unpaired monitor is already running, stop it in its terminal and 
 again with `--pair`. On Linux a local request verified as the same OS user passes without the
 token; macOS cannot verify one, so there every request needs it.
 
-Pair the monitor before serving it with `tailscale serve`. On macOS an unpaired monitor
-admits any request from the same machine, including one `tailscale serve` relays.
+Pair the monitor before serving it with `tailscale serve`. While `tailscale serve` relays
+anything to its port, an unpaired monitor on macOS refuses every request it cannot verify,
+the Mac's own browser included, until it is paired.
 `--pair-phone` refuses an unpaired monitor, finds the `tailscale serve` address (or says how
 to set it up), and never shows the token itself. `--port N` names the monitor's port,
 `--url ADDRESS` an address you already have, and `--yes` skips the confirmation; it never
@@ -281,7 +282,8 @@ every block).
 
 **`--dump-html`** exports a **single self-contained `.html`** — no network, no
 external assets — that reproduces the TUI's structure in the browser: folding,
-search (`/`), `j/k`/`[ ]` keys, a turn sidebar with scroll-spy, a usage/cost panel,
+search (`/`, or `⌘F`/`Ctrl+F`: a second press there is the browser's find), `j/k`/`[ ]`
+keys, a turn sidebar with scroll-spy, a usage/cost panel,
 light/dark themes (persisted), and click-to-copy on the session id and code fences.
 It honors the same `--fold`/`--unfold`/`--full` flags, but never caps a body — the
 full content is always in the file (grep-able), with long tails hidden behind a

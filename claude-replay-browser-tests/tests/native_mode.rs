@@ -692,8 +692,17 @@ fn run_sized(mobile: bool, unix: bool, width: u32, height: u32) {
         &tab,
         "document.getElementById('transcript').innerText.includes('Start this session')",
     );
+    // The session opened above while the index read it triggers is still to come: creation
+    // calls refreshIndex after opening it, which reads /api/sessions (not held) before it asks
+    // for the threads (held). So wait for that read to be held, then check the created session
+    // is still the one open, with its read unanswered (#s227: on a loaded machine
+    // /api/sessions was still out when the case asserted at once, and found no read held).
+    wait(&tab, "window.heldNativeScans.length > 0");
     assert_eq!(
-        eval(&tab, "window.heldNativeScans.length > 0"),
+        eval(
+            &tab,
+            "new URL(location.href).searchParams.get('session') === 'rollout-native-created' && document.getElementById('transcript').innerText.includes('Start this session') && window.heldNativeScans.length > 0"
+        ),
         true,
         "Creation finished while its index read was held"
     );
@@ -1204,8 +1213,42 @@ fn phone_native_controls(tab: &headless_chrome::Tab, root: &std::path::Path) {
     eval(tab, "(()=>{Object.defineProperty(visualViewport,'height',{configurable:true,get:()=>innerHeight-Math.min(300,innerHeight/3)});visualViewport.dispatchEvent(new Event('resize'));return true;})()");
     wait(
         tab,
-        "document.getElementById('app').classList.contains('keyboard-up')",
+        "document.getElementById('sessionView').classList.contains('keyboard-up')",
     );
+    // #s442: native mode reads the view's states where the view sets them, on #sessionView (stage
+    // 2 moved them off #app). With the keyboard up the status chip gives way (upright the shell's
+    // own narrow rule hides it already, so this bites sideways) and the composer drops the
+    // keyboard's safe-area inset. While the reader composes, `--phone-bottom`, where the sheets rise
+    // from (Info's foot among them), is just above the composer on the keyboard; it is read beside
+    // the sheets, on the view's own element. And with the reader's tools opened while the field
+    // keeps its focus, the transcript keeps no room for their dock, which composing hides. On the
+    // iOS 26.4 Simulator (#s442's walk) a tap on that control kept the field's focus sideways only;
+    // upright it took focus off the field and the keyboard went down, so there this state is a
+    // script's.
+    let states = "(()=>{const v=document.getElementById('sessionView'),p=document.createElement('div');p.style.cssText='position:absolute;visibility:hidden;width:1px;height:var(--phone-bottom)';v.append(p);const rise=p.getBoundingClientRect().height;p.remove();const c=document.getElementById('composer').getBoundingClientRect();return {chip:getComputedStyle(document.getElementById('statusChip')).display,safe:getComputedStyle(document.getElementById('composer')).getPropertyValue('--shared-keyboard-safe-bottom').trim(),composing:v.classList.contains('composing'),rise,lift:document.getElementById('app').getBoundingClientRect().bottom-c.top,height:c.height,padding:parseFloat(document.getElementById('transcript').style.paddingBottom),reader:document.body.hasAttribute('data-shared-reader-open'),focus:document.activeElement===document.getElementById('composeInput')};})()";
+    until(
+        tab,
+        &format!("(()=>{{const s={states};return s.chip==='none' && s.safe==='0px' && s.composing && s.focus && s.lift>s.height+100 && s.rise>=s.lift && s.rise<=s.lift+16;}})()"),
+        "the keyboard hides the status chip and the composer's inset, and the sheets rise from just above the composer",
+        Duration::from_secs(10),
+        &format!("JSON.stringify({states})"),
+    );
+    eval(
+        tab,
+        "document.getElementById('sharedReaderTools').click();true",
+    );
+    until(
+        tab,
+        &format!("(()=>{{const s={states};return s.reader && s.composing && s.focus && Math.abs(s.padding-(s.height+24))<=1;}})()"),
+        "the transcript keeps no room for the reader's dock while the reader composes",
+        Duration::from_secs(10),
+        &format!("JSON.stringify({states})"),
+    );
+    eval(
+        tab,
+        "document.getElementById('composeInput').dispatchEvent(new Event('focus'));true",
+    );
+    wait(tab, "!document.body.hasAttribute('data-shared-reader-open') && document.getElementById('composer').dataset.sharedCollapsed==='false'");
     // Model Safari's page scroll AND viewport offsets, including the observed 337 px.
     // All assertions use the app box, as do the shell's phone-top/phone-bottom rules.
     eval(tab, "(()=>{Object.defineProperty(visualViewport,'offsetTop',{configurable:true,get:()=>337});Object.defineProperty(visualViewport,'pageTop',{configurable:true,get:()=>337});visualViewport.dispatchEvent(new Event('scroll'));return true;})()");
@@ -1284,7 +1327,19 @@ fn phone_native_controls(tab: &headless_chrome::Tab, root: &std::path::Path) {
         wait(tab, "document.getElementById('composer').dataset.sharedInputOnly==='false' && document.getElementById('sendBtn').checkVisibility()");
     }
     eval(tab, "(()=>{Object.defineProperty(visualViewport,'scale',{configurable:true,get:()=>2});Object.defineProperty(visualViewport,'pageTop',{configurable:true,get:()=>120});visualViewport.dispatchEvent(new Event('scroll'));return true;})()");
-    wait(tab, "document.getElementById('app').style.transform==='' && !document.getElementById('app').classList.contains('keyboard-up')");
+    wait(tab, "document.getElementById('app').style.transform==='' && !document.getElementById('sessionView').classList.contains('keyboard-up')");
+    // #s451: the keyboard back at scale 1 while the composer's field has focus, then the field
+    // blurred with the short viewport left in place and no resize (Safari kept one 378px short in a
+    // fresh tab with nothing focused): the shortfall is the keyboard only while a field has focus.
+    eval(tab, "(()=>{delete visualViewport.scale;delete visualViewport.pageTop;delete visualViewport.offsetTop;visualViewport.dispatchEvent(new Event('resize'));return true;})()");
+    wait(tab, "document.activeElement===document.getElementById('composeInput') && document.getElementById('sessionView').classList.contains('keyboard-up') && parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--phone-kb'))>80");
+    eval(tab, "document.getElementById('composeInput').blur();true");
+    wait(tab, "!document.getElementById('sessionView').classList.contains('keyboard-up') && getComputedStyle(document.documentElement).getPropertyValue('--phone-kb').trim()==='0px'");
+    // #s455: nor does the resident composer fit itself to that shortfall with nothing focused. A
+    // viewport left 60px tall would have cut it to one clipped input row (fitComposer read
+    // visualViewport.height); it reads the view's guarded --phone-kb and keeps its full height.
+    eval(tab, "(()=>{Object.defineProperty(visualViewport,'height',{configurable:true,get:()=>60});visualViewport.dispatchEvent(new Event('resize'));return true;})()");
+    wait(tab, "document.activeElement!==document.getElementById('composeInput') && getComputedStyle(document.documentElement).getPropertyValue('--phone-kb').trim()==='0px' && document.getElementById('composer').getAttribute('data-shared-input-only')==='false' && parseFloat(document.getElementById('composer').style.maxHeight)>100");
     eval(tab, "(()=>{delete visualViewport.height;delete visualViewport.scale;delete visualViewport.pageTop;delete visualViewport.offsetTop;document.activeElement.blur();visualViewport.dispatchEvent(new Event('resize'));return true;})()");
 }
 /// Reload uses the real browser journal and gateway receipts, including an accepted

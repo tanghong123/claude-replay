@@ -392,6 +392,14 @@ pub struct Index {
     /// pair persisted `[]` over the developer's real `~/.local/state/…/ignored.json`. Holding
     /// the path makes that structurally impossible — an instance writes where it was told to.
     state_dir: PathBuf,
+    /// The stores to list (#s426, `design/backend-mount.md`): `None` is every agent's store on
+    /// this machine, as the process's environment and `$HOME` name them (the monitor); a host
+    /// that mounts the table names its own, each an agent and a store root.
+    stores: Option<Vec<(Agent, PathBuf)>>,
+    /// Whether scans read this machine's processes (`ps`, `lsof`), the Claude desktop app's
+    /// records, and through them herdr: what tells which session is live and in which pane.
+    /// A host whose sessions do not run on its own server turns them off (#s426).
+    probes: bool,
     state: std::sync::Mutex<State>,
 }
 
@@ -1093,12 +1101,74 @@ impl Index {
             cache_root,
             only,
             state_dir,
+            stores: None,
+            probes: true,
             state: std::sync::Mutex::new(State {
                 ignored,
                 started_by_edges,
                 ..Default::default()
             }),
         }
+    }
+
+    /// List only these stores, each an agent and a store root, instead of every agent's store on
+    /// this machine (#s426): what a host that mounts the route table serves. A store whose agent
+    /// cannot list a chosen root lists nothing, and says so once.
+    pub fn with_stores(mut self, stores: Vec<(Agent, PathBuf)>) -> Self {
+        self.stores = Some(stores);
+        self
+    }
+
+    /// Read none of this machine's processes, the desktop app's records or herdr (#s426). A
+    /// row then has no process: no `pid`, `term` or `target`, its state what its transcript
+    /// alone shows, and nothing to send into.
+    pub fn without_process_probes(mut self) -> Self {
+        self.probes = false;
+        self
+    }
+
+    /// Whether this index reads this machine's processes, the Claude desktop app's records and
+    /// herdr ([`Index::without_process_probes`]). The route table leaves the Arrange choice's
+    /// readers out with them.
+    pub fn probes(&self) -> bool {
+        self.probes
+    }
+
+    /// The pane grants in this index's state directory (#s426): what a row's `consented` reads,
+    /// and what a send, a dialog and a grant ask. A host's index keeps its own, never the
+    /// monitor's beside it.
+    pub fn consent(&self) -> crate::consent::ConsentStore {
+        crate::consent::ConsentStore::new(crate::consent::consent_file(&self.state_dir))
+    }
+
+    /// The pane passcode in this index's state directory (#s426), which a grant asks for.
+    pub fn passcode(&self) -> crate::consent::Passcode {
+        crate::consent::Passcode::new(crate::consent::passcode_file(&self.state_dir))
+    }
+
+    /// The transcripts one agent's stores hold: the machine-wide store, or the roots this
+    /// index was given for that agent.
+    fn transcripts_of(&self, a: &dyn claude_replay_core::TranscriptAdapter) -> Vec<PathBuf> {
+        let Some(stores) = &self.stores else {
+            return a.store_transcripts();
+        };
+        let mut found = Vec::new();
+        for (agent, root) in stores.iter().filter(|(agent, _)| *agent == a.agent()) {
+            match a.store_transcripts_in(root) {
+                Some(paths) => found.extend(paths),
+                None => {
+                    static SAID: std::sync::Once = std::sync::Once::new();
+                    SAID.call_once(|| {
+                        eprintln!(
+                            "agent-monitor: {} cannot list a chosen store ({}); it lists nothing",
+                            agent.label(),
+                            root.display()
+                        )
+                    });
+                }
+            }
+        }
+        found
     }
 
     /// Install the host's live native ownership view without activating a runtime.
@@ -1230,7 +1300,7 @@ impl Index {
     /// move costs three `stat`s and nothing else.
     fn scan(&self, st: &mut State, register: &dyn Fn(&Path)) {
         // Liveness refresh on its own slower clock (§5.1).
-        if st.procs_at.is_none_or(|t| t.elapsed() > PROC_REFRESH) {
+        if self.probes && st.procs_at.is_none_or(|t| t.elapsed() > PROC_REFRESH) {
             st.procs = scan_procs();
             st.procs_at = Some(Instant::now());
             // #s340: which desktop session started which, on the same clock.
@@ -1248,7 +1318,7 @@ impl Index {
             {
                 continue;
             }
-            for path in a.store_transcripts() {
+            for path in self.transcripts_of(*a) {
                 let sid = stem_of(&path);
                 seen.push(sid.clone());
                 register(&path);
@@ -1411,6 +1481,12 @@ impl Index {
         let mut seen_sub_costs = HashSet::new();
         for a in adapters() {
             if !self.only.is_empty() && !self.only.contains(&a.agent()) {
+                continue;
+            }
+            // The adapters list sub-agents machine-wide only, so an index over chosen stores
+            // (#s426) banks none: it would read this machine's own stores, not the host's. Its
+            // rows' cost leaves out their sub-agents' spend.
+            if self.stores.is_some() {
                 continue;
             }
             let subs = a.store_subagent_transcripts();
@@ -1789,7 +1865,7 @@ impl Index {
         // `consented` by matching its own `(sock, pane, sid, pid)` against these — the same
         // quadruple the send re-checks — so the badge never claims consent a send would then
         // refuse (e.g. after a restart mints a new pid).
-        let grants = crate::consent::ConsentStore::open().active_grants();
+        let grants = self.consent().active_grants();
         // #s234: a grant that follows a herdr restore (same session, pane and server, the new
         // process naming the session itself) covers the row too, as the send would find.
         let consented = |sock: Option<&str>, pane: &str, sid: &str, pid: u32, follows: bool| {
@@ -5323,6 +5399,59 @@ mod tests {
     /// born from the card pass alone (unvisited, no counters — R7/§3); growth is a two-scan
     /// mtime diff, with the FIRST sighting never claiming growth; and a meta stream
     /// appearing at the monitor root turns the row visited with folded counters.
+    /// #s426: an index over chosen stores lists their sessions and none of this machine's, and
+    /// with process probing off a scan reads no processes at all.
+    #[test]
+    fn an_index_over_chosen_stores_lists_them_alone_and_probes_nothing() {
+        let base = std::env::temp_dir().join(format!("cm-index-stores-{}", std::process::id()));
+        let _env = StateEnv::set(base.join("state"));
+        let _ = std::fs::remove_dir_all(&base);
+        let machine = base.join("machine-projects");
+        let chosen = base.join("chosen-projects");
+        std::env::set_var("CLAUDE_PROJECTS_DIR", &machine);
+        std::env::set_var("QODERWORK_PROJECTS_DIR", base.join("qw"));
+        std::env::set_var("QWENWORK_PROJECTS_DIR", base.join("qwen"));
+        std::env::set_var("QODER_PROJECTS_DIR", base.join("qoder"));
+        std::env::set_var("CODEX_HOME", base.join("codex"));
+        let write = |store: &Path, sid: &str| {
+            let proj = store.join("-tmp-chosen-repo");
+            std::fs::create_dir_all(&proj).unwrap();
+            let ts = iso_utc(SystemTime::now() - Duration::from_secs(600));
+            std::fs::write(
+                proj.join(format!("{sid}.jsonl")),
+                format!(
+                    "{{\"sessionId\":\"x\",\"type\":\"user\",\"cwd\":\"/tmp/chosen-repo\",\"timestamp\":\"{ts}\",\"message\":{{\"role\":\"user\",\"content\":\"hello\"}}}}\n"
+                ),
+            )
+            .unwrap();
+        };
+        let on_machine = "aaaaaaaa-0000-4000-8000-000000000001";
+        let in_chosen = "bbbbbbbb-0000-4000-8000-000000000002";
+        write(&machine, on_machine);
+        write(&chosen, in_chosen);
+        let idx = Index::new(base.join("cache"), base.join("state"), Vec::new())
+            .with_stores(vec![(Agent::CLAUDE, chosen.clone())])
+            .without_process_probes();
+        let json: Value = serde_json::from_str(&idx.sessions_json(|_| {})).unwrap();
+        let ids: Vec<String> = json["groups"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|g| g["rows"].as_array().unwrap().clone())
+            .map(|r| r["id"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            ids,
+            [in_chosen],
+            "the chosen store's session, and not the machine's"
+        );
+        assert!(
+            idx.state.lock().unwrap().procs_at.is_none(),
+            "no process was read"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     #[test]
     fn index_end_to_end_on_a_fixture_store() {
         // The store env vars are process-global: hold the same lock every env-setting test
@@ -8944,7 +9073,7 @@ n/Users/x/proj
         row.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(now - 5));
         row.last_event = Some(now - 5);
         st.rows.insert("h1".into(), row);
-        crate::consent::ConsentStore::open()
+        idx.consent()
             .grant(None, "w1:p2", "h1", 700)
             .expect("a tmux-keyed grant");
         let mut facts = Vec::new();
@@ -8978,7 +9107,7 @@ n/Users/x/proj
                 pane: "w1:p2".into(),
             })
         );
-        crate::consent::ConsentStore::open()
+        idx.consent()
             .grant(
                 Some("herdr:/Users/x/.config/herdr/sessions/trial/herdr.sock"),
                 "w1:p2",
@@ -8988,6 +9117,79 @@ n/Users/x/proj
             .expect("the herdr grant");
         let snapshot = idx.assemble(&st, &mut Vec::new());
         assert_eq!(find(&snapshot, "h1").expect("the row")["consented"], true);
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// #s426: an index keeps its pane grants and passcode in the state directory it was given,
+    /// so a host's index beside a monitor never reads the monitor's grants. A grant in the
+    /// environment's directory marks no row of an index given another, and a passcode set
+    /// there asks nothing of it.
+    #[test]
+    fn an_index_reads_its_grants_and_passcode_from_its_own_state_directory() {
+        let scratch = std::env::temp_dir().join(format!("cm-own-state-{}", std::process::id()));
+        let _env = StateEnv::set(scratch.join("monitor-state"));
+        let own = scratch.join("host-state");
+        let idx = Index::new(scratch.join("cache"), own.clone(), Vec::new());
+        let socket = "/Users/x/.config/herdr/sessions/trial/herdr.sock";
+        let mut procs = parse_ps("  700 claude --resume\n");
+        apply_tty(&mut procs, "  700 ttys004 10:00\n", 1_791_400_000);
+        apply_env(
+            &mut procs,
+            &format!("  700 claude HERDR_ENV=1 HERDR_PANE_ID=w1:p2 HERDR_SOCKET_PATH={socket}\n"),
+        );
+        apply_nesting(
+            &mut procs,
+            "  1 0 launchd\n  60 1 herdr\n  61 60 zsh\n  700 61 claude\n",
+        );
+        apply_lsof(&mut procs, "p700\nfcwd\nn/w/harbor\n");
+        let mut st = State {
+            procs,
+            ..Default::default()
+        };
+        let now = 1_791_400_000u64;
+        let mut row = growth_row("/w/harbor", false);
+        row.first_event = Some(now - 600);
+        row.tree_mtime = Some(SystemTime::UNIX_EPOCH + Duration::from_secs(now - 5));
+        row.last_event = Some(now - 5);
+        st.rows.insert("h1".into(), row);
+        let consented = |st: &State| {
+            fn find<'a>(v: &'a Value, id: &str) -> Option<&'a Value> {
+                match v {
+                    Value::Object(m) if m.get("id").and_then(|i| i.as_str()) == Some(id) => Some(v),
+                    Value::Object(m) => m.values().find_map(|c| find(c, id)),
+                    Value::Array(a) => a.iter().find_map(|c| find(c, id)),
+                    _ => None,
+                }
+            }
+            let snapshot = idx.assemble(st, &mut Vec::new());
+            find(&snapshot, "h1").expect("the row")["consented"].clone()
+        };
+        let herdr = format!("herdr:{socket}");
+
+        crate::consent::ConsentStore::open()
+            .grant(Some(&herdr), "w1:p2", "h1", 700)
+            .expect("a grant in the environment's state directory");
+        assert_eq!(
+            consented(&st),
+            false,
+            "the environment's grant is not this index's"
+        );
+        crate::consent::Passcode::open()
+            .set("monitor's code")
+            .expect("a passcode in the environment's state directory");
+        assert!(
+            !idx.passcode().is_set(),
+            "nor is the environment's passcode"
+        );
+
+        idx.consent()
+            .grant(Some(&herdr), "w1:p2", "h1", 700)
+            .expect("a grant in the index's own");
+        assert_eq!(consented(&st), true, "its own grant marks the row");
+        assert!(own.join("consent.json").is_file());
+        idx.passcode().set("host's code").expect("its own passcode");
+        assert!(idx.passcode().verify("host's code"));
+        assert!(!idx.passcode().verify("monitor's code"));
         let _ = std::fs::remove_dir_all(&scratch);
     }
 
@@ -9755,7 +9957,7 @@ n/Users/x/proj
             st
         };
         // The grant was made for the process before the restore.
-        crate::consent::ConsentStore::open()
+        idx.consent()
             .grant(Some(&format!("herdr:{socket}")), "w1:p2", sid, 700)
             .expect("the grant");
         let consented = |st: &State| {

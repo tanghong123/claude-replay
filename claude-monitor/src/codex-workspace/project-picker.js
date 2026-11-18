@@ -1,4 +1,4 @@
-import { svg } from "/monitor-ui/icons.js";
+import { svg } from "../monitor-ui/icons.js";
 
 /** @typedef {{id:string, label:string, detail?:string}} ProjectChoice */
 

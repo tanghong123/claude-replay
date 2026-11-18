@@ -1,6 +1,7 @@
 // The `/pull` + `/records` protocol's client half is the shared module's (#49): this store
 // keeps its timer, its array and its handlers, and applies the plan the reducer returns.
 import { cursorText, freshCursor, parseRecords, pullQuery, recordsQuery, reducePull } from "./shared/record-stream.js";
+import { backend } from "./backend.js";
 
 /** How long a first pull may take before the page says what it is doing (#221). Long enough that
  *  a warm open — under a second, measured — never shows it; short enough that a cold one does not
@@ -128,7 +129,7 @@ export class RecordStore {
     try {
       // Only a store that holds nothing asks for the tail: a fresh open, or one that recovered.
       const tail = this.tailBudget && !this.records.length ? `&tail=${this.tailBudget}` : "";
-      const response = await fetch(`/pull?${pullQuery(this.session, this.cursor)}${tail}`, { cache: "no-store" });
+      const response = await backend().fetch(`/pull?${pullQuery(this.session, this.cursor)}${tail}`, { cache: "no-store" });
       if (generation !== this.generation) return;
       if (response.status === 404) {
         if (this.refreshEmpty()) return;
@@ -143,11 +144,11 @@ export class RecordStore {
       const reply = await response.json();
       if (generation !== this.generation) return;
       this.confirmedEmpty = false; this.missingSince = null;
-      if (reply.t === "redirect" && reply.url) { location.assign(reply.url); return; }
+      if (reply.t === "redirect" && reply.url) { location.assign(reply.url.startsWith("/") ? backend().url(reply.url) : reply.url); return; }
       if (reply.t === "error") throw new Error(reply.message || "Session stream unavailable");
       if (reply.committed_ext?.len) {
         const ext = reply.committed_ext;
-        const records = await fetch(`/records?${recordsQuery(this.session, ext, reply.epoch)}`, { cache: "no-store" });
+        const records = await backend().fetch(`/records?${recordsQuery(this.session, ext, reply.epoch)}`, { cache: "no-store" });
         // The pointer raced a store reset. Keep the currently rendered records and the old
         // cursor; the next pull sees the epoch bump and resynchronizes atomically.
         if (records.status === 409) return;
@@ -218,7 +219,7 @@ export class RecordStore {
     try {
       while (head.got < head.len) {
         const len = Math.min(this.headPieceBytes, head.len - head.got);
-        const response = await fetch(`/records?${recordsQuery(this.session, { offset: head.got, len }, head.epoch)}`, { cache: "no-store" });
+        const response = await backend().fetch(`/records?${recordsQuery(this.session, { offset: head.got, len }, head.epoch)}`, { cache: "no-store" });
         if (!current()) return;
         if (response.status === 409) { this.recover(); return; }
         if (!response.ok) throw new Error(`records HTTP ${response.status}`);
@@ -291,7 +292,7 @@ export class RecordStore {
     // read whole after all (stage 1's path), and a stale epoch starts the session over.
     const without = () => { if (current() && this.windowed) this.loadHead(generation, head); };
     try {
-      const response = await fetch(`/turn-index?session=${encodeURIComponent(this.session)}&epoch=${head.epoch}&upto=${head.count}`, { cache: "no-store" });
+      const response = await backend().fetch(`/turn-index?session=${encodeURIComponent(this.session)}&epoch=${head.epoch}&upto=${head.count}`, { cache: "no-store" });
       if (!current()) return;
       if (response.status === 409) { if (this.windowed) this.recover(); return; }
       if (!response.ok) throw new Error(`turn-index HTTP ${response.status}`);
@@ -453,7 +454,7 @@ export class RecordStore {
     };
     try {
       const len = Math.min(this.headPieceBytes, read.end - read.at);
-      const response = await fetch(`/records?${recordsQuery(this.session, { offset: read.at, len }, head.epoch)}`, { cache: "no-store" });
+      const response = await backend().fetch(`/records?${recordsQuery(this.session, { offset: read.at, len }, head.epoch)}`, { cache: "no-store" });
       if (!current()) return;
       if (response.status === 409) { this.recover(); return; }
       if (!response.ok) throw new Error(`records HTTP ${response.status}`);

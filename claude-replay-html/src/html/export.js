@@ -3144,6 +3144,8 @@
   // wrapped in <mark class="hl"> as their blocks materialize. Enter cycles the global
   // hit index, materializing + marking `.cur` on the way (Shift+Enter goes back).
   var q = $("q");
+  // The keys that open it, from the shared table: "/" and the platform's ⌘F or Ctrl+F (#s509).
+  q.placeholder = "Search transcript  ( " + shared.hintFor("search") + " )";
   var hitRecs = [];   // {rec, count, start} per record with hits, in stream order (#50)
   var totalHits = 0;
   function clearHl() {
@@ -3713,7 +3715,9 @@
     var binding = shared.resolveKey(e, "view", e.target);
     if (!binding) return;
     switch (binding.action) {
-      case "search": e.preventDefault(); q.focus(); return;
+      // `/`, and ⌘F or Ctrl+F (#s509): the field focused with its query selected, as a browser's
+      // find opens. In the field (a text field, above) the same press is the browser's.
+      case "search": e.preventDefault(); q.focus(); q.select(); return;
       case "hit-next":
       case "hit-prev":
         if (filter) { e.preventDefault(); filterNav(binding.action === "hit-next" ? 1 : -1); } // #49 next/prev filtered hit
@@ -3798,6 +3802,26 @@
   // closing beside this page, and leaving the heights alone is what made a jump to the end land
   // 693px short of it afterwards.
   window.addEventListener("resize", function () { vw.remeasure(); }, { passive: true });
+  // #s492: the column's width also changes with no `resize`. Where a scrollbar takes room (Linux,
+  // Windows, a Mac set to always show them), the page's own scrollbar appears once the records
+  // outgrow the window, or goes when a filter leaves them inside it, and moves the column by its
+  // width; wide mode lifts the column's caps (`applyWide`), at load too. Unheard, the engine kept
+  // the width it read as the mount was attached, and the next resize scaled every remembered height
+  // by a ratio from that column (1.193 where the column's own widths give 1.168, measured). So a
+  // change of the mount's own width is heard here. Past the engine's own threshold it is a
+  // remeasure, which scales; under it (a scrollbar beside a column over about 1500px wide) the
+  // width is only taken, because `remeasure` would read so small a ratio as no width change and
+  // clear every remembered height. A resize remeasures first (the resize steps run before the
+  // observers in a frame), so this finds the width it left, unless that remeasure itself brought
+  // the scrollbar in or out, which is a change of its own.
+  if (typeof ResizeObserver !== "undefined") {
+    new ResizeObserver(function () {
+      var w = vwin.getBoundingClientRect().width;
+      if (!w || !vw.lastWidth || Math.abs(w - vw.lastWidth) < 1) return;
+      if (Math.abs(vw.lastWidth / w - 1) > 0.01) vw.remeasure();
+      else vw.lastWidth = w;
+    }).observe(vwin);
+  }
   spy();
 
   // On load, deep-link wins; otherwise jump to the end so the newest messages
