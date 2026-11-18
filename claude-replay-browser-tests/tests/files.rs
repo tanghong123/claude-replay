@@ -1948,3 +1948,117 @@ fn consecutive_images_are_one_block_and_open_in_the_pane_one_by_one_or_all() {
         PANE_TABS,
     );
 }
+
+/// What `hidden_inside_the_view` reads: every element of the session view that is hidden by its own
+/// computed style (no box, `visibility: hidden` or an opacity of 0, the three WebKit's content-change
+/// observer counts as hidden), keyed by a number it gives each element once.
+const HIDDEN_IN_VIEW: &str = "JSON.stringify((function(){ var all = document.querySelectorAll('#sessionView *'); window.__hk = window.__hk || 0; var out = {}; for (var i = 0; i < all.length; i++) { var e = all[i]; if (e.__hk == null) e.__hk = ++window.__hk; var s = getComputedStyle(e); if (s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0') out[e.__hk] = (e.id ? '#' + e.id : '') + '.' + String(e.className && e.className.baseVal != null ? e.className.baseVal : e.className).trim().split(/\\s+/).join('.'); } return out; })())";
+
+/// #s573: on a touch screen hover reveals nothing (#s41), in the desktop layout too. A sideways iPad
+/// is that layout on a touch screen (`hover: none`, `pointer: coarse`, 1210px), and there a tap on a
+/// lone image's thumbnail opened it in the pane only on a second tap: WebKit spends a tap that shows
+/// hidden content on hover as the hover, and the record's # (`.renderer-spot`) was hidden at rest,
+/// its touch override coming before the rule that hid it. Chrome does not spend the tap, so this
+/// measures the cause: the pointer moves onto the thumbnail and onto an agent's turn, and nothing in
+/// the session view that was hidden before shows after. The instrument is checked against the old
+/// cascade put back, which it must catch.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_touch_screen_beside_the_list_reveals_nothing_on_a_hover_inside_a_record() {
+    const ALONE: &str = "5e5510a1-0000-4000-8000-0000000000s573";
+    let _serial = serial();
+    let base = base("files-touch-hover");
+    let stores = Stores::new(&base);
+    let line = |v: serde_json::Value| format!("{v}\n");
+    let mut jsonl = user_at("look at the screenshot", &at("00:01"));
+    jsonl += &harness::assistant_at(
+        "reading it now, and saying so at some length so the turn has a body to point at",
+        &at("00:02"),
+    );
+    jsonl += &read_tool_at("r1", "/tmp/alone.png", &at("00:03"));
+    jsonl += &line(
+        serde_json::json!({"type": "user", "timestamp": at("00:04"), "message": {"role": "user", "content": [{
+        "type": "tool_result", "tool_use_id": "r1",
+        "content": [{"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": harness::TINY_PNG_B64.trim()}}]}]}}),
+    );
+    jsonl += &harness::assistant_at("all done", &at("00:05"));
+    stores.claude_session(ALONE, &jsonl);
+
+    let m = Monitor::spawn(Kind::V1, 3204, &base, Some(&stores), true);
+    let (_browser, tab) = chrome_tab();
+    harness::resize(&tab, 1210.0, 834.0);
+    // A touch screen in the desktop layout, as an iPad held sideways reports itself. Touch emulation
+    // stays off, so the mouse below gives the page its `:hover`, as WebKit gives it a tapped element.
+    tab.call_method(
+        headless_chrome::protocol::cdp::Emulation::SetEmulatedMedia {
+            media: None,
+            features: Some(vec![
+                headless_chrome::protocol::cdp::Emulation::MediaFeature {
+                    name: "hover".into(),
+                    value: "none".into(),
+                },
+                headless_chrome::protocol::cdp::Emulation::MediaFeature {
+                    name: "pointer".into(),
+                    value: "coarse".into(),
+                },
+            ]),
+        },
+    )
+    .unwrap();
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={ALONE}"));
+    until(
+        &tab,
+        "!!document.querySelector('.renderer-image .image-thumb img') && document.querySelectorAll('.turn.assistant').length >= 2",
+        "the lone image and the agent's turns",
+        Duration::from_secs(30),
+        "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+    );
+    let layout = eval(&tab, "JSON.stringify({ hoverNone: matchMedia('(hover:none)').matches, coarse: matchMedia('(pointer:coarse)').matches, phone: document.getElementById('sessionView').classList.contains('pl-phone'), width: innerWidth })");
+    let layout: serde_json::Value = serde_json::from_str(layout.as_str().unwrap_or("{}")).unwrap();
+    assert!(
+        layout["hoverNone"] == true && layout["coarse"] == true && layout["phone"] == false,
+        "the page reads a touch screen in the desktop layout: {layout}"
+    );
+    eval(&tab, "document.querySelector('.renderer-image .image-thumb').scrollIntoView({ block: 'center' }); 'ok'");
+    std::thread::sleep(Duration::from_millis(400));
+    let centre = |selector: &str| -> headless_chrome::browser::tab::point::Point {
+        let at = eval(&tab, &format!("JSON.stringify((function(){{ var b = document.querySelector({selector:?}).getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; }})())"));
+        let at: Vec<f64> = serde_json::from_str(at.as_str().unwrap_or("[0,0]")).unwrap();
+        headless_chrome::browser::tab::point::Point { x: at[0], y: at[1] }
+    };
+    // From a point over nothing in the view (the list's head), onto each target; what it reveals.
+    let revealed = |target: &str| -> Vec<String> {
+        let away = centre("#sessionList");
+        tab.move_mouse_to_point(headless_chrome::browser::tab::point::Point { x: away.x, y: 8.0 })
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        let before: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(eval(&tab, HIDDEN_IN_VIEW).as_str().unwrap_or("{}")).unwrap();
+        tab.move_mouse_to_point(centre(target)).unwrap();
+        std::thread::sleep(Duration::from_millis(400));
+        let after: serde_json::Map<String, serde_json::Value> =
+            serde_json::from_str(eval(&tab, HIDDEN_IN_VIEW).as_str().unwrap_or("{}")).unwrap();
+        before
+            .iter()
+            .filter(|(k, _)| !after.contains_key(*k))
+            .map(|(_, v)| v.as_str().unwrap_or("").to_string())
+            .collect()
+    };
+    let thumb = ".renderer-image .image-thumb";
+    let turn = ".turn.assistant .body";
+    for target in [thumb, turn] {
+        let shown = revealed(target);
+        assert!(
+            shown.is_empty(),
+            "a hover over {target} shows nothing a tap would be spent on: {shown:?}"
+        );
+    }
+    // The instrument against the old cascade: the record's # hidden at rest, its hover showing it.
+    eval(&tab, "(function(){ var s = document.createElement('style'); s.textContent = '#sessionView .renderer>.renderer-spot{opacity:0} #sessionView .renderer:hover>.renderer-spot{opacity:1}'; document.head.appendChild(s); return 'ok'; })()");
+    let shown = revealed(thumb);
+    assert!(
+        shown.iter().any(|c| c.contains("renderer-spot")),
+        "with the # hidden at rest again, the hover over the thumbnail shows it: {shown:?}"
+    );
+}
