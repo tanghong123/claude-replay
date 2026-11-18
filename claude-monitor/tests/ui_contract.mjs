@@ -1626,7 +1626,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // room changes (the magnifier gives way, the keyboard, a pane), through the view's own observer.
   assert.match(viewSource, /const SEARCH_PLACEHOLDERS = \["Search this session", "Search"\];/, "the shorter texts, longest first");
   assert.match(viewSource, /input\.placeholder = \[hint, \.\.\.SEARCH_PLACEHOLDERS\]\.find\(fits\) \|\| SEARCH_PLACEHOLDERS\[SEARCH_PLACEHOLDERS\.length - 1\];\n    input\.style\.width = `\$\{room\}px`;\n    searchField\.scrollLeft = chips \? searchField\.scrollWidth : 0;/, "an empty field fills its room, from its start");
-  assert.match(viewSource, /\nnew ResizeObserver\(\(\) => fitSearchField\(\)\)\.observe\(searchField\);\n/, "the field is fitted again as the strip's room changes");
+  assert.match(viewSource, /\nconst searchFit = new ResizeObserver\(\(\) => fitSearchField\(\)\);\nsearchFit\.observe\(searchField\);\n/, "the field is fitted again as the strip's room changes");
+  // And as the bar's room changes with no window resize (the pane opening, its drag): a floor fitted
+  // to the old room held the box past the session's column (#s520, train2's review).
+  assert.match(viewSource, /\nconst searchBar = viewRoot\.\$\("\.workspace>\.topbar"\);\nif \(searchBar\) searchFit\.observe\(searchBar\);\n/, "the field is fitted again as the bar's room changes");
   assert.match(viewSource, /byId\("composer"\)\.dataset\.commandKeys = "";/, "the view marks its compose box");
   // ENGAGEMENT: a click on a guest's prose leaves the focus on <body>, so the keydown's target is
   // <body> — and the key is still the guest's until the reader clicks elsewhere. bindKeymap tracks
