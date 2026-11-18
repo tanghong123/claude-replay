@@ -35,7 +35,7 @@ pub(crate) struct MetricsAcc {
     /// with zero interleaved exceptions — so one key is enough state to collapse them,
     /// which keeps the resumable cursor small.
     last_usage_key: Option<String>,
-    /// The RECORDED model `last_usage_key` was credited under — the last resolved name
+    /// The RECORDED model `last_usage_key` was guarded under — the last resolved name
     /// (`self.model`) when the line records none, renamed to the current head's pick only
     /// when that name is the router. Both must match before a line is treated as a repeat:
     /// after a restore the single-model-per-message invariant can't be re-verified, and
