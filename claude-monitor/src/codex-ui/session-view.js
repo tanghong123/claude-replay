@@ -907,6 +907,9 @@ function markTitleWord() {
   titleRuler.font = font;
   const width = word ? titleRuler.measureText(word).width + (text.length > word.length ? titleRuler.measureText("…").width : 0) : 0;
   heading.style.setProperty("--title-word", `${Math.ceil(width) + 1}px`);
+  // A new name gives the box held beside it a different room (`fitDeskSearch`); during module
+  // evaluation the search is not built yet and this does nothing.
+  fitSearchField();
 }
 function paintHeader() {
   if (sessionNewTab) sessionNewTab.hidden = !selectedId();
@@ -2669,38 +2672,60 @@ const TITLE_GIVES_TO = 80;
 
 /** Above a phone the box in use asks for the room its query needs (#s520): its chips and its text,
  *  measured as a phone's field is, beside the box's own controls. The title gives way first, down to
- *  `TITLE_GIVES_TO` (or its whole name, if shorter), and the box takes no more than that leaves. A fixed floor of
- *  400px left `uo(R): needle` 17px short at a 1100px window on a Mac and short on Linux's wider fonts,
- *  since the count names the scope too ("2 hits in uo(R)"). Only the floor's rule reads
- *  `--search-floor` (production.css, #s520), so it means nothing on a phone or in the bar the outline's
- *  glyphs join, and it is worked out again from the floor that rule gives without it. */
+ *  `TITLE_GIVES_TO` (or its whole name, if shorter, and never past its own floor, its first word:
+ *  `--title-word`), and the box takes no more than that leaves, nor more than its own width rule
+ *  gives it (`min(460px,36vw)` and its kin): a floor past that widened the cluster around a box that
+ *  stayed put, a blank gap beside it (train2's review), where a longer query scrolls in its field as
+ *  it always has. A fixed floor of 400px left `uo(R): needle` 17px short at a 1100px window on a Mac
+ *  and short on Linux's wider fonts, since the count names the scope too ("2 hits in uo(R)"). Only
+ *  the floor's rule reads `--search-floor` (production.css, #s520), so it means nothing on a phone or
+ *  in the bar the outline's glyphs join, and it is worked out again from the floor that rule gives
+ *  without it, whenever the field, the bar or the title changes. */
 function fitDeskSearch(input) {
-  const cluster = viewRoot.$(".header-search-cluster");
-  if (!cluster) return;
+  const cluster = viewRoot.$(".header-search-cluster"), searchbox = viewRoot.$(".header-searchbox");
+  if (!cluster || !searchbox) return;
   cluster.style.removeProperty("--search-floor");
-  if (!input.value || sessionView.classList.contains("pl-phone") || sessionView.classList.contains("pl-outline-bar")) return;
+  const chipped = searchChips.classList.contains("has-chips");
+  if ((!input.value && !chipped) || sessionView.classList.contains("pl-phone") || sessionView.classList.contains("pl-outline-bar")) return;
   const cs = getComputedStyle(input);
   fieldMeasure.style.font = cs.font; fieldMeasure.style.letterSpacing = cs.letterSpacing;
   fieldMeasure.textContent = input.value;
-  // What each part lacks at the floor the rule gives: the text (measured, or the field's own scroll
-  // width where that is more) and the chips, whose values shrink to an ellipsis inside them (so the
-  // strip's own scroll width does not show it) and which a narrow strip holds to 70% of it.
-  const text = Math.max(Math.ceil(fieldMeasure.getBoundingClientRect().width) + 8, input.scrollWidth);
-  let chips = Math.max(0, searchChips.scrollWidth - searchChips.clientWidth);
-  for (const value of searchChips.querySelectorAll(".search-chip-value")) chips += Math.max(0, value.scrollWidth - value.clientWidth);
-  const short = Math.max(0, text - input.clientWidth) + chips;
-  const box = cluster.getBoundingClientRect().width;
-  if (!short) return;
-  const need = Math.ceil(box + short + 2);
+  // What the strip needs to show it all: the text (measured, or the field's own scroll width where
+  // that is more) and the chips at their whole width (their values shrink to an ellipsis inside them,
+  // so the chips' own scroll width does not show it), which the strip holds to a share of itself
+  // (`.search-field>.search-chips`, 70%) beside its gap.
+  const text = input.value ? Math.max(Math.ceil(fieldMeasure.getBoundingClientRect().width) + 8, input.scrollWidth) : 0;
+  let chips = chipped ? searchChips.scrollWidth : 0;
+  if (chipped) for (const value of searchChips.querySelectorAll(".search-chip-value")) chips += Math.max(0, value.scrollWidth - value.clientWidth);
+  const cap = getComputedStyle(searchChips).maxWidth, share = cap.endsWith("%") ? parseFloat(cap) / 100 || 1 : 1;
+  const gap = parseFloat(getComputedStyle(searchField).columnGap) || 0;
+  const strip = chips ? Math.max(chips / share, chips + gap + text) : text;
+  const short = Math.ceil(strip - searchField.clientWidth);
+  if (short <= 0) return;
+  const box = cluster.getBoundingClientRect().width, own = searchbox.getBoundingClientRect().width;
+  // The box's own width rule, read with its `max-width:100%` lifted for a moment.
+  const held = searchbox.style.maxWidth;
+  searchbox.style.maxWidth = "none";
+  const widest = searchbox.getBoundingClientRect().width + (box - own);
+  searchbox.style.maxWidth = held;
   const title = byId("sessionTitle");
-  const give = title ? Math.max(0, title.getBoundingClientRect().width - Math.min(TITLE_GIVES_TO, title.scrollWidth)) : 0;
-  cluster.style.setProperty("--search-floor", `${Math.floor(Math.min(need, box + give))}px`);
+  const keep = title ? Math.max(parseFloat(getComputedStyle(title).minWidth) || 0, Math.min(TITLE_GIVES_TO, title.scrollWidth)) : 0;
+  const give = title ? Math.max(0, title.getBoundingClientRect().width - keep) : 0;
+  const floor = Math.floor(Math.min(box + short + 2, box + give, widest));
+  if (floor > box) cluster.style.setProperty("--search-floor", `${floor}px`);
 }
 addEventListener("resize", () => fitSearchField(), { signal });
 // The strip's room changes without the window's (#s516): the magnifier gives way while the field holds
 // the focus (the keyboard up), and the dock narrows beside a pane. The strip is a flex item that
-// takes what the box leaves, whatever the field inside it measures, so a fit never resizes it again.
-new ResizeObserver(() => fitSearchField()).observe(searchField);
+// takes what the box leaves, whatever the field inside it measures; above a phone a fit may set a
+// floor that resizes it once more, and the next fit sets the same floor. The bar's room changes
+// without the window's too (the pane opening beside the session, its drag), and a floor fitted to
+// the old room would hold the box past the session's column (train2's review), so the bar is watched
+// as well.
+const searchFit = new ResizeObserver(() => fitSearchField());
+searchFit.observe(searchField);
+const searchBar = viewRoot.$(".workspace>.topbar");
+if (searchBar) searchFit.observe(searchBar);
 // #310, #313: on a phone (the view's phone family, `PHONE_QUERY` read from its own classes, #s431; #s32 a landscape phone too) the search box is an icon with its
 // input hidden. A tap on it OPENS it across the bar's second row, and it stays open until a tap lands outside the search's own
 // surfaces (the box, the drop-down, the filter popover) or Escape — never on blur, since a touch
