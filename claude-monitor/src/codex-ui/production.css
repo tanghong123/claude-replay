@@ -1306,11 +1306,6 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    host says where its tabs open (the view's `detachTo`) and while a session is open. */
 .workspace>.topbar .session-newtab{font-size:15px;line-height:1}
 .workspace>.topbar .session-newtab[hidden]{display:none}
-/* The ↗ gives the search box its room while the search is in use: typed in, held, or holding a
-   query. With it the box at 1100px left the field no width beside the title (train2's CI, the
-   search box case); a tab of the session is not what a reader searching it reaches for, and it
-   comes back as the query goes. `:has()` cannot nest, hence two selectors. */
-.workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held))>.session-newtab,.workspace>.topbar:has(>.header-search-cluster>.header-searchbox.has-query)>.session-newtab{display:none}
 /* #272 every file view offers the file manager beside showing or downloading: one control in the
    pane's head for whatever the pane shows, and a prompt card's own reveal beside its action. */
 .preview-head .preview-reveal{width:32px;height:32px;flex:none}
@@ -1364,6 +1359,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 #sessionView.pl-outline-bar .workspace>.topbar>.session-heading{min-width:calc(min(var(--title-word,0px),160px) + 30px)}
 #sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster{flex-shrink:1;min-width:150px}
 #sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster>.header-searchbox{max-width:100%}
+/* While the search is in use (typed in, held, or holding a query) the title gives way first: the
+   heading shrinks at twice the box's rate, so the query keeps a field to show in. At an even rate
+   the box at 1100px, a long title beside it, kept no field at all (`uo(R): needle` read 0px wide,
+   train2's CI). `:has()` cannot nest, hence two selectors. */
+#sessionView:not(.pl-phone) .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held))>.session-heading,#sessionView:not(.pl-phone) .workspace>.topbar:has(>.header-search-cluster>.header-searchbox.has-query)>.session-heading{flex-shrink:2}
 @media(min-width:1181px) and (min-height:501px),(min-width:1181px) and (pointer:fine){.header-searchbox:focus-within,.header-searchbox:has(input:not(:placeholder-shown)),.header-searchbox:has(.search-chips.has-chips){width:min(460px,36vw)}}
 /* #303 widened this: the box may hold chips now (`scope:o`, `tool:Read`), and at 1100px a 400px box
    left the text 34px — "needle" needs 43. */

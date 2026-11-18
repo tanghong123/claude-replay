@@ -440,9 +440,8 @@ screen up to 760px):
   on #s462: Windows NavigationView's minimal mode, JetBrains' undocked tool windows, VS Code's
   title-bar toggles). A glyph in the column opens the outline at its pane where the outline fits, as
   today, and its list as the same panel where the outline does not.
-  That bar is the session's column alone, 480–547px, and it carries nine controls beside the title,
-  ten where the host gives the transcript a tab of its own (#s433's ↗, which steps aside while the
-  search is in use)
+  That bar is the session's column alone, 480–547px, and it carries nine controls beside the title
+  (ten where the host gives the transcript a tab of its own, #s433's ↗)
   (#s520: laid out at their widest, the search box 180 or 286px by the window's bands, the title
   shrank to a letter and Info and the pane's control went past the window or under the open pane).
   There, read from the arrangement (`pl-outline-bar`), the crumb and its dividers go, the status chip

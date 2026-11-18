@@ -1910,7 +1910,6 @@
 :where(#sessionView) .preview-head .preview-newtab[hidden]{display:none}
 :where(#sessionView) .workspace>.topbar .session-newtab{font-size:15px;line-height:1}
 :where(#sessionView) .workspace>.topbar .session-newtab[hidden]{display:none}
-:where(#sessionView) .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held))>.session-newtab,:where(#sessionView) .workspace>.topbar:has(>.header-search-cluster>.header-searchbox.has-query)>.session-newtab{display:none}
 :where(#sessionView) .preview-head .preview-reveal{width:32px;height:32px;flex:none}
 :where(#sessionView) .preview-head .preview-reveal[hidden]{display:none}
 :where(#sessionView) .preview-head .preview-reveal .icon{width:15px;height:15px}
@@ -1939,6 +1938,7 @@
 #sessionView.pl-outline-bar .workspace>.topbar>.session-heading{min-width:calc(min(var(--title-word,0px),160px) + 30px)}
 #sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster{flex-shrink:1;min-width:150px}
 #sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster>.header-searchbox{max-width:100%}
+#sessionView:not(.pl-phone) .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held))>.session-heading,#sessionView:not(.pl-phone) .workspace>.topbar:has(>.header-search-cluster>.header-searchbox.has-query)>.session-heading{flex-shrink:2}
 :where(#sessionView:is(.pl-min-w-1181.pl-min-h-501,.pl-min-w-1181.pl-fine)) .header-searchbox:focus-within,:where(#sessionView:is(.pl-min-w-1181.pl-min-h-501,.pl-min-w-1181.pl-fine)) .header-searchbox:has(input:not(:placeholder-shown)),:where(#sessionView:is(.pl-min-w-1181.pl-min-h-501,.pl-min-w-1181.pl-fine)) .header-searchbox:has(.search-chips.has-chips){width:min(460px,calc(36 * var(--pl-b) / 100))}
 :where(#sessionView:is(.pl-min-w-901.pl-max-w-1180.pl-min-h-501,.pl-min-w-901.pl-max-w-1180.pl-fine)) .header-searchbox:focus-within,:where(#sessionView:is(.pl-min-w-901.pl-max-w-1180.pl-min-h-501,.pl-min-w-901.pl-max-w-1180.pl-fine)) .header-searchbox:has(input:not(:placeholder-shown)),:where(#sessionView:is(.pl-min-w-901.pl-max-w-1180.pl-min-h-501,.pl-min-w-901.pl-max-w-1180.pl-fine)) .header-searchbox:has(.search-chips.has-chips){width:min(460px,calc(42 * var(--pl-b) / 100))}
 :where(#sessionView:is(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine)) .header-searchbox:focus-within{width:min(392px,calc(52 * var(--pl-b) / 100))}
