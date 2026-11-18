@@ -1991,9 +1991,9 @@ fn a_touch_screen_beside_the_list_reveals_nothing_on_a_hover_inside_a_record() {
     // A touch screen in the desktop layout, as an iPad held sideways reports itself: Chrome's touch
     // emulation alone, at the window's own size (no phone viewport), so the page reads
     // `pointer: coarse` and `hover: none`. Emulating the two media features instead held on neither
-    // Chrome (macOS read both false, Linux `hover` only). The emulation does not turn the mouse into
-    // touches, so the mouse below still gives the page its `:hover`, as WebKit gives one to a tapped
-    // element.
+    // Chrome (macOS read both false, Linux `hover` only). The hover a tap gives is forced below, not
+    // made with the mouse: under touch emulation the mouse hovered on Linux's Chrome and on neither of
+    // this Mac's (157), where the instrument's own check then saw nothing.
     tab.call_method(
         headless_chrome::protocol::cdp::Emulation::SetTouchEmulationEnabled {
             enabled: true,
@@ -2025,18 +2025,47 @@ fn a_touch_screen_beside_the_list_reveals_nothing_on_a_hover_inside_a_record() {
             .unwrap_or_else(|_| panic!("{selector} is drawn, with a box, to hover over: {at}"));
         headless_chrome::browser::tab::point::Point { x: at[0], y: at[1] }
     };
-    // From a point over nothing in the view (the list's head), onto each target; what it reveals.
-    let revealed = |target: &str| -> Vec<String> {
-        let away = centre("#sessionList");
-        tab.move_mouse_to_point(headless_chrome::browser::tab::point::Point { x: away.x, y: 8.0 })
+    // What a tap's hover reveals: WebKit gives `:hover` to the tapped element and every element above
+    // it, so the case forces that state on the same chain (CSS.forcePseudoState, element by element)
+    // and compares the session view before and after; the mouse rests over nothing in the view (the
+    // list's head) throughout, so it hovers nothing on any Chrome.
+    let away = centre("#sessionList");
+    tab.move_mouse_to_point(headless_chrome::browser::tab::point::Point { x: away.x, y: 8.0 })
+        .unwrap();
+    let force = |target: &str, on: bool| {
+        use headless_chrome::protocol::cdp::CSS;
+        let chain = eval(&tab, &format!("(function(){{ var e = document.querySelector({target:?}), n = 0; for (; e; e = e.parentElement) e.setAttribute('data-hk-hover', n++); return n; }})()"))
+            .as_i64()
+            .unwrap_or_else(|| panic!("{target} is drawn, to give a tap's hover"));
+        let _ = tab.call_method(CSS::Enable(None));
+        for i in 0..chain {
+            let node = tab
+                .find_element(&format!("[data-hk-hover='{i}']"))
+                .unwrap_or_else(|e| panic!("{target}'s ancestor {i}: {e}"))
+                .node_id;
+            tab.call_method(CSS::ForcePseudoState {
+                node_id: node,
+                forced_pseudo_classes: if on {
+                    vec!["hover".to_string()]
+                } else {
+                    vec![]
+                },
+            })
             .unwrap();
+        }
+        if !on {
+            eval(&tab, "document.querySelectorAll('[data-hk-hover]').forEach(function (e) { e.removeAttribute('data-hk-hover'); }); 1");
+        }
+    };
+    let revealed = |target: &str| -> Vec<String> {
         std::thread::sleep(Duration::from_millis(400));
         let before: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str(eval(&tab, VIEW_ELEMENTS).as_str().unwrap_or("{}")).unwrap();
-        tab.move_mouse_to_point(centre(target)).unwrap();
+        force(target, true);
         std::thread::sleep(Duration::from_millis(400));
         let after: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str(eval(&tab, VIEW_ELEMENTS).as_str().unwrap_or("{}")).unwrap();
+        force(target, false);
         // Hidden before and still there, shown now: an element the page drew or dropped meanwhile
         // is not a hover's reveal.
         before
