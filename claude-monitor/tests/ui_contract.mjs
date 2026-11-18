@@ -4016,6 +4016,30 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     const still = echoing(1000, 1000), anchor = still.captureDomAnchor();
     assert.equal(anchor.key, "u5");
     assert.equal(still.offsetOf(anchor), 1000);
+    // With a row in each item (50px down it) the anchor refines into the row straddling the top at the
+    // latest write, and a placeholder straddling there gives way to the item after it, both judged at
+    // the write: the same anchor a capture makes at W2 with no echo.
+    const rowed = (w1, w2, placeholder) => {
+      const vw = echoing(w1, w2);
+      for (const it of vw.mount.children) {
+        const i = Number(it.dataset.unitIndex), row = {
+          dataset: { blockIndex: `${i}.1` },
+          getBoundingClientRect: () => ({ top: VT + 200 * i + 50 - w1, bottom: VT + 200 * (i + 1) - w1, height: 150 }),
+          querySelectorAll: () => [], querySelector: () => null,
+        };
+        it.querySelectorAll = () => [row];
+        it.querySelector = sel => (sel === `[data-block-index="${i}.1"]` ? row : null);
+      }
+      vw.placeholderAt = i => i === placeholder;
+      return vw;
+    };
+    for (const placeholder of [null, 8]) {
+      const echoed = rowed(1000, 1675, placeholder).captureDomAnchor(), plain = rowed(1675, 1675, placeholder).captureDomAnchor();
+      const pick = a => [a.key, a.top, a.block, a.blockTop];
+      assert.deepEqual(pick(echoed), pick(plain), `an echo's capture is the one made at the latest write (placeholder ${placeholder}) (#s568)`);
+      assert.deepEqual(pick(echoed), placeholder == null ? ["u8", -75, "8.1", -25] : ["u9", 125, null, 0], `…which is the row straddling the top, or the item after a straddling placeholder (#s568)`);
+      assert.equal(rowed(1000, 1675, placeholder).offsetOf(echoed), 1675, `…and names the latest write (#s568)`);
+    }
   }
   assert.match(engine, /const drift = p0 && p0\.at != null && !this\.inFlight\(\) && !returning \? startTop - p0\.at : 0;/, "no drift while a smooth write travels");
   assert.match(engine, /const smooth = !!options\.smooth \|\| this\.inFlight\(\);/, "…and a placement then is issued smooth again, toward the recomputed destination");
