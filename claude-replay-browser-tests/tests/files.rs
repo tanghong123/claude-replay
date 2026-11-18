@@ -1960,9 +1960,9 @@ const VIEW_ELEMENTS: &str = "JSON.stringify((function(){ var all = document.quer
 /// lone image's thumbnail opened it in the pane only on a second tap: WebKit spends a tap that shows
 /// hidden content on hover as the hover, and the record's # (`.renderer-spot`) was hidden at rest,
 /// its touch override coming before the rule that hid it. Chrome does not spend the tap, so this
-/// measures the cause: the pointer moves onto the thumbnail and onto an agent's turn, and nothing in
-/// the session view that was hidden before shows after. The instrument is checked against the old
-/// cascade put back, which it must catch.
+/// measures the cause: a tap's `:hover` is forced on the thumbnail and every element above it, then on
+/// an agent's turn and its chain, and nothing in the session view that was hidden before shows after.
+/// The instrument is checked against the old cascade put back, which it must catch.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_touch_screen_beside_the_list_reveals_nothing_on_a_hover_inside_a_record() {
@@ -2032,22 +2032,24 @@ fn a_touch_screen_beside_the_list_reveals_nothing_on_a_hover_inside_a_record() {
     let away = centre("#sessionList");
     tab.move_mouse_to_point(headless_chrome::browser::tab::point::Point { x: away.x, y: 8.0 })
         .unwrap();
+    // CSS.forcePseudoState needs the CSS agent, which needs the DOM agent first (Linux's Chrome
+    // refuses CSS.enable without it; the Mac's took it).
+    tab.call_method(headless_chrome::protocol::cdp::DOM::Enable {
+        include_whitespace: None,
+    })
+    .expect("the DOM agent is enabled");
+    tab.call_method(headless_chrome::protocol::cdp::CSS::Enable(None))
+        .expect("the CSS agent is enabled");
     // The chain's node ids, read in ONE document request: headless_chrome's `find_element` asks
     // for the document each time, which renumbers the DOM agent's nodes and drops the state forced
-    // on the ones before (only `<html>`, forced last, kept its hover). CSS.forcePseudoState needs
-    // the CSS agent, which needs the DOM agent first (Linux's Chrome refuses CSS.enable without
-    // it; the Mac's took it).
+    // on the ones before (only `<html>`, forced last, kept its hover). A target the page does not
+    // draw fails the case rather than forcing nothing and passing.
     let chain = |target: &str| -> Vec<headless_chrome::protocol::cdp::DOM::NodeId> {
-        use headless_chrome::protocol::cdp::{CSS, DOM};
-        let n = eval(&tab, &format!("(function(){{ document.querySelectorAll('[data-hk-hover]').forEach(function (e) {{ e.removeAttribute('data-hk-hover'); }}); var e = document.querySelector({target:?}), n = 0; for (; e; e = e.parentElement) {{ e.setAttribute('data-hk-hover', ''); n++; }} return n; }})()"))
+        use headless_chrome::protocol::cdp::DOM;
+        let n = eval(&tab, &format!("(function(){{ document.querySelectorAll('[data-hk-hover]').forEach(function (e) {{ e.removeAttribute('data-hk-hover'); }}); var e = document.querySelector({target:?}); if (!e) return null; var n = 0; for (; e; e = e.parentElement) {{ e.setAttribute('data-hk-hover', ''); n++; }} return n; }})()"))
             .as_i64()
+            .filter(|n| *n >= 2)
             .unwrap_or_else(|| panic!("{target} is drawn, to give a tap's hover"));
-        tab.call_method(DOM::Enable {
-            include_whitespace: None,
-        })
-        .expect("the DOM agent is enabled");
-        tab.call_method(CSS::Enable(None))
-            .expect("the CSS agent is enabled");
         let root = tab
             .call_method(DOM::GetDocument {
                 depth: Some(0),
@@ -2080,7 +2082,7 @@ fn a_touch_screen_beside_the_list_reveals_nothing_on_a_hover_inside_a_record() {
                     vec![]
                 },
             })
-            .unwrap();
+            .expect(":hover is forced on the tapped chain's node");
         }
     };
     let revealed = |target: &str| -> Vec<String> {
@@ -2111,8 +2113,9 @@ fn a_touch_screen_beside_the_list_reveals_nothing_on_a_hover_inside_a_record() {
             "a hover over {target} shows nothing a tap would be spent on: {shown:?}"
         );
     }
-    // The instrument against the old cascade: the record's # hidden at rest, its hover showing it.
-    eval(&tab, "(function(){ var s = document.createElement('style'); s.textContent = '#sessionView .renderer>.renderer-spot{opacity:0} #sessionView .renderer:hover>.renderer-spot{opacity:1}'; document.head.appendChild(s); return 'ok'; })()");
+    // The instrument against the old cascade: the record's # hidden at rest, its hover showing it,
+    // with no transition, so the reading does not wait on the animation clock of a busy renderer.
+    eval(&tab, "(function(){ var s = document.createElement('style'); s.textContent = '#sessionView .renderer>.renderer-spot{opacity:0;transition:none} #sessionView .renderer:hover>.renderer-spot{opacity:1}'; document.head.appendChild(s); return 'ok'; })()");
     let shown = revealed(thumb);
     assert!(
         shown.iter().any(|c| c.contains("renderer-spot")),
