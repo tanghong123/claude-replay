@@ -10,7 +10,8 @@
 //!
 //! Ports 2811–2814, 2933 for #374's handed-over files on a phone, 3091–3093 for #s115's saved
 //! output of a cut Bash command, 2937 for #s7's mentioned files
-//! under the allowlist ceiling, and 2970 for #s11's images in a tab of their own. The classic page
+//! under the allowlist ceiling, 2970 for #s11's images in a tab of their own, 3203 for #s221's image
+//! groups and 3204 for #s573's touch screen in the desktop layout. The classic page
 //! (export.js) draws no preview pane and reads no file from disk: a path it offers is revealed or
 //! copied.
 
@@ -2023,8 +2024,10 @@ fn a_touch_screen_beside_the_list_reveals_nothing_on_a_hover_inside_a_record() {
     eval(&tab, "document.querySelector('.renderer-image .image-thumb').scrollIntoView({ block: 'center' }); 'ok'");
     std::thread::sleep(Duration::from_millis(400));
     let centre = |selector: &str| -> headless_chrome::browser::tab::point::Point {
-        let at = eval(&tab, &format!("JSON.stringify((function(){{ var b = document.querySelector({selector:?}).getBoundingClientRect(); return [b.left + b.width / 2, b.top + b.height / 2]; }})())"));
-        let at: Vec<f64> = serde_json::from_str(at.as_str().unwrap_or("[0,0]")).unwrap();
+        // A selector that misses must fail the case, not hover over nothing and pass.
+        let at = eval(&tab, &format!("JSON.stringify((function(){{ var e = document.querySelector({selector:?}); if (!e) return null; var b = e.getBoundingClientRect(); return b.width && b.height ? [b.left + b.width / 2, b.top + b.height / 2] : null; }})())"));
+        let at: Vec<f64> = serde_json::from_str(at.as_str().unwrap_or("null"))
+            .unwrap_or_else(|_| panic!("{selector} is drawn, with a box, to hover over: {at}"));
         headless_chrome::browser::tab::point::Point { x: at[0], y: at[1] }
     };
     // From a point over nothing in the view (the list's head), onto each target; what it reveals.
