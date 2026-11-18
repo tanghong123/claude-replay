@@ -87,6 +87,7 @@ const ROUTES = [
   ["GET", "/mdrev/<mdrev>/", "optional"],
   ["ANY", "/api/mdrev/", "optional"],
   ["GET", "/mermaid/", "optional"],
+  ["GET", "/detached", "page"],
   ["GET", "/image", "page"],
   ["GET", "/markdown", "page"],
   ["ANY", "/api/mdrev-review/", "page"],
@@ -1953,9 +1954,10 @@ async function main() {
   });
 
   // ------------------------------------------------------------------------ detached tabs
-  await rule("tabs.static", S.tabs, "/image and /markdown are static pages: nothing from the address is written into them", async () => {
+  await rule("tabs.static", S.tabs, "/detached, /image and /markdown are static pages: nothing from the address is written into them", async () => {
     const marker = `conform${NONCE}marker`;
     const asks = [
+      ["/detached", `detached?session=${marker}&root=${marker}&path=${marker}&name=${marker}`],
       ["/image", `image?name=${marker}&path=${marker}&sig=${marker}&held=${marker}`],
       ["/markdown", `markdown?root=${marker}&path=${marker}&cap=${marker}&from=${marker}&to=${marker}&since=${marker}`],
     ];
@@ -1976,7 +1978,7 @@ async function main() {
       if (reply.text().includes(marker)) problems.push(`${route} wrote its address into the page`);
       said.push(`${route} static`);
     }
-    if (said.every((x) => x.endsWith("not served"))) return verdict(problems, skip("404: neither is served (no tab of its own)"));
+    if (said.every((x) => x.endsWith("not served"))) return verdict(problems, skip("404: none is served (no tab of its own)"));
     return verdict(problems, said.join(", "));
   });
 

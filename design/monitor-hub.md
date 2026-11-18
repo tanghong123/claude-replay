@@ -377,14 +377,23 @@ the one layout it reads today. These are additions to the kit's interface, the o
 
 ### D7 — The by-device arrangement
 
-A new Arrange choice in the session list, "By device", offered only when rows carry a `machine`: an
-outer head per machine, its sessions under it, arranged as the reader chose for the rest of the
-list. An app arrangement (like the Claude app, the Codex app, Herdr) is read per machine from that
-machine's `/api/layout` (D6), since each machine has its own app, and applied to that machine's rows
-alone, so with more than one machine it is offered only under By device: N apps' layouts have no one
-merged order. Which app arrangements a machine offers comes from its plain `/api/layout` answer.
-Every other choice (by agent and project, by activity) shows one merged list, each row wearing its
-machine as a small label.
+The arrangement by machine is a box in the session list's filter, **Group by machine** (#s561,
+Hong on the iOS app, 2026-11-17: "No need to have a machine switch at the top, instead, extend the
+filter menu to have another check box to group agents by machine"), not an Arrange choice: it sits
+between Idle and Include hidden and is shown only while the list holds more than one machine (one
+that has never answered counts).
+Ticked, the list is an outer head per machine, in the host's order of machines, saying how the
+machine answers while it does not (D6's heads over the list give way to it), each holding that
+machine's own sessions arranged as the reader chose for the rest of the list (by agent and project,
+or by activity); its rows do not repeat the machine. Unticked, the list is one merged list, each
+project's head and each row of the list by activity wearing its machine as a small label: the first
+label of the machine's host name (Hong: "limit to the first dot component maybe"). The choice is
+remembered like the filter's others.
+
+Not built yet: an app arrangement (like the Claude app, the Codex app, Herdr) under Group by machine.
+It would be read per machine from that machine's `/api/layout` (D6), since each machine has its own
+app, and applied to that machine's rows alone; with more than one machine an app arrangement is
+offered disabled, with the reason, since N apps' layouts have no one merged order.
 
 ### D8 — A session opens on its own machine
 
@@ -673,7 +682,11 @@ rows)". The merged source of D6 is kit code, each part reads a server of its own
 their machine and show a machine gone stale. Building it found the kit still kept one handle for
 the whole page: the list had no `backend` of its own and read whichever handle the view's
 `backend` option had last set, against D5's "never page-wide". #s540 gives the list its own; #s541
-builds the merged source on it.
+builds the merged source on it (`mergedBackend` in the kit, `merged-source.js`): the rows and groups
+of every machine with their ids and keys namespaced, the machine's label on a project's head and a
+flat row, a hide sent to the row's machine, and a stale machine's rows greyed under a head saying
+since when. It answers no app arrangement yet: over more than one machine one is offered only under
+D7's By device, so the per-machine layouts come with D7.
 
 **Still open,** each asked when the phase it holds up comes near, not before:
 

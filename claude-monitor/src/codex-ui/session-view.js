@@ -1,7 +1,7 @@
 // The session view (#s429, design/session-view-component.md, stage 3): the transcript and its
 // viewport, the turn bar and search, the outline panes, the artifact pane, the compose box and its
 // dialogs, and the phone's dock and sheets — everything of one session, behind one entry point,
-// `mountSessionView`. The app shell (app.js) mounts it as a host would and keeps only what is the
+// `mountSessionView`. The app shell (app-mount.js) mounts it as a host would and keeps only what is the
 // app's: the session list, the drawer and the rail, the brand, the theme, the session search and the
 // toast. What the view needs from the app comes in as options; what the app asks of it is the handle.
 //
@@ -49,7 +49,7 @@ export const KEYBOARD_MODES = Object.freeze(["engaged", "page"]);
 /** Every option `mountSessionView` takes; any other name is refused, so a misspelt or retired one
  *  (the old `toast`, `keys` or `controls`) fails loudly rather than being dropped. */
 export const MOUNT_OPTIONS = Object.freeze([
-  "theme", "grid", "backend", "show", "keyboard", "write", "frame",
+  "theme", "grid", "backend", "show", "keyboard", "write", "frame", "detachTo",
   "selectedId", "sessionRow", "sessionWorkers", "selectSession", "renderList", "refreshIndex", "pauseIndex", "resumeIndex",
   "onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast", "onOutline",
   "room", "parentShown", "openList", "openSidebar", "paneLayout", "paneCount",
@@ -72,7 +72,8 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  `sessionRow`, `sessionWorkers`, `selectSession`, `renderList`, `refreshIndex`, `pauseIndex` and
  *  `resumeIndex`. The rest are optional: a host may leave out `theme`, `backend`, `show` and
  *  `keyboard` (each has a default), `write` (writes are not offered without it), `frame` (the
- *  native app's), and every handler of what the view tells it.
+ *  native app's), `detachTo` (tabs open at the server's own pages), and every handler of what the
+ *  view tells it.
  *  - `theme`: "light" (the default) or "dark", carried by the view's element, where its stylesheet
  *    reads it; the handle's `setTheme` changes it.
  *  - `grid`: the box around the view (the app's `#app`). The phone's sheets are measured against it
@@ -87,7 +88,19 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    - `reading`: the Reading menu (Aa) and its keys (`w`, `-`, `+`). Off, the reader's stored
  *      reading preferences (this origin's `am-prod-reading`) still apply as they are.
  *    - `history`: the viewport history's Save, a row of the Reading menu.
- *    - `detach`: the artifact pane's ↗, which opens the document or image in a tab of its own.
+ *    - `detach`: every ↗ that opens something in a tab of its own: the artifact pane's (the document
+ *      or image it shows) and, where `detachTo` is given, the top bar's (the session's transcript).
+ *  - `detachTo`: where a tab of its own opens (#s433, design/embedding.md, "Detached views"): the page
+ *    that runs the kit's `mountDetached`, which reads what to show from the address's query (a
+ *    session, a document or an image). Left out, nothing changes: the pane's ↗ opens the server's
+ *    own `/markdown` and `/image` pages, and the top bar draws no ↗ for the transcript. A string is
+ *    that page's address, and every ↗ opens it with the query added (`?session=…`, `?root=…`,
+ *    `?name=…`). A function is asked at each ↗ with `{ kind, query, href }` (`kind` "session",
+ *    "markdown" or "image"; `href` the server's own page for it: `/detached`, `/markdown` or
+ *    `/image` with the query) and answers the address the view opens, or anything else once it has
+ *    opened a window of its own. The view opens a tab with `window.open`, never `noopener`: text the
+ *    transcript carries and an image it embeds reach the tab through a copy of this page's
+ *    sessionStorage, which a window the host opens itself does not get (that tab then says so).
  *  - `keyboard`: "engaged" (the default) or "page", as `KEYBOARD_MODES` says. Engaged, the view answers
  *    its keymap only while the reader's last press or focus is inside its element (or the task card
  *    it floats over the page), and yields to a guest inside it (mdrev's pane), as mdrev does; a key
@@ -95,6 +108,11 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    "page" is the app's mode: the view binds none, and the host owns the page's keyboard and calls
  *    `keys[action]`. A host that uses it gets the action names, not the key table (shared/keymap.js,
  *    which the app binds with its list's keys and contexts).
+ *    In either mode a mouse's click in the transcript focuses the transcript (#s488), which draws no
+ *    focus ring: WebKit sends a key from a pressed node a redraw has replaced to the page and scrolls
+ *    nothing. A click inside a box that scrolls on its own (a wide code block or table, a capped raw
+ *    record), a touch and a pen do not focus the transcript (the browser's own rule decides the rest);
+ *    nor does a press on the transcript's scrollbar, which leaves a focused transcript focused.
  *  - `write`: what writing to a session needs from the host, which owns write mode; left out, the
  *    view offers no writes (no compose button, no ✎ in a phone's dock, no notice that a session
  *    cannot be written to). An object of two functions:
@@ -187,6 +205,7 @@ if (!KEYBOARD_MODES.includes(keyboardMode)) throw new Error(`mountSessionView ta
 if (options.write !== undefined && !(typeof options.write?.on === "function" && typeof options.write?.confirm === "function")) throw new Error("mountSessionView takes its write as { on, confirm }, two functions, or none for a host that offers no writes");
 if (options.room !== undefined && typeof options.room !== "function") throw new Error("mountSessionView takes its room as a function answering how many pixels its host could give, or none");
 if (options.frame !== undefined && typeof options.frame !== "function") throw new Error("mountSessionView takes its frame as a function from a page's HTML to the address its frame loads");
+if (options.detachTo !== undefined && !((typeof options.detachTo === "string" && options.detachTo) || typeof options.detachTo === "function")) throw new Error("mountSessionView takes its detachTo as the address of the page its tabs open at, or a function answering one, or none");
 /** Whether an optional control is drawn: each is, unless the host switched it off. */
 const shows = name => options.show?.[name] !== false;
 // What the view starts outside its element, which `unmount` stops (stage 7). Every listener it binds
@@ -409,9 +428,59 @@ let turnsFollow = true;
 // The turn a turn step last landed, while the view stays where it landed (#s487, `stepLanded`) —
 // declared here for the same reason: `currentUserUnitIndex` reads it during the first render.
 let stepLanded = null;
+// The top bar's ↗ for the transcript (#s433), made further down — declared here for the same reason:
+// the header paints during the first render.
+let sessionNewTab = null;
 
 const byId = viewRoot.byId;
 const transcript = byId("transcript");
+// #s488: a mouse's press in the transcript gives the page's keys the transcript itself. With nothing
+// focused WebKit scrolls by a key the box holding the node the mouse last pressed, and the growth
+// redraws the units its rewritten records stand in (a turn committing rewrites the whole open turn),
+// so that node was often gone by the next key and Page Up, an arrow or Space scrolled nothing in
+// Safari. Focusable (`tabindex=-1`: never in the Tab order), the box takes the focus natively from a
+// press on its text, as the nearest focusable thing the press lands in, and keeps it through any
+// redraw; a press on a control the browser focuses still focuses the control. Only a MOUSE's press
+// does: a finger's or a pen's tap does not focus it (the attribute goes for the tap), since on a phone
+// or a tablet a tap on the text must not put the keyboard down nor take the focus from a field. No
+// ring is drawn for it (`production.css`). A browser sends no pointer events for a tap's
+// compatibility mouse events, so a mouse's pointerdown is a mouse's press, except one the browser
+// suite supplies: Linux's Chrome stops a synthesized tap at `touchend` and the harness sends the
+// press itself, up to half a second later and more on a loaded runner (#366), so a mouse press that
+// comes after a touch, at its point and within `TAP_MOUSE_MS` of it, is read as that tap's.
+const TAP_MOUSE_MS = 2000, TAP_MOUSE_PX = 24;
+let lastTouch = null;
+const touched = event => { if (event.pointerType !== "mouse") lastTouch = { at: event.timeStamp, x: event.clientX, y: event.clientY }; };
+const tapsMouse = event => !!lastTouch && event.timeStamp - lastTouch.at < TAP_MOUSE_MS && Math.hypot(event.clientX - lastTouch.x, event.clientY - lastTouch.y) < TAP_MOUSE_PX;
+// A press inside a box of the transcript's that scrolls on its own (a wide code block or table, a
+// capped raw record) leaves the box unfocusable too, as before: with nothing focused the browser
+// starts a key from the pressed node, so the arrows and Page Up/Down scroll that box, where the
+// transcript taking the focus would have sent them past it. What is left of the bug is there: in
+// Safari, after a click in a wide block of the open turn, a prompt arriving redraws that block and
+// Page Up scrolls nothing again, the original bug limited to wide blocks. Only a CAPPED box (one with
+// a max-height, as a raw record is) counts for scrolling down: a box that scrolls sideways computes
+// `overflow-y: auto` too, and a glyph or a child's margin can stand a pixel or two past an ordinary
+// code block's height, which would hand every such block the bug back.
+const scrollsInside = target => {
+  for (let node = target?.nodeType === 1 ? target : target?.parentElement; node && node !== transcript; node = node.parentElement) {
+    const style = getComputedStyle(node);
+    if ((/(auto|scroll)/.test(style.overflowX) && node.scrollWidth > node.clientWidth + 1) || (style.maxHeight !== "none" && /(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 1)) return true;
+  }
+  return false;
+};
+transcript.tabIndex = -1;
+transcript.addEventListener("pointerdown", event => {
+  // A press on the transcript's own scrollbar does not focus it: a browser moves the focus to a box
+  // it may focus on that press, so a draft's keys went to the transcript (with none, Chrome blurs the
+  // field as for a press anywhere else, measured, so the keys go to the page as before). With the
+  // transcript itself focused the box stays focusable, since one that stops being so is blurred.
+  const mouse = event.pointerType === "mouse" && !tapsMouse(event);
+  if (mouse && viewport.frame.isScrollbarTarget(event)) { if (viewRoot.active() !== transcript) transcript.removeAttribute("tabindex"); }
+  else if (mouse && !scrollsInside(event.target)) transcript.tabIndex = -1;
+  else transcript.removeAttribute("tabindex");
+  touched(event);
+}, { capture: true, passive: true, signal });
+transcript.addEventListener("pointerup", touched, { capture: true, passive: true, signal });
 const projection = new Projection();
 let landedHash = "";
 // #s277: a link waiting for its turn to arrive, and when it began to wait (`landOnHash`).
@@ -675,7 +744,37 @@ layoutHeard = () => { if (!settleOutline()) paneLayoutChanged({ decided: true })
 // (`toggled`), even where the host's list gives way in the same moment; the pane shutting itself as
 // the view is built glides nothing, but the view is arranged again for it, since what the mount draws
 // reads the arrangement. Then `layoutChanged` remeasures once that glide is done.
-const preview = new Preview({ phone: () => layout.phone(), layoutChanged: () => paneLayoutChanged(), paneToggled: change => (viewMounted ? layout.toggled(change) : (change(), layout.decide())), dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
+/** Where a tab of its own opens for `kind` ("session", "markdown" or "image") and the address's
+ *  `query` (#s433): the host's page (`detachTo`), else the server's own; "" for none (a transcript
+ *  with no `detachTo`, or a host that opened a window itself). */
+function tabAddress(kind, query) {
+  const to = options.detachTo;
+  if (typeof to === "string") {
+    // The query goes before a fragment the page's address carries, after a query of its own.
+    const cut = to.indexOf("#"), page = cut < 0 ? to : to.slice(0, cut), fragment = cut < 0 ? "" : to.slice(cut);
+    return `${page}${page.includes("?") ? "&" : "?"}${query}${fragment}`;
+  }
+  if (typeof to === "function") {
+    let answer;
+    try { answer = to({ kind, query, href: serverTab(kind, query) }); } catch (error) { (globalThis.reportError || console.error)(error); return ""; }
+    return typeof answer === "string" ? answer : "";
+  }
+  return kind === "session" ? "" : serverTab(kind, query);
+}
+/** The server's own tab for a document or an image (its `/markdown` and `/image` pages), or for a
+ *  transcript (`/detached`), which the view opens only where the host asks for it. */
+function serverTab(kind, query) {
+  if (kind === "markdown") return backend().mdrevUrl(`/markdown?${query}`);
+  if (kind === "image") return backend().url(`/image?${query}`);
+  return backend().url(`/detached?${query}`);
+}
+/** Open a tab of its own. NOT `noopener`: the tab takes a copy of this page's sessionStorage, which
+ *  is how held text and an embedded image reach it. */
+function openTab(kind, query) {
+  const href = tabAddress(kind, query);
+  if (href) window.open(href, "_blank");
+}
+const preview = new Preview({ openTab, phone: () => layout.phone(), layoutChanged: () => paneLayoutChanged(), paneToggled: change => (viewMounted ? layout.toggled(change) : (change(), layout.decide())), dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
 const attachmentViewer = new AttachmentViewer({ toast });
 // What the compose box asks of the app goes nowhere once the view is unmounted: a dialog's answer
 // still settling, a send still out.
@@ -777,16 +876,44 @@ function renderParent(meta) {
   parentBtn.dataset.parent = parent?.id || "";
   parentBtn.title = parent ? `Back to the parent session: ${parent.title || parent.id}  ( ${hintFor("parent")} )` : "Back to the parent session";
   // A deep-linked child gets a history entry for its parent, so the browser's own Back goes there
-  // too: the app's to write, since the session's address is its (`parentShown` in app.js).
+  // too: the app's to write, since the session's address is its (`parentShown` in app-mount.js).
   if (parent) options.parentShown?.(parent.id);
   return parent;
 }
 /** The top bar for the selected session, and its title to the host (`onTitle`, when it changed). */
 function renderHeader() {
   paintHeader();
+  markTitleWord();
   sayTitle(sessionTitle.textContent);
 }
+// #s520: off the phone the title keeps at least its first word, whatever else the top bar holds:
+// the bar's rules give it that much room (`--title-word` on the bar, so the search box's floor beside
+// the heading reads it too, production.css) and let
+// the crumb, the status chip and the search box give way first. Measured with the title's own font
+// on a canvas, so nothing is laid out for it, and again only when the text or the font changed (a
+// host's stylesheet may arrive after the first header). `var`: a header can be drawn during module
+// evaluation.
+var titleRuler = null, titleWordKey = "";
+function markTitleWord() {
+  const heading = sessionTitle.parentElement, text = sessionTitle.textContent.trim();
+  titleRuler ||= document.createElement("canvas").getContext("2d");
+  if (!heading || !titleRuler) return;
+  // From the longhands: Chrome answers "" for the `font` shorthand when a longhand has no place in
+  // it.
+  const style = getComputedStyle(sessionTitle);
+  const font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+  if (`${font}\n${text}` === titleWordKey) return;
+  titleWordKey = `${font}\n${text}`;
+  const word = text.split(/\s+/)[0] || "";
+  titleRuler.font = font;
+  const width = word ? titleRuler.measureText(word).width + (text.length > word.length ? titleRuler.measureText("…").width : 0) : 0;
+  (heading.parentElement || heading).style.setProperty("--title-word", `${Math.ceil(width) + 1}px`);
+  // A new name gives the box held beside it a different room (`fitDeskSearch`); during module
+  // evaluation the search is not built yet and this does nothing.
+  fitSearchField();
+}
 function paintHeader() {
+  if (sessionNewTab) sessionNewTab.hidden = !selectedId();
   renderArtifacts();
   const row = selectedRow();
   const liveMeta = recordState.session === selectedId() ? recordState.meta : null;
@@ -809,6 +936,7 @@ function paintHeader() {
     byId("sessionCrumb").textContent = "Scanning sessions";
     byId("statusChip").className = "status-chip idle";
     byId("statusChip").textContent = "None selected";
+    byId("statusChip").title = "";
     sessionTitle.tabIndex = -1;
     sessionCopyMenu.hidden = true;
     setSessionCopyMenu(false);
@@ -823,7 +951,8 @@ function paintHeader() {
     : `${agentName(row.agent)} · ${row._group?.label || ""}`;
   byId("statusChip").className = `status-chip ${state.state} ${state.reason}`;
   byId("statusChip").innerHTML = `<span class="state-dot ${escapeText(state.state)} ${escapeText(state.reason)}" style="margin:0"></span>${escapeText(state.label)}${row.stateConfidence === "inferred" ? " · inferred" : ""}`;
-  byId("statusChip").title = row.stateDetail || "";
+  // #s520: where the glyphs' bar draws the chip as its dot, its words are its title.
+  byId("statusChip").title = `${row.stateDetail || state.label}${row.stateConfidence === "inferred" ? " · inferred" : ""}`;
   const meta = recordState.session === row.id ? (recordState.meta || {}) : {};
   const sid = meta.sid || row.id || "";
   const path = meta.path || "";
@@ -2414,7 +2543,7 @@ byId("transcriptSearchInput").onkeydown = event => {
   // Escape leaves the box as a click outside would (#298, the owner; the classic page's `q.blur()`):
   // the query, its count and its marks stay, and the next key is the page's keymap's again. An open
   // filter popover closes with it, as the page-wide Escape closes it.
-  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPopover(null); event.currentTarget.blur(); setPhoneSearch(false); return; }
+  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPopover(null); event.currentTarget.blur(); setPhoneSearch(false); releaseSearch(); return; }
   // An Enter that commits an input method's composition (pinyin, kana) is the input method's; Safari
   // sends it with `isComposing` false and keyCode 229.
   if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
@@ -2517,7 +2646,7 @@ function fitSearchField() {
   if (!searchField || !fieldMeasure) return;
   const input = byId("transcriptSearchInput");
   const hint = input.dataset.hint || input.placeholder;
-  if (!viewRoot.$(".header-searchbox")?.classList.contains("phone-open")) { input.style.width = ""; input.placeholder = hint; return; }
+  if (!viewRoot.$(".header-searchbox")?.classList.contains("phone-open")) { input.style.width = ""; input.placeholder = hint; fitDeskSearch(input); return; }
   const cs = getComputedStyle(input);
   fieldMeasure.style.font = cs.font; fieldMeasure.style.letterSpacing = cs.letterSpacing;
   const chips = searchChips.classList.contains("has-chips") ? searchChips.getBoundingClientRect().width + 4 : 0;
@@ -2536,11 +2665,74 @@ function fitSearchField() {
   input.style.width = `${Math.max(room, text)}px`;
   if (input.selectionStart === input.value.length) searchField.scrollLeft = searchField.scrollWidth;
 }
+/** How far the title gives way to a query being typed above a phone (#s520): a word or two. The
+ *  task's bar is the title's first word; 120px left a 1100px window with the pane open 8px short of
+ *  `uo(R): needle` on a Mac and more with Linux's wider glyphs, and the query is what the reader is
+ *  looking at while they type. */
+const TITLE_GIVES_TO = 80;
+
+/** Above a phone the box in use asks for the room its query needs (#s520): its chips and its text,
+ *  measured as a phone's field is, beside the box's own controls. The title gives way first, down to
+ *  `TITLE_GIVES_TO` (or its whole name, if shorter, and never past its own floor, its first word:
+ *  `--title-word`), and the box takes no more than that leaves, nor more than its own width rule
+ *  gives it (`min(460px,36vw)` and its kin): a floor past that widened the cluster around a box that
+ *  stayed put, a blank gap beside it (train2's review), where a longer query scrolls in its field as
+ *  it always has. A fixed floor of 400px left `uo(R): needle` 17px short at a 1100px window on a Mac
+ *  and short on Linux's wider fonts, since the count names the scope too ("2 hits in uo(R)"). Only
+ *  the floor's rule reads `--search-floor` (production.css, #s520), so it means nothing on a phone or
+ *  in the bar the outline's glyphs join, and it is worked out again from the floor that rule gives
+ *  without it, whenever the field, the bar or the title changes. */
+function fitDeskSearch(input) {
+  const cluster = viewRoot.$(".header-search-cluster"), searchbox = viewRoot.$(".header-searchbox");
+  if (!cluster || !searchbox) return;
+  cluster.style.removeProperty("--search-floor");
+  const chipped = searchChips.classList.contains("has-chips");
+  if ((!input.value && !chipped) || sessionView.classList.contains("pl-phone") || sessionView.classList.contains("pl-outline-bar")) return;
+  const cs = getComputedStyle(input);
+  fieldMeasure.style.font = cs.font; fieldMeasure.style.letterSpacing = cs.letterSpacing;
+  fieldMeasure.textContent = input.value;
+  // What the strip needs to show it all: the text (measured, or the field's own scroll width where
+  // that is more) and the chips at their whole width (their values shrink to an ellipsis inside them,
+  // so the chips' own scroll width does not show it), which the strip holds to a share of itself
+  // (`.search-field>.search-chips`, 70%) beside its gap.
+  const text = input.value ? Math.max(Math.ceil(fieldMeasure.getBoundingClientRect().width) + 8, input.scrollWidth) : 0;
+  let chips = chipped ? searchChips.scrollWidth : 0;
+  if (chipped) for (const value of searchChips.querySelectorAll(".search-chip-value")) chips += Math.max(0, value.scrollWidth - value.clientWidth);
+  const cap = getComputedStyle(searchChips).maxWidth, share = cap.endsWith("%") ? parseFloat(cap) / 100 || 1 : 1;
+  const gap = parseFloat(getComputedStyle(searchField).columnGap) || 0;
+  const strip = chips ? Math.max(chips / share, chips + gap + text) : text;
+  const short = Math.ceil(strip - searchField.clientWidth);
+  if (short <= 0) return;
+  const box = cluster.getBoundingClientRect().width, own = searchbox.getBoundingClientRect().width;
+  // The box's own width rule, read with its `max-width:100%` and its shrinking as a flex item lifted
+  // for a moment (a squeezed item could read its content's least instead).
+  const held = [searchbox.style.maxWidth, searchbox.style.flexShrink];
+  searchbox.style.maxWidth = "none"; searchbox.style.flexShrink = "0";
+  const widest = searchbox.getBoundingClientRect().width + (box - own);
+  [searchbox.style.maxWidth, searchbox.style.flexShrink] = held;
+  // What the title can give: down to what it keeps, and no more than its heading can, which keeps a
+  // floor of its own (the first word and what else it draws at its least): a title above its keep in
+  // a heading at that floor has nothing to give, and a floor counted on it pushed the bar's last
+  // controls out of the session's column (train2's measure, a long first word at 1100px).
+  const title = byId("sessionTitle"), heading = title?.parentElement;
+  const keep = title ? Math.max(parseFloat(getComputedStyle(title).minWidth) || 0, Math.min(TITLE_GIVES_TO, title.scrollWidth)) : 0;
+  const headingGives = heading ? heading.getBoundingClientRect().width - (parseFloat(getComputedStyle(heading).minWidth) || 0) : Infinity;
+  const give = title ? Math.max(0, Math.min(title.getBoundingClientRect().width - keep, headingGives)) : 0;
+  const floor = Math.floor(Math.min(box + short + 2, box + give, widest));
+  if (floor > box) cluster.style.setProperty("--search-floor", `${floor}px`);
+}
 addEventListener("resize", () => fitSearchField(), { signal });
 // The strip's room changes without the window's (#s516): the magnifier gives way while the field holds
 // the focus (the keyboard up), and the dock narrows beside a pane. The strip is a flex item that
-// takes what the box leaves, whatever the field inside it measures, so a fit never resizes it again.
-new ResizeObserver(() => fitSearchField()).observe(searchField);
+// takes what the box leaves, whatever the field inside it measures; above a phone a fit may set a
+// floor that resizes it once more, and the next fit sets the same floor. The bar's room changes
+// without the window's too (the pane opening beside the session, its drag), and a floor fitted to
+// the old room would hold the box past the session's column (train2's review), so the bar is watched
+// as well.
+const searchFit = new ResizeObserver(() => fitSearchField());
+searchFit.observe(searchField);
+const searchBar = viewRoot.$(".workspace>.topbar");
+if (searchBar) searchFit.observe(searchBar);
 // #310, #313: on a phone (the view's phone family, `PHONE_QUERY` read from its own classes, #s431; #s32 a landscape phone too) the search box is an icon with its
 // input hidden. A tap on it OPENS it across the bar's second row, and it stays open until a tap lands outside the search's own
 // surfaces (the box, the drop-down, the filter popover) or Escape — never on blur, since a touch
@@ -2554,8 +2746,15 @@ function setPhoneSearch(open) {
   if (open && phoneSearch.matches) byId("transcriptSearchInput").focus();
 }
 searchBox.addEventListener("click", event => {
+  // #s520: off the phone a click anywhere in the box but its buttons is a click for its field, as a
+  // native search field takes it; where the box rests as its glyph (the bar the outline's glyphs
+  // join) that click is what opens it.
+  if (!phoneSearch.matches) {
+    if (!event.target.closest("button, input")) byId("transcriptSearchInput").focus();
+    return;
+  }
   // #333: with a query the closed box keeps its arrows, which step through the matches in place.
-  if (!phoneSearch.matches || searchBox.classList.contains("phone-open") || event.target.closest("#filterTranscriptBtn, .find-nav")) return;
+  if (searchBox.classList.contains("phone-open") || event.target.closest("#filterTranscriptBtn, .find-nav")) return;
   setPhoneSearch(true);
 });
 // A tap outside dismisses the TOP layer only (#s49, the owner: "after opening and closing the filter
@@ -2566,6 +2765,33 @@ document.addEventListener("pointerdown", event => {
   if (phoneSearch.matches && byId("navigatorOptions").classList.contains("open")) { setPopover(null); return; }
   setPhoneSearch(false);
 }, { capture: true, signal });
+// #s520: where the box rests as its glyph (the bar the outline's glyphs join), what holds it open
+// is the reader's use of the search, not the field's focus: `search-held` on its cluster, from a
+// focus or a mouse's press anywhere inside it (the box, its drop-down, the filter) until a press
+// outside it, a Tab out of it, a press inside the pane's page (which takes the focus into its frame
+// and sends this page no press) or Escape. Safari and Firefox on a Mac give a pressed button no
+// focus, so the field's blur at the press would fold the box and take the button from under the
+// pointer before its click. A finger's press holds nothing: WebKit spends a tap whose press shows
+// content as a hover and sends no click, so on an iPad the box opened at the press and its field
+// never took the focus (#s547's walk). A finger opens it by the click, which focuses the field, and
+// iOS leaves the focus in the field when a button is tapped. Leaving also closes the filter there,
+// so the box folds with it: a press outside closes it anyway (#s546), a Tab out or a press into the
+// pane's page does not.
+const searchCluster = viewRoot.$(".header-search-cluster");
+searchCluster.addEventListener("pointerdown", event => { if (event.pointerType === "mouse") searchCluster.classList.add("search-held"); }, { signal });
+searchCluster.addEventListener("focusin", () => searchCluster.classList.add("search-held"), { signal });
+searchCluster.addEventListener("focusout", event => { if (event.relatedTarget && !searchCluster.contains(event.relatedTarget)) releaseSearch(); }, { signal });
+document.addEventListener("pointerdown", event => {
+  if (searchCluster.classList.contains("search-held") && !searchCluster.contains(event.target)) releaseSearch();
+}, { capture: true, signal });
+addEventListener("blur", () => { if (viewRoot.active()?.tagName === "IFRAME") releaseSearch(); }, { signal });
+/** The search is no longer in use: the box may fold, and in the glyphs' bar its filter shuts. */
+function releaseSearch() {
+  const cluster = viewRoot.$(".header-search-cluster");
+  if (!cluster?.classList.contains("search-held")) return;
+  cluster.classList.remove("search-held");
+  if (layout.arrangement()?.outline === "bar" && byId("navigatorOptions").classList.contains("open")) setPopover(null);
+}
 phoneSearch.addEventListener("change", () => { if (!phoneSearch.matches) setPhoneSearch(false); }, { signal });
 byId("transcriptSearchInput").addEventListener("focus", () => { if (phoneSearch.matches && byId("navigatorOptions").classList.contains("open")) setPopover(null); });
 const SCOPE_ROWS = [["u", "User messages"], ["a", "Agent replies"], ["t", "Thinking"], ["o", "Tools"], ["w", "Whole words"]];
@@ -3004,7 +3230,12 @@ readingSection.innerHTML = `<div class="scope-menu-head"><strong>Reading</strong
 <div class="reading-row reading-wide"><span>Wide transcript</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wide" aria-label="Wide transcript" aria-checked="false"><span></span></button></div>
 <div class="reading-row reading-wrap"><span>Wrap long lines</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wrap" aria-label="Wrap long lines — the baseline every code block starts from" aria-checked="false"><span></span></button></div>
 <div class="reading-row"><span>User turns as raw text</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="rawUser" aria-label="Show user turns as raw text — exactly as typed, whitespace intact" aria-checked="false"><span></span></button></div>
+<div class="reading-row reading-fold-all"><span>Agent processes</span><button class="scope-menu-action" type="button" data-fold-all title="Collapse every agent process; with none open, open them all">Collapse all</button></div>
 <div class="reading-row"><span>Viewport history</span><button class="scope-menu-action" type="button" data-history-save title="Save the last hour of what you did and what the page did — kinds, heights and timings, no content">Save</button></div>`;
+// #s520: where the outline's glyphs share the top bar, the bar's fold-all control moves into this
+// menu (production.css shows the row only there, and only while the menu is drawn); the row presses
+// it.
+readingSection.querySelector("[data-fold-all]").addEventListener("click", () => byId("sessionFoldAll").click());
 // A host may switch the viewport history's Save off (stage 6): it is this repository's bug report.
 if (!shows("history")) readingSection.querySelector("[data-history-save]").closest(".reading-row").remove();
 // Production-only chrome, built here so the extracted demo shell stays byte-identical (the
@@ -3624,6 +3855,17 @@ byId("navigatorRailExpand").onclick = () => toggleNavigator(!uiState.navigatorOp
 // demo shell, which is never hand-edited, so it is removed here at runtime — the same
 // production-chrome layering the X itself used.
 byId("navigatorToggle")?.remove();
+// #s433: the session's transcript in a tab of its own, beside the right pane's control: only where the
+// host says where its tabs open (`detachTo`), so a host that passes nothing sees nothing new. Hidden
+// on a phone, where the tab has no way back (the pane's ↗ too, #335), and while no session is open.
+sessionNewTab = shows("detach") && options.detachTo !== undefined
+  ? Object.assign(document.createElement("button"), { type: "button", id: "sessionNewTab", className: "iconbtn session-newtab", textContent: "↗", title: "Open this session in a new tab", hidden: true })
+  : null;
+if (sessionNewTab) {
+  sessionNewTab.setAttribute("aria-label", "Open this session in a new tab");
+  sessionNewTab.onclick = () => { const id = selectedId(); if (id) openTab("session", `session=${encodeURIComponent(id)}`); };
+  byId("previewBtn").before(sessionNewTab);
+}
 // The published-artifact roster (#78) lives in the right pane (#95), not in a header menu:
 // one row per URL with its republish count — twenty calls for two decks read as two rows —
 // as the pane's pinned first tab, and the count on the pane's own button so a closed pane
@@ -4095,7 +4337,7 @@ function pageTranscript(direction) {
   viewport.pageBy(direction, { intent: true });
 }
 // The view's half of the keymap, by the keymap's action names: the handle's `keys`. In the app
-// (`keyboard: "page"`) the app binds the page's keys and adds the list's (app.js); engaged, the view
+// (`keyboard: "page"`) the app binds the page's keys and adds the list's (app-mount.js); engaged, the view
 // binds them itself (below).
 const keyActions = {
   // `/`, and ⌘F or Ctrl+F (#s509), from the compose box too: the field focused with its query
@@ -4125,7 +4367,7 @@ if (!shows("reading")) for (const action of ["wrap", "size-down", "size-up"]) de
 // (the list's arrows, `\`) or one that answers `false` is left to the page. It listens in the capture
 // phase, so a host's own listener on the page, bound before the view's, finds the key already taken
 // (`defaultPrevented`) rather than acting on it beside the view. "page" binds nothing: the host
-// routes the page's keys to `keys` (app.js).
+// routes the page's keys to `keys` (app-mount.js).
 if (keyboardMode === "engaged") {
   document.addEventListener("keydown", event => {
     if (!engaged || !element.isConnected) return;
@@ -4149,8 +4391,17 @@ byId("findPrev").title = `Previous match (${hintFor("hit-prev")})`; byId("findNe
 byId("turnPrev").title = `Previous turn (${hintFor("turn-prev")})`; byId("turnNext").title = `Next turn (${hintFor("turn-next")})`;
 // The header's own turn steppers were in the design but never bound; they step the same way the keys do.
 byId("turnPrev").onclick = () => stepTurn(-1); byId("turnNext").onclick = () => stepTurn(1);
+// #s520: Escape leaves the search wherever the focus is: on a step or the funnel after a press
+// (Chrome focuses a pressed button), or nowhere (Safari and Firefox on a Mac). It is the view's
+// Escape only while the reader works in the view (#s535, `viewEscape`); a hover's copy menu closes
+// on it too (#s557).
 addEventListener("keydown", event => {
-  if (viewEscape(event)) { setSessionCopyMenu(false); setPopover(null); }
+  if (viewEscape(event)) {
+    setSessionCopyMenu(false); setPopover(null);
+    const active = viewRoot.active(), cluster = viewRoot.$(".header-search-cluster");
+    if (active && cluster?.contains(active)) active.blur();
+    releaseSearch();
+  }
   else if (event.key === "Escape" && hovered(sessionTitle, sessionCopyMenu)) setSessionCopyMenu(false);
 }, { signal });
 
@@ -4209,7 +4460,7 @@ var sessionLoading;
 //    after), so the outline's rendering, its filters and its one click handler serve both.
 //  - `--phone-top`, the bar's measured bottom, places the sheets that hang from the top (Info);
 //    `--phone-bottom`, the dock's top, the sheets that rise from the pill.
-// The drawer and a wide phone's column are the app's (app.js); the rest of the shell is the view's.
+// The drawer and a wide phone's column are the app's (app-mount.js); the rest of the shell is the view's.
 var mobileShell;
 var infoPopoverToggle;
 var phoneDock;

@@ -18,12 +18,13 @@ import { RESULT_MARK, resultBodyHtml } from "../../claude-replay-html/src/html/s
 import { isInteraction, interactionCard, interactionHtml } from "../../claude-replay-html/src/html/shared/interaction.js";
 import { splitQuery, querySpans, zeroCounts, countRecord, countLabel, writePrefix, prefixOf, CLASS_ORDER, MIN_NEEDLE, toolMatches, recordHasTool, toolLetters, resolveTools, RESERVED_TOOLS } from "../../claude-replay-html/src/html/shared/search.js";
 import { chainWalk, toolTree } from "../../claude-replay-html/src/html/shared/filter.js";
-import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, HeightGuess, correction, firstVisible, classifyScroll, traceWanted } from "../../claude-replay-html/src/html/shared/virtual-window.js";
+import { prefixSums, indexAt, rangeForScroll, rangeAround, clampRange, padHeights, heightChanged, HeightGuess, correction, firstVisible, classifyScroll, traceWanted, VirtualWindow } from "../../claude-replay-html/src/html/shared/virtual-window.js";
 import { taskGlyph, taskStatus as cardStatus, taskStamp, taskDates, taskChips, taskRowMeta, taskSections, taskCardHtml, TASK_NO_TITLE, TASK_NO_DETAILS } from "../../claude-replay-html/src/html/shared/task-card.js";
 import { displayName, toolHead, stateLabel, nextHeadStep, headStepState, headStepOf } from "../../claude-monitor/src/codex-ui/shared/tool-head.js";
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { COMMAND_KEY, KEYMAP, bindKeymap, hintFor, inGuest, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
 import { isMarkdownName, standaloneFacts, standaloneHref } from "../../claude-monitor/src/codex-ui/mdrev-pane.js";
+import { DETACHED_OPTIONS, detachedKind, mountDetached } from "../../claude-monitor/src/codex-ui/detached.js";
 import { agentRecordTargets, currentTurnIndex, peerHue, peerLabelRest, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget, taskDetails, artifactRoster, humanTokens, compactionTick } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
@@ -39,7 +40,11 @@ const referenceCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/ref
 const referenceShell = readFileSync(new URL("../../claude-monitor/src/codex-ui/reference-shell.html", import.meta.url), "utf8");
 const productionCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
 const viewportSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
-const appSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+// #s551 (design/app-mount.md, stage 2): the app's code is app-mount.js, `mountApp`, and the monitor's
+// page mounts it from app.js; a pattern about the app reads both, as it read the one file they were.
+const mountSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/app-mount.js", import.meta.url), "utf8");
+const hostSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+const appSource = `${mountSource}\n${hostSource}`;
 // #s429 (design/session-view-component.md, stage 3): the session view's code is session-view.js and
 // the app's (the list, the drawer, the chrome) is app.js. A pattern reads the module that holds its
 // code; a ban reads both, as it read the one file both were.
@@ -62,6 +67,10 @@ assert.equal(referenceShell, extractedShell, "reference shell must remain an exa
 const appShell = readFileSync(new URL("../../claude-monitor/src/codex-ui/app-shell.html", import.meta.url), "utf8");
 const { SESSION_VIEW_MARKUP } = await import("../src/codex-ui/session-view-markup.js");
 const { SESSION_LIST_MARKUP } = await import("../src/codex-ui/session-list-markup.js");
+// #s551 stage 2: the page carries an empty wrapper, and `mountApp` draws the app's shell into it from
+// its module, which is the shell file exactly.
+const { APP_SHELL_MARKUP } = await import("../src/codex-ui/app-shell-markup.js");
+assert.equal(APP_SHELL_MARKUP, appShell, "the shell's module is app-shell.html, byte for byte (run scripts/extract-agent-monitor-demo.mjs)");
 // #s430 stage 3: the demo's two attention controls (the Needs attention button and the rail's bell),
 // which the list removed as it mounted, are cut from the app's shell and kept nowhere. Their markup,
 // as the demo has it: the reference rules that style them stay the app's (`APP_CHROME`), so the
@@ -477,7 +486,7 @@ let droppedAttention = "";
     for (const m of readFileSync(file, "utf8").matchAll(/^import [^;]*? from "(\.[^"]+)";/gm)) reach(new URL(m[1], file), seen);
     return seen;
   };
-  const appModules = ["app.js", "state.js", "view-root.js", "backend.js", "icons.js"];
+  const appModules = ["app.js", "app-mount.js", "app-shell-markup.js", "state.js", "view-root.js", "backend.js", "icons.js"];
   for (const href of reach(new URL("../src/codex-ui/session-view.js", import.meta.url))) {
     const name = href.slice(href.indexOf("/codex-ui/") + "/codex-ui/".length);
     if (appModules.includes(name)) continue;
@@ -568,7 +577,7 @@ let droppedAttention = "";
     const listView = read("session-list-view.js");
     const fn = name => { const at = listView.indexOf(`function ${name}(`); assert.ok(at >= 0, `the list draws with ${name}`); return listView.slice(at, listView.indexOf("\n}\n", at)); };
     assert.match(fn("railFlyoutBody"), /flatSessionsHtml\(\[agent\][^)]*\) : agentProjectsHtml\(agent\)/, "the flyout draws an agent's rows as the tree draws them");
-    const flyoutText = ["railFlyoutBody", "agentProjectsHtml", "flatSessionsHtml", "familyRowsHtml", "sessionTreeRow", "treeAction", "agentGlyph"].map(fn).join("\n");
+    const flyoutText = ["railFlyoutBody", "agentProjectsHtml", "flatSessionsHtml", "familyRowsHtml", "sessionTreeRow", "treeAction", "agentGlyph", "machineTag"].map(fn).join("\n");
     const flyoutNames = new Set();
     for (const m of flyoutText.matchAll(/class=\\?["']((?:[^"'\\$]|\$\{[^}]*\})*)\\?["']/g)) for (const w of words(m[1])) flyoutNames.add(`.${w}`);
     const shown = [...flyoutNames].filter(n => styles.LIST_CHROME.includes(n)).sort();
@@ -677,7 +686,7 @@ assert.match(viewSource, /footerCost\.textContent = display\.label \|\| ownCost 
 assert.match(classicExportSource, /var usageCost = u\.cost \|\| \(u\.cost_partial \? "unpriced" : null\)/, "the classic transcript Usage panel must distinguish wholly unpriced from no usage");
 assert.match(classicExportSource, /if \(usageCost\) row\("est\. cost", usageCost, "total"\)/, "the classic transcript Usage row must render the four-state cost label");
 
-for (const moduleName of ["app.js", "session-list-view.js", "session-view.js", "control-store.js", "preview.js"]) {
+for (const moduleName of ["app-mount.js", "session-list-view.js", "session-view.js", "control-store.js", "preview.js"]) {
   const module = readFileSync(new URL(`../../claude-monitor/src/codex-ui/${moduleName}`, import.meta.url), "utf8");
   for (const [, id] of module.matchAll(/byId\("([^"]+)"\)/g)) {
     // The page as it is drawn: the app's shell, the view's markup inside #sessionView (stage 4), and
@@ -1518,7 +1527,7 @@ assert.match(viewSource, /if \(target && turnsFollow\) revealInPane\(target\);/,
   console.log("#s209 agent mark cases passed");
 }
 assert.match(productionCss, /\n:is\(#collapseBtn,#expandBtn\)\[data-flat\]\{display:none\}/, "flat, the group controls go: the list marks the two it places, since the head is outside its element (#s430 stage 3)");
-assert.match(listSource, /for \(const control of \[collapseBtn, expandBtn\]\) control\.toggleAttribute\("data-flat", flat \|\| arranged\);/, "…with the same verdict as its own sessions-flat");
+assert.match(listSource, /for \(const control of \[collapseBtn, expandBtn\]\) control\.toggleAttribute\("data-flat", \(flat && !grouped\) \|\| arranged\);/, "…with the same verdict as its own sessions-flat, except that grouped by machine (#s561) the machines' heads still fold");
 assert.match(appSource, /indexState\.selectedWasRow && !selectedRow\(\)\) sessionGone\(\)/, "a sub-agent child, never a list row, is not declared gone by the index poll");
 assert.match(viewSource, /meta\?\.ancestors\?\.at\(-1\)/, "the parent control reads the last ancestor from the session's own meta");
 assert.match(productionCss, /\.session-parent\.is-live\{display:inline-flex;/, "the reference parent control is shown by a production state, not by editing the shell");
@@ -1573,6 +1582,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const ev = (key, extra = {}) => ({ key, metaKey: false, ctrlKey: false, altKey: false, shiftKey: false, ...extra });
   assert.equal(resolveKey(ev("]"), "view").action, "turn-next");
   assert.equal(resolveKey(ev("]"), "list"), null, "view keys do not fire while the list has focus");
+  // #s576: a Chinese keyboard's full-width brackets are the bracket keys, under the same rules.
+  assert.equal(resolveKey(ev("\u3011"), "view").action, "turn-next", "】 steps to the next turn");
+  assert.equal(resolveKey(ev("\u3010"), "view").action, "turn-prev", "【 steps to the previous turn");
+  assert.equal(resolveKey(ev("\u3010"), "view", { tagName: "INPUT" }), null, "…never while typing");
+  assert.equal(resolveKey(ev("\u3011"), "list"), null, "…and not while the list has focus");
+  assert.equal(resolveKey(ev("\u3011"), "view", { tagName: "DIV", closest: sel => (sel === "[data-guest-keys]" ? {} : null) }), null, "…nor inside a guest");
+  for (const mod of ["metaKey", "ctrlKey", "altKey"]) assert.equal(resolveKey(ev("\u3011", { [mod]: true }), "view"), null, `…nor with ${mod} held`);
+  for (const b of KEYMAP) assert.ok(!["\u3010", "\u3011"].includes(b.key), "no binding names a full-width bracket itself");
+  assert.equal(hintFor("turn-next"), "]", "the hint still names the bracket key");
   assert.equal(resolveKey(ev("ArrowDown"), "list").action, "list-next");
   assert.equal(resolveKey(ev("ArrowDown"), "view"), null, "arrow keys are the list's alone");
   assert.equal(resolveKey(ev("/"), "list").action, "search", "search works from anywhere");
@@ -1617,7 +1635,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // room changes (the magnifier gives way, the keyboard, a pane), through the view's own observer.
   assert.match(viewSource, /const SEARCH_PLACEHOLDERS = \["Search this session", "Search"\];/, "the shorter texts, longest first");
   assert.match(viewSource, /input\.placeholder = \[hint, \.\.\.SEARCH_PLACEHOLDERS\]\.find\(fits\) \|\| SEARCH_PLACEHOLDERS\[SEARCH_PLACEHOLDERS\.length - 1\];\n    input\.style\.width = `\$\{room\}px`;\n    searchField\.scrollLeft = chips \? searchField\.scrollWidth : 0;/, "an empty field fills its room, from its start");
-  assert.match(viewSource, /\nnew ResizeObserver\(\(\) => fitSearchField\(\)\)\.observe\(searchField\);\n/, "the field is fitted again as the strip's room changes");
+  assert.match(viewSource, /\nconst searchFit = new ResizeObserver\(\(\) => fitSearchField\(\)\);\nsearchFit\.observe\(searchField\);\n/, "the field is fitted again as the strip's room changes");
+  // And as the bar's room changes with no window resize (the pane opening, its drag): a floor fitted
+  // to the old room held the box past the session's column (#s520, train2's review).
+  assert.match(viewSource, /\nconst searchBar = viewRoot\.\$\("\.workspace>\.topbar"\);\nif \(searchBar\) searchFit\.observe\(searchBar\);\n/, "the field is fitted again as the bar's room changes");
   assert.match(viewSource, /byId\("composer"\)\.dataset\.commandKeys = "";/, "the view marks its compose box");
   // ENGAGEMENT: a click on a guest's prose leaves the focus on <body>, so the keydown's target is
   // <body> — and the key is still the guest's until the reader clicks elsewhere. bindKeymap tracks
@@ -1648,6 +1669,26 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(trip({ ...local, range: { from: "abc123", to: "WORKTREE", since: "1w" } }), { ...local, range: { from: "abc123", since: "1w" } }, "a time window keeps its window");
   assert.deepEqual(trip({ ...local, range: { from: null, to: "def456" } }), { ...local, range: { from: null, to: "def456" } }, "a plain read AT a revision — what mdrev reports for a pick in clean mode — is still a range");
   assert.deepEqual(trip({ root: "held", path: "0123456789abcdef/NOTES.md", cap: "d".repeat(64), range: null }), { root: "held", path: "0123456789abcdef/NOTES.md", cap: "d".repeat(64), range: null }, "held text, by the path the store gave it");
+  // #s433: a tab of its own reads what to show from its address, the transcript first, then a
+  // document, then an image, so every address the monitor's `/markdown` and `/image` tabs were opened
+  // with still lands on the one page that serves them now.
+  assert.equal(detachedKind("?session=s1&root=held&path=a.md"), "session", "a session's address names its transcript");
+  assert.equal(detachedKind(standaloneHref({ root: "held", path: "0123/NOTES.md", cap: "d".repeat(64) }).split("?")[1]), "markdown", "a document's, as the pane writes it");
+  assert.equal(detachedKind("name=a.png&path=%2Fx%2Fa.png&sig=s"), "image", "an offered image file's");
+  assert.equal(detachedKind("?name=a.png&held=am-image%3Ak"), "image", "an embedded image's copy");
+  assert.equal(detachedKind("?root=&path=shot.png"), "markdown", "an empty root is still a document's address, whose tab says it names none");
+  assert.equal(detachedKind(""), "none", "an address that names nothing");
+  assert.deepEqual([...DETACHED_OPTIONS], ["backend", "theme", "address"]);
+  {
+    const element = { nodeType: 1, id: "", childNodes: [], dataset: {} };
+    assert.throws(() => mountDetached(element, { detachTo: "/x" }), /takes no option named detachTo/, "an option it does not take is refused");
+    assert.throws(() => mountDetached({ ...element, id: "pane" }, {}), /no id or the id detachedView/, "an element with another id is refused");
+    assert.throws(() => mountDetached(element, { theme: "blue" }), /theme/, "a theme it does not know is refused");
+  }
+  // The app opens the transcript's tab at `/detached` and a document's or an image's where it opened
+  // before (`/markdown`, `/image`), all one page: the server's own, the `href` the view hands it.
+  assert.match(appSource, /detachTo:\s*\(\s*\{\s*href\s*\}\s*\)\s*=>\s*href\s*,/, "the app opens each tab at the server's own page");
+  assert.match(viewSource, /return\s+backend\(\)\.url\(\s*`\/detached\?\$\{query\}`\s*\)/, "the server's own transcript tab is /detached");
   assert.deepEqual(standaloneFacts(""), { root: "", path: "", cap: "", range: null }, "an empty address names nothing");
   assert.equal(hintFor("hit-prev"), "N"); assert.equal(hintFor("page-up"), "⇧Space"); assert.equal(hintFor("nope"), "");
   assert.match(appSource, /bindKeymap\(document, /, "the shell binds the keymap once, at the document");
@@ -2198,7 +2239,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // drawn at rest.
   assert.match(navCss, /\.turn:hover>\.spot-link,\.turn:focus-within>\.spot-link,\.spot-link:focus-visible\{opacity:1\}/, "a turn reveals its own spot controls");
   assert.match(navCss, /\.renderer:hover>\.renderer-spot,\.renderer:focus-within>\.renderer-spot/, "…and so does a fold head");
-  assert.match(navCss, /@media\(hover:none\)\{\.spot-link,\.renderer>\.renderer-spot\{opacity:1\}/, "…while a device that cannot hover keeps both reachable");
+  assert.match(navCss, /@media\(hover:none\)\{\.spot-link\{opacity:1\}\}/, "…while a device that cannot hover keeps both reachable: a turn's,");
+  // #s573: …and a record's, whose override must come AFTER the rule that hides it at rest (the same
+  // specificity, so the later one wins): before it, a sideways iPad spent a tap revealing it.
+  const spotHidden = navCss.indexOf(".renderer>.renderer-spot{position:absolute;"), spotTouch = navCss.indexOf("@media(hover:none){.renderer>.renderer-spot{opacity:1}}");
+  assert.ok(spotHidden >= 0 && spotTouch > spotHidden, "a record's # is drawn at rest on a touch screen, its override after the rule that hides it");
   assert.doesNotMatch(shellSource, /uiState\.navigatorHidden/, "#148: no hidden flag is read anywhere");
   // The two affordances that remain have to BE there, since nothing else can reach the states.
   assert.match(viewSource, /byId\("navigatorClose"\)\.onclick = \(\) => toggleNavigator\(false\)/, "the caption collapses to the rail");
@@ -2633,8 +2678,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(src, /onScroll\(event\) \{\n(?:    \/\/.*\n)*    if \(!this\.laidOut\(\)\) return;/, "and an offset the hidden box lost is no scroll of the reader's");
   // The review of b65a0e52: what a hidden transaction still did, each now held.
   assert.match(src, /if \(!shown && p0 && p0\.source !== "tail"\) this\.position = p0;/, "a prepend while hidden translates the kept P");
-  assert.match(src, /: p\.top != null \? p\.top - marginTop\(\[\.\.\.this\.mount\.children\]\.find\(child => Number\(child\.dataset\.unitIndex\) === p\.index\)\)\n\s*: p\.offset != null \? -p\.offset : null;\n\s*const top = this\.laidOut\(\) \|\| slot == null\n\s*\? next\.getBoundingClientRect\(\)\.top - this\.frame\.viewportTop\(\)\n\s*: slot \+ \(this\.prefix\[from \+ 1\] \|\| 0\) - \(this\.prefix\[p\.index\] \|\| 0\) \+ marginTop\(next\);/, "…and a reader on the pending card is placed from the sums and the two items' top margins (an anchor's top, or a model position's offset), not a rect with no size");
-  assert.match(src, /if \(returning\) \{ this\.wrote = null; this\.unheard = null; \}/, "a smooth write the hide stopped is over, and so is the wait for a late event (#s481)");
+  assert.match(src, /: p\.top != null \? p\.top - marginTop\(\[\.\.\.this\.mount\.children\]\.find\(child => Number\(child\.dataset\.unitIndex\) === p\.index\)\)\n\s*: p\.offset != null \? -p\.offset : null;\n(?:\s*\/\/.*\n)*\s*const at = this\.readTop\(\);\n\s*const top = this\.laidOut\(\) \|\| slot == null\n\s*\? next\.getBoundingClientRect\(\)\.top - this\.frame\.viewportTop\(\) \+ this\.frame\.scrollTop\(\) - at\n\s*: slot \+ \(this\.prefix\[from \+ 1\] \|\| 0\) - \(this\.prefix\[p\.index\] \|\| 0\) \+ marginTop\(next\);/, "…and a reader on the pending card is placed from the sums and the two items' top margins (an anchor's top, or a model position's offset), not a rect with no size");
+  assert.match(src, /if \(returning\) \{ this\.forgetWrites\(\); this\.unheard = null; \}/, "a smooth write the hide stopped is over, and so is the wait for a late event (#s481)");
   assert.match(src, /if \(returning\) this\.cameBack\(\);/, "back from hidden, the page's pass and the placeholders' fit run before the mount");
   assert.match(src, /fitPlaceholders\(only = null\) \{\n[\s\S]*?\n    if \(!this\.laidOut\(\)\) return;\n    const margins = /, "hidden, a placeholder keeps the sums' height, its margins unread");
   assert.match(src, /if \(!this\.laidOut\(\)\) \{\n          if \(wasFollowing\) this\.followChanged\(\);\n          this\.scheduleRemember\(\);\n          return;\n        \}/, "a jump while hidden reads no gap: the pin it dropped stays dropped");
@@ -2644,7 +2689,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(src, /restore:deferred|this\.owed|scheduleSettle|settleTimer|bottomTimer|estimatesTimer/, "#196 stage 2: no correction is owed, deferred or dropped any more — a placement lands at once, whatever the reader is doing (framework I7); the tail and the estimates wait for rest on the one timer");
   assert.match(src, /defer\(what\) \{\n    if \(what === "tail"\) this\.pendingTail = true;\n    else this\.estimatesPending = true;\n    this\.armRest\(\);/, "…and that timer is the only thing that waits (framework §4.2)");
   assert.match(src, /this\.updatePads\(\);\n    \/\/ A fresh placeholder[^\n]*\n    this\.fitPlaceholders\(fresh\);\n(?:    \/\/.*\n)*    if \(this\.laidOut\(\)\) this\.afterMount\(fresh\);\n    else this\.mountedHidden = \[\.\.\.this\.mountedHidden\.filter\(element => element\.isConnected\), \.\.\.fresh\];\n    this\.measureMounted\(\);\n    this\.updatePads\(\);/, "PAD, then measure (#179): `fitPlaceholders` (#s277: it reads the margins of a placeholder it sizes), `afterMount` (the classic page's clamp pass) and `measureMounted` all force layout, and until the pads are written the page is short by whatever the new window dropped off its top — a browser clamps `scrollTop` to it and a reader on the tail is pulled up by the whole difference (262px on the shell, 228 on the classic page)");
-  assert.match(src, /if \(!this\.position \|\| \(this\.position\.at !== this\.frame\.scrollTop\(\) && !this\.inFlight\(\)\)\) this\.position = this\.captureDomAnchor\(\) \|\| this\.modelAnchor\(\);/, "a transaction the engine is about to make re-reads `P` when the offset moved since it was read (#196 stage 2: the reader's scroll moves `P`, it does not erase it) — unless a smooth write of the engine's own is what is moving it (stage 4)");
+  assert.match(src, /if \(!this\.position \|\| \(this\.position\.at !== this\.readTop\(\) && !this\.inFlight\(\)\)\) this\.position = this\.captureDomAnchor\(\) \|\| this\.modelAnchor\(\);/, "a transaction the engine is about to make re-reads `P` when the offset moved since it was read (#196 stage 2: the reader's scroll moves `P`, it does not erase it) — unless a smooth write of the engine's own is what is moving it (stage 4)");
   // #213, the owner's rule: a transaction confirms `following` against the OFFSET before it acts on
   // it. Follow is released in the scroll handler, and the browser can deliver that event most of a
   // second after the wheel (measured at the wheel's own clock: 6, 4, 1018, 1019, 939, 7 ms); inside
@@ -2665,14 +2710,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // change it"), and with the call inside the window it fired on the runaway replay: one I13,
   // `{from: true, to: false}`, on a `records` transaction, in two runs of three.
   assert.match(src, /if \(shown && !returning\) this\.confirmFollow\(startTop\);\n(?:\s*\/\/.*\n)*\s*if \(returning && !options\.range\) options = [^\n]*\n\s*const following0 = this\.following;/, "…as the deferred half of the scroll handler, outside what I13 measures (#213)");
-  assert.match(src, /syncPosition\(placed = null\) \{\n(?:    \/\/.*\n)*    if \(!this\.laidOut\(\)\) return;\n    if \(this\.following \|\| this\.dragging \|\| !this\.count\) \{ this\.position = null; return; \}\n(?:.*\n){0,3}?    const read = this\.captureDomAnchor\(\) \|\| this\.modelAnchor\(\);/, "…and every transaction re-reads it where it left the reader (a landing the reader asked for excepted, #196 stage 4)");
+  assert.match(src, /syncPosition\(placed = null\) \{\n(?:    \/\/.*\n)*    if \(!this\.laidOut\(\)\) return;\n    if \(this\.following \|\| this\.dragging \|\| !this\.count\) \{ this\.position = null; return; \}\n(?:.*\n){0,6}?    const read = this\.captureDomAnchor\(\) \|\| this\.modelAnchor\(\);/, "…and every transaction re-reads it where it left the reader (a landing the reader asked for excepted, #196 stage 4)");
   // #s291: the remainder a whole-pixel placement leaves is the engine's, not the reader's — read back
   // as the new `P`, a run of fills walked a reader 1.3px.
-  assert.match(src, /const left = exact == null \? 0 : this\.frame\.scrollTop\(\) - exact;\n\s*if \(left && Math\.abs\(left\) <= 1\) \{/, "…less the remainder of the anchor it placed, never a clamp's (#s291)");
+  assert.match(src, /const left = exact == null \? 0 : this\.readTop\(\) - exact;\n\s*if \(left && Math\.abs\(left\) <= 1\) \{/, "…less the remainder of the anchor it placed, never a clamp's (#s291)");
   assert.match(src, /this\.syncPosition\(placed === "placed" && !drift && !smooth \? p0 : null\);/, "…and only for a placement with no drift of the reader's in it");
   assert.match(src, /const PLACE_EPSILON = 0\.5;/, "a placement writes any correction a whole-pixel offset can make (#s291)");
   assert.match(src, /if \(child\.top < viewportTop - 1 && this\.placeholderAt\(Number\(child\.element\.dataset\.unitIndex\)\)\) \{/, "a placeholder straddling the top is no anchor while the unit after it begins on screen (#s291)");
-  assert.match(src, /const startTop = this\.frame\.scrollTop\(\);\n(?:\s*\/\/.*\n)*\s*const shown = this\.laidOut\(\), returning = shown && this\.wasHidden;\n\s*if \(!shown\) this\.wasHidden = true;\n(?:\s*\/\/.*\n)*\s*if \(returning\) \{ this\.wrote = null; this\.unheard = null; \}\n\s*if \(shown && !returning\) this\.confirmFollow\(startTop\);\n(?:\s*\/\/.*\n)*\s*if \(returning && !options\.range\) options = [^\n]*\n\s*const following0 = this\.following;\n\s*try \{\n\s*(?:const|let) p0 = this\.positionFor\(options\);\n(?:\s*\/\/.*\n)*\s*const drift = p0 && p0\.at != null && !this\.inFlight\(\) && !returning \? startTop - p0\.at : 0;/, "the placement adds what the reader scrolled since `P` was read, computed once at the transaction's start (and not while a smooth write travels, #196 stage 4)");
+  assert.match(src, /const startTop = this\.readTop\(\);\n(?:\s*\/\/.*\n)*\s*const shown = this\.laidOut\(\), returning = shown && this\.wasHidden;\n\s*if \(!shown\) this\.wasHidden = true;\n(?:\s*\/\/.*\n)*\s*if \(returning\) \{ this\.forgetWrites\(\); this\.unheard = null; \}\n\s*if \(shown && !returning\) this\.confirmFollow\(startTop\);\n(?:\s*\/\/.*\n)*\s*if \(returning && !options\.range\) options = [^\n]*\n\s*const following0 = this\.following;\n\s*try \{\n\s*(?:const|let) p0 = this\.positionFor\(options\);\n(?:\s*\/\/.*\n)*\s*const drift = p0 && p0\.at != null && !this\.inFlight\(\) && !returning \? startTop - p0\.at : 0;/, "the placement adds what the reader scrolled since `P` was read, computed once at the transaction's start (and not while a smooth write travels, #196 stage 4)");
   assert.match(src, /place\(position, drift = 0, smooth = false\) \{\n(?:.*\n){0,6}?    const want = base \+ drift;/, "…so a clamp inside the transaction or the engine's own write is never counted as theirs (measured: 1,882px of clamp placed twice)");
   assert.match(src, /transact\("update", \{ range: p0 => this\.rangeFor\(p0\), tail: false/, "the deferred window update is one transaction, ranged around `P` (framework I11), and leaves the tail alone on the reader's own scroll batch");
   assert.match(src, /if \(position\.source === "model"\) return this\.documentTopOf\(position\.index\) \+ position\.offset;/, "#191: the model form is the record the offset named plus how far into it — the sums' own position, not a replay");
@@ -3607,7 +3652,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // under a topbar and a session header, so the fallback range — the one taken when no mounted
   // element is visible, which is exactly where a jump from far away leaves the reader — named an
   // item that far late.
-  assert.match(src, /rangeForScroll\(this\.prefix, this\.count, this\.frame\.scrollTop\(\) - this\.contentTop\(\), this\.frame\.clientHeight\(\), this\.overscan\)/, "…and so is the range a scroll offset asks for");
+  assert.match(src, /rangeForScroll\(this\.prefix, this\.count, this\.readTop\(\) - this\.contentTop\(\), this\.frame\.clientHeight\(\), this\.overscan\)/, "…and so is the range a scroll offset asks for (read at the latest write while an echo shows, #s568)");
   assert.match(src, /return itemTop \+ within - sat;\s*\n\s*\}\s*\n/, "the offset `P` names is derived from the anchor's own rect (offsetOf)…");
   assert.match(src, /place\(position, drift = 0, smooth = false\) \{\n    if \(!position\) return false;\n(?:    if \(this\.dragging\) this\.violation\("I14".*\n)?    const base = this\.offsetOf\(position\);\n(?:.*\n){0,60}?      this\.frame\.scrollTo\(want\);\n/, "…and the write-back is absolute — `scrollTo(where it goes)`, never `scrollBy(how far it drifted)`");
   assert.equal((src.match(/this\.frame\.scrollTo\(/g) || []).length, 2, "#196 (framework I2): the engine writes the offset in exactly ONE place, place() — its instant form and its smooth form (#196 stage 4)");
@@ -3949,14 +3994,92 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // The range form of `wrote`, and its arrival.
   assert.match(engine, /this\.wrote = \{ from, to, last: from \};/, "a smooth write is a range until it arrives");
   assert.match(engine, /if \(Math\.abs\(top - wrote\.to\) <= 1\) \{\n\s*this\.wrote = wrote\.to;\n\s*this\.trace\("arrived"/, "…collapsing to the offset on arrival");
-  assert.match(engine, /if \(!onPath\) \{ this\.wrote = null; return false; \}/, "…and an event off the animation's path is the reader's");
+  assert.match(engine, /if \(!onPath\) \{ this\.forgetWrites\(\); return false; \}/, "…and an event off the animation's path is the reader's");
+  // #s568: an EARLIER own write the browser reports after a later one (iOS WebKit's scrolling thread)
+  // is an echo, not the reader: onScroll ignores it, and every "did the reader move" read takes the
+  // latest write in its place, until that write's own event comes or ECHO_MS has passed.
+  assert.match(engine, /const ECHO_MS = 120;/, "the echo window is sized from the iPad's measure (#s568)");
+  assert.match(engine, /this\.recentWrites = this\.recentWrites\.filter\(write => now - write\.at < ECHO_MS\);\n\s*this\.recentWrites\.push\(\{ top: this\.wrote, at: now \}\);\n\s*this\.latestHeard = false;/, "each instant write is kept for the echo window, and the newest is not yet heard (#s568)");
+  assert.match(engine, /if \(Math\.abs\(top - wrote\) > 1\) return false;\n\s*this\.latestHeard = true;/, "the newest write's own event closes the echo window (#s568)");
+  assert.match(engine, /forgetWrites\(\) \{\n\s*this\.wrote = null;\n\s*this\.recentWrites = \[\];\n\s*\}/, "forgetting the write forgets the writes it could echo (#s568)");
+  assert.doesNotMatch(engine.replace(/forgetWrites\(\) \{\n\s*this\.wrote = null;/, "").replace(/^\s*this\.wrote = null;\n\s*\/\/ The instant writes made within/m, ""), /this\.wrote = null;/, "every reset of the write goes through forgetWrites (#s568)");
+  assert.match(engine, /if \(this\.echoOf\(top, event && event\.timeStamp \? event\.timeStamp : performance\.now\(\)\)\) \{\n\s*this\.trace\("scroll:echo"/, "onScroll ignores an echo, stamped by the event's own time (#s568)");
+  for (const read of ["const startTop = this.readTop();", "this.position.at !== this.readTop() && !this.inFlight()", "held.at = this.inFlight() ? this.wrote.to : this.readTop();", "p.at !== this.readTop()) v(\"I1\"", "correction(this.inFlight() ? this.wrote.to : this.readTop(), want, PLACE_EPSILON)"])
+    assert.ok(engine.includes(read), `"did the reader move" reads past an echo: ${read} (#s568)`);
+  // …and what is read on screen during an echo describes the view at the latest write (the review of
+  // #s568): a capture there named the echo's offset, which the next placement wrote for real, and
+  // every transaction during an echo reported its distance as an I7 displacement.
+  for (const read of [
+    "const at = this.readTop(), lag = this.frame.scrollTop() - at;\n    const viewportTop = this.frame.viewportTop() - lag;",
+    "top: child.top - viewportTop, block: null, blockTop: 0, at, fallback: this.modelAnchor() };",
+    "anchor.blockTop = row.top - viewportTop; }",
+    "return rangeForScroll(this.prefix, this.count, this.readTop() - this.contentTop(), this.frame.clientHeight(), this.overscan);",
+    "const at = this.readTop(), y = at - this.contentTop();",
+    "next.getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop() - at",
+    "const y = this.readTop() - this.contentTop();\n    const first = this.indexAt(Math.max(0, y));",
+    "(row || item).getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop() - this.readTop();",
+    "if (this.position && Math.abs(this.position.at - this.wrote) <= 1 && this.echoOf(this.frame.scrollTop()))",
+    "performance.now() - latest.at > ECHO_MS",
+  ])
+    assert.ok(engine.includes(read), `a read on screen during an echo is moved to the latest write: ${read} (#s568)`);
+  // …held by what the engine does, not only by its text (the second review of #s568: the browser
+  // cases' echo comes while a jump's hold answers first, so no capture runs in it). A frame that reads
+  // the earlier write, W1, while the engine's latest is W2: 200px items from the content's top.
+  {
+    const VT = 40, H = 400, item = (i, w1) => ({
+      dataset: { unitKey: `u${i}`, unitIndex: String(i) },
+      getBoundingClientRect: () => ({ top: VT + 200 * i - w1, bottom: VT + 200 * (i + 1) - w1, height: 200 }),
+      querySelectorAll: () => [], querySelector: () => null,
+    });
+    const echoing = (w1, w2) => Object.assign(Object.create(VirtualWindow.prototype), {
+      frame: { scrollTop: () => w1, viewportTop: () => VT, clientHeight: () => H, scrollHeight: () => 4000 },
+      mount: { children: Array.from({ length: 20 }, (_, i) => item(i, w1)) },
+      prefix: prefixSums(20, () => 200), count: 20, overscan: 0,
+      readTop: () => w2, contentTop: () => 0, modelAnchor: () => null, placeholderAt: () => false,
+    });
+    for (const [w1, w2, key] of [[1000, 1650, "u8"], [1650, 1000, "u5"]]) {
+      const vw = echoing(w1, w2), anchor = vw.captureDomAnchor();
+      assert.equal(anchor.key, key, `the anchor is the item the reader sees at the latest write ${w2}, not at the echo's ${w1} (#s568)`);
+      assert.equal(vw.offsetOf(anchor), w2, `…and it names the latest write as the offset (#s568)`);
+      const range = vw.rangeForScroll();
+      assert.ok(range.lo <= Math.floor(w2 / 200) && range.hi >= Math.ceil((w2 + H) / 200), `the window chosen from the offset covers the reader at ${w2}, not the echo's ${w1}: ${JSON.stringify(range)} (#s568)`);
+    }
+    // Not echoing, the same reads describe the layout as it stands.
+    const still = echoing(1000, 1000), anchor = still.captureDomAnchor();
+    assert.equal(anchor.key, "u5");
+    assert.equal(still.offsetOf(anchor), 1000);
+    // With a row in each item (50px down it) the anchor refines into the row straddling the top at the
+    // latest write, and a placeholder straddling there gives way to the item after it, both judged at
+    // the write: the same anchor a capture makes at W2 with no echo.
+    const rowed = (w1, w2, placeholder) => {
+      const vw = echoing(w1, w2);
+      for (const it of vw.mount.children) {
+        const i = Number(it.dataset.unitIndex), row = {
+          dataset: { blockIndex: `${i}.1` },
+          getBoundingClientRect: () => ({ top: VT + 200 * i + 50 - w1, bottom: VT + 200 * (i + 1) - w1, height: 150 }),
+          querySelectorAll: () => [], querySelector: () => null,
+        };
+        it.querySelectorAll = () => [row];
+        it.querySelector = sel => (sel === `[data-block-index="${i}.1"]` ? row : null);
+      }
+      vw.placeholderAt = i => i === placeholder;
+      return vw;
+    };
+    for (const placeholder of [null, 8]) {
+      const echoed = rowed(1000, 1675, placeholder).captureDomAnchor(), plain = rowed(1675, 1675, placeholder).captureDomAnchor();
+      const pick = a => [a.key, a.top, a.block, a.blockTop];
+      assert.deepEqual(pick(echoed), pick(plain), `an echo's capture is the one made at the latest write (placeholder ${placeholder}) (#s568)`);
+      assert.deepEqual(pick(echoed), placeholder == null ? ["u8", -75, "8.1", -25] : ["u9", 125, null, 0], `…which is the row straddling the top, or the item after a straddling placeholder (#s568)`);
+      assert.equal(rowed(1000, 1675, placeholder).offsetOf(echoed), 1675, `…and names the latest write (#s568)`);
+    }
+  }
   assert.match(engine, /const drift = p0 && p0\.at != null && !this\.inFlight\(\) && !returning \? startTop - p0\.at : 0;/, "no drift while a smooth write travels");
   assert.match(engine, /const smooth = !!options\.smooth \|\| this\.inFlight\(\);/, "…and a placement then is issued smooth again, toward the recomputed destination");
   // The commanded hold: kept while the anchor resolves at its index, released on the reader's signal.
-  assert.match(engine, /if \(held && this\.anchorResolves\(held\)\) \{ held\.at = this\.inFlight\(\) \? this\.wrote\.to : this\.frame\.scrollTop\(\); return; \}/, "a landing the reader asked for is held through every later transaction");
+  assert.match(engine, /if \(held && this\.anchorResolves\(held\)\) \{ held\.at = this\.inFlight\(\) \? this\.wrote\.to : this\.readTop\(\); return; \}/, "a landing the reader asked for is held through every later transaction");
   assert.match(engine, /anchorResolves\(position\) \{\n\s*if \(position\.source !== "anchor"\) return false;/, "…never through the fallback (a held model form across measures is #191 again)");
-  assert.match(engine, /this\.wrote = null;\n\s*\/\/[^\n]*\n\s*this\.releaseHold\(\);\n\s*const at = event/, "…released by the reader's own scroll");
-  assert.match(engine, /this\.wrote = null;\n\s*this\.releaseHold\(\);\n\s*\}/, "…and by any input");
+  assert.match(engine, /this\.forgetWrites\(\);\n\s*\/\/[^\n]*\n\s*this\.releaseHold\(\);\n\s*const at = event/, "…released by the reader's own scroll");
+  assert.match(engine, /this\.forgetWrites\(\);\n\s*this\.releaseHold\(\);\n\s*\}/, "…and by any input");
   // Intent is the page's, never invented; the follow decision once, at the destination.
   assert.match(engine, /command\(cause, position, options = \{\}\) \{\n\s*if \(!this\.count \|\| !position\) return false;\n\s*if \(options\.intent\) this\.markIntent\(\);/, "a commanded move stamps intent only when the page says so (v1.254.0)");
   assert.match(engine, /const following = wasFollowing && options\.pin !== "acquire" \? gap <= this\.slacks\.hold : gap <= this\.slacks\.acquire;\n\s*if \(following !== this\.following\) this\.following = following;\n\s*if \(following !== wasFollowing\) this\.followChanged\(\);/, "…keeps the pin within the hold slack, acquires it at the true end, and announces a change once");
@@ -4152,7 +4275,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(engine, /if \(last && last\.until != null && last\.kind === kind && \(last\.key == null \? null : last\.key\) === key && t - last\.until <= HISTORY_COALESCE_MS\) \{/, "…coalesced per gesture");
   assert.match(engine, /const key = kind === "key" \? \(event\.key === " " \? "Space" : String\(event\.key\)\.length > 1 \? String\(event\.key\) : "char"\) : null;/, "a key is named only when it is not a character — the history carries no content");
   assert.match(engine, /if \(event\.type === "keydown" && event\.target && \(\/\^\(INPUT\|TEXTAREA\)\$\/\.test\(event\.target\.tagName\) \|\| event\.target\.isContentEditable\)\) return;/, "…and a key in a field or an editable element is not the reader's input at all");
-  assert.match(engine, /const top = this\.frame\.scrollTop\(\);\n\s*this\.topSeen = top;\n(?:\s*\/\/.*\n)*\s*const waited = this\.unheard;\n\s*if \(this\.unheard\) \{ this\.unheard = null; if \(this\.pendingTail \|\| this\.estimatesPending\) this\.armRest\(\); \}\n(?:\s*\/\/.*\n)*\s*if \(!\(waited && waited\.held\) && this\.ownScroll\(top\)\) \{/, "the scroll handler's one read is kept as the engine's belief of the offset, and every event it hears ends a wait for a late one before the own-write test (#s481), which the event a held follower waited for skips: it is the move's, at the offset the hold wrote (#s431)");
+  assert.match(engine, /const top = this\.frame\.scrollTop\(\);\n(?:\s*\/\/.*\n)*\s*if \(this\.echoOf\(top, [^\n]*\n[^\n]*\n\s*return;\n\s*\}\n\s*this\.topSeen = top;\n(?:\s*\/\/.*\n)*\s*const waited = this\.unheard;\n\s*if \(this\.unheard\) \{ this\.unheard = null; if \(this\.pendingTail \|\| this\.estimatesPending\) this\.armRest\(\); \}\n(?:\s*\/\/.*\n)*\s*if \(!\(waited && waited\.held\) && this\.ownScroll\(top\)\) \{/, "the scroll handler's one read is kept as the engine's belief of the offset, and every event it hears ends a wait for a late one before the own-write test (#s481), which the event a held follower waited for skips: it is the move's, at the offset the hold wrote (#s431)");
   assert.match(engine, /if \(p && p\.at != null\) return Math\.round\(p\.at\);\n\s*if \(typeof this\.wrote === "number"\) return Math\.round\(this\.wrote\);/, "…after P's own offset and what the engine last wrote");
   assert.match(engine, /if \(options\.intent\) this\.markIntent\(\);\n(?:\s*\/\/.*\n)*\s*this\.record\("actions", \{ kind: cause, index:/, "a commanded move is an action with its target");
   assert.match(engine, /this\.record\("actions", \{ kind: "follow", intent: !!options\.intent \}\);/, "…and so is the end");
@@ -4593,7 +4716,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(q("a project:x b").text, "a b", "the token's own space goes with it");
   assert.deepEqual(q("ub: tool:Bash scope:u foo"), { agents: [], projects: [], text: "ub: tool:bash scope:u foo" },
     "the session box's filters mean nothing here: they are text like any other");
-  const appSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  const appSrc = mountSource;
   const globalRowsSrc = appSrc.slice(appSrc.indexOf("function globalRows("), appSrc.indexOf("function renderGlobalSearch("));
   assert.doesNotMatch(globalRowsSrc, /splitQuery|querySpans|parseScope|takeTokens|takeTools/, "⌘K calls nothing of the session grammar");
   console.log("#294 qualifier grammar cases passed");
@@ -4877,7 +5000,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   walk(new URL("../src/codex-ui/native-mode.js", import.meta.url));
   const viewModules = [...closure].map(href => href.slice(href.indexOf("/codex-ui/") + "/codex-ui/".length));
   for (const name of ["control-store.js", "preview.js", "record-store.js", "viewport.js", "components.js", "dialog-card.js", "view-state.js", "view-root.js", "shared/virtual-window.js"]) assert.ok(viewModules.includes(name), `the view's import closure holds ${name}`);
-  assert.ok(!viewModules.includes("app.js"), "and not the app");
+  assert.ok(!viewModules.includes("app.js") && !viewModules.includes("app-mount.js"), "and not the app");
   for (const href of closure) assert.doesNotMatch(readFileSync(new URL(href), "utf8"), /from "\.\.?\/state\.js"/, `${href.slice(href.indexOf("/codex-ui/") + 10)} imports nothing from state.js`);
   assert.ok(!viewModules.includes("state.js"), "the view's modules reach state.js by no path");
   // The confirm, run: the last ask goes on with the passcode given, an earlier or cancelled one does
@@ -4918,7 +5041,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // list reads is documented and passed, every member of the handle the app calls is one the list
 // returns, and the list finds its elements inside its own element.
 {
-  const call = /^const listHandle = mountSessionList\(page\.byId\("sessionList"\), \{\n([\s\S]*?)\n\}\);/m.exec(appSource);
+  const call = /^listHandle = mountSessionList\(page\.byId\("sessionList"\), \{\n([\s\S]*?)\n\}\);/m.exec(appSource);
   assert.ok(call, "the app mounts the list in one call with an options literal, on the shell's empty #sessionList (stage 3)");
   const passed = new Set([...call[1].matchAll(/^  ([A-Za-z]+)(?=[:,])/gm)].map(m => m[1]));
   const destructured = /^const \{ (.+) \} = options;$/m.exec(listSource);
@@ -5153,6 +5276,61 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("#s430 list options and unmount cases passed");
 }
 
+// #s551 (design/app-mount.md, stage 2): the web app as one mount. Its options are one list, which it
+// refuses any other name by, which is exactly what it reads, and which its doc comment documents; it
+// checks its backend, its version and its element before it touches anything, so a refused call draws
+// nothing and may be made again; a second call throws; it reads its own server and version, never the
+// page's; and the monitor's page mounts it once, with the page's server and version, on its wrapper.
+{
+  const listed = /^export const MOUNT_OPTIONS = Object\.freeze\(\[([^\]]*)\]\);$/m.exec(mountSource);
+  assert.ok(listed, "the mount lists its options in MOUNT_OPTIONS");
+  const MOUNT = [...listed[1].matchAll(/"([^"]+)"/g)].map(m => m[1]);
+  assert.deepEqual(MOUNT, ["backend", "version"], "stage 2 takes one server and the brand's version");
+  const body = mountSource.slice(mountSource.indexOf("export function mountApp("), mountSource.indexOf("export async function installNativeController("));
+  const read = new Set([...body.matchAll(/\boptions\??\.([A-Za-z]+)/g)].map(m => m[1]));
+  assert.deepEqual([...read].sort(), [...MOUNT].sort(), "MOUNT_OPTIONS is exactly the options the mount reads");
+  const doc = mountSource.slice(mountSource.indexOf("/** Draw the web app into"), mountSource.indexOf("export function mountApp("));
+  for (const name of MOUNT) assert.match(doc, new RegExp(`^ \\*  - \`${name}\``, "m"), `the mount's doc comment documents ${name}`);
+  // The guards, run over fakes: from the once check to the element's.
+  const guards = /^(if \(appMounted\)[\s\S]*?this one holds the host's nodes"\);)$/m.exec(mountSource);
+  assert.ok(guards, "the mount checks it is not drawn yet, its options and its element before it touches anything");
+  const guard = new Function("element", "options", "MOUNT_OPTIONS", "appMounted", "page", `${guards[1]}\nreturn "drawn";`);
+  const empty = () => ({ isConnected: true, childNodes: [{ nodeType: 3, data: "\n  " }] });
+  const handle = { base: "/m", paired: true, fetch: () => {} };
+  const bare = { byId: () => null };
+  const mount = (options, element = empty(), mounted = false, onPage = bare) => { try { return guard(element, options, MOUNT, mounted, onPage); } catch (error) { return `refused: ${error.message}`; } };
+  assert.equal(mount({ backend: handle }), "drawn", "a backend handle is all it needs");
+  assert.equal(mount({ backend: handle, version: "1.2.3" }), "drawn", "and a version for its brand");
+  assert.equal(mount({ backend: handle, version: null }), "drawn", "a version left empty is none");
+  for (const [options, why] of [
+    [{}, "needs its backend"],
+    [{ backend: "/m" }, "backend handle.*\"/m\""],
+    [{ backend: { base: "/m" } }, "backend handle"],
+    [{ backend: handle, version: 3 }, "version as a string.*3"],
+    [{ backend: handle, machines: [] }, "no option named machines"],
+    [{ backend: handle, theme: "dark" }, "no option named theme"],
+    [{ backend: handle, frame: () => "" }, "no option named frame"],
+  ]) assert.match(String(mount(options)), new RegExp(`^refused: .*${why}`), `refused: ${why}`);
+  for (const [options, why] of [[null, "as an object, not null"], ["/m", "as an object, not \"/m\""], [[handle], "as an object"]]) {
+    assert.match(String(mount(options)), new RegExp(`^refused: .*${why}`), `options that are no object are refused: ${why}`);
+  }
+  assert.match(String(mount({ backend: handle }, null)), /^refused: .*none was given/, "no element is refused");
+  assert.match(String(mount({ backend: handle }, { isConnected: false, childNodes: [] })), /^refused: .*not on it/, "nor one off the page, whose ids the app could not find");
+  assert.match(String(mount({ backend: handle }, empty(), false, { byId: id => (id === "app" ? {} : null) })), /^refused: .*holds one already/, "nor on a page holding an #app of its own, which the app would take for its own");
+  assert.match(String(mount({ backend: handle }, { isConnected: true, childNodes: [{ nodeType: 1 }] })), /^refused: .*host's nodes/, "and one holding the host's nodes");
+  assert.match(String(mount({ backend: handle }, { isConnected: true, childNodes: [{ nodeType: 8, data: "" }] })), /^refused: .*host's nodes/, "a comment too");
+  assert.match(String(mount({ backend: handle }, empty(), true)), /^refused: .*once per page/, "a second call throws, whatever it passes");
+  assert.match(mountSource, /this one holds the host's nodes"\);\nappMounted = true;\nuseBackend\(options\.backend\);\nelement\.classList\.add\("app-mount"\);\nelement\.innerHTML = APP_SHELL_MARKUP;\n/, "the page counts as holding the app only once every guard has passed, and nothing is drawn before");
+  // Its own server and version, never the page's.
+  assert.doesNotMatch(mountSource, /\bbackend\(\)|dataset\.version|import \{[^}]*\bbackend\b[^}]*\} from "\.\/backend\.js"/, "the mount reads no page-wide server and no body's version");
+  assert.match(mountSource, /^  backend: options\.backend,$/m, "the view is mounted on the mount's server");
+  assert.match(mountSource, /\.textContent = `v\$\{options\.version \|\| "dev"\}`;/, "the brand names the mount's version");
+  // The monitor's page: one call, on its wrapper, with its own server and the version its body carries.
+  assert.equal((hostSource.match(/\bmountApp\(/g) || []).length, 1, "app.js mounts the web app once");
+  assert.match(hostSource, /^mountApp\(page\.byId\("appMount"\), \{ backend: backend\(\), version: page\.body\(\)\.dataset\.version \|\| undefined \}\);$/m, "on the page's wrapper, with the page's server and version");
+  assert.match(hostSource, /^export \{ installNativeController \} from "\.\/app-mount\.js";$/m, "and native mode's entry still finds its hook there");
+  console.log("#s551 app mount cases passed");
+}
 // #s429 stage 6: the optional controls and the keys a host may change. A control switched off is
 // not drawn and takes no key; engaged, the view's keys answer only while the reader works in it.
 {
@@ -5429,4 +5607,192 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // The app remembers the view's choices whenever it remembers its own, as its one persist did.
   assert.match(appSource, /^function persist\(\) \{ persistIndex\(\); viewHandle\?\.persist\(\); \}$/m, "the app's persist asks the view to remember its own");
   console.log("#s429 unmount cases passed");
+}
+
+// #s541 (design/monitor-hub.md D6, Hong's choice on #s539): the merged source, one server answered in
+// the page over several machines' session lists, each through its own handle. Run over fake handles:
+// the rows of each machine named and keyed by it, the same path on two machines two projects and its
+// desktop agent two groups, a hide sent to its own machine with the machine taken off, a machine that
+// does not answer in time answered with its last rows, stale from when it last answered, and no other
+// app's arrangement over several machines.
+{
+  const { mergedBackend, splitMachineId } = await import("../../claude-monitor/src/codex-ui/merged-source.js");
+  const { ARRANGE_SOURCES, groupAcrossMachines } = await import("../../claude-monitor/src/codex-ui/session-list.js");
+  const { groupSessions } = await import("../../claude-replay-html/src/html/shared/session-visibility.js");
+  const reply = body => new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+  const index = sid => ({
+    groups: [
+      { kind: "project", label: "x", secondary: "~/code/x", ignoreKey: "p:~/code/x", hidden: false, rows: [
+        { id: sid, agent: "claude", name: `${sid} title`, family: sid, ignoreKey: `s:${sid}` },
+        { id: `${sid}-w`, agent: "claude", name: "worker", family: `${sid}-w`, startedBy: sid, ignoreKey: `s:${sid}-w` },
+        { id: `${sid}-side`, agent: "claude", name: "side", family: `${sid}-side`, sideOf: sid, ignoreKey: `s:${sid}-side` },
+      ] },
+      { kind: "agent", label: "Claude", secondary: "desktop agent · no workspace", ignoreKey: "a:Claude", hidden: false, rows: [
+        { id: `${sid}-desk`, agent: "claude", name: "desktop", family: `${sid}-desk`, ignoreKey: `s:${sid}-desk` },
+      ] },
+    ],
+    ignoredCount: 1,
+  });
+  const machine = (name, answer) => {
+    const asked = [];
+    return { asked, handle: { base: `/m/${name}`, paired: true, fetch: async (path, init) => { asked.push(path); return answer(path, init); } } };
+  };
+  let clock = 1_000_000;
+  const now = () => clock;
+  let bHangs = false, release = null;
+  const a = machine("a", path => path === "/api/sessions" ? reply(index("sa")) : reply({ ok: true, ignored: 2 }));
+  const b = machine("b", path => {
+    if (path !== "/api/sessions") return reply({ ok: true, ignored: 3 });
+    if (bHangs) return new Promise(resolve => { release = () => resolve(reply(index("sb"))); });
+    return reply(index("sb"));
+  });
+  const merged = mergedBackend([{ machine: "a", label: "Mac mini", handle: a.handle }, { machine: "b", handle: b.handle }], { timeout: 400, now });
+  const read = async () => (await merged.fetch("/api/sessions", { cache: "no-store" })).json();
+
+  const first = await read();
+  assert.deepEqual(first.machines, [
+    { machine: "a", label: "Mac mini", state: "live", since: new Date(clock).toISOString(), error: null },
+    { machine: "b", label: "b", state: "live", since: new Date(clock).toISOString(), error: null },
+  ], "each machine answered, named by its label (the key where it has none)");
+  assert.equal(first.ignoredCount, 2, "the machines' hidden counts summed");
+  const rows = first.groups.flatMap(group => group.rows);
+  const sa = rows.find(row => row.id === "a/sa");
+  assert.deepEqual([sa.machine, sa.family, sa.ignoreKey], ["a", "a/sa", "a/s:sa"], "a row names its machine, and its id, family and key are its machine's");
+  assert.equal(rows.find(row => row.id === "a/sa-w").startedBy, "a/sa", "a worker's starter is on its own machine");
+  assert.equal(rows.find(row => row.id === "b/sb-side").sideOf, "b/sb", "and a side session's");
+  assert.deepEqual(first.groups.map(group => [group.machine, group.ignoreKey]), [["a", "a/p:~/code/x"], ["a", "a/a:Claude"], ["b", "b/p:~/code/x"], ["b", "b/a:Claude"]], "every group names its machine and its key is its machine's");
+  assert.equal(rows.length, 8, "nothing dropped");
+
+  // One monitor's groups are grouped as they always were; a merged source's, by machine.
+  assert.deepEqual(groupAcrossMachines(index("sa").groups), groupSessions(index("sa").groups), "no machine: the one grouping");
+  const tree = groupAcrossMachines(first.groups);
+  assert.deepEqual(tree.map(agent => agent.id), ["claude"], "one agent across the machines");
+  assert.deepEqual(tree[0].projects.map(project => [project.id, project.machine, project.sessions.length]), [["a/p:~/code/x", "a", 3], ["a/claude:desktop", "a", 1], ["b/p:~/code/x", "b", 3], ["b/claude:desktop", "b", 1]], "the same path on two machines is two projects, and so is each machine's desktop agent");
+
+  // A hide goes to the row's machine, with the machine taken off its key.
+  const hid = await (await merged.fetch(`/api/ignore?add=${encodeURIComponent("b/s:sb")}`, { cache: "no-store" })).json();
+  assert.deepEqual(hid, { ok: true, ignored: 3 }, "the machine's own answer");
+  assert.equal(b.asked.at(-1), "/api/ignore?add=s%3Asb", "sent to b, as b keys it");
+  assert.ok(!a.asked.some(path => path.startsWith("/api/ignore")), "and never to a");
+  for (const [query, why] of [[`remove=${encodeURIComponent("c/s:x")}`, "a machine it does not know"], ["add=s%3Asb", "a key that names none"]]) {
+    const refused = await merged.fetch(`/api/ignore?${query}`);
+    assert.deepEqual([refused.status, (await refused.json()).ok], [404, false], `${why}: refused, so the list says the hide failed`);
+  }
+
+  // No other app's arrangement over several machines (D7: they come with the arrangement by machine).
+  const layouts = await (await merged.fetch("/api/layout")).json();
+  assert.deepEqual(layouts.sources.map(entry => [entry.source, entry.available]), ARRANGE_SOURCES.map(source => [source, false]), "every app the list can follow, each one that cannot be read, so it is offered disabled with the reason");
+  assert.match(layouts.sources[0].reason, /several machines/);
+  assert.equal((await merged.fetch("/api/layout?source=herdr")).status, 404, "a source is one it does not know");
+  assert.equal((await merged.fetch("/records?session=a%2Fsa")).status, 404, "and it answers the list's routes alone");
+  assert.throws(() => merged.url("/file?path=x"), /routes alone/, "it builds no URL");
+
+  // b stops answering: its last rows stay, stale since it last answered; a goes on.
+  const answeredAt = clock;
+  clock += 60_000; bHangs = true;
+  const started = Date.now();
+  const late = await read();
+  assert.ok(Date.now() - started < 2000, "an ask waits for a slow machine no longer than the timeout");
+  assert.deepEqual(late.machines.map(entry => [entry.machine, entry.state, entry.since]), [["a", "live", new Date(clock).toISOString()], ["b", "stale", new Date(answeredAt).toISOString()]], "b stale since it last answered");
+  assert.match(late.machines[1].error, /no answer in/, "saying why");
+  assert.ok(late.groups.flatMap(group => group.rows).some(row => row.id === "b/sb"), "b's last rows kept");
+  const asks = b.asked.filter(path => path === "/api/sessions").length;
+  const again = Date.now();
+  await read();
+  assert.equal(b.asked.filter(path => path === "/api/sessions").length, asks, "a machine still answering is not asked again");
+  assert.ok(Date.now() - again < 300, `nor waited for again: the machines on time answer at once, well inside the 400 ms timeout (${Date.now() - again} ms)`);
+  release(); bHangs = false;
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.deepEqual((await read()).machines.map(entry => entry.state), ["live", "live"], "its late answer is kept, and it is live again");
+
+  // An ask still out after eight times the timeout is given up, and the machine asked afresh.
+  let hangs = 0;
+  const quiet = mergedBackend([{ machine: "q", handle: { fetch: (_path, init) => { hangs += 1; return new Promise((_resolve, reject) => init.signal.addEventListener("abort", () => reject(Object.assign(new Error("The operation was aborted."), { name: "AbortError" })))); } } }], { timeout: 20, now });
+  const quietRead = async () => (await quiet.fetch("/api/sessions")).json();
+  assert.deepEqual((await quietRead()).machines.map(entry => [entry.state, entry.error]), [["failed", "no answer in 20 ms"]], "overdue");
+  await new Promise(resolve => setTimeout(resolve, 260));
+  assert.deepEqual([quiet.machines()[0].error, hangs], ["no answer in 160 ms", 1], "given up after 160 ms, saying so");
+  assert.deepEqual([(await quietRead()).machines[0].error, hangs], ["no answer in 20 ms", 2], "then asked afresh, its state the new ask's");
+  assert.equal(mergedBackend([{ machine: "a", handle: a.handle }], { timeout: 1500 }).machines()[0].error, null);
+
+  // A machine that never answered: a head saying why, and no rows.
+  const never = mergedBackend([{ machine: "c", handle: { fetch: async () => { throw new Error("connection refused"); } } }], { timeout: 40, now });
+  const lone = await (await never.fetch("/api/sessions")).json();
+  assert.deepEqual([lone.groups, lone.machines[0].state, lone.machines[0].error, lone.machines[0].since], [[], "failed", "connection refused", null]);
+
+  // Where a merged row is, and the view's options for a view on its machine, in that machine's ids.
+  const where = merged.locate("b/sb");
+  assert.deepEqual([where.machine, where.label, where.id, where.row.id, where.row.machine, where.handle === b.handle], ["b", "b", "sb", "sb", undefined, true], "its machine's own id, row and handle");
+  assert.equal(merged.locate("sb"), null, "an id with no machine is none of them");
+  const listed = new Map(late.groups.flatMap(group => group.rows).map(row => [row.id, row]));
+  const list = { selected: () => "b/sb", workers: id => [...listed.values()].filter(row => row.startedBy === id) };
+  const onB = merged.forView(list, "b");
+  assert.deepEqual([onB.selectedId(), onB.sessionRow("sb")?.id, onB.sessionWorkers("sb").map(row => row.id), onB.listId("sb")], ["sb", "sb", ["sb-w"], "b/sb"]);
+  assert.deepEqual([onB.sessionRow("sb")._group.label, onB.sessionRow("sb")._group.secondary, onB.sessionRow("sb") === onB.sessionRow("sb")], ["x", "~/code/x", true], "a row the view reads carries its group (its head names the project, Info the directory), the same object until the machine answers again");
+  assert.equal(merged.forView(list, "a").selectedId(), "", "a session of another machine is not this view's");
+  assert.throws(() => merged.forView(list, "z"), /no machine named z/);
+
+  assert.deepEqual(splitMachineId("mac-mini/p:~/code/x"), { machine: "mac-mini", id: "p:~/code/x" }, "split at the first /");
+  assert.equal(splitMachineId("s:abc"), null);
+  assert.equal(splitMachineId("/abc"), null);
+  for (const [machines, why] of [[[], /machines it merges/], [[{ machine: "a/b", handle: a.handle }], /no "\/"/], [[{ machine: "a", handle: a.handle }, { machine: "a", handle: b.handle }], /two machines named a/], [[{ machine: "a" }], /backend handle/]]) {
+    assert.throws(() => mergedBackend(machines), why);
+  }
+  // The list keeps each machine's state, and draws it: the label, the greyed rows, the heads.
+  const storeSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-index-store.js", import.meta.url), "utf8");
+  assert.match(storeSource, /indexState\.machines = Array\.isArray\(data\.machines\) \? data\.machines : \[\];/, "the index keeps how each machine answered");
+  assert.match(storeSource, /grouped\(\) \{ return this\.group \? this\.group\(indexState\.groups, groupAcrossMachines\) : groupAcrossMachines\(indexState\.groups\); \}/, "and groups by machine");
+  const listViewSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-list-view.js", import.meta.url), "utf8");
+  assert.match(listViewSource, /const treeHtml = machineHeadsHtml\(grouped\) \+ \(html \|\|/, "the heads lead the list");
+  const mergedSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/merged-source.js", import.meta.url), "utf8");
+  const sources = mergedSource.match(/const SOURCES = Object\.freeze\((\[[^\]]*\])\);/);
+  assert.deepEqual(sources && JSON.parse(sources[1]), ARRANGE_SOURCES, "the merged source answers every app the list can follow");
+  // A machine's state is drawn under a prefixed name: a host may style .stale or .failed for itself.
+  assert.match(listViewSource, /const HEAD_STATE = Object\.freeze\(\{ stale: " tree-machine-head-stale", failed: " tree-machine-head-failed" \}\);/, "the heads' states, prefixed");
+  assert.match(listViewSource, /machineStale\(key\) \? " tree-machine-stale" : ""/, "and the label's");
+  const listRules = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.doesNotMatch(listRules, /\.tree-machine(?:-head)?\.(?:stale|failed|live|waiting)(?![\w-])/, "and no rule styles a bare state name on them");
+  console.log("#s541 merged source cases passed");
+
+  // #s561 (Hong, on the iOS app: "a check box to group agents by machine"; "show the host the agent
+  // is running on (limit to the first dot component maybe)"): the list machine first, and a
+  // machine's short name.
+  const { machineSections, machineShortLabel } = await import("../../claude-monitor/src/codex-ui/session-list.js");
+  for (const [label, shown] of [["aries-black.tail1234.ts.net", "aries-black"], ["Studio Mac", "Studio Mac"], ["mac-mini", "mac-mini"], ["100.64.0.7", "100.64.0.7"], ["fd7a:115c::1", "fd7a:115c::1"], [".hidden", ".hidden"], [undefined, ""], ["Hong's Mac v1.2", "Hong's Mac v1.2"], ["Mac (studio.local)", "Mac (studio.local)"], ["studio.local.", "studio"], ["10.0.0.1.", "10.0.0.1."]]) {
+    assert.equal(machineShortLabel(label), shown, `${label} shows as ${shown}`);
+  }
+  // Two machines that would read the same once cut keep their whole labels; one apart keeps its cut.
+  for (const [label, labels, shown] of [
+    ["mac.tail1.ts.net", ["mac.tail1.ts.net", "mac.tail2.ts.net"], "mac.tail1.ts.net"],
+    ["studio.home", ["studio.home", "laptop.home"], "studio"],
+    ["mac.ts.net", ["mac", "mac.ts.net"], "mac.ts.net"],
+    ["mac.ts.net", ["mac.ts.net", "mac.ts.net"], "mac"],
+    ["Mac.tail1.ts.net", ["Mac.tail1.ts.net", "mac.tail2.ts.net"], "Mac.tail1.ts.net"],
+  ]) assert.equal(machineShortLabel(label, labels), shown, `${label} beside ${labels.join(", ")} shows as ${shown}`);
+  const sections = machineSections(tree, [...late.machines].reverse());
+  assert.deepEqual(sections.map(section => [section.machine.machine, section.machine.state]), [["b", "stale"], ["a", "live"]], "a section per machine, in the order the machines are listed, each saying how it answers");
+  assert.deepEqual(sections.map(section => section.agents.map(agent => [agent.id, agent.projects.map(project => project.id)])), [
+    [["claude", ["b/p:~/code/x", "b/claude:desktop"]]],
+    [["claude", ["a/p:~/code/x", "a/claude:desktop"]]],
+  ], "each holding its own machine's agents and projects alone");
+  assert.deepEqual(machineSections(tree, [{ machine: "c", label: "c", state: "failed", since: null, error: "connection refused" }, ...late.machines]).map(section => [section.machine.machine, section.agents.length]), [["c", 0], ["a", 1], ["b", 1]], "a machine with no rows keeps its section");
+  assert.deepEqual(machineSections(tree, [late.machines[0]]).map(section => section.machine.machine), ["a", "b"], "a machine the rows name and the list does not comes after it");
+  assert.equal(tree[0].projects.length, 4, "the tree it was handed is left as it was");
+  // The view: the box between the states and Include hidden, shown for more than one machine, the
+  // choice remembered; under a machine's head no project or row repeats its machine.
+  assert.match(listViewSource, /if \(shows\("filter"\)\) sheetParts\[0\] \+= `\n<div data-machine-part>/, "the box comes right after the states, before Include hidden, hidden by the code alone");
+  assert.match(listViewSource, /machinePart\.hidden = machineCount\(\) < 2;/, "and is offered only over more than one machine");
+  assert.match(listViewSource, /filterSheet\.innerHTML = sheetParts\.join\([^\n]*\);\n(?:\/\/[^\n]*\n)*paintMachinePart\(\);/, "hidden from the mount on, before the first answer draws the list");
+  assert.match(listViewSource, /function toggleFilterSheet\(open\) \{\n(?:  [^\n]*\n){0,3}  if \(open\) paintMachinePart\(\);/, "and painted again as the sheet opens");
+  assert.match(listViewSource, /collapseBtn\.onclick = \(\) => \{\n  if \(drawnGroupedFlat\) \{ for \(const entry of indexState\.machines\) indexState\.collapsed\.add\(`m:\$\{entry\.machine\}`\); persist\(\); renderTree\(\); return; \}/, "in the list by activity grouped by machine, Collapse all folds the machines' heads alone");
+  assert.match(listViewSource, /const groupedByMachine = \(\) => shows\("filter"\) && indexState\.byMachine && machineCount\(\) > 1;/);
+  assert.match(listViewSource, /const entry = drawingMachine \? null : machineState\(key\);/, "under its head, a machine is not named again");
+  assert.match(listViewSource, /const was = drawingMachine;[\s\S]*?finally \{ drawingMachine = was; \}/, "and a draw inside a draw gives the mark back as it found it");
+  assert.match(listViewSource, /const grouped = !arranged && groupedByMachine\(\);[\s\S]*?machineHeadsHtml\(grouped\)/, "the heads over the list give way only when the grouped list is drawn");
+  const stateSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
+  assert.match(stateSource, /byMachine: localStorage\.getItem\("am-prod-by-machine"\) === "1",/, "remembered");
+  assert.match(stateSource, /localStorage\.setItem\("am-prod-by-machine", indexState\.byMachine \? "1" : "0"\);/);
+  assert.match(listViewSource, /const GROUP_STATE = Object\.freeze\(\{ stale: " tree-machine-group-stale", failed: " tree-machine-group-failed", waiting: " tree-machine-group-waiting" \}\);/, "a machine's head says its state under a prefixed name too");
+  assert.doesNotMatch(listRules, /\.tree-machine-group\.(?:stale|failed|live|waiting)(?![\w-])/, "and no rule styles a bare state name on it");
+  console.log("#s561 group by machine cases passed");
 }

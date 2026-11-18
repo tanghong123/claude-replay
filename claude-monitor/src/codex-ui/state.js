@@ -5,7 +5,7 @@ const json = (key, fallback) => {
   catch (_) { return fallback; }
 };
 
-// The app's stores (#s429, design/session-view-component.md, stages 3 and 7). The app is app.js (the
+// The app's stores (#s429, design/session-view-component.md, stages 3 and 7). The app is app-mount.js (the
 // session list, the drawer, the chrome) with session-list.js and the session index; native mode, the
 // monitor's own, reads them too (native-entry.js, codex-workspace/monitor-controls.js). The session
 // view (session-view.js and the modules under it) imports none of this: it makes its own stores as it
@@ -16,6 +16,9 @@ const json = (key, fallback) => {
  *  workers through `selectedId`, `sessionRow` and `sessionWorkers`. */
 export const indexState = {
   groups: [], rows: new Map(), selected: "",
+  // #s541: a merged source's machines, as its last answer said each answered (`{ machine, label,
+  // state, since, error }`); empty for one monitor.
+  machines: [],
   collapsed: new Set(json("am-demo-collapsed", [])), ignoredCount: 0, showHidden: false,
   // The session filter (#202): which of the three buckets — recent (active in the last 6 hours) /
   // blocked / idle — the tree shows. The owner's default is Active recently and Blocked (a new
@@ -41,6 +44,10 @@ export const indexState = {
   // #s387: each arranged section's own order and grouping (the reader's, beside the app's), keyed
   // `L:<source>:<section id>` — the reader's, never the app's — remembered like the arrangement.
   sectionViews: json("am-prod-section-views", {}),
+  // #s561 (Hong: "a check box to group agents by machine"): a list over several machines arranged
+  // machine first, a head per machine holding its own tree. Remembered like the arrangement; it
+  // changes nothing while the list holds one machine.
+  byMachine: localStorage.getItem("am-prod-by-machine") === "1",
   // Fork families opened in the tree (view state, like classic famOpen), and whether the
   // selected id was a LIST row when chosen — a sub-agent child never is, and must not be
   // declared gone by the index poll for that reason.
@@ -71,6 +78,7 @@ export function persist() {
   const appChosen = ["claude-app", "codex-app", "herdr"].includes(indexState.arrange);
   localStorage.setItem("am-prod-session-flat", indexState.flat || (appChosen && indexState.arrangeBefore === "flat") ? "1" : "0");
   localStorage.setItem("am-prod-section-views", JSON.stringify(indexState.sectionViews));
+  localStorage.setItem("am-prod-by-machine", indexState.byMachine ? "1" : "0");
   if (["claude-app", "codex-app", "herdr"].includes(indexState.arrange)) localStorage.setItem("am-prod-session-arrange", indexState.arrange);
   else localStorage.removeItem("am-prod-session-arrange");
 }
