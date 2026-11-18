@@ -27675,6 +27675,185 @@ fn a_click_in_a_growing_transcript_leaves_its_keys_a_scroller_no_redraw_takes() 
     );
 }
 
+/// #s531, from #s488's review: leaving the session's search by Escape gives the keys back to the
+/// transcript the search took them from. After a click on its text the transcript holds the focus
+/// (#s488), so in Safari a key after a live redraw still scrolls; a blur on leaving the search put
+/// the focus on nothing again, and Page Up after the next redraw scrolled nothing until another
+/// click. Chrome scrolls either way, so this case reads the focus a key depends on, as #s488's does:
+/// ⌘F (Ctrl+F off a Mac) from the clicked transcript opens the search and a second press is the
+/// browser's; Escape puts the focus back on the transcript, where a redraw leaves it; so does Escape
+/// after a click on the field, and after the field lost the focus to nothing (Safari gives a pressed
+/// button none); from nothing focused, Escape leaves the focus on nothing as before. A real Page Up
+/// moves the transcript, last.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn escape_from_the_search_gives_the_keys_back_to_the_transcript_it_took_them_from() {
+    let _serial = serial();
+    let base = harness::base("search-escape-focus");
+    let stores = harness::Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000053100";
+    let path = stores.claude_session(sid, &harness::long_session(30, harness::Shape::default()));
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3069, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1366.0, 1024.0);
+    m.pair(&tab);
+    harness::track_idle(&tab);
+    m.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#transcript .virtual-window .turn.assistant p').length >= 2 && document.getElementById('transcript').scrollTop > 0",
+        "the session drawn at its tail",
+        Duration::from_secs(30),
+        "JSON.stringify({ ps: document.querySelectorAll('#transcript .virtual-window p').length, top: (document.getElementById('transcript') || {}).scrollTop })",
+    );
+    // The last reply's paragraph the mouse can reach, kept on the page as `__clicked`: at the tail
+    // it is the one the next turn's commit draws again.
+    let click_paragraph = |what: &str| {
+        let at = harness::eval(&tab, "(function(){ var s = document.getElementById('transcript'), v = s.getBoundingClientRect(); var ps = [].slice.call(s.querySelectorAll('.virtual-window .turn.assistant p')); for (var i = ps.length - 1; i >= 0; i--) { var r = ps[i].getBoundingClientRect(); if (r.height < 4 || r.top < v.top + 60 || r.bottom > v.bottom - 8) continue; var x = r.left + Math.min(40, r.width / 2), y = r.top + r.height / 2, hit = document.elementFromPoint(x, y); if (hit && ps[i].contains(hit)) { window.__clicked = ps[i]; return JSON.stringify([x, y]); } } return '[]'; })()");
+        let at: Vec<f64> = serde_json::from_str(at.as_str().unwrap_or("[]")).unwrap_or_default();
+        assert_eq!(at.len(), 2, "a paragraph to click {what}");
+        tab.click_point(headless_chrome::browser::tab::point::Point { x: at[0], y: at[1] })
+            .expect("a click on a paragraph");
+    };
+    let on = "(function(){ var a = document.activeElement, s = document.getElementById('transcript'), cs = getComputedStyle(a); return JSON.stringify({ on: a === s ? 'the transcript' : a === document.body ? 'nothing' : (a.id || a.tagName.toLowerCase()), connected: a.isConnected, outline: cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0, clicked: !!(window.__clicked && window.__clicked.isConnected) }); })()";
+    let read = |what: &str| -> serde_json::Value {
+        let v: serde_json::Value =
+            serde_json::from_str(harness::eval(&tab, on).as_str().unwrap_or("{}")).unwrap();
+        eprintln!("#s531 {what}: {v}");
+        v
+    };
+    let focus_on = |what: &str, expect: &str| {
+        let v = read(what);
+        assert_eq!(
+            (
+                v["on"].as_str(),
+                v["connected"].as_bool(),
+                v["outline"].as_bool()
+            ),
+            (Some(expect), Some(true), Some(false)),
+            "{what}: the focus on {expect}, connected, no outline ({v})"
+        );
+    };
+    // ⌘F (Ctrl+F off a Mac), dispatched on what has the focus: whether the page took it, and whether
+    // the field has the focus after it. A dispatched press cannot become a stuck key (#270).
+    let command_f = |what: &str| -> (bool, bool) {
+        let v = harness::eval(&tab, "(function(){ var t = document.activeElement || document.body, command = /Mac|iPhone|iPad|iPod/.test(navigator.platform) ? 'metaKey' : 'ctrlKey', init = {key: 'f', bubbles: true, cancelable: true}; init[command] = true; var e = new KeyboardEvent('keydown', init); t.dispatchEvent(e); return JSON.stringify([e.defaultPrevented, document.activeElement === document.getElementById('transcriptSearchInput')]); })()");
+        let v: Vec<bool> = serde_json::from_str(v.as_str().unwrap_or("[]")).unwrap_or_default();
+        eprintln!("#s531 {what}: prevented, in the field: {v:?}");
+        (
+            v.first().copied().unwrap_or(false),
+            v.get(1).copied().unwrap_or(false),
+        )
+    };
+    let escape = || {
+        harness::eval(&tab, "(function(){ (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true})); return 'ok'; })()");
+    };
+
+    click_paragraph("to start");
+    focus_on("a click on the text", "the transcript");
+    assert_eq!(
+        command_f("⌘F from the transcript"),
+        (true, true),
+        "⌘F with the transcript focused opens the session's search"
+    );
+    assert_eq!(
+        command_f("⌘F in the field"),
+        (false, true),
+        "a second ⌘F, from the field, is the browser's"
+    );
+    escape();
+    focus_on("Escape from the field", "the transcript");
+    // A turn every second: the commit draws the clicked reply again.
+    let script = (0..4)
+        .flat_map(|i| {
+            [
+                harness::user_at(
+                    &format!("question {}: a late question", 900 + i),
+                    &harness::now_minus(60),
+                ),
+                harness::assistant_at(
+                    &format!(
+                        "answer {}: a late answer, a paragraph a reader could click",
+                        900 + i
+                    ),
+                    &harness::now_minus(55),
+                ),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let growth = harness::LiveGrowth::start(path.clone(), script, Duration::from_millis(1000));
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while Instant::now() < deadline
+        && harness::eval(&tab, "!!(window.__clicked && window.__clicked.isConnected)")
+            == serde_json::json!(true)
+    {
+        harness::pause("the growth", Duration::from_millis(100));
+    }
+    growth.finish(Duration::from_secs(20));
+    let after = read("after the growth");
+    assert_eq!(
+        after["clicked"], false,
+        "the growth drew the clicked reply again ({after})"
+    );
+    focus_on("after the growth", "the transcript");
+
+    click_paragraph("before a click on the field");
+    harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
+    focus_on("a click on the field", "transcriptSearchInput");
+    escape();
+    focus_on("Escape after a click on the field", "the transcript");
+
+    assert_eq!(
+        command_f("⌘F again"),
+        (true, true),
+        "⌘F opens the search again"
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('transcriptSearchInput').blur(); 'ok'",
+    );
+    focus_on("the field's focus lost to nothing", "nothing");
+    escape();
+    focus_on(
+        "Escape with the focus on nothing, the search still held",
+        "the transcript",
+    );
+
+    harness::eval(&tab, "document.activeElement.blur(); 'ok'");
+    focus_on("nothing focused", "nothing");
+    assert_eq!(
+        command_f("⌘F from nothing"),
+        (true, true),
+        "⌘F from nothing focused opens the search"
+    );
+    escape();
+    focus_on(
+        "Escape from a search opened with nothing focused",
+        "nothing",
+    );
+
+    // A real Page Up after a click and the search moves the transcript (last: Chrome's CDP key a page
+    // does not prevent is never released, so nothing is typed after it).
+    click_paragraph("before Page Up");
+    assert_eq!(
+        command_f("⌘F before Page Up"),
+        (true, true),
+        "⌘F opens the search"
+    );
+    escape();
+    focus_on("before Page Up", "the transcript");
+    let top = "Math.round(document.getElementById('transcript').scrollTop)";
+    let before = harness::eval(&tab, top).as_i64().unwrap_or(0);
+    tab.press_key("PageUp").unwrap();
+    harness::until(
+        &tab,
+        &format!("{top} < {before} - 100"),
+        "Page Up to move the transcript",
+        Duration::from_secs(5),
+        top,
+    );
+}
+
 /// #s488's other half: a finger's or a pen's tap on the transcript's text does not focus it. On a
 /// phone or a tablet a tap there must not take the focus from a field (and put the keyboard down) for
 /// a key nobody presses. Three taps, each from nothing focused and from the search field: Chrome's own

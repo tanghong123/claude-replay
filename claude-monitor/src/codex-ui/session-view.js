@@ -2542,8 +2542,9 @@ byId("transcriptSearchInput").oninput = () => {
 byId("transcriptSearchInput").onkeydown = event => {
   // Escape leaves the box as a click outside would (#298, the owner; the classic page's `q.blur()`):
   // the query, its count and its marks stay, and the next key is the page's keymap's again. An open
-  // filter popover closes with it, as the page-wide Escape closes it.
-  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPopover(null); event.currentTarget.blur(); setPhoneSearch(false); releaseSearch(); return; }
+  // filter popover closes with it, as the page-wide Escape closes it. Opened from the transcript, it
+  // gives the keys back to the transcript (`leaveSearch`, #s531).
+  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPopover(null); leaveSearch(event.currentTarget); setPhoneSearch(false); releaseSearch(); return; }
   // An Enter that commits an input method's composition (pinyin, kana) is the input method's; Safari
   // sends it with `isComposing` false and keyCode 229.
   if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
@@ -2779,14 +2780,32 @@ document.addEventListener("pointerdown", event => {
 // pane's page does not.
 const searchCluster = viewRoot.$(".header-search-cluster");
 searchCluster.addEventListener("pointerdown", event => { if (event.pointerType === "mouse") searchCluster.classList.add("search-held"); }, { signal });
-searchCluster.addEventListener("focusin", () => searchCluster.classList.add("search-held"), { signal });
+searchCluster.addEventListener("focusin", event => {
+  searchCluster.classList.add("search-held");
+  if (!searchCluster.contains(event.relatedTarget)) searchFrom = event.relatedTarget === transcript ? transcript : null;
+}, { signal });
 searchCluster.addEventListener("focusout", event => { if (event.relatedTarget && !searchCluster.contains(event.relatedTarget)) releaseSearch(); }, { signal });
 document.addEventListener("pointerdown", event => {
   if (searchCluster.classList.contains("search-held") && !searchCluster.contains(event.target)) releaseSearch();
 }, { capture: true, signal });
 addEventListener("blur", () => { if (viewRoot.active()?.tagName === "IFRAME") releaseSearch(); }, { signal });
+// #s531: where the search took the focus from. A mouse's press on the transcript focuses it (#s488),
+// so its keys reach a scroller no redraw replaces; a blur on leaving the search put them on the body
+// again, where in Safari Page Up after a live redraw scrolled nothing until the next click. So
+// leaving the search by Escape gives the focus back to the transcript when the search took it from
+// there (by ⌘F or /, a click on the field, or the phone's open, all one focus), and otherwise
+// blurs, as before: from nothing focused the focus goes nowhere still. Cleared whenever the search
+// is released, since what the reader did then is where they are.
+let searchFrom = null;
+function leaveSearch(active) {
+  const from = searchFrom;
+  searchFrom = null;
+  if (from?.isConnected) from.focus({ preventScroll: true });
+  if (viewRoot.active() !== from) active?.blur();
+}
 /** The search is no longer in use: the box may fold, and in the glyphs' bar its filter shuts. */
 function releaseSearch() {
+  searchFrom = null;
   const cluster = viewRoot.$(".header-search-cluster");
   if (!cluster?.classList.contains("search-held")) return;
   cluster.classList.remove("search-held");
@@ -4399,7 +4418,10 @@ addEventListener("keydown", event => {
   if (viewEscape(event)) {
     setSessionCopyMenu(false); setPopover(null);
     const active = viewRoot.active(), cluster = viewRoot.$(".header-search-cluster");
-    if (active && cluster?.contains(active)) active.blur();
+    // Out of the box but still in the search (Safari gives a pressed button no focus, so the blur of
+    // the field left it on nothing), Escape leaves it the same way (#s531).
+    if (active && cluster?.contains(active)) leaveSearch(active);
+    else if (cluster?.classList.contains("search-held") && (!active || active.tagName === "BODY")) leaveSearch(null);
     releaseSearch();
   }
   else if (event.key === "Escape" && hovered(sessionTitle, sessionCopyMenu)) setSessionCopyMenu(false);
