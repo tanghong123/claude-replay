@@ -1558,7 +1558,10 @@ const CODEX_STATE_LIMIT: u64 = 64 << 20;
 /// pins (`pinned-thread-ids`), the project order and names (`project-order`, `local-projects`),
 /// the threads with no project (`projectless-thread-ids`), each thread's project while the app
 /// has not yet moved it into its database (`thread-project-assignments`), and how the state file's
-/// project ids map to the database's.
+/// project ids map to the database's. Since ChatGPT 26.1111 (#s579) the sidebar's atoms are the
+/// account's own (`sidebar_atoms`), and so are the pins in the app-server's order
+/// (`app-server-pinned-thread-order-v1`) and the project order (`unified-sidebar-project-order-v1`,
+/// with the ChatGPT app's projects); the top-level pins and order are what the app kept before.
 #[derive(Clone, Debug, Default, PartialEq)]
 struct CodexSidebar {
     section_order: Vec<String>,
@@ -1731,21 +1734,8 @@ fn parse_codex_sidebar(state: &Value) -> Result<CodexSidebar, String> {
                 .collect()
         })
         .unwrap_or_default();
-    let names = state.get("local-projects").and_then(Value::as_object);
-    let projects = strings(state.get("project-order"))
-        .into_iter()
-        .map(|id| {
-            let name = names
-                .and_then(|n| n.get(&id))
-                .and_then(|p| p.get("name"))
-                .and_then(Value::as_str)
-                .unwrap_or(&id)
-                .to_string();
-            (id, name)
-        })
-        .collect();
     // The database's project ids by the state file's, for this machine's host.
-    let server_project = state
+    let server_project: HashMap<String, String> = state
         .get("app-server-project-id-by-legacy-project-id-by-host")
         .and_then(Value::as_object)
         .and_then(|hosts| {
@@ -1761,6 +1751,53 @@ fn parse_codex_sidebar(state: &Value) -> Result<CodexSidebar, String> {
                 .collect()
         })
         .unwrap_or_default();
+    let names = state.get("local-projects").and_then(Value::as_object);
+    let name_of = |id: &str| -> Option<String> {
+        names
+            .and_then(|n| n.get(id))
+            .and_then(|p| p.get("name"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let legacy_order = strings(state.get("project-order"));
+    // #s579: the project order where the app keeps it now, per account: the unified sidebar's
+    // (`unified-sidebar-project-order-v1`), which holds the ChatGPT app's projects too
+    // (`chatgpt:project:<id>`) and may still name a project since removed. Only the Codex app's
+    // projects, by the state file's id (a database id is mapped back), and only those the state
+    // file still names; then any it names that the unified order has not caught up with, in the
+    // old order. Without it, the old top-level `project-order`, as before.
+    let state_id: HashMap<&str, &str> = server_project
+        .iter()
+        .map(|(state, server): (&String, &String)| (server.as_str(), state.as_str()))
+        .collect();
+    let order: Vec<String> = match atoms
+        .and_then(|a| a.get("unified-sidebar-project-order-v1"))
+        .and_then(Value::as_array)
+    {
+        Some(unified) => {
+            let mut order: Vec<String> = Vec::new();
+            let codex = unified
+                .iter()
+                .filter_map(Value::as_str)
+                .filter_map(|key| key.strip_prefix("codex:project:"))
+                .map(|id| state_id.get(id).copied().unwrap_or(id).to_string())
+                .filter(|id| name_of(id).is_some());
+            for id in codex.chain(legacy_order.iter().cloned()) {
+                if !order.contains(&id) {
+                    order.push(id);
+                }
+            }
+            order
+        }
+        None => legacy_order,
+    };
+    let projects = order
+        .into_iter()
+        .map(|id| {
+            let name = name_of(&id).unwrap_or_else(|| id.clone());
+            (id, name)
+        })
+        .collect();
     let thread_project = state
         .get("thread-project-assignments")
         .and_then(Value::as_object)
@@ -1779,7 +1816,14 @@ fn parse_codex_sidebar(state: &Value) -> Result<CodexSidebar, String> {
             .into_iter()
             .collect(),
         collapsed_builtin,
-        pinned: strings(state.get("pinned-thread-ids")),
+        // #s579: the pins where the app keeps them now, per account, in its order
+        // (`app-server-pinned-thread-order-v1`), else the old top-level list. Never the unified
+        // sidebar's pin order, which keeps pins since removed and the ChatGPT app's projects.
+        pinned: atoms
+            .and_then(|a| a.get("app-server-pinned-thread-order-v1"))
+            .filter(|v| v.is_array())
+            .map(|v| strings(Some(v)))
+            .unwrap_or_else(|| strings(state.get("pinned-thread-ids"))),
         projects,
         server_project,
         thread_project,
@@ -2975,6 +3019,66 @@ mod tests {
         assert!(parse_codex_sidebar(&json!({ "project-order": [] }))
             .unwrap_err()
             .contains("sidebar-custom-sections-v3"));
+    }
+
+    /// #s579: the pins and the project order where the app keeps them now, in the account's atoms:
+    /// the pins in the app-server's order (never the unified sidebar's pin order, which keeps pins
+    /// since removed and a ChatGPT project), the projects in the unified sidebar's order, the
+    /// Codex app's only, a database id mapped to the state file's, a project since removed left
+    /// out, and one the unified order has not caught up with after it. Without the new keys the
+    /// old top-level ones decide, as before.
+    #[test]
+    fn pins_and_project_order_are_read_where_the_app_keeps_them_now() {
+        let legacy = codex_state_json();
+        let old = parse_codex_sidebar(&legacy).unwrap();
+        assert_eq!(old.pinned, vec!["t-pin"], "the old top-level pins");
+        let order = |s: &CodexSidebar| {
+            s.projects
+                .iter()
+                .map(|(id, _)| id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            order(&old),
+            vec!["lp-api", "lp-web", "lp-docs", "lp-empty"],
+            "the old order"
+        );
+
+        let mut current = legacy.clone();
+        let atoms = current["electron-persisted-atom-state"].take();
+        current["electron-persisted-atom-state"] = json!({});
+        current["electron-renderer-content-owner"] = json!("owner-a");
+        current["electron-owner-atoms:owner-a"] = atoms;
+        let owned = &mut current["electron-owner-atoms:owner-a"];
+        owned["app-server-pinned-thread-order-v1"] = json!(["t-chat", "t-pin"]);
+        owned["unified-sidebar-pinned-order-v1"] = json!([
+            "codex:thread:local:t-unpinned-long-ago",
+            "chatgpt:project:g-p-1",
+            "codex:thread:local:t-pin"
+        ]);
+        owned["unified-sidebar-project-order-v1"] = json!([
+            "chatgpt:project:g-p-1",
+            "codex:project:lp-docs",
+            "chatgpt:project:g-p-2",
+            "codex:project:srv-web",
+            "codex:project:lp-removed",
+            "codex:project:lp-api"
+        ]);
+        let new = parse_codex_sidebar(&current).unwrap();
+        assert_eq!(
+            new.pinned,
+            vec!["t-chat", "t-pin"],
+            "the app-server's pins, in its order"
+        );
+        assert_eq!(
+            order(&new),
+            vec!["lp-docs", "lp-web", "lp-api", "lp-empty"],
+            "the unified order's Codex projects (srv-web is lp-web; lp-removed is gone), then lp-empty"
+        );
+        assert_eq!(new.projects[1].1, "web", "named as the state file names it");
+        // A pin list present but empty is the account's word: no pins.
+        current["electron-owner-atoms:owner-a"]["app-server-pinned-thread-order-v1"] = json!([]);
+        assert!(parse_codex_sidebar(&current).unwrap().pinned.is_empty());
     }
 
     /// #s579: the app now keeps the sidebar's atoms per account, under
