@@ -3700,10 +3700,11 @@
   // Input on the transcript only, as the app shell's (`readerMoves`): here the WINDOW is the
   // transcript's scroller, so input anywhere it scrolls counts (the stream, its margins, the bar
   // over it), but a wheel over the sidebar, the task panel or an open menu of the top bar scrolls
-  // that panel or menu and leaves the reader where the step put them.
+  // that panel or menu, and one over the full-size image view zooms the image (#s526): each leaves
+  // the reader where the step put them.
   var SCROLL_KEYS = { ArrowUp: 1, ArrowDown: 1, PageUp: 1, PageDown: 1, Home: 1, End: 1, " ": 1 };
   function onTranscript(t) {
-    return !(t instanceof Element && t.closest("#sidebar, #taskpanel, #toolmenu, #agentmenu, #taskmenu, #artifactmenu"));
+    return !(t instanceof Element && t.closest("#sidebar, #taskpanel, #toolmenu, #agentmenu, #taskmenu, #artifactmenu, .lightbox"));
   }
   ["wheel", "touchmove", "keydown"].forEach(function (ev) {
     window.addEventListener(ev, function (e) {

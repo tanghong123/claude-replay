@@ -2248,6 +2248,80 @@ fn app_shell_keeps_a_turn_steps_hold_through_a_wheel_over_its_session_list() {
     scenario_a_wheel_beside_the_transcript_keeps_a_turn_steps_hold(&page.tab, Surface::AppShell);
 }
 
+/// #s526: on the classic page a wheel over the full-size image view zooms the image and leaves the
+/// reader where the step put them, so the turn the step landed stays the current one: from the end,
+/// where turn N-1 is in view and `[` moves nothing, `[`, an image opened full size, a real wheel
+/// over it, Escape, and `[` again go to N-1 and then N-2. The page ended the hold on that wheel, so
+/// its second `[` counted from N again and landed N-1 a second time. The image is opened through
+/// the page's own opener (a click on an `.aimg` anywhere opens it), on an image drawn nowhere: an
+/// image in the last turns brings its attachment row, the turns no longer fit, the step moves the
+/// view, and the hold no longer decides anything. The app shell's image opens in its pane, outside
+/// the transcript, and already kept the hold.
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_keeps_a_turn_steps_hold_through_a_wheel_over_the_full_size_image() {
+    let _serial = serial();
+    let fx = fixture_short_last_turns("scenario-turnhold-lightbox-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    let (tab, surface) = (&page.tab, Surface::Classic);
+    let at_bottom = |tab: &headless_chrome::Tab| {
+        eval(
+            tab,
+            "(function(){ var s = document.scrollingElement; return s.scrollHeight - innerHeight - s.scrollTop <= 1; })()",
+        )
+        .as_bool()
+    };
+    let mut readings = Vec::new();
+    step_back_from_the_end(tab, surface, &mut readings);
+    assert_eq!(
+        at_bottom(tab),
+        Some(true),
+        "the premise: the step moved nothing, so only the hold names turn 29: {readings:?}"
+    );
+    let opened = eval(
+        tab,
+        &format!(
+            "(function(){{ var i = document.createElement('img'); i.className = 'aimg'; i.alt = 'a screenshot'; i.src = 'data:image/png;base64,{}'; i.style.display = 'none'; document.body.appendChild(i); i.click(); i.remove(); return !!document.querySelector('.lightbox .lb-stage'); }})()",
+            harness::TINY_PNG_B64.trim()
+        ),
+    );
+    assert_eq!(
+        opened.as_bool(),
+        Some(true),
+        "the premise: the image opens full size: {readings:?}"
+    );
+    settle();
+    wheel_over(
+        tab,
+        "document.querySelector('.lightbox .lb-stage')",
+        &readings,
+    );
+    settle();
+    until_engine_quiet(tab);
+    key(tab, "Escape", false);
+    settle();
+    until_engine_quiet(tab);
+    let closed = eval(tab, "!document.querySelector('.lightbox')");
+    let after = named_turn(tab, surface);
+    readings.push(after.clone());
+    assert_eq!(
+        (
+            closed.as_bool(),
+            at_bottom(tab),
+            after["bar"].as_i64(),
+            after["pane"].as_i64()
+        ),
+        (Some(true), Some(true), Some(29), Some(29)),
+        "the full-size view closes, the view has not moved, and turn 29 is still the current one: {readings:?}"
+    );
+    let (first, later) = press_and_name(tab, surface, "[", &mut readings);
+    assert_eq!(
+        names_both(&first, &later),
+        [Some(28); 4],
+        "…so the next `[` goes to turn 28, and stays: {readings:?}"
+    );
+}
+
 /// Twenty-eight long turns, then two short ones.
 fn fixture_short_last_turns(name: &str) -> Fixture {
     let base = base(name);
