@@ -1519,9 +1519,12 @@ merge path** (owner, 2026-10-16): the owner's agent reviews a teammate's change 
 risk, approves and lands it under the owner's account without asking, once all three hold:
 
 1. **Reviewed twice.** The agent's own review: the gates below, the browser cases the change
-   touches, the whole local browser suite for a change to page code, and an iOS Simulator walk for a
-   phone UI change. Then an independent review of the exact head commit by a fresh subagent or
-   another agent, never the session that lands it. Every thread on the change is answered.
+   touches, and an iOS Simulator walk for a phone UI change. Then an independent review of the exact
+   head commit by a fresh subagent or another agent, never the session that lands it. Every thread
+   on the change is answered. For a change to page code the whole local browser suite runs ONCE, on
+   the head that lands (main merged in), and a review round before that leans on CI's browser legs on
+   the change (the owner, 2026-11-18: the local Mac suite once per landing, review rounds on CI Linux
+   through draft PRs).
 2. **Green.** CI passed on that exact head: `fmt · clippy · test`, `secrets · blocked emails`,
    `version guard` and `browser (real Chrome)`.
 3. **Current.** main is merged in (or the branch rebased onto it), and the result is still green.
