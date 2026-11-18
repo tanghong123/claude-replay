@@ -1988,21 +1988,16 @@ fn a_touch_screen_beside_the_list_reveals_nothing_on_a_hover_inside_a_record() {
     let m = Monitor::spawn(Kind::V1, 3204, &base, Some(&stores), true);
     let (_browser, tab) = chrome_tab();
     harness::resize(&tab, 1210.0, 834.0);
-    // A touch screen in the desktop layout, as an iPad held sideways reports itself. Touch emulation
-    // stays off, so the mouse below gives the page its `:hover`, as WebKit gives it a tapped element.
+    // A touch screen in the desktop layout, as an iPad held sideways reports itself: Chrome's touch
+    // emulation alone, at the window's own size (no phone viewport), so the page reads
+    // `pointer: coarse` and `hover: none`. Emulating the two media features instead held on neither
+    // Chrome (macOS read both false, Linux `hover` only). The emulation does not turn the mouse into
+    // touches, so the mouse below still gives the page its `:hover`, as WebKit gives one to a tapped
+    // element.
     tab.call_method(
-        headless_chrome::protocol::cdp::Emulation::SetEmulatedMedia {
-            media: None,
-            features: Some(vec![
-                headless_chrome::protocol::cdp::Emulation::MediaFeature {
-                    name: "hover".into(),
-                    value: "none".into(),
-                },
-                headless_chrome::protocol::cdp::Emulation::MediaFeature {
-                    name: "pointer".into(),
-                    value: "coarse".into(),
-                },
-            ]),
+        headless_chrome::protocol::cdp::Emulation::SetTouchEmulationEnabled {
+            enabled: true,
+            max_touch_points: Some(5),
         },
     )
     .unwrap();
