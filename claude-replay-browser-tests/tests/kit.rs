@@ -707,7 +707,7 @@ fn one_list_over_two_machines_labels_routes_and_greys_each_machine() {
     let there = Monitor::spawn(Kind::V1, 3315, &there_base, Some(&there_stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    let mut answers: Vec<Answer> = kit_answers()
+    let mut answers: Vec<Answer> = kit_answers("")
         .into_iter()
         .filter(|answer| answer.path != "/kit-host")
         .collect();
@@ -1047,7 +1047,7 @@ fn groups_by_machine_from_the_filter(phone: bool, here_port: u16, there_port: u1
         page.contains("mountSessionView, persist }") && page.contains("    persist,\n    onOpen:"),
         "the host page passes the list its persist"
     );
-    let mut answers = kit_answers();
+    let mut answers = kit_answers("");
     answers.push(Answer {
         pattern: "*/kit-merged*".into(),
         path: "/kit-merged".into(),
