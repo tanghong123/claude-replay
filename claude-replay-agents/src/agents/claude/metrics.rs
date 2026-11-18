@@ -41,7 +41,10 @@ pub(crate) struct MetricsAcc {
     /// against another model's figures would under-credit. Recorded rather than resolved so
     /// a head rename between two lines of one API call still reads as that call and adds
     /// only growth; the growth lands under the new pick once (0 of 255 heads across 23
-    /// sessions landed inside a call, 2026-11-18).
+    /// sessions landed inside a call, 2026-11-18). A line recording none falls back to the
+    /// resolved name, so a call mixing recorded and absent lines reads the odd line as a
+    /// new call; no repeat group in 31,342 across three stores mixes them
+    /// (2026-11-18), and a test pins the fallback.
     last_usage_model: Option<String>,
     /// What has already been credited for `last_usage_key`, so a repeat adds only the
     /// growth. Identical repeats add nothing; a streamed/retried group that grows
@@ -1703,6 +1706,39 @@ mod runtime_tests {
         let m = resumed.finish();
         assert_eq!(m.per_model["qmodel_latest"].output, 5);
         assert_eq!(m.per_model.get("fast").map(|t| t.output).unwrap_or(0), 0);
+    }
+
+    /// A resumed cursor credits a GROWTH line under the pick the head named after the park:
+    /// the guard crosses the cursor and the growth lands once, not the whole call again.
+    #[test]
+    fn a_restored_cursor_credits_growth_under_the_new_pick() {
+        let head_p =
+            r#"{"type":"runtime-config","sessionId":"q","model":"qmodel_latest","timestamp":1}"#;
+        let head_q = r#"{"type":"runtime-config","sessionId":"q","model":"fast","timestamp":2}"#;
+        let line1 = r#"{"type":"assistant","requestId":"r1","message":{"role":"assistant","id":"m1","model":"auto","usage":{"output_tokens":5}},"timestamp":"2026-09-03T10:00:02.000Z"}"#;
+        let line3 = r#"{"type":"assistant","requestId":"r1","message":{"role":"assistant","id":"m1","model":"auto","usage":{"output_tokens":7}},"timestamp":"2026-09-03T10:00:04.000Z"}"#;
+        let acc = fold(&[head_p, line1, head_q]);
+        let mut resumed = MetricsAcc::recording(&["effort", "permission", "client"]);
+        resumed.restore(&acc.state());
+        resumed.push(&serde_json::from_str::<Value>(line3).unwrap());
+        let m = resumed.finish();
+        assert_eq!(m.per_model["qmodel_latest"].output, 5);
+        assert_eq!(m.per_model["fast"].output, 2);
+    }
+
+    /// A line recording no model guards on the RESOLVED name. If another line of the same
+    /// call records the router, the pair reads as two calls and credits twice — pinned, not
+    /// fixed: 0 of 31,342 repeat groups across three stores mix recorded and absent
+    /// (2026-11-18), and inheriting the last recorded name instead would trade that
+    /// unobserved over-count for an unobserved under-count on the restore subtraction check.
+    #[test]
+    fn a_line_without_a_recorded_model_guards_on_the_resolved_name() {
+        let head_p =
+            r#"{"type":"runtime-config","sessionId":"q","model":"qmodel_latest","timestamp":1}"#;
+        let named = r#"{"type":"assistant","requestId":"r1","message":{"role":"assistant","id":"m1","model":"auto","usage":{"output_tokens":5}},"timestamp":"2026-09-03T10:00:02.000Z"}"#;
+        let bare = r#"{"type":"assistant","requestId":"r1","message":{"role":"assistant","id":"m1","usage":{"output_tokens":5}},"timestamp":"2026-09-03T10:00:03.000Z"}"#;
+        let m = fold(&[head_p, named, bare]).finish();
+        assert_eq!(m.per_model["qmodel_latest"].output, 10);
     }
 
     /// The resume cursor carries the snapshot; the declaration stays the adapter's.
