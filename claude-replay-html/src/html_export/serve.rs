@@ -2274,12 +2274,32 @@ pub fn spawn_streaming_listener_gated(
     let port = listener.local_addr()?.port();
     let gate = std::sync::Arc::new(gate);
     std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let handler = handler.clone();
-            let gate = gate.clone();
-            std::thread::spawn(move || {
-                let _ = serve_connection(stream, &*handler, &gate);
-            });
+        // An accept error must not spin: at the fd ceiling every accept fails with EMFILE
+        // instantly, and a tight retry loop burns a core forever without ever recovering.
+        // Back off (50 ms doubling to 1 s) until an accept succeeds; say the first error of
+        // a streak once, so a full fd table is visible without flooding the log.
+        let mut backoff = std::time::Duration::from_millis(50);
+        let mut said = false;
+        loop {
+            match listener.accept() {
+                Ok((stream, _)) => {
+                    backoff = std::time::Duration::from_millis(50);
+                    said = false;
+                    let handler = handler.clone();
+                    let gate = gate.clone();
+                    std::thread::spawn(move || {
+                        let _ = serve_connection(stream, &*handler, &gate);
+                    });
+                }
+                Err(error) => {
+                    if !said {
+                        eprintln!("loopback listener accept failed: {error}");
+                        said = true;
+                    }
+                    std::thread::sleep(backoff);
+                    backoff = (backoff * 2).min(std::time::Duration::from_secs(1));
+                }
+            }
         }
     });
     Ok(port)
@@ -2360,6 +2380,17 @@ pub fn service_body_limit(route: &str) -> usize {
         MAX_BODY_BYTES
     }
 }
+
+/// How long a connection may stay silent while its request line, headers or body are read.
+/// A browser preconnect or a phone suspended behind a relay holds its socket open without
+/// sending a byte; unbounded, each one keeps a thread and two descriptors for the life of
+/// the process, until the fd table is full and no child can spawn.
+const REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long one write of a buffered reply may block. A peer that stops reading (a suspended
+/// phone, a relay gone to a zero window) otherwise pins the writer thread AND the whole
+/// multi-MB body it holds. The SSE path keeps its own shorter bound.
+const RESPONSE_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// The largest artifact `/file` will hand over. The route exists so a click can SHOW a file
 /// the agent touched; anything bigger is a download, and the page falls back to revealing it
@@ -2544,12 +2575,73 @@ fn artifact_refused(code: &'static str, why: &'static str) -> HttpResponse {
     }
 }
 
+/// TCP keepalive on an accepted socket, so a peer that vanished without a FIN (a suspended
+/// phone, a NAT drop) is detected by the kernel even while a thread waits on the socket.
+/// Best-effort: the read/write timeouts are the real bounds, and a platform that refuses
+/// the option still gets those. Idle 60 s, then 3 probes 10 s apart.
+#[cfg(unix)]
+fn keepalive(stream: &std::net::TcpStream) {
+    use std::os::unix::io::AsRawFd;
+    let fd = stream.as_raw_fd();
+    let set = |level, name, value: libc::c_int| unsafe {
+        libc::setsockopt(
+            fd,
+            level,
+            name,
+            std::ptr::addr_of!(value).cast(),
+            std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+        )
+    };
+    if set(libc::SOL_SOCKET, libc::SO_KEEPALIVE, 1) != 0 {
+        return;
+    }
+    // macOS names the idle timer TCP_KEEPALIVE; Linux names it TCP_KEEPIDLE. Elsewhere the
+    // system defaults apply — SO_KEEPALIVE alone is already better than none.
+    #[cfg(target_os = "macos")]
+    let idle = libc::TCP_KEEPALIVE;
+    #[cfg(target_os = "linux")]
+    let idle = libc::TCP_KEEPIDLE;
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        let _ = set(libc::IPPROTO_TCP, idle, 60);
+        let _ = set(libc::IPPROTO_TCP, libc::TCP_KEEPINTVL, 10);
+        let _ = set(libc::IPPROTO_TCP, libc::TCP_KEEPCNT, 3);
+    }
+}
+
+#[cfg(not(unix))]
+fn keepalive(_stream: &std::net::TcpStream) {}
+
 fn serve_connection<R: Into<HttpReply>>(
-    mut stream: std::net::TcpStream,
+    stream: std::net::TcpStream,
     handler: &(dyn Fn(&Request) -> R + Send + Sync),
     gate: &AuthGate,
 ) -> std::io::Result<()> {
+    serve_connection_timed(
+        stream,
+        handler,
+        gate,
+        REQUEST_READ_TIMEOUT,
+        RESPONSE_WRITE_TIMEOUT,
+    )
+}
+
+/// `serve_connection` with the socket bounds passed in, so a test can watch a timeout fire
+/// without waiting out the production duration — and without a process-wide override that
+/// would shorten every other test's server at once.
+fn serve_connection_timed<R: Into<HttpReply>>(
+    mut stream: std::net::TcpStream,
+    handler: &(dyn Fn(&Request) -> R + Send + Sync),
+    gate: &AuthGate,
+    read_timeout: std::time::Duration,
+    write_timeout: std::time::Duration,
+) -> std::io::Result<()> {
     use std::io::{BufRead, BufReader, Read, Write};
+    keepalive(&stream);
+    // A timeout closes the connection: the read or write returns Err, this function ends,
+    // the thread ends, and both descriptors drop. The clone shares the socket's options.
+    stream.set_read_timeout(Some(read_timeout))?;
+    stream.set_write_timeout(Some(write_timeout))?;
     // Read the request line + headers (bounded — a monitor request is tiny; an 8 KiB cap
     // keeps a hostile peer from streaming forever).
     let mut reader = BufReader::new(stream.try_clone()?);
@@ -3731,6 +3823,125 @@ mod tests {
             held.starts_with("HTTP/1.1 413"),
             "hold has its own, larger bound: {held}"
         );
+    }
+
+    /// A connection that sends nothing must be closed by the read timeout: a browser
+    /// preconnect or a phone suspended behind a relay used to keep a thread and two
+    /// descriptors for the life of the process.
+    #[test]
+    fn an_idle_connection_is_closed_by_the_read_timeout() {
+        use std::io::Read;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let served = serve_connection_timed(
+                stream,
+                &|_: &Request| HttpResponse::ok(TEXT_PLAIN, b"too late".to_vec()),
+                &AuthGate::same_user(),
+                std::time::Duration::from_millis(200),
+                RESPONSE_WRITE_TIMEOUT,
+            );
+            let _ = tx.send(served);
+        });
+        let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        // Send nothing. The server must hang up on its own; a read of 0 is that FIN.
+        let mut byte = [0u8; 1];
+        let n = client
+            .read(&mut byte)
+            .expect("the idle socket must be closed, not reset");
+        assert_eq!(n, 0, "the server must close an idle connection");
+        let served = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the connection thread must end with the read timeout");
+        let error = served.expect_err("a timed-out read is an error, not a served request");
+        assert!(
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ),
+            "the read must end on its timeout: {error}"
+        );
+    }
+
+    /// A client that asks for a large buffered reply and never reads it must be dropped by
+    /// the write timeout: the writer thread used to block forever, retaining the whole
+    /// multi-MB body in RAM.
+    #[test]
+    fn a_stalled_reader_is_dropped_by_the_write_timeout() {
+        use std::io::Write;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            let served = serve_connection_timed(
+                stream,
+                // Big enough to fill both loopback socket buffers even where they autotune.
+                &|_: &Request| HttpResponse::ok(TEXT_PLAIN, vec![b'x'; 16 * 1024 * 1024]),
+                &AuthGate::same_user(),
+                REQUEST_READ_TIMEOUT,
+                std::time::Duration::from_millis(200),
+            );
+            let _ = tx.send(served);
+        });
+        let mut client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(
+            client,
+            "GET /big HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        // Never read a byte. The channel is the clock: a writer that never ends fails the
+        // recv_timeout below rather than hanging the suite.
+        let served = rx
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("the stalled writer must end on its write timeout");
+        let error = served.expect_err("a timed-out write is an error, not a delivered reply");
+        assert!(
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+            ),
+            "the write must end on its timeout: {error}"
+        );
+    }
+
+    /// Accepted sockets carry TCP keepalive, so a peer that vanished without a FIN is
+    /// detected by the kernel even while a thread waits on the socket.
+    #[cfg(unix)]
+    #[test]
+    fn accepted_sockets_carry_tcp_keepalive() {
+        use std::os::unix::io::AsRawFd;
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let _client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        keepalive(&stream);
+        let get = |level, name| unsafe {
+            let mut value: libc::c_int = 0;
+            let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+            assert_eq!(
+                libc::getsockopt(
+                    stream.as_raw_fd(),
+                    level,
+                    name,
+                    std::ptr::addr_of_mut!(value).cast(),
+                    &mut len
+                ),
+                0
+            );
+            value
+        };
+        // macOS reports the internal flag value (8), not 1; any nonzero means enabled.
+        assert_ne!(get(libc::SOL_SOCKET, libc::SO_KEEPALIVE), 0);
+        #[cfg(target_os = "macos")]
+        assert_eq!(get(libc::IPPROTO_TCP, libc::TCP_KEEPALIVE), 60);
+        #[cfg(target_os = "linux")]
+        assert_eq!(get(libc::IPPROTO_TCP, libc::TCP_KEEPIDLE), 60);
     }
 
     #[test]
