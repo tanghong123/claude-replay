@@ -83,7 +83,9 @@ impl Serves {
     pub fn admits(&self, method: &str, name: &str, query: &str) -> bool {
         let reads = |rest: &str| method == "GET" || rest == "resolve";
         match name {
-            "api/send" | "api/consent" | "api/dialog" | "api/answer" => self.writes,
+            "api/send" | "api/consent" | "api/dialog" | "api/answer" | "api/pair/phone" => {
+                self.writes
+            }
             "file" => self.files,
             "__reveal" => self.reveal,
             _ if name.starts_with("api/mdrev-review/") => {
@@ -265,11 +267,26 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
     match name {
         // The app shell, whatever `?ui=` says: `?ui=classic` and a `ui.json` that remembered the
         // classic view both get it since that view was retired (#s98).
-        "" | "index.html" => HttpResponse::html(ui::app_page(
-            front.version,
-            front.paired,
-            write_gate(front.paired, ceiling.writes, req.authenticated),
-        )),
+        // #s577: the gate's pairing NOW, which the page may have changed since the start.
+        "" | "index.html" => {
+            let paired = claude_replay_html::gate_paired().unwrap_or(front.paired);
+            HttpResponse::html(ui::app_page(
+                front.version,
+                paired,
+                write_gate(paired, ceiling.writes, req.authenticated),
+            ))
+        }
+        // #s577: pair a phone from the page — what `--pair-phone` prints, for a paired browser.
+        "api/pair/phone" => match req.deny_write() {
+            Some(deny) => deny,
+            None => match backend.service.port() {
+                Some(port) => HttpResponse::json(crate::pair_phone::phone_pairing(port).to_string()),
+                None => HttpResponse::json(
+                    serde_json::json!({"ok": false, "error": "the monitor's port is not known yet"})
+                        .to_string(),
+                ),
+            },
+        },
         // A Markdown document from the preview pane, in a tab of its own (#271).
         "markdown" => HttpResponse::html(ui::markdown_page()),
         // An image from the preview pane, in a tab of its own (#s11).
@@ -864,7 +881,11 @@ mod tests {
         let rows = contract_index::rows(&doc);
         assert!(rows.len() > 15, "read only {} rows", rows.len());
         let mut asked = 0;
-        for row in rows.iter().filter(|row| row.tier != "native") {
+        // The listener's own rows are answered before the table (#s577): its tests hold them.
+        for row in rows
+            .iter()
+            .filter(|row| row.tier != "native" && row.tier != "listener")
+        {
             let name = contract_index::probe(
                 row,
                 mdrev::VERSION,

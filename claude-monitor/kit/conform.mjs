@@ -83,6 +83,8 @@ const ROUTES = [
   ["POST", "/api/consent", "write"],
   ["GET", "/api/dialog", "write"],
   ["POST", "/api/answer", "write"],
+  ["POST", "/api/pair/phone", "write"],
+  ["POST", "/api/pair/self", "listener"],
   ["GET", "/monitor-ui/", "core"],
   ["GET", "/mdrev/<mdrev>/", "optional"],
   ["ANY", "/api/mdrev/", "optional"],
@@ -1863,6 +1865,16 @@ async function main() {
     for (const w of WRITES) served(w.path, writes.served);
   } catch (e) {
     writes.why = `the write probe (POST /api/consent, no target) got no answer: ${e.message}`;
+  }
+  // Pairing from the page (#s577), asked with a GET, which both refuse (405) before they act: no
+  // code is minted and no browser is paired. A 404 is a host that offers neither.
+  for (const path of ["/api/pair/phone", "/api/pair/self"]) {
+    try {
+      const reply = await ask("GET", path.slice(1));
+      served(path, reply.status === 404 ? false : reply.status === 405 ? true : null);
+    } catch (_) {
+      // Not told apart from outside: the row stays unknown.
+    }
   }
   const noWrites = () => skip(writes.why ?? "404: not served (the page draws no compose box and no answer buttons)");
 

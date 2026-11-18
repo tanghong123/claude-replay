@@ -21,6 +21,7 @@ pub mod index;
 pub mod kit;
 pub mod layout;
 pub mod pair_phone;
+pub mod peer_user;
 pub mod root_claim;
 pub mod routes;
 pub mod state;

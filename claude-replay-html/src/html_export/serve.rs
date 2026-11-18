@@ -425,6 +425,11 @@ impl SessionService {
         let _ = self.port.set(port);
     }
 
+    /// The port [`set_port`](Self::set_port) published, once the host's listener has bound.
+    pub fn port(&self) -> Option<u16> {
+        self.port.get().copied()
+    }
+
     /// Reconstruct the `AgentInfo` that `render_agent_stream` / `child_info` expect from the
     /// split state: the source (owned by the cache) + the title (owned by `titles`) + the id.
     fn agent_info(&self, id: &str, source: std::path::PathBuf, t: &TitleInfo) -> AgentInfo {
@@ -1829,6 +1834,33 @@ pub type HostCheck = std::sync::Arc<dyn Fn(&str) -> bool + Send + Sync>;
 /// connects from the loopback, so a peer the gate cannot verify may be anyone on the tailnet.
 pub type RelayCheck = std::sync::Arc<dyn Fn() -> bool + Send + Sync>;
 
+/// How the server's own page pairs the browser it runs in (#s577), which the HOST supplies: the
+/// gate decides who may, the host keeps the credential.
+#[derive(Clone)]
+pub struct SelfPairing {
+    /// Mint the token, keep it where a restart reads it (the host's 0600 file, as its terminal
+    /// pairing does), and return it; `None` if it could not, and the gate stays unpaired.
+    pub mint: std::sync::Arc<dyn Fn() -> Option<String> + Send + Sync>,
+    /// Whether the loopback connection from `peer` into `local` is held by a process of the
+    /// user this server runs as, where the gate cannot read it itself (it reads `/proc/net/tcp`
+    /// where there is one). It must answer no when it cannot tell.
+    pub peer_is_this_user:
+        std::sync::Arc<dyn Fn(std::net::SocketAddr, std::net::SocketAddr) -> bool + Send + Sync>,
+}
+
+thread_local! {
+    /// #s577: whether the gate the route's request came through is paired NOW, read by a route
+    /// (the page names it) since a page may pair the gate while the server runs. Set before the
+    /// route, on its connection's own thread, as `ROUTE_REFUSAL` is read after it.
+    static GATE_PAIRED: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether the gate this route's request came through is paired now (#s577); `None` for a
+/// request no gate brought (a test calling a route directly).
+pub fn gate_paired() -> Option<bool> {
+    GATE_PAIRED.get()
+}
+
 /// Whether the request's `Host`/`Origin` are the server's own origin at `port`: the write verdict
 /// [`foreign_header`] gives, as a yes or no, for the cases that pin it.
 #[cfg(test)]
@@ -1888,8 +1920,12 @@ pub struct AuthGate {
     /// Our effective uid; a loopback peer with this uid is same-user (Linux). `None` when
     /// it could not be read.
     euid: Option<u32>,
-    /// The bearer token when paired; `None` = unpaired (D3b behavior).
-    token: Option<std::sync::Arc<str>>,
+    /// The bearer token when paired; `None` = unpaired (D3b behavior). Shared and swappable,
+    /// because a page may pair its own browser while the server runs (#s577,
+    /// [`with_self_pairing`](Self::with_self_pairing)): every clone of the gate sees the switch.
+    token: std::sync::Arc<std::sync::RwLock<Option<std::sync::Arc<str>>>>,
+    /// How a page pairs its own browser (#s577): the host's, when it offers it.
+    self_pairing: Option<SelfPairing>,
     /// Where one-time pairing codes live (#11), when the host offers phone pairing: a PAIRED
     /// gate with this set answers `/pair` and `/api/pair` before deciding anything else.
     pair_codes: Option<std::sync::Arc<std::path::Path>>,
@@ -1945,14 +1981,16 @@ impl AuthGate {
     pub fn same_user() -> Self {
         Self {
             euid: current_euid(),
-            token: None,
+            token: Default::default(),
+            self_pairing: None,
             pair_codes: None,
             refusal: DEFAULT_REFUSAL,
             pair_command: super::pairing::DEFAULT_PAIR_COMMAND,
             public: &[],
             trusted_hosts: None,
             relay: None,
-            token_only: false,
+            // Read now, though only a paired gate consults it: a page may pair this one later.
+            token_only: std::env::var_os("AGENT_MONITOR_TOKEN_ONLY").is_some_and(|v| v != "0"),
             body_limits: Vec::new(),
         }
     }
@@ -1962,7 +2000,8 @@ impl AuthGate {
     pub fn with_token(token: impl Into<std::sync::Arc<str>>) -> Self {
         Self {
             euid: current_euid(),
-            token: Some(token.into()),
+            token: std::sync::Arc::new(std::sync::RwLock::new(Some(token.into()))),
+            self_pairing: None,
             pair_codes: None,
             refusal: DEFAULT_REFUSAL,
             pair_command: super::pairing::DEFAULT_PAIR_COMMAND,
@@ -2024,7 +2063,7 @@ impl AuthGate {
     /// The unverifiable loopback leg of an unpaired gate: admitted only while no relay reaches
     /// the port (#s422). A paired gate never admits it.
     fn unverified_admits(&self) -> bool {
-        if self.token.is_some() {
+        if self.token().is_some() {
             return false;
         }
         let relayed = self.relay.as_ref().is_some_and(|relayed| relayed());
@@ -2066,7 +2105,8 @@ impl AuthGate {
     fn for_test(token: Option<&str>) -> Self {
         Self {
             euid: Some(u32::MAX), // never a real uid → same-user never matches
-            token: token.map(std::sync::Arc::from),
+            token: std::sync::Arc::new(std::sync::RwLock::new(token.map(std::sync::Arc::from))),
+            self_pairing: None,
             pair_codes: None,
             refusal: DEFAULT_REFUSAL,
             pair_command: super::pairing::DEFAULT_PAIR_COMMAND,
@@ -2078,17 +2118,32 @@ impl AuthGate {
         }
     }
 
+    /// The token now: set at construction, or by a page that paired its browser since (#s577).
+    fn token(&self) -> Option<std::sync::Arc<str>> {
+        self.token.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Let the server's own page pair the browser it runs in (#s577): `POST /api/pair/self` from
+    /// an UNPAIRED gate's own origin, on this machine, with no relay reaching the port, by a
+    /// program running as this user, mints the host's token (`SelfPairing::mint`), switches the
+    /// gate to require it from then on, and answers with that browser's cookie. See
+    /// [`self_pair_route`] for every check and why.
+    pub fn with_self_pairing(mut self, pairing: SelfPairing) -> Self {
+        self.self_pairing = Some(pairing);
+        self
+    }
+
     /// Whether a token is configured (the binary uses this to decide the pre-pair
     /// warning and whether to print a tokened URL).
     pub fn is_paired(&self) -> bool {
-        self.token.is_some()
+        self.token().is_some()
     }
 
     /// Whether `presented` is the configured token — the "authenticated" test a WRITE
     /// needs (#133), STRICTER than [`decide`](Self::decide): same-user loopback admits a
     /// READ but never a write. Always false on an unpaired monitor (no token).
     fn token_ok(&self, presented: Option<&str>) -> bool {
-        matches!((self.token.as_deref(), presented),
+        matches!((self.token().as_deref(), presented),
             (Some(t), Some(p)) if ct_eq(t.as_bytes(), p.as_bytes()))
     }
 
@@ -2104,7 +2159,8 @@ impl AuthGate {
     ) -> Access {
         // A valid token admits regardless of peer identity (the phone/remote path, and
         // the shared-Mac path). Constant-time compare: loopback is where timing leaks.
-        if let (Some(tok), Some(p)) = (self.token.as_deref(), presented) {
+        let token = self.token();
+        if let (Some(tok), Some(p)) = (token.as_deref(), presented) {
             if ct_eq(tok.as_bytes(), p.as_bytes()) {
                 return if from_cookie {
                     Access::Ok
@@ -2118,7 +2174,7 @@ impl AuthGate {
             return Access::Denied;
         }
         // A paired gate told to admit the token alone has no same-user leg (#366).
-        if self.token_only && self.token.is_some() {
+        if self.token_only && token.is_some() {
             return Access::Denied;
         }
         let same_user = match (peer, local) {
@@ -2336,6 +2392,108 @@ fn cookie_name(token: &str) -> String {
     let digest = Sha256::digest(token.as_bytes());
     let hex: String = digest[..4].iter().map(|b| format!("{b:02x}")).collect();
     format!("{LEGACY_COOKIE}-{hex}")
+}
+
+/// `POST /api/pair/self` (#s577): the server's own page pairs the browser it runs in. It answers
+/// JSON, `{"ok": true}` with the browser's cookie (the second value, the token to set it for), or
+/// `{"ok": false, "why": …}` naming the first check that failed, in this order:
+///
+/// 1. the gate is unpaired — a paired one is paired from a browser it already admits, or with
+///    the terminal's address;
+/// 2. the request came from this machine with nothing between: a loopback peer, a loopback
+///    `Host`, none of a relay's headers, its headers whole, and no relay reaching the port at
+///    all (`tailscale serve`, whose raw TCP form adds no header to tell it by). So nobody on a
+///    network can pair: they reach the port only through a relay;
+/// 3. it came from the server's own page: an `Origin` that is this port on the loopback, which a
+///    browser sends with every POST and a page on another site cannot forge (a cross-site
+///    request), and a `Host` that is (DNS rebinding);
+/// 4. the program that opened the connection runs as the user the server runs as: read from
+///    `/proc/net/tcp` where there is one, else asked of the host (`peer_is_this_user`), which
+///    says no when it cannot tell. Another user of a shared machine fails here. A program
+///    running as this user could read the host's token file anyway, so the check grants nothing
+///    the file did not.
+///
+/// Then the host mints and keeps the token, the gate requires it from that moment — every
+/// browser that does not hold it is refused where `--pair` would refuse it — and this browser
+/// is answered with its cookie.
+#[allow(clippy::too_many_arguments)]
+fn self_pair_route(
+    gate: &AuthGate,
+    pairing: &SelfPairing,
+    method: &str,
+    headers: &str,
+    peer: Option<std::net::SocketAddr>,
+    local: Option<std::net::SocketAddr>,
+    headers_whole: bool,
+    relayed_past_cap: bool,
+) -> (HttpResponse, Option<String>) {
+    let refuse = |code: &'static str, why: &str| {
+        let mut r = HttpResponse::json(serde_json::json!({"ok": false, "why": why}).to_string());
+        r.code = code;
+        (r, None)
+    };
+    if method != "POST" {
+        return (
+            HttpResponse::method_not_allowed("pairing this browser takes a POST"),
+            None,
+        );
+    }
+    if gate.token().is_some() {
+        return refuse(
+            "409 Conflict",
+            "This monitor is already paired: open the address it printed in its terminal.",
+        );
+    }
+    let (Some(peer), Some(local)) = (peer, local) else {
+        return refuse("403 Forbidden", "The connection's ends could not be read.");
+    };
+    let relay_reaches = gate.relay.as_ref().is_some_and(|relayed| relayed());
+    if !peer.ip().is_loopback()
+        || !host_is_local(header_value(headers, "host"))
+        || came_through_a_relay(headers)
+        || relayed_past_cap
+        || !headers_whole
+        || relay_reaches
+    {
+        return refuse(
+            "403 Forbidden",
+            "A browser can pair only from this machine, while nothing relays the monitor's port to a network.",
+        );
+    }
+    let origin = header_value(headers, "origin");
+    if origin.is_none() || foreign_header(headers, local.port(), None).is_some() {
+        return refuse(
+            "403 Forbidden",
+            "Only the monitor's own page can pair a browser.",
+        );
+    }
+    let this_user = match (peer, local) {
+        (std::net::SocketAddr::V4(p), std::net::SocketAddr::V4(l)) => {
+            match peer_uid_v4(*p.ip(), p.port(), *l.ip(), l.port()) {
+                Some(uid) => gate.euid == Some(uid),
+                None => (pairing.peer_is_this_user)(peer, local),
+            }
+        }
+        _ => (pairing.peer_is_this_user)(peer, local),
+    };
+    if !this_user {
+        return refuse(
+            "403 Forbidden",
+            "This browser could not be shown to run as the monitor's own user.",
+        );
+    }
+    let Some(token) = (pairing.mint)() else {
+        return refuse(
+            "500 Internal Server Error",
+            "The pairing token could not be made.",
+        );
+    };
+    *gate.token.write().unwrap_or_else(|e| e.into_inner()) = Some(token.as_str().into());
+    eprintln!("this browser paired the monitor from its page; from now on it requires the token");
+    (
+        HttpResponse::json(serde_json::json!({"ok": true}).to_string()),
+        Some(token),
+    )
 }
 
 /// The `Set-Cookie` line that pairs a browser with the gate holding `token`.
@@ -2602,7 +2760,7 @@ fn serve_connection<R: Into<HttpReply>>(
 
     // #196 §4.2: same-user OR a valid token (query / Authorization: Bearer / cmauth cookie) —
     // except a GET of a path the host made public (#320), which needs neither.
-    let own_cookie = gate.token.as_deref().map(cookie_name);
+    let own_cookie = gate.token().as_deref().map(cookie_name);
     let (presented, from) = extract_token(query, &headers, own_cookie.as_deref());
     let from_cookie = matches!(from, Some(TokenFrom::Cookie | TokenFrom::LegacyCookie));
     // #350: a browser let in by the old shared cookie is given this gate's own as well.
@@ -2638,7 +2796,7 @@ fn serve_connection<R: Into<HttpReply>>(
     // `Forwarded`, `Tailscale-User-Login`), and a `Host` that is not a loopback name. Either is
     // refused, and the refusal names pairing. A raw TCP relay (`tailscale serve --tcp`) sends no
     // headers and is not caught here: the relay check is (#s422, `unverified_admits`).
-    let access = if gate.token.is_none()
+    let access = if gate.token().is_none()
         && gate.trusted_hosts.is_some()
         && !public
         && !matches!(access, Access::Denied)
@@ -2677,11 +2835,32 @@ fn serve_connection<R: Into<HttpReply>>(
         reader.read_exact(&mut body)?;
     }
 
+    // #s577: the page pairing its own browser is a way in too, answered before the verdict: the
+    // route makes its own checks, stricter than the gate's.
+    if name == "api/pair/self" && !denied_large_body {
+        if let Some(pairing) = gate.self_pairing.as_ref() {
+            let (r, cookie) = self_pair_route(
+                gate,
+                pairing,
+                &method,
+                &headers,
+                peer,
+                local,
+                headers_whole,
+                relayed_past_cap,
+            );
+            let head = response_head(&r, &cookie.map(|t| set_cookie_line(&t)).unwrap_or_default());
+            return stream
+                .write_all(head.as_bytes())
+                .and_then(|_| stream.write_all(&r.body));
+        }
+    }
+
     // #11: a small pairing POST is the way IN, so answer it before enforcing the gate
     // verdict. Large denied requests still reach the refusal without reading their body.
-    if let (Some(tok), Some(codes)) = (gate.token.as_deref(), gate.pair_codes.as_deref()) {
+    if let (Some(tok), Some(codes)) = (gate.token(), gate.pair_codes.as_deref()) {
         if !denied_large_body && (name == "pair" || name == "api/pair") {
-            let (r, cookie) = pairing_route(&method, name, &body, tok, codes, gate.pair_command);
+            let (r, cookie) = pairing_route(&method, name, &body, &tok, codes, gate.pair_command);
             let head = response_head(&r, &cookie);
             return stream
                 .write_all(head.as_bytes())
@@ -2729,6 +2908,7 @@ fn serve_connection<R: Into<HttpReply>>(
     let mut route_refusal = None;
     let mut route = || {
         ROUTE_REFUSAL.set(None);
+        GATE_PAIRED.set(Some(gate.token().is_some()));
         let reply: HttpReply = handler(&request()).into();
         route_refusal = ROUTE_REFUSAL.take();
         reply
@@ -2741,7 +2921,7 @@ fn serve_connection<R: Into<HttpReply>>(
             say_refusal(refusal_line(now(), name, token_said(from), &headers));
             let refusal = HttpResponse::refusal_page_with_pairing(
                 gate.refusal,
-                gate.token.is_some() && gate.pair_codes.is_some(),
+                gate.token().is_some() && gate.pair_codes.is_some(),
             );
             (refusal.into(), None, false)
         }
@@ -3640,6 +3820,86 @@ mod tests {
     const TEST_ROUTE_BODY_LIMIT: usize = 12 * 1024 * 1024;
 
     use super::*;
+
+    /// #s577: the page pairs its own browser only from this machine, with nothing relaying the
+    /// port, from its own page, by a program of its own user, and only an unpaired gate; then the
+    /// gate requires the token it minted, and the browser is answered with its cookie.
+    #[test]
+    fn a_page_pairs_its_own_browser_only_when_every_check_holds() {
+        let pairing = |this_user: bool| SelfPairing {
+            mint: std::sync::Arc::new(|| Some("minted-token".to_string())),
+            peer_is_this_user: std::sync::Arc::new(move |_, _| this_user),
+        };
+        // Ports no /proc/net/tcp row names, so the host's answer decides the user.
+        let peer: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let local: std::net::SocketAddr = "127.0.0.1:2".parse().unwrap();
+        let own = "Host: 127.0.0.1:2\r\nOrigin: http://127.0.0.1:2\r\n";
+        let why = |r: &HttpResponse| String::from_utf8_lossy(&r.body).into_owned();
+        let try_pair = |gate: &AuthGate, p: &SelfPairing, method: &str, headers: &str, peer| {
+            self_pair_route(
+                gate,
+                p,
+                method,
+                headers,
+                Some(peer),
+                Some(local),
+                true,
+                false,
+            )
+        };
+
+        let gate = AuthGate::same_user();
+        let (r, cookie) = try_pair(&gate, &pairing(true), "GET", own, peer);
+        assert!(r.code.starts_with("405") && cookie.is_none());
+        for (headers, what) in [
+            ("Host: 127.0.0.1:2\r\n", "no Origin: not a browser's POST from the page"),
+            ("Host: 127.0.0.1:2\r\nOrigin: http://evil.example\r\n", "another site's page"),
+            ("Host: evil.example:2\r\nOrigin: http://evil.example:2\r\n", "DNS rebinding"),
+            ("Host: 127.0.0.1:2\r\nOrigin: http://127.0.0.1:2\r\nX-Forwarded-For: 100.64.0.7\r\n", "a relay's request"),
+        ] {
+            let (r, cookie) = try_pair(&gate, &pairing(true), "POST", headers, peer);
+            assert!(r.code.starts_with("403") && cookie.is_none(), "{what}: {}", why(&r));
+        }
+        let off_box: std::net::SocketAddr = "100.64.0.7:1".parse().unwrap();
+        assert!(try_pair(&gate, &pairing(true), "POST", own, off_box)
+            .0
+            .code
+            .starts_with("403"));
+        let (r, _) = try_pair(&gate, &pairing(false), "POST", own, peer);
+        assert!(
+            r.code.starts_with("403") && why(&r).contains("own user"),
+            "{}",
+            why(&r)
+        );
+        let relayed = AuthGate::same_user().with_relay_check(std::sync::Arc::new(|| true));
+        let (r, _) = try_pair(&relayed, &pairing(true), "POST", own, peer);
+        assert!(
+            r.code.starts_with("403") && why(&r).contains("relays"),
+            "{}",
+            why(&r)
+        );
+        assert!(!gate.is_paired(), "nothing refused paired it");
+
+        let (r, cookie) = try_pair(&gate, &pairing(true), "POST", own, peer);
+        assert!(r.code.starts_with("200"), "{}", why(&r));
+        assert_eq!(cookie.as_deref(), Some("minted-token"));
+        assert!(gate.is_paired() && gate.token_ok(Some("minted-token")));
+        let clone_seen = gate.clone();
+        assert!(
+            clone_seen.is_paired(),
+            "every clone of the gate sees the switch"
+        );
+        assert!(
+            matches!(gate.decide(peer, local, None, false), Access::Denied)
+                || cfg!(target_os = "linux"),
+            "an unverified peer without the token is refused from now on"
+        );
+        let (r, cookie) = try_pair(&gate, &pairing(true), "POST", own, peer);
+        assert!(
+            r.code.starts_with("409") && cookie.is_none(),
+            "a paired gate is not paired again"
+        );
+    }
     use std::net::Ipv4Addr;
 
     /// #275: the page offers a PATH as an image exactly when `/file` will serve it as one. The

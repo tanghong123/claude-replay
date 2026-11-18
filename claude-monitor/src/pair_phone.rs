@@ -878,6 +878,83 @@ pub fn run(token: Option<&str>, port: u16, url: Option<String>, yes: bool) -> Re
 /// The codes file in the monitor's state directory, shared by this CLI and the running monitor.
 pub const PAIR_CODES_FILE: &str = "pair-codes";
 
+/// How long the page waits on one `tailscale` read (#s577): a click waits on it, so it is bounded
+/// as the background reads are (#s151).
+const PAGE_READ_BOUND: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// What the page shows to pair a phone (#s577, `POST /api/pair/phone`): what `--pair-phone` prints,
+/// as JSON. Where `tailscale serve` relays this monitor's port, a fresh one-time code (the same
+/// codes, file and lifetime), the address the phone opens with it and that address's QR code as
+/// SVG (`served: true`); else the one command that serves the monitor to the tailnet, which the
+/// reader runs (`served: false`). Nothing here changes Tailscale's setup, as with the CLI. The
+/// route asks it only of a paired browser (`deny_write`).
+pub fn phone_pairing(port: u16) -> Value {
+    let Some(bin) = tailscale() else {
+        return serde_json::json!({"ok": true, "served": false, "tailscale": false,
+            "serve": serve_command(port, true)});
+    };
+    let read =
+        |args: &[&str]| tailscale_json_read(&bin, args, PAGE_READ_BOUND).unwrap_or(Value::Null);
+    let status = read(&["status", "--json"]);
+    let dns = status
+        .pointer("/Self/DNSName")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
+    let https = status
+        .get("CertDomains")
+        .and_then(Value::as_array)
+        .is_some_and(|d| !d.is_empty());
+    let serve = read(&["serve", "status", "--json"]);
+    // Only an address the tailnet alone reaches and that serves the monitor alone: there the phone
+    // can write too, which is what pairing it is for.
+    let Some(base) = trusted_bases(&serve, &dns, port).first().cloned() else {
+        let open: Vec<String> = serve_bases(&serve, &dns, port);
+        return serde_json::json!({"ok": true, "served": false, "tailscale": true,
+            "serve": serve_command(port, https), "untrusted": open});
+    };
+    let codes = crate::index::state_dir().join(PAIR_CODES_FILE);
+    if let Some(dir) = codes.parent() {
+        std::fs::create_dir_all(dir).ok();
+    }
+    let Some(code) = pairing::mint_pair_code(&codes, pairing::now_secs()) else {
+        return serde_json::json!({"ok": false, "error": "a pairing code could not be made"});
+    };
+    let link = format!("{base}pair#code={code}");
+    serde_json::json!({
+        "ok": true,
+        "served": true,
+        "base": base,
+        "link": link,
+        "code": pairing::display_code(&code),
+        "minutes": pairing::PAIR_CODE_TTL_SECS / 60,
+        "qr": qr_svg(&link).unwrap_or_default(),
+    })
+}
+
+/// A QR code for `text` as an SVG of dark modules on white with a quiet zone, for the page: the
+/// `qrcode` crate here carries no SVG renderer (default features off), and its modules are all a
+/// drawing needs.
+pub fn qr_svg(text: &str) -> Result<String> {
+    let code =
+        qrcode::QrCode::new(text.as_bytes()).context("encode the pairing address as a QR code")?;
+    let width = code.width();
+    let colors = code.to_colors();
+    let quiet = 4;
+    let side = width + 2 * quiet;
+    let mut path = String::new();
+    for (i, c) in colors.iter().enumerate() {
+        if *c == qrcode::Color::Dark {
+            let (x, y) = (i % width + quiet, i / width + quiet);
+            path.push_str(&format!("M{x} {y}h1v1h-1z"));
+        }
+    }
+    Ok(format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 {side} {side}\" shape-rendering=\"crispEdges\">\
+         <rect width=\"{side}\" height=\"{side}\" fill=\"#fff\"/><path d=\"{path}\" fill=\"#000\"/></svg>"
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

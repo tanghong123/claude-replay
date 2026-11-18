@@ -38,7 +38,10 @@ The tiers say what a host must serve:
 - **optional**: a feature goes away (each section says which);
 - **write**: sending, granting and answering; a host that serves none of these says it is not paired;
 - **page**: the detached tabs, which `design/embedding.md` moves to a later kit;
-- **native**: Codex native mode, which is outside contract 1 (see "Codex native mode").
+- **native**: Codex native mode, which is outside contract 1 (see "Codex native mode");
+- **listener**: answered by the monitor's listener itself, before any route sees the request (see
+  "Pairing from the page"); a host's own sign-in stands in for it, and a host without it answers
+  404, as for a route it does not serve.
 
 <!-- route-index -->
 | Method | Path | Tier | Probe | What for |
@@ -56,6 +59,8 @@ The tiers say what a host must serve:
 | POST | `/api/consent` | write | `/api/consent` | grant or revoke sending into a live pane |
 | GET | `/api/dialog` | write | `/api/dialog` | read the dialog a live session is waiting on |
 | POST | `/api/answer` | write | `/api/answer` | answer that dialog |
+| POST | `/api/pair/phone` | write | `/api/pair/phone` | a one-time code and QR code that pair a phone |
+| POST | `/api/pair/self` | listener | `/api/pair/self` | pair the browser the page runs in |
 | GET | `/monitor-ui/` | core | `/monitor-ui/app.js` | the page's modules and stylesheets |
 | GET | `/mdrev/<mdrev>/` | optional | `/mdrev/<mdrev>/mdrev.js` | mdrev's viewer, for Markdown and code in the artifact pane |
 | ANY | `/api/mdrev/` | optional | `/api/mdrev/hold` | mdrev's routes for the pane |
@@ -373,8 +378,19 @@ every answer.
 | `POST /api/consent` | `target=<id>`, `op=revoke` to revoke | the passcode as text, or nothing | `{ok: true, sid, granted}` | `passcode-required`, `bad-passcode`, `locked`, and the send's |
 | `GET /api/dialog` | `target=<id>` | | `{ok: true, sid, open, dialog, why?}` | `no-consent`, `held` |
 | `POST /api/answer` | `target=<id>` | `{fingerprint, choice}`, `{fingerprint, choices}` or `{fingerprint, text}` (one line, 2,000 characters at most) | `{ok: true, sid, via: "herdr"}` | `held`, `no-consent` |
+| `POST /api/pair/phone` | | | `{ok: true, served: true, base, link, code, minutes, qr}` (`qr` an SVG of `link`), or `{ok: true, served: false, tailscale, serve, untrusted?}` naming the command that serves the monitor to the tailnet | words in `error` |
 
 A `held` refusal's `error` says what the reader should do, and the page shows it as is.
+
+### Pairing from the page
+
+`POST /api/pair/self` pairs the browser the page runs in, as `agent-monitor --pair` does, while
+the monitor runs. The listener answers it only while the monitor is unpaired, and only for a
+request from this machine with nothing relaying the port, from the page's own origin, by a program
+running as the monitor's own user. It answers `{ok: true}` with the browser's cookie, after which
+the monitor requires pairing from every reader; or a status of 403, 405 or 409 with
+`{ok: false, why}`, words the page shows as they are. `<body data-write>` says which reason the
+page names beside its Write mode switch.
 
 A `dialog` is `{kind: "question", "permission" or "plan", fingerprint, title, text, detail, note,
 multi, choices: [{n, label, description, checked?, freeText?}], tabs?: [{label, done}], plan?}`.
@@ -527,6 +543,7 @@ A host that serves the monitor's page, or mounts its parts, supplies these with 
 | What | Read for | Without it |
 |---|---|---|
 | `<body data-paired>` | whether writes are offered, and whether an HTML file is framed in the pane | no compose box, no answers, no framed pages |
+| `<body data-write>` | whether this reader's writes are admitted (`open`), else what is missing: `monitor` (not paired), `browser` (this browser holds no token) or `host` (the host serves no writes) | writing follows `data-paired` |
 | `<body data-contract>` | the contract version | the page cannot say which version it reads |
 | `<body data-version>` | the build, shown in the brand | `vdev` |
 | `<body data-mdrev>` | the pinned mdrev release | Markdown shows as text |

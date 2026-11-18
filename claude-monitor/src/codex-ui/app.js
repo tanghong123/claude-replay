@@ -561,12 +561,14 @@ var mobileShell;
 // the longer help.
 const WRITE_NEED = {
   monitor: {
-    line: "Needs a paired monitor: <code>agent-monitor --pair</code>",
-    help: "<b>Write mode needs a paired monitor</b><p>Stop the monitor and run this in a terminal:</p><code>agent-monitor --pair</code>",
+    line: "Needs a paired monitor",
+    // #s577: the page pairs its own browser, as `agent-monitor --pair` does, without a restart.
+    pair: true,
+    help: "<b>Pair this browser to write</b><p>Writing to your sessions needs a paired monitor. Once it is paired, other browsers and tools on this machine need pairing too. This browser stays paired.</p>",
   },
   browser: {
     line: "This browser is not paired with the monitor",
-    help: "<b>This browser is not paired</b><p>The monitor is paired, but this browser holds no pairing token, so the monitor would refuse what it sends. Open the address <code>agent-monitor</code> printed in its terminal when it started: it carries the token.</p>",
+    help: "<b>This browser is not paired</b><p>The monitor is paired, but this browser holds no pairing token, so the monitor would refuse what it sends. Open the address the monitor printed in its terminal when it started: it carries the token.</p>",
   },
   host: {
     line: "This page only reads sessions",
@@ -578,8 +580,9 @@ writeReason.id = "writeReason";
 writeReason.className = "write-reason";
 page.byId("writeBtn").after(writeReason);
 const writeReasonText = need => { const el = document.createElement("div"); el.innerHTML = need.line; return el.textContent; };
+const currentNeed = () => controlState.writes ? null : WRITE_NEED[controlState.writeNeed] || WRITE_NEED.monitor;
 function paintWrite() {
-  const need = controlState.writes ? null : WRITE_NEED[controlState.writeNeed] || WRITE_NEED.monitor;
+  const need = currentNeed();
   page.byId("writeSwitch").setAttribute("aria-checked", String(controlState.write));
   page.byId("writeSwitch").setAttribute("aria-disabled", String(!!need));
   page.byId("writeBtn").classList.toggle("on", controlState.write);
@@ -587,16 +590,79 @@ function paintWrite() {
   page.byId("sidebarMiniWrite").classList.toggle("on", controlState.write);
   page.byId("sidebarMiniWrite").classList.toggle("disabled", !!need);
   page.byId("sidebarMiniWrite").title = need ? `Write mode: ${writeReasonText(need)}` : "Write mode";
-  page.byId("writeInfo").hidden = !need;
+  // ⓘ stays on a paired page too: its help is where a phone is paired from (#s577).
+  page.byId("writeInfo").hidden = false;
   writeReason.hidden = !need;
   writeReason.innerHTML = need ? need.line : "";
+  if (need?.pair) {
+    const button = document.createElement("button");
+    button.type = "button"; button.className = "write-pair"; button.textContent = "Pair this browser";
+    button.onclick = event => { event.stopPropagation(); showPairHelp(); };
+    writeReason.append(" ", button);
+  }
+}
+// The help under the switch (#s577): why writing is off and how to turn it on, with the pairing
+// itself where the page can do it; once paired, how to pair a phone.
+function closePairHelp() { const help = page.byId("writeHelp"); help.hidden = true; help.classList.remove("show"); }
+function helpActions(...buttons) {
+  const row = document.createElement("div"); row.className = "pair-actions";
+  for (const [label, action, primary] of buttons) {
+    const b = document.createElement("button"); b.type = "button"; b.textContent = label;
+    if (primary) b.className = "pair-primary";
+    b.onclick = event => { event.stopPropagation(); action(b); };
+    row.append(b);
+  }
+  return row;
 }
 function showPairHelp() {
   const help = page.byId("writeHelp");
-  const need = controlState.writes ? null : WRITE_NEED[controlState.writeNeed] || WRITE_NEED.monitor;
-  help.innerHTML = need ? need.help
-    : "<b>Monitor is paired</b><p>With write mode on, a writable session shows a compose box. A live terminal still needs its own grant.</p>";
+  const need = currentNeed();
+  if (need) {
+    help.innerHTML = need.help;
+    if (need.pair) help.append(helpActions(["Pair this browser", pairThisBrowser, true], ["Not now", closePairHelp]));
+    else help.append(helpActions(["Close", closePairHelp]));
+  } else {
+    help.innerHTML = "<b>Monitor is paired</b><p>With write mode on, a writable session shows a compose box. A live terminal still needs its own grant.</p>";
+    help.append(helpActions(["Pair a phone", pairPhone, true], ["Close", closePairHelp]));
+  }
   help.hidden = false; help.classList.add("show");
+}
+// `POST /api/pair/self`: the server pairs this browser if it may (from this machine, nothing
+// relaying its port, from its own page, by a program of its own user) and says why not otherwise.
+async function pairThisBrowser(button) {
+  button.disabled = true; button.textContent = "Pairing…";
+  let answer;
+  try { answer = await backend().fetch("/api/pair/self", { method: "POST", cache: "no-store" }).then(r => r.json().catch(() => ({ ok: false, why: `HTTP ${r.status}` }))); }
+  catch (_) { answer = { ok: false, why: "could not reach the monitor" }; }
+  if (answer.ok) { location.reload(); return; }
+  const help = page.byId("writeHelp");
+  help.innerHTML = "<b>Not paired</b><p class='pair-why'></p><p>You can also stop the monitor and run this in a terminal:</p><code>agent-monitor --pair</code>";
+  help.querySelector(".pair-why").textContent = answer.why || answer.error || "the monitor refused";
+  help.append(helpActions(["Close", closePairHelp]));
+}
+// `POST /api/pair/phone`: a one-time code and its QR, as `agent-monitor --pair-phone` prints them.
+async function pairPhone(button) {
+  button.disabled = true; button.textContent = "Making a code…";
+  let answer;
+  try { answer = await backend().fetch("/api/pair/phone", { method: "POST", cache: "no-store" }).then(r => r.json()); }
+  catch (_) { answer = { ok: false, error: "could not reach the monitor" }; }
+  const help = page.byId("writeHelp");
+  if (answer.ok && answer.served) {
+    help.innerHTML = "<b>Pair a phone</b><p>Scan this with the phone's camera. The phone must be on your tailnet.</p><div class='pair-qr'></div><p>Or open <span class='pair-base'></span>pair on the phone and type</p><div class='pair-code'></div><p class='pair-note'></p>";
+    help.querySelector(".pair-qr").innerHTML = answer.qr;
+    help.querySelector(".pair-base").textContent = answer.base;
+    help.querySelector(".pair-code").textContent = answer.code;
+    help.querySelector(".pair-note").textContent = `The code works once, for ${answer.minutes} minutes. The phone then stays paired.`;
+  } else if (answer.ok) {
+    help.innerHTML = answer.tailscale
+      ? "<b>Serve the monitor to your tailnet first</b><p>A phone reaches this monitor through Tailscale. Run this once on this machine, then pair the phone:</p><code class='pair-serve'></code>"
+      : "<b>Install Tailscale first</b><p>A phone reaches this monitor through Tailscale: install it here and on the phone, sign both in to the same tailnet, then run:</p><code class='pair-serve'></code>";
+    help.querySelector(".pair-serve").textContent = answer.serve;
+  } else {
+    help.innerHTML = "<b>No code</b><p class='pair-why'></p>";
+    help.querySelector(".pair-why").textContent = answer.error || "the monitor refused";
+  }
+  help.append(helpActions(answer.ok && !answer.served ? ["Try again", pairPhone, true] : ["New code", pairPhone], ["Close", closePairHelp]));
 }
 page.byId("writeSwitch").onclick = () => {
   if (!controlState.writes) { showPairHelp(); return; }
@@ -605,7 +671,7 @@ page.byId("writeSwitch").onclick = () => {
   viewHandle.writeChanged();
 };
 page.byId("writeBtn").onclick = event => { if (!event.target.closest("button")) page.byId("writeSwitch").click(); };
-page.byId("writeInfo").onclick = event => { event.stopPropagation(); showPairHelp(); };
+page.byId("writeInfo").onclick = event => { event.stopPropagation(); const help = page.byId("writeHelp"); if (help.classList.contains("show")) closePairHelp(); else showPairHelp(); };
 // The confirm layer answers the view's last ask: the passcode given ("" with no field) on Confirm,
 // null on Cancel, and null for an ask a newer one replaced. Its passcode field, once drawn, stays.
 let confirming = null;
