@@ -2290,46 +2290,73 @@ pub fn spawn_streaming_listener_gated(
                         })
                         .map(|_| ())
                 },
+                |error| {
+                    use std::io::Write;
+                    // writeln, not eprintln: a closed stderr pipe (EPIPE) must not panic
+                    // this thread and take the listener down with it.
+                    let _ = writeln!(std::io::stderr(), "loopback listener: {error}");
+                },
             );
         })
         .context("spawn loopback listener thread")?;
     Ok(port)
 }
 
-/// The accept loop behind injectable accept and handle, so a test can drive its error paths.
-/// Neither an accept error nor a refused thread may spin or kill the loop: at the fd/thread
-/// ceiling both fail instantly, and a tight retry burns a core forever without recovering.
-/// Back off (50 ms doubling to 1 s) until a connection is served. Say one line per error
-/// streak — errors less than a second apart share a line, and a new streak after a quiet
-/// second says its own, so a listener that hits the ceiling again after hours idle is seen.
+/// The accept loop behind injectable accept, handle and error log, so a test can drive its
+/// error paths and count the lines they say. Neither an accept error nor a refused thread
+/// may spin or kill the loop: at the fd/thread ceiling both fail instantly, and a tight
+/// retry burns a core forever without recovering. Back off (50 ms doubling to 1 s) until a
+/// connection is served. Say one line per error streak: the quiet second is measured from
+/// the END of the backoff sleep, so a sustained ceiling stays at one line, while a new
+/// streak after a quiet second says its own — a listener that hits the ceiling again after
+/// hours idle is seen.
 fn accept_loop(
+    accept: impl FnMut() -> std::io::Result<std::net::TcpStream>,
+    handle: impl FnMut(std::net::TcpStream) -> std::io::Result<()>,
+    say: impl FnMut(&std::io::Error),
+) {
+    accept_loop_timed(
+        accept,
+        handle,
+        say,
+        std::time::Duration::from_millis(50),
+        std::time::Duration::from_secs(1),
+        std::time::Duration::from_secs(1),
+    )
+}
+
+/// The loop with its three bounds injectable: the first backoff sleep, its cap, and the
+/// quiet window that starts a new log line. A test drives the same logic in milliseconds.
+fn accept_loop_timed(
     mut accept: impl FnMut() -> std::io::Result<std::net::TcpStream>,
     mut handle: impl FnMut(std::net::TcpStream) -> std::io::Result<()>,
+    mut say: impl FnMut(&std::io::Error),
+    first_backoff: std::time::Duration,
+    max_backoff: std::time::Duration,
+    quiet_window: std::time::Duration,
 ) {
-    use std::io::Write;
-    let mut backoff = std::time::Duration::from_millis(50);
+    let mut backoff = first_backoff;
     let mut said = false;
     let mut last_error = std::time::Instant::now();
     loop {
         match accept().and_then(&mut handle) {
             Ok(()) => {
-                backoff = std::time::Duration::from_millis(50);
+                backoff = first_backoff;
             }
             Err(error) => {
-                // One line per streak: a streak is errors less than a second apart, so a
-                // quiet listener that hits the ceiling again hours later says so again —
-                // resetting on success would swallow that line when the last streak ended
-                // in a success under a second after its last error.
-                let quiet = last_error.elapsed() >= std::time::Duration::from_secs(1);
-                last_error = std::time::Instant::now();
+                // One line per streak, measured from the end of the backoff sleep: at the
+                // cap the sleep itself spans the quiet window, so measuring from before it
+                // would say a line every second for as long as the ceiling holds. Success
+                // never re-arms `said`: a streak that ends in a success under a second
+                // after its last error must not swallow the next streak's line.
+                let quiet = last_error.elapsed() >= quiet_window;
                 if !said || quiet {
-                    // writeln, not eprintln: a closed stderr pipe (EPIPE) must not panic
-                    // this thread and take the listener down with it.
-                    let _ = writeln!(std::io::stderr(), "loopback listener: {error}");
+                    say(&error);
                     said = true;
                 }
                 std::thread::sleep(backoff);
-                backoff = (backoff * 2).min(std::time::Duration::from_secs(1));
+                last_error = std::time::Instant::now();
+                backoff = (backoff * 2).min(max_backoff);
             }
         }
     }
@@ -2426,7 +2453,8 @@ const RESPONSE_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_se
 /// How long one write of a streamed disk download may wait for progress. The bound is per
 /// send, not per transfer: a reader paused for minutes (a locked phone, Chrome's paused
 /// download) resumes where it left off, while a peer stuck at a zero window forever is
-/// released instead of holding a thread and two descriptors for the life of the process.
+/// released instead of holding a thread and three descriptors — the socket, its read
+/// clone and the open file — for the life of the process.
 const STREAM_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// The largest artifact `/file` will hand over. The route exists so a click can SHOW a file
@@ -3971,6 +3999,7 @@ mod tests {
                     drop(stream);
                     Ok(())
                 },
+                |_| {},
             );
         });
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
@@ -3991,21 +4020,89 @@ mod tests {
                 "accept gap {i} must sleep at least {least} ms"
             );
         }
-        // The sixth error (the refused handle) sleeps at the cap, not past it.
+        // The sixth error (the refused handle) sleeps at the cap, not past it. The upper
+        // bound still catches an uncapped ladder (that sleep would be 1600 ms) while
+        // leaving a loaded machine room to schedule the test thread.
         assert!(gap(5) >= 1000, "the ladder must reach the 1 s cap");
-        assert!(gap(5) < 1400, "the cap must hold: gap 5 was {} ms", gap(5));
-        // The error after the success sleeps the reset 50 ms, not the old 1 s.
+        assert!(gap(5) < 1600, "the cap must hold: gap 5 was {} ms", gap(5));
+        // The error after the success sleeps the reset 50 ms, not the old 1 s; without
+        // the reset this gap would be the capped 1000 ms.
         assert!(gap(7) >= 50, "the post-reset error must still back off");
         assert!(
-            gap(7) < 400,
+            gap(7) < 1000,
             "success must reset the backoff: gap 7 was {} ms",
             gap(7)
         );
     }
 
-    /// The timeout tests drive the timed core directly with short bounds; only the source
-    /// holds the production wiring. Match the whole call, not the constant names — a
-    /// comment mentioning them must not pass — and pin the fallible spawns.
+    /// The loop says ONE line per error streak, even at the backoff cap: the quiet window
+    /// is measured from the end of the sleep, not from before it, or a sustained ceiling
+    /// would say a line every second. A success does not re-arm the line, and an error
+    /// after a quiet window says its own. The timed core runs the whole ladder with a
+    /// 200 ms cap and window; the injected sink counts what production would log.
+    #[test]
+    fn the_accept_loop_says_one_line_per_error_streak() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let client = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let mut streams = std::iter::once(listener.accept().unwrap().0);
+        let accepts = std::sync::Arc::new(AtomicUsize::new(0));
+        let accepts_in = accepts.clone();
+        let lines = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let lines_in = lines.clone();
+        std::thread::spawn(move || {
+            accept_loop_timed(
+                || match accepts_in.fetch_add(1, Ordering::SeqCst) {
+                    // Ten instant failures climb the ladder to the 200 ms cap.
+                    0..=9 => Err(std::io::Error::other("fd ceiling (test)")),
+                    10 => Ok(streams.next().unwrap()),
+                    // Right after the success: the same streak, no new line.
+                    11 => Err(std::io::Error::other("fd ceiling (test)")),
+                    // A quiet gap, then a new streak says its own line.
+                    12 => {
+                        std::thread::sleep(std::time::Duration::from_millis(600));
+                        Err(std::io::Error::other("fd ceiling again (test)"))
+                    }
+                    13 => Err(std::io::Error::other("fd ceiling again (test)")),
+                    // Park like a quiet listener: the loop under test stays alive.
+                    _ => loop {
+                        std::thread::park();
+                    },
+                },
+                |stream| {
+                    drop(stream);
+                    Ok(())
+                },
+                |error| lines_in.lock().unwrap().push(format!("{error}")),
+                std::time::Duration::from_millis(5),
+                std::time::Duration::from_millis(200),
+                std::time::Duration::from_millis(200),
+            );
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        // The park arm is accept #14 (counter 15); reaching it means every say decision
+        // has run.
+        while accepts.load(Ordering::SeqCst) < 15 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            accepts.load(Ordering::SeqCst) >= 15,
+            "the loop must reach the park arm"
+        );
+        let lines = lines.lock().unwrap();
+        assert_eq!(
+            lines.len(),
+            2,
+            "one line per streak, not one per error at the cap: {lines:?}"
+        );
+        drop(client);
+    }
+
+    /// The timeout tests drive the timed cores directly with short bounds; only the source
+    /// holds the production wiring. Match the whole calls, not the constant names — a
+    /// comment mentioning them must not pass — and pin the fallible spawns and the
+    /// EPIPE-safe stderr line.
     #[test]
     fn the_listener_serves_with_the_production_socket_bounds() {
         let source = include_str!("serve.rs");
@@ -4020,6 +4117,17 @@ mod tests {
             ),
             "the wrapper must pass the production bounds to the timed core"
         );
+        let loop_wrapper = source
+            .split("fn accept_loop(")
+            .nth(1)
+            .expect("the accept_loop wrapper");
+        let loop_wrapper = &loop_wrapper[..loop_wrapper.find("fn accept_loop_timed").unwrap()];
+        assert!(
+            loop_wrapper.contains(
+                "accept_loop_timed(\n        accept,\n        handle,\n        say,\n        std::time::Duration::from_millis(50),\n        std::time::Duration::from_secs(1),\n        std::time::Duration::from_secs(1),\n    )"
+            ),
+            "the wrapper must pass the production backoff bounds to the timed core"
+        );
         let listener = source
             .split("pub fn spawn_streaming_listener_gated")
             .nth(1)
@@ -4029,6 +4137,10 @@ mod tests {
             listener.matches("std::thread::Builder::new()").count(),
             2,
             "the loop thread and every connection thread must spawn fallibly"
+        );
+        assert!(
+            listener.contains("writeln!(std::io::stderr(), \"loopback listener: {error}\")"),
+            "the production error line must stay an EPIPE-safe writeln on stderr"
         );
     }
 
