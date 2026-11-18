@@ -2041,6 +2041,9 @@ mod price_tests {
             ("gpt-6.1-sol", p("2", "2.5", "0.1", "10")),
             ("gpt-6.1-terra", p("1", "1.25", "0.05", "5")),
             ("gpt-6-1-terra", p("1", "1.25", "0.05", "5")),
+            // Priced before first use (#s572, the page's props read raw 2026-11-18).
+            ("gpt-6.2-astra", p("8", "10", "0.4", "40")),
+            ("gpt-6-2-sol", p("2", "2.5", "0.1", "10")),
             ("gpt-6-luna", p("0.1", "0.125", "0.01", "0.5")),
             ("gpt-5.6-sol", p("4", "5", "0.4", "20")),
             ("gpt-5.6", p("4", "5", "0.4", "20")),
@@ -2794,11 +2797,13 @@ mod request_pricing_tests {
 
     /// Ultrafast (the pricing page's Ultrafast tab, read raw 2026-10-04 and again 2026-10-09):
     /// gpt-6-astra and, since 2026-10-08, gpt-6.1-sol, each 6x Standard on every token class,
-    /// short and long. A model the tab does not list prices an
+    /// short and long; gpt-6.2-astra and gpt-6.2-sol (read raw 2026-11-18, #s572) 3x through
+    /// 2027-02-28, the promotion the page prints, and 6x from 2027-03-01, which the catalog will
+    /// take when the page is re-read after that date. A model the tab does not list prices an
     /// ultrafast request at Standard as an estimate, as Fast does without a long-context rate. The
     /// tier is reached through `from_recorded`, where the old code lost it (Unknown: 1x, estimate).
     #[test]
-    fn ultrafast_is_six_times_standard_where_the_page_lists_it() {
+    fn ultrafast_is_the_pages_multiple_of_standard_where_it_lists_the_model() {
         let table = PriceTable::default();
         let tokens = TokenCounts {
             input: 1_000_000,
@@ -2813,6 +2818,10 @@ mod request_pricing_tests {
             ("gpt-6-astra", true, 120.0, false),
             ("gpt-6.1-sol", false, 12.0, false),
             ("gpt-6.1-sol", true, 24.0, false),
+            ("gpt-6.2-astra", false, 24.0, false),
+            ("gpt-6.2-astra", true, 48.0, false),
+            ("gpt-6.2-sol", false, 6.0, false),
+            ("gpt-6.2-sol", true, 12.0, false),
             // Not on the Ultrafast tab (read raw 2026-10-27): Standard, as an estimate.
             ("gpt-6.1-terra", false, 1.0, true),
             ("gpt-6-sol", false, 2.0, true),
