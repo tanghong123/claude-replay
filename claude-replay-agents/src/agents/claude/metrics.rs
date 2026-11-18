@@ -38,6 +38,9 @@ pub(crate) struct MetricsAcc {
     /// The model `last_usage_key` was credited under. Both must match before a line is
     /// treated as a repeat: after a restore the single-model-per-message invariant can't
     /// be re-verified, and subtracting against another model's figures would under-credit.
+    /// The name stored is the resolved one: a head rewrite between two lines of one API call
+    /// renames the second, so the pair reads as two calls and credits twice — rare, heads
+    /// land at turn opens.
     last_usage_model: Option<String>,
     /// What has already been credited for `last_usage_key`, so a repeat adds only the
     /// growth. Identical repeats add nothing; a streamed/retried group that grows
@@ -108,6 +111,9 @@ impl MetricsAcc {
         remember_string(&mut self.runtime.client_version, v.get("version"));
         if v.get("type").and_then(Value::as_str) == Some("runtime-config") {
             remember_string(&mut self.runtime.reasoning_effort, v.get("reasoningEffort"));
+            // The client rewrites the head on every picker change (three mid-session switch
+            // sessions measured 2026-11-18); the per-turn `businessModelKey` matches it where
+            // present but is absent on some turn-openers, so the head is the selection's source.
             remember_string(&mut self.runtime.model, v.get("model"));
             if let Some(w) = v.get("contextWindow").and_then(Value::as_u64) {
                 self.runtime.context_window_tokens = Some(w);
@@ -333,6 +339,17 @@ impl MetricsAcc {
         self.time_answer(v);
     }
 
+    /// The Qoder family's assistant records name the ROUTER ("auto"), while the model the
+    /// person picked is written only in the `runtime-config` head — so a record naming the
+    /// router buckets under the head's selection. A record naming a model of its own keeps
+    /// it, and a head naming the router itself (or nothing) renames nothing.
+    fn named_model(&self, recorded: &str) -> String {
+        match self.runtime.model.as_deref() {
+            Some(pick) if recorded == "auto" && pick != "auto" => pick.to_string(),
+            _ => recorded.to_string(),
+        }
+    }
+
     /// Fold the line into [`answers`](Self::answers): an assistant line is a part of the answer
     /// its `message.id` names, and every user line a request (a prompt, a tool result, or a meta
     /// record the client writes with one). A `<synthetic>` record is the client's own (an API
@@ -346,17 +363,6 @@ impl MetricsAcc {
     /// same release throughout (179,405 lines on one box, 2026-11-01); every Qoder 1.1.69-1.1.80
     /// line beside credits held a real count. So a credited usage's output count is taken when it
     /// is above 0; a 0 beside credits is no count, never a false 0.
-    /// The Qoder family's assistant records name the ROUTER ("auto"), while the model the
-    /// person picked is written only in the `runtime-config` head — so a record naming the
-    /// router buckets under the head's selection. A record naming a model of its own keeps
-    /// it, and a head naming the router itself (or nothing) renames nothing.
-    fn named_model(&self, recorded: &str) -> String {
-        match self.runtime.model.as_deref() {
-            Some(pick) if recorded == "auto" && pick != "auto" => pick.to_string(),
-            _ => recorded.to_string(),
-        }
-    }
-
     fn time_answer(&mut self, v: &Value) {
         let ts = v
             .get("timestamp")
@@ -1599,6 +1605,50 @@ mod runtime_tests {
         let m = fold(&[]).finish();
         assert_eq!(m.runtime.recorded, vec!["effort", "permission", "client"]);
         assert!(m.runtime.reasoning_effort.is_none());
+    }
+
+    /// The client rewrites the head when the person switches model mid-session (measured
+    /// 2026-11-18: 32, 4 and 5 heads in three switch sessions), so each turn's router-named
+    /// replies bucket under the pick in force when they were written.
+    #[test]
+    fn a_mid_session_head_rewrite_buckets_each_turn_under_its_own_pick() {
+        let head_auto = r#"{"type":"runtime-config","sessionId":"q","model":"auto","timestamp":1}"#;
+        let head_pick =
+            r#"{"type":"runtime-config","sessionId":"q","model":"qmodel_latest","timestamp":2}"#;
+        let auto1 = r#"{"type":"assistant","requestId":"r1","message":{"role":"assistant","id":"m1","model":"auto","usage":{"output_tokens":5}},"timestamp":"2026-09-03T10:00:02.000Z"}"#;
+        let auto2 = r#"{"type":"assistant","requestId":"r2","message":{"role":"assistant","id":"m2","model":"auto","usage":{"output_tokens":7}},"timestamp":"2026-09-03T10:01:02.000Z"}"#;
+        let m = fold(&[head_auto, auto1, head_pick, auto2]).finish();
+        assert_eq!(m.per_model["auto"].output, 5);
+        assert_eq!(m.per_model["qmodel_latest"].output, 7);
+        assert_eq!(m.model, "qmodel_latest");
+    }
+
+    /// A cursor parked without `runtime.model` restores to no pick: router-named replies
+    /// keep the router's row until a head names one again. (Cursors parked before v82 are
+    /// discarded by the version guard; this pins the restore semantics for a state whose
+    /// runtime simply never saw a head.)
+    #[test]
+    fn a_restore_without_runtime_model_keeps_the_router_row_until_a_head_names_one() {
+        let head =
+            r#"{"type":"runtime-config","sessionId":"q","model":"qmodel_latest","timestamp":1}"#;
+        let auto1 = r#"{"type":"assistant","requestId":"r1","message":{"role":"assistant","id":"m1","model":"auto","usage":{"output_tokens":5}},"timestamp":"2026-09-03T10:00:02.000Z"}"#;
+        let auto2 = r#"{"type":"assistant","requestId":"r2","message":{"role":"assistant","id":"m2","model":"auto","usage":{"output_tokens":7}},"timestamp":"2026-09-03T10:01:02.000Z"}"#;
+        let mut state = fold(&[head, auto1]).state();
+        state["runtime"].as_object_mut().unwrap().remove("model");
+        let mut resumed = MetricsAcc::recording(&["effort", "permission", "client"]);
+        resumed.restore(&state);
+        resumed.push(&serde_json::from_str::<Value>(auto2).unwrap());
+        let m = resumed.finish();
+        assert!(m.runtime.model.is_none());
+        assert_eq!(m.per_model["auto"].output, 7);
+        assert_eq!(m.per_model["qmodel_latest"].output, 5);
+        let mut resumed = MetricsAcc::recording(&["effort", "permission", "client"]);
+        resumed.restore(&state);
+        resumed.push(&serde_json::from_str::<Value>(head).unwrap());
+        resumed.push(&serde_json::from_str::<Value>(auto2).unwrap());
+        let m = resumed.finish();
+        assert_eq!(m.per_model["qmodel_latest"].output, 12);
+        assert_eq!(m.per_model.get("auto").map(|t| t.output).unwrap_or(0), 0);
     }
 
     /// The resume cursor carries the snapshot; the declaration stays the adapter's.
