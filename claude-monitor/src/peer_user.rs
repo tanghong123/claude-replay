@@ -7,31 +7,63 @@
 //! descriptors to root alone, so `lsof` lists only this user's processes' sockets (measured on
 //! macOS 26: 128 root processes running, and every one of the 118 TCP sockets `lsof -iTCP` listed
 //! was uid 501's). Finding the connection's CLIENT end there is therefore the proof, and its
-//! process's uid is checked as well. Anything else — no `lsof`, no answer within the bound, no
-//! such socket, another uid — is a no.
+//! process's uid is checked as well. No such socket, or another uid, is a no
+//! ([`PeerUser::NotThisUser`]); a check that could not look — busy with another ask, asked again
+//! too soon, `lsof` not answering within the bound or its last run still stuck — says so
+//! ([`PeerUser::CannotTell`]), and the page asks the reader to try again.
+//!
+//! The route answers before any pairing, so any program on this machine can ask it, and each ask
+//! starts an `lsof`. So one check runs at a time, a new one starts at most every
+//! [`LSOF_EVERY`], and its `lsof` runs under a guard of its own: one stuck in the kernel stops the
+//! next pairing check, never the session scan's `lsof`, nor the scan's this one.
 
+use claude_replay_html::PeerUser;
 use std::net::SocketAddr;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// How long `lsof` may take: a pairing click waits on it, and a probe stuck in the kernel must not
 /// hold the page (index.rs's probes allow 15 s for the same reason).
 const LSOF_BOUND: Duration = Duration::from_secs(5);
 
-/// Whether the loopback connection from `peer` into this server's `local` end is held by a process
-/// of this user (see the module).
-pub fn peer_is_this_user(peer: SocketAddr, local: SocketAddr) -> bool {
+/// The abandoned-probe guard the pairing check's `lsof` runs under (`index::run_bounded_keyed`):
+/// its own, apart from the scan's `lsof`.
+const LSOF_GUARD: &str = "pair-self:lsof";
+
+/// The least time between two pairing checks' `lsof` runs.
+const LSOF_EVERY: Duration = Duration::from_millis(500);
+
+/// Who holds the loopback connection from `peer` into this server's `local` end (see the module).
+pub fn peer_user(peer: SocketAddr, local: SocketAddr) -> PeerUser {
     if !peer.ip().is_loopback() {
-        return false;
+        return PeerUser::NotThisUser;
     }
+    static LAST_START: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+    // Held for the whole check, so a second ask meanwhile is told to try again, not queued.
+    let mut last = match LAST_START.try_lock() {
+        Ok(last) => last,
+        Err(std::sync::TryLockError::Poisoned(last)) => last.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => return PeerUser::CannotTell,
+    };
+    if last.is_some_and(|at| at.elapsed() < LSOF_EVERY) {
+        return PeerUser::CannotTell;
+    }
+    *last = Some(Instant::now());
     let selector = format!("-iTCP@{}:{}", lsof_host(&peer), peer.port());
-    let out = crate::index::run_bounded_env(
+    let Some(out) = crate::index::run_bounded_keyed(
+        LSOF_GUARD,
         &["lsof", "-nP", "-a", &selector, "-sTCP:ESTABLISHED", "-Fpun"],
         &[],
         LSOF_BOUND,
-    );
+    ) else {
+        return PeerUser::CannotTell;
+    };
     // SAFETY: geteuid has no preconditions and cannot fail.
     let euid = unsafe { libc::geteuid() };
-    client_held_by(&out, peer, local, euid, std::process::id())
+    if client_held_by(&out, peer, local, euid, std::process::id()) {
+        PeerUser::ThisUser
+    } else {
+        PeerUser::NotThisUser
+    }
 }
 
 /// The host as `lsof -i` takes it: an IPv6 address in brackets.
@@ -115,9 +147,30 @@ mod tests {
 
     #[test]
     fn a_peer_off_the_loopback_is_never_this_user() {
-        assert!(!peer_is_this_user(
-            addr("100.64.0.7:52345"),
-            addr("127.0.0.1:2727")
-        ));
+        assert_eq!(
+            peer_user(addr("100.64.0.7:52345"), addr("127.0.0.1:2727")),
+            PeerUser::NotThisUser
+        );
+    }
+
+    /// #s577 review: the pairing check starts at most one `lsof` per [`LSOF_EVERY`], so a program
+    /// asking the unauthenticated route in a loop cannot start one per ask; an ask too soon is told
+    /// to try again, not that the browser is another user's. Then a later ask looks again.
+    #[test]
+    fn the_pairing_check_starts_one_lsof_at_a_time_and_says_when_it_could_not_look() {
+        let (peer, local) = (addr("127.0.0.1:1"), addr("127.0.0.1:2"));
+        let first = peer_user(peer, local);
+        assert_ne!(first, PeerUser::ThisUser, "no connection holds those ports");
+        assert_eq!(
+            peer_user(peer, local),
+            PeerUser::CannotTell,
+            "asked again at once"
+        );
+        std::thread::sleep(LSOF_EVERY + Duration::from_millis(50));
+        assert_ne!(
+            peer_user(peer, local),
+            PeerUser::ThisUser,
+            "a later ask looks again"
+        );
     }
 }

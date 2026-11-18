@@ -60,7 +60,7 @@ The tiers say what a host must serve:
 | POST | `/api/consent` | write | `/api/consent` | grant or revoke sending into a live pane |
 | GET | `/api/dialog` | write | `/api/dialog` | read the dialog a live session is waiting on |
 | POST | `/api/answer` | write | `/api/answer` | answer that dialog |
-| POST | `/api/pair/phone` | write | `/api/pair/phone` | a one-time code and QR code that pair a phone |
+| POST | `/api/pair/phone` | listener | `/api/pair/phone` | a one-time code and QR code that pair a phone |
 | POST | `/api/pair/self` | listener | `/api/pair/self` | pair the browser the page runs in |
 | GET | `/monitor-ui/` | core | `/monitor-ui/app.js` | the page's modules and stylesheets |
 | GET | `/mdrev/<mdrev>/` | optional | `/mdrev/<mdrev>/mdrev.js` | mdrev's viewer, for Markdown and code in the artifact pane |
@@ -382,7 +382,6 @@ every answer.
 | `POST /api/consent` | `target=<id>`, `op=revoke` to revoke | the passcode as text, or nothing | `{ok: true, sid, granted}` | `passcode-required`, `bad-passcode`, `locked`, and the send's |
 | `GET /api/dialog` | `target=<id>` | | `{ok: true, sid, open, dialog, why?}` | `no-consent`, `held` |
 | `POST /api/answer` | `target=<id>` | `{fingerprint, choice}`, `{fingerprint, choices}` or `{fingerprint, text}` (one line, 2,000 characters at most) | `{ok: true, sid, via: "herdr"}` | `held`, `no-consent` |
-| `POST /api/pair/phone` | | | `{ok: true, served: true, base, link, code, minutes, qr}` (`qr` an SVG of `link`), or `{ok: true, served: false, tailscale, serve, untrusted?}` naming the command that serves the monitor to the tailnet | words in `error` |
 
 A `held` refusal's `error` says what the reader should do, and the page shows it as is.
 
@@ -396,9 +395,22 @@ An answer names the fingerprint, and is refused when the pane shows another dial
 the monitor runs. The listener answers it only while the monitor is unpaired, and only for a
 request from this machine with nothing relaying the port, from the page's own origin, by a program
 running as the monitor's own user. It answers `{ok: true}` with the browser's cookie, after which
-the monitor requires pairing from every reader; or a status of 403, 405 or 409 with
-`{ok: false, why}`, words the page shows as they are. `<body data-write>` says which reason the
-page names beside its Write mode switch.
+the monitor requires pairing from every reader. Two pages pairing at once get one token: the
+second is told the monitor is paired.
+
+`POST /api/pair/phone` makes a phone's one-time pairing code, as `agent-monitor --pair-phone` does,
+for a paired browser: it needs the monitor's token and the page's own origin. It answers `{ok: true,
+served: true, base, link, code, minutes, qr}` (`qr` an SVG of `link`), or `{ok: true, served: false,
+tailscale, serve, untrusted?}` naming the command that serves the monitor to the tailnet. The
+listener answers it, not a route, because the code is the listener's own credential: it goes to the
+file the listener redeems at `/pair`, which no table a host mounts may reach.
+
+Both refuse with `{ok: false, why}`, words the page shows as they are, under the status of the
+check that failed: 405 for a method other than POST (with `Allow: POST`); 403 for a foreign origin,
+and for `/api/pair/self` a request from elsewhere, through a relay or by another user; 401 for
+`/api/pair/phone` without the token; 409 when `/api/pair/self` finds the monitor paired (the page
+reloads); 503 when the monitor could not check the user just now (the page offers to try again);
+500 when the token or the code could not be made. A listener that offers neither answers 404.
 
 ### The page's facts
 

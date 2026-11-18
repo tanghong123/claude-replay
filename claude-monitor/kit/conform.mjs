@@ -83,7 +83,7 @@ const ROUTES = [
   ["POST", "/api/consent", "write"],
   ["GET", "/api/dialog", "write"],
   ["POST", "/api/answer", "write"],
-  ["POST", "/api/pair/phone", "write"],
+  ["POST", "/api/pair/phone", "listener"],
   ["POST", "/api/pair/self", "listener"],
   ["GET", "/monitor-ui/", "core"],
   ["GET", "/mdrev/<mdrev>/", "optional"],

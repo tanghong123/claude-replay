@@ -886,9 +886,10 @@ const PAGE_READ_BOUND: std::time::Duration = std::time::Duration::from_secs(3);
 /// as JSON. Where `tailscale serve` relays this monitor's port, a fresh one-time code (the same
 /// codes, file and lifetime), the address the phone opens with it and that address's QR code as
 /// SVG (`served: true`); else the one command that serves the monitor to the tailnet, which the
-/// reader runs (`served: false`). Nothing here changes Tailscale's setup, as with the CLI. The
-/// route asks it only of a paired browser (`deny_write`).
-pub fn phone_pairing(port: u16) -> Value {
+/// reader runs (`served: false`). Nothing here changes Tailscale's setup, as with the CLI. The code
+/// goes to `codes`, the file the monitor's gate redeems at `/pair`; the gate asks this only of a
+/// paired browser of its own origin (`AuthGate::with_phone_pairing`).
+pub fn phone_pairing(port: u16, codes: &std::path::Path) -> Value {
     let Some(bin) = tailscale() else {
         return serde_json::json!({"ok": true, "served": false, "tailscale": false,
             "serve": serve_command(port, true)});
@@ -913,12 +914,11 @@ pub fn phone_pairing(port: u16) -> Value {
         return serde_json::json!({"ok": true, "served": false, "tailscale": true,
             "serve": serve_command(port, https), "untrusted": open});
     };
-    let codes = crate::index::state_dir().join(PAIR_CODES_FILE);
     if let Some(dir) = codes.parent() {
         std::fs::create_dir_all(dir).ok();
     }
-    let Some(code) = pairing::mint_pair_code(&codes, pairing::now_secs()) else {
-        return serde_json::json!({"ok": false, "error": "a pairing code could not be made"});
+    let Some(code) = pairing::mint_pair_code(codes, pairing::now_secs()) else {
+        return serde_json::json!({"ok": false, "why": "A pairing code could not be made."});
     };
     let link = format!("{base}pair#code={code}");
     serde_json::json!({

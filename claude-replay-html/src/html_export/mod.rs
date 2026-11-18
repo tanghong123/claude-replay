@@ -60,8 +60,8 @@ pub use serve::{
     existing_server, finish_reply, gate_paired, get_request, handoff_url, mint_token, query_get,
     serve, service_body_limit, service_routes, spawn_listener, spawn_listener_gated,
     spawn_streaming_listener_gated, start_server, AuthGate, EventStream, HostCheck, HttpReply,
-    HttpResponse, LiveServer, RelayCheck, ReplyClient, Request, RootLock, RouteHandler,
-    SelfPairing, ServiceConfig, SessionService, StaleEpoch, StreamingRouteHandler,
+    HttpResponse, LiveServer, PeerUser, PhonePairing, RelayCheck, ReplyClient, Request, RootLock,
+    RouteHandler, SelfPairing, ServiceConfig, SessionService, StaleEpoch, StreamingRouteHandler,
 };
 
 const CSS: &str = include_str!("../html/export.css");

@@ -568,7 +568,9 @@ const WRITE_NEED = {
   },
   browser: {
     line: "This browser is not paired with the monitor",
-    help: "<b>This browser is not paired</b><p>The monitor is paired, but this browser holds no pairing token, so the monitor would refuse what it sends. Open the address the monitor printed in its terminal when it started: it carries the token.</p>",
+    // A monitor paired from its page printed no address, and one a LaunchAgent starts prints none
+    // to its log (#s204): `--pair` in a terminal hands off to the running monitor and prints it.
+    help: "<b>This browser is not paired</b><p>The monitor is paired, but this browser holds no pairing token, so the monitor would refuse what it sends. Run this in a terminal on this machine: it prints the address that pairs a browser, and opens it in the default one.</p><code>agent-monitor --pair</code>",
   },
   host: {
     line: "This page only reads sessions",
@@ -629,23 +631,26 @@ function showPairHelp() {
 }
 // `POST /api/pair/self`: the server pairs this browser if it may (from this machine, nothing
 // relaying its port, from its own page, by a program of its own user) and says why not otherwise.
+// A 409 is a monitor paired meanwhile (another tab, a terminal): the reload shows where this
+// browser stands, paired already when that tab was this browser's.
 async function pairThisBrowser(button) {
   button.disabled = true; button.textContent = "Pairing…";
-  let answer;
-  try { answer = await backend().fetch("/api/pair/self", { method: "POST", cache: "no-store" }).then(r => r.json().catch(() => ({ ok: false, why: `HTTP ${r.status}` }))); }
-  catch (_) { answer = { ok: false, why: "could not reach the monitor" }; }
-  if (answer.ok) { location.reload(); return; }
+  let answer, status = 0;
+  try { answer = await backend().fetch("/api/pair/self", { method: "POST", cache: "no-store" }).then(r => { status = r.status; return r.json().catch(() => ({ ok: false, why: `HTTP ${r.status}` })); }); }
+  catch (_) { answer = { ok: false, why: "Could not reach the monitor." }; }
+  if (answer.ok || status === 409) { location.reload(); return; }
   const help = page.byId("writeHelp");
-  help.innerHTML = "<b>Not paired</b><p class='pair-why'></p><p>You can also stop the monitor and run this in a terminal:</p><code>agent-monitor --pair</code>";
-  help.querySelector(".pair-why").textContent = answer.why || answer.error || "the monitor refused";
-  help.append(helpActions(["Close", closePairHelp]));
+  help.innerHTML = "<b>Could not pair this browser</b><p class='pair-why'></p><p>You can also stop the monitor and run this in a terminal:</p><code>agent-monitor --pair</code>";
+  help.querySelector(".pair-why").textContent = answer.why || answer.error || "The monitor refused.";
+  // A 503 is a check that could not look just now (macOS asks lsof): asking again may pair.
+  help.append(status === 503 ? helpActions(["Try again", pairThisBrowser, true], ["Close", closePairHelp]) : helpActions(["Close", closePairHelp]));
 }
 // `POST /api/pair/phone`: a one-time code and its QR, as `agent-monitor --pair-phone` prints them.
 async function pairPhone(button) {
   button.disabled = true; button.textContent = "Making a code…";
   let answer;
-  try { answer = await backend().fetch("/api/pair/phone", { method: "POST", cache: "no-store" }).then(r => r.json()); }
-  catch (_) { answer = { ok: false, error: "could not reach the monitor" }; }
+  try { answer = await backend().fetch("/api/pair/phone", { method: "POST", cache: "no-store" }).then(r => r.json().catch(() => ({ ok: false, why: `HTTP ${r.status}` }))); }
+  catch (_) { answer = { ok: false, why: "Could not reach the monitor." }; }
   const help = page.byId("writeHelp");
   if (answer.ok && answer.served) {
     help.innerHTML = "<b>Pair a phone</b><p>Scan this with the phone's camera. The phone must be on your tailnet.</p><div class='pair-qr'></div><p>Or open <span class='pair-base'></span>pair on the phone and type</p><div class='pair-code'></div><p class='pair-note'></p>";
@@ -660,7 +665,7 @@ async function pairPhone(button) {
     help.querySelector(".pair-serve").textContent = answer.serve;
   } else {
     help.innerHTML = "<b>No code</b><p class='pair-why'></p>";
-    help.querySelector(".pair-why").textContent = answer.error || "the monitor refused";
+    help.querySelector(".pair-why").textContent = answer.why || answer.error || "The monitor refused.";
   }
   help.append(helpActions(answer.ok && !answer.served ? ["Try again", pairPhone, true] : ["New code", pairPhone], ["Close", closePairHelp]));
 }

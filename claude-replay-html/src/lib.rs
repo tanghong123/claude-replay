@@ -16,9 +16,9 @@ pub use html_export::{
     get_request, handoff_url, install_mdrev, mdrev_state_dir, mdrev_version, mermaid_runtime_path,
     mint_token, query_get, serve, service_body_limit, service_routes, spawn_listener,
     spawn_listener_gated, spawn_streaming_listener_gated, start_server, AuthGate, EventStream,
-    HostCheck, HttpReply, HttpResponse, LiveServer, MdrevKit, RelayCheck, ReplyClient, Request,
-    RootLock, RouteHandler, SelfPairing, ServiceConfig, SessionService, StaleEpoch,
-    StreamingRouteHandler,
+    HostCheck, HttpReply, HttpResponse, LiveServer, MdrevKit, PeerUser, PhonePairing, RelayCheck,
+    ReplyClient, Request, RootLock, RouteHandler, SelfPairing, ServiceConfig, SessionService,
+    StaleEpoch, StreamingRouteHandler,
 };
 
 pub use html_export::render_markdown;

@@ -87,8 +87,38 @@ pub fn ensure_token(cache_root: &std::path::Path) -> Result<String> {
         return Ok(tok);
     }
     let tok = claude_replay_html::mint_token().context("read /dev/urandom to mint a token")?;
-    write_token_0600(&token_path(), &tok)?;
-    Ok(tok)
+    create_token_0600(&token_path(), &tok)
+}
+
+/// Write `tok` as the token file only where there is none, whole and at once, and return the token
+/// the file holds afterwards: `tok`, or the one another pairing wrote first. Two pairings at once
+/// (`--pair` in a terminal, and the page's, #s577) read "none" together; both writing would leave a
+/// running monitor holding one token and the file the other, which the next restart enforces. So
+/// the token goes to a file of its own at 0600, and a hard link puts it at `path`, which fails
+/// while a file is there.
+fn create_token_0600(path: &std::path::Path, tok: &str) -> Result<String> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let staged = path.with_file_name(format!(
+        ".{}.{}-{n}",
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("auth-token"),
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&staged);
+    write_token_0600(&staged, tok)?;
+    let linked = std::fs::hard_link(&staged, path);
+    let _ = std::fs::remove_file(&staged);
+    match linked {
+        Ok(()) => Ok(tok.to_string()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => std::fs::read_to_string(path)
+            .ok()
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .with_context(|| format!("read the token another pairing wrote to {}", path.display())),
+        Err(e) => Err(e).with_context(|| format!("write token {}", path.display())),
+    }
 }
 
 /// Write `tok` to `path` with mode 0600 set at open.
@@ -2944,6 +2974,39 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&state);
         let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    /// #s577 review: a pairing that finds a token file another pairing wrote meanwhile keeps that
+    /// token rather than replacing it, and leaves nothing staged beside it.
+    #[test]
+    fn a_token_another_pairing_wrote_first_is_kept() {
+        let dir = std::env::temp_dir().join(format!("cm-tok-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("auth-token");
+        assert_eq!(create_token_0600(&path, "first").unwrap(), "first");
+        assert_eq!(
+            create_token_0600(&path, "second").unwrap(),
+            "first",
+            "the file's token wins"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first");
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            left,
+            vec![std::ffi::OsString::from("auth-token")],
+            "nothing staged is left"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "owner-only");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// #133 passcode gate (pure): empty body asks for the passcode; a wrong one is `Bad` and,

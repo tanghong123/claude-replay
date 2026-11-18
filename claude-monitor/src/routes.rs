@@ -83,9 +83,7 @@ impl Serves {
     pub fn admits(&self, method: &str, name: &str, query: &str) -> bool {
         let reads = |rest: &str| method == "GET" || rest == "resolve";
         match name {
-            "api/send" | "api/consent" | "api/dialog" | "api/answer" | "api/pair/phone" => {
-                self.writes
-            }
+            "api/send" | "api/consent" | "api/dialog" | "api/answer" => self.writes,
             "file" => self.files,
             "__reveal" => self.reveal,
             _ if name.starts_with("api/mdrev-review/") => {
@@ -276,17 +274,6 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
                 write_gate(paired, ceiling.writes, req.authenticated),
             ))
         }
-        // #s577: pair a phone from the page — what `--pair-phone` prints, for a paired browser.
-        "api/pair/phone" => match req.deny_write() {
-            Some(deny) => deny,
-            None => match backend.service.port() {
-                Some(port) => HttpResponse::json(crate::pair_phone::phone_pairing(port).to_string()),
-                None => HttpResponse::json(
-                    serde_json::json!({"ok": false, "error": "the monitor's port is not known yet"})
-                        .to_string(),
-                ),
-            },
-        },
         // A Markdown document from the preview pane, in a tab of its own (#271).
         "markdown" => HttpResponse::html(ui::markdown_page()),
         // An image from the preview pane, in a tab of its own (#s11).

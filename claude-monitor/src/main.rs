@@ -359,8 +359,12 @@ fn main() -> Result<()> {
         let root = root.clone();
         claude_replay_html::SelfPairing {
             mint: std::sync::Arc::new(move || ensure_token(&root).ok()),
-            peer_is_this_user: std::sync::Arc::new(claude_monitor::peer_user::peer_is_this_user),
+            peer_user: std::sync::Arc::new(claude_monitor::peer_user::peer_user),
         }
+    })
+    // #s577: and a paired browser makes a phone's code, as `--pair-phone` does, in the file above.
+    .with_phone_pairing(claude_replay_html::PhonePairing {
+        offer: std::sync::Arc::new(claude_monitor::pair_phone::phone_pairing),
     })
     // #320: the icons and the manifest, which a phone reads to put the page on its Home Screen.
     .with_public(public_assets)
