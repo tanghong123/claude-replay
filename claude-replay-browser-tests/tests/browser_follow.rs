@@ -22765,7 +22765,7 @@ fn a_desktop_drawer_keeps_its_brand_clear_of_the_handle_and_lies_over_the_whole_
         })
         .collect();
     stores.claude_session(PHONE_SID, &t);
-    let m = harness::Monitor::spawn(harness::Kind::V1, 2935, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3063, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     harness::resize(&tab, 1100.0, 860.0);
     m.pair(&tab);
@@ -22813,7 +22813,7 @@ fn a_desktop_drawer_keeps_its_brand_clear_of_the_handle_and_lies_over_the_whole_
         var at = document.elementFromPoint(b.left + 3, b.top + b.height / 2); \
         var strip = document.getElementById('turnStickyBar').getBoundingClientRect(), y = strip.top + strip.height / 2, over = []; \
         for (var x = s.left + 8; x < s.right - 4; x += 24) { var e = document.elementFromPoint(x, y); if (!e || !sb.contains(e)) over.push([Math.round(x), e ? (e.id || e.className || e.tagName) : null]); } \
-        return JSON.stringify({ open: !app.classList.contains('mobile-detail'), sbLeft: Math.round(s.left), tight: app.classList.contains('sidebar-tight'), \
+        return JSON.stringify({ open: !app.classList.contains('mobile-detail'), sbLeft: Math.round(s.left), tight: app.classList.contains('sidebar-tight'), strip: document.getElementById('turnStickyBar').classList.contains('on') && strip.height > 0, \
           brandLeft: Math.round(b.left), handleRight: Math.round(h.right), brandHit: !!at && brand.contains(at), notInDrawer: over }); })()";
     harness::until(
         &tab,
@@ -22832,10 +22832,9 @@ fn a_desktop_drawer_keeps_its_brand_clear_of_the_handle_and_lies_over_the_whole_
             && open["tight"] == false,
         "the open drawer's brand starts clear of the handle, its own first letter on top: {open}"
     );
-    assert_eq!(
-        open["notInDrawer"],
-        serde_json::json!([]),
-        "along the strip's row the open drawer is on top everywhere inside it: {open}"
+    assert!(
+        open["strip"] == true && open["notInDrawer"] == serde_json::json!([]),
+        "the strip still drawn beneath, and along its row the open drawer on top everywhere inside it: {open}"
     );
     harness::eval(
         &tab,
@@ -22847,6 +22846,61 @@ fn a_desktop_drawer_keeps_its_brand_clear_of_the_handle_and_lies_over_the_whole_
         "the drawer shut: the strip on top again",
         Duration::from_secs(10),
         facts,
+    );
+}
+
+/// #s583's review: a wide phone held sideways shows the list as a column under the same `app-drawer`,
+/// and its handle hides the column without touching `mobile-detail`, so the drawer's open flag can
+/// stand where no drawer is drawn (here: opened upright, then turned sideways). With the column
+/// hidden the view fills the window and is no box of its own, and isolating it there would sink
+/// its layers under the handle (the review sheet's close sits right under it). So there the view
+/// stays level with the handle's layer.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_wide_phone_s_hidden_column_leaves_the_view_s_layers_where_they_were() {
+    let _serial = serial();
+    let (_m, _b, tab) = drawer_world(3065, "wide-hidden-column", 390, 844, false, 8, None);
+    let classes = "innerWidth + 'x' + innerHeight + ' ' + document.getElementById('app').className + ' view ' + document.getElementById('sessionView').className + ' isolation ' + getComputedStyle(document.getElementById('sessionView')).isolation";
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('drawerHandle').click(); return 'ok'; })()",
+    );
+    harness::until(
+        &tab,
+        "!document.getElementById('app').classList.contains('mobile-detail')",
+        "upright, the drawer open",
+        Duration::from_secs(10),
+        classes,
+    );
+    harness::phone(&tab, 956, 440);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    harness::until(
+        &tab,
+        "innerWidth === 956 && document.getElementById('app').classList.contains('app-drawer') && !document.getElementById('app').classList.contains('mobile-detail') && getComputedStyle(document.querySelector('#app>.sidebar')).position !== 'fixed'",
+        "the premise: turned sideways, the list a column, the drawer's open flag still standing",
+        Duration::from_secs(10),
+        classes,
+    );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('drawerHandle').click(); return 'ok'; })()",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('phone-column-off') && !document.getElementById('app').classList.contains('mobile-detail') && !document.getElementById('sessionView').classList.contains('pl-boxed')",
+        "the premise: the column hidden, the view filling the window unboxed",
+        Duration::from_secs(10),
+        classes,
+    );
+    let isolation = harness::eval(
+        &tab,
+        "getComputedStyle(document.getElementById('sessionView')).isolation",
+    );
+    assert_eq!(
+        isolation.as_str(),
+        Some("auto"),
+        "no drawer lies over the view, so it is no stacking context of its own: {}",
+        harness::eval(&tab, classes)
     );
 }
 

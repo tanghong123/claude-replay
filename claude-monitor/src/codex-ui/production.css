@@ -2033,6 +2033,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 #app.app-drawer:not(.mobile-detail)>#sessionView{isolation:isolate}
 #app.app-drawer.mobile-detail>#sessionView{animation:drawer-closing .22s}
 @keyframes drawer-closing{from,to{isolation:isolate}}
+/* A wide phone held sideways shows the list as a COLUMN under the same `app-drawer`, and its handle
+   hides the column without touching `mobile-detail`, so the flag can stand while no drawer is drawn:
+   isolated there, the view (filling the window with the column hidden) would sink its review sheet
+   and its sheets under the handle. No drawer lies over the view there. */
+@media (pointer:coarse) and (max-height:500px) and (min-width:900px){#app.app-drawer:not(.mobile-detail)>#sessionView{isolation:auto}#app.app-drawer.mobile-detail>#sessionView{animation:none}}
 @keyframes session-loading-spin{to{transform:rotate(360deg)}}
 @media(prefers-reduced-motion:reduce){.session-loading{animation:none}.session-loading-spinner{animation:none}}
 
