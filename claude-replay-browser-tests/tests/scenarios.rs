@@ -1813,7 +1813,9 @@ const ECHO_QUIET_MS: u32 = 20;
 /// growth that makes the second. Its `during`, set after arming too, runs as the echo is played: the
 /// shim then plays the echo only once the engine's burst of writes has stopped for `ECHO_QUIET_MS`
 /// (a move mounts units, and their measure writes too, which would end the echoed layout before any
-/// check read it), still within `ECHO_WINDOW_MS` of the first write, and keeps the echo until the
+/// check read it), still within `ECHO_WINDOW_MS` of the first write, keeps the browser's own scroll
+/// events from the page from the second write until the echo is over (WebKit's come late: an event
+/// reporting the latest write would make the echo a reader's move, rightly), and keeps the echo until the
 /// engine has recorded a transaction or that window has run out, so a transaction places while the
 /// page shows the echoed layout (each echo says which ran and whether it placed, in `during`, and
 /// whether the engine wrote meanwhile, `wroteDuring`). `done` counts the pairs played or set aside,
@@ -1833,7 +1835,14 @@ fn echo_shim(surface: Surface) -> String {
         if (!s.__echoHooked) {{
             var desc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
             var raw = function (v) {{ desc.set.call(s, v); }};
-            var st = window.__echo = {{ armed: false, last: null, echoes: [], skips: [], done: 0 }}, w = {window};
+            var st = window.__echo = {{ armed: false, last: null, echoes: [], skips: [], done: 0, held: 0 }}, w = {window};
+            // While an echo with `during` is pending, the browser's own scroll events (trusted) are kept
+            // from the page, as WebKit's come late (its event for the later write came by 55ms on the
+            // 11-inch iPad, probe568): the engine hears neither write reported until the echo is over,
+            // so the echo is still one to it when the transaction runs. The shim's own events pass.
+            window.addEventListener('scroll', function (e) {{
+                if (st.hold && e.isTrusted && (e.target === s || e.target === document)) {{ st.held++; e.stopImmediatePropagation(); }}
+            }}, {{ capture: true }});
             Object.defineProperty(s, 'scrollTop', {{ configurable: true,
                 get: function () {{ return desc.get.call(this); }},
                 set: function (v) {{
@@ -1847,9 +1856,10 @@ fn echo_shim(surface: Surface) -> String {
                     if (!st.armed || !prev || Math.abs(prev.top - top) <= 1) return;
                     st.armed = false;
                     var echo = {{ from: Math.round(prev.top), to: Math.round(top), gap: Math.round(now - prev.at) }};
-                    var skip = function (why) {{ echo.skipped = why; st.skips.push(echo); st.done++; }};
+                    var skip = function (why) {{ st.hold = false; echo.skipped = why; st.skips.push(echo); st.done++; }};
                     if (now - prev.at > w) return skip('the writes came ' + echo.gap + 'ms apart');
                     var during = st.during; st.during = null;
+                    if (during) st.hold = true;
                     // With `during`, the echo waits for the engine's burst of writes to end (what the
                     // second write set off: a measure of what the move mounted writes too), so the
                     // transaction `during` sets off places without writing and checks itself in the
@@ -1870,7 +1880,7 @@ fn echo_shim(surface: Surface) -> String {
                         echo.late = Math.round(late);
                         st.echoes.push(echo);
                         raw(prev.top); echo.read = Math.round(desc.get.call(s)); {target}.dispatchEvent(new Event('scroll'));
-                        var rest = function () {{ raw(st.last.top); echo.rested = Math.round(st.last.top); {target}.dispatchEvent(new Event('scroll')); st.done++; }};
+                        var rest = function () {{ st.hold = false; echo.held = st.held; raw(st.last.top); echo.rested = Math.round(st.last.top); {target}.dispatchEvent(new Event('scroll')); st.done++; }};
                         if (!during) return setTimeout(rest, 12);
                         var states = window.__viewportHistory.states, n0 = states.length;
                         during();
