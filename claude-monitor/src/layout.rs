@@ -104,8 +104,13 @@ pub struct Section {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Layout {
     pub sections: Vec<Section>,
-    /// Something the reader should know about how faithful the list is, in words the page shows.
+    /// Something the reader should know about how faithful the list is, in words the page shows:
+    /// the detail, which the page shows on a click (#s579).
     pub note: Option<String>,
+    /// The one short line the page shows over the list, in plain words, when the note changes what
+    /// the reader sees there (#s579): a section left out, threads that could not be read, a list
+    /// that may not match the app's. `None` where nothing does.
+    pub summary: Option<String>,
 }
 
 /// A source's layout, or why it could not be read, in words the page shows.
@@ -468,6 +473,9 @@ impl Readers {
                     "{reason}; showing the sections its database holds{}",
                     layout.note.map(|n| format!(". {n}")).unwrap_or_default()
                 ));
+                // #s579: the reader needs to know only that the list may differ from the app's.
+                layout.summary =
+                    Some("This list may not match the Codex app's sidebar".to_string());
                 Ok(layout)
             }
         }
@@ -480,14 +488,15 @@ fn modified(path: &Path) -> Option<SystemTime> {
 
 /// A layout as the page reads it.
 pub fn layout_json(source: Source, read: &LayoutRead) -> Value {
-    let (available, reason, note, sections) = match read {
+    let (available, reason, note, summary, sections) = match read {
         Ok(layout) => (
             true,
             None,
             layout.note.clone(),
+            layout.summary.clone(),
             layout.sections.iter().map(section_json).collect(),
         ),
-        Err(reason) => (false, Some(reason.clone()), None, Vec::new()),
+        Err(reason) => (false, Some(reason.clone()), None, None, Vec::new()),
     };
     json!({
         "source": source.key(),
@@ -495,6 +504,7 @@ pub fn layout_json(source: Source, read: &LayoutRead) -> Value {
         "available": available,
         "reason": reason,
         "note": note,
+        "summary": summary,
         "sections": sections,
     })
 }
@@ -533,6 +543,7 @@ pub fn pending_json(source: Source) -> Value {
         "pending": true,
         "reason": null,
         "note": null,
+        "summary": null,
         "sections": [],
     })
 }
@@ -951,9 +962,13 @@ fn claude_layout(prefs: &Value, records: &[AppRecord]) -> LayoutRead {
             unknown.join(", ")
         )
     });
+    let summary = note
+        .is_some()
+        .then(|| "Some of the Claude app's sections are not shown here".to_string());
     Ok(Layout {
         sections: out,
         note,
+        summary,
     })
 }
 
@@ -1112,6 +1127,22 @@ impl CodexData {
 
     /// The note for a layout drawn from this data: a catalogue that could not be read, and threads
     /// that could not be.
+    /// The plain line for what [`note`](Self::note) says (#s579): threads not shown, or a list that
+    /// is the monitor's guess.
+    fn summary(&self) -> Option<String> {
+        if self.unreadable > 0 {
+            Some(format!(
+                "{} Codex thread{} could not be read",
+                self.unreadable,
+                if self.unreadable == 1 { "" } else { "s" }
+            ))
+        } else {
+            self.catalogue_note
+                .as_ref()
+                .map(|_| "This list may show threads the Codex app does not".to_string())
+        }
+    }
+
     fn note(&self) -> Option<String> {
         let unreadable = (self.unreadable > 0).then(|| {
             format!(
@@ -1600,13 +1631,37 @@ fn codex_state<'a>(
     Ok(&cache.as_ref().expect("read above").sidebar)
 }
 
+/// Where the app keeps the sidebar's atoms (#s579): the signed-in account's own,
+/// `electron-owner-atoms:<owner>` with the owner `electron-renderer-content-owner` names (measured
+/// with ChatGPT 26.1111.21308, which hosts the Codex app, on 2026-11-18: every sidebar atom is there
+/// and `electron-persisted-atom-state` holds none); another account's, which the app keeps beside
+/// it; or `electron-persisted-atom-state`, where the app kept them before. The first that holds the
+/// sections.
+fn sidebar_atoms(state: &Value) -> Option<&serde_json::Map<String, Value>> {
+    const OWNED: &str = "electron-owner-atoms:";
+    let owner = state
+        .get("electron-renderer-content-owner")
+        .and_then(Value::as_str)
+        .and_then(|owner| state.get(format!("{OWNED}{owner}").as_str()));
+    let others = state
+        .as_object()
+        .into_iter()
+        .flat_map(|top| top.iter())
+        .filter(|(key, _)| key.starts_with(OWNED))
+        .map(|(_, atoms)| atoms);
+    owner
+        .into_iter()
+        .chain(others)
+        .chain(state.get("electron-persisted-atom-state"))
+        .filter_map(Value::as_object)
+        .find(|atoms| atoms.contains_key("sidebar-custom-sections-v3"))
+}
+
 fn parse_codex_sidebar(state: &Value) -> Result<CodexSidebar, String> {
-    let atoms = state
-        .get("electron-persisted-atom-state")
-        .and_then(Value::as_object);
+    let atoms = sidebar_atoms(state);
     let unknown = || {
         "The Codex app's sidebar state is in a format this monitor does not know \
-         (no sidebar-custom-sections-v3)"
+         (no sidebar-custom-sections-v3 in its account's atoms or the shared ones)"
             .to_string()
     };
     // One account's sections: the first that has a section order.
@@ -1948,9 +2003,15 @@ fn codex_sidebar_layout(data: &CodexData, sidebar: &CodexSidebar) -> Layout {
             unknown.join(", ")
         )
     });
+    let summary = if note.is_some() {
+        Some("Some of the Codex app's sections are not shown here".to_string())
+    } else {
+        data.summary()
+    };
     Layout {
         sections: out,
         note: join_notes(note, data.note()),
+        summary,
     }
 }
 
@@ -2096,6 +2157,7 @@ fn codex_layout(data: &CodexData) -> Layout {
     Layout {
         sections: out,
         note: join_notes(note, data.note()),
+        summary: data.summary(),
     }
 }
 
@@ -2293,6 +2355,7 @@ fn herdr_layout(servers: &[(String, Value)]) -> Layout {
     Layout {
         sections: out,
         note: None,
+        summary: None,
     }
 }
 
@@ -2912,6 +2975,55 @@ mod tests {
         assert!(parse_codex_sidebar(&json!({ "project-order": [] }))
             .unwrap_err()
             .contains("sidebar-custom-sections-v3"));
+    }
+
+    /// #s579: the app now keeps the sidebar's atoms per account, under
+    /// `electron-owner-atoms:<owner>`, and none in `electron-persisted-atom-state`: they are read
+    /// there, the account `electron-renderer-content-owner` names first, and the shared atoms still
+    /// read as before. The page's line says nothing then: the list is the app's.
+    #[test]
+    fn the_sidebar_is_read_from_the_account_s_own_atoms() {
+        let legacy = codex_state_json();
+        let atoms = legacy["electron-persisted-atom-state"].clone();
+        let mut owned = legacy.clone();
+        owned["electron-persisted-atom-state"] = json!({ "composer-prompt-drafts-v2": {} });
+        owned["electron-renderer-content-owner"] = json!("owner-a");
+        owned["electron-owner-atoms:owner-a"] = atoms.clone();
+        owned["electron-owner-atoms:owner-b"] = json!({ "sidebar-width": 300 });
+        let want = parse_codex_sidebar(&legacy).unwrap();
+        assert_eq!(
+            parse_codex_sidebar(&owned).unwrap(),
+            want,
+            "the account's own atoms"
+        );
+        // The renderer naming another account than the one with a sidebar: the one that has it.
+        owned["electron-renderer-content-owner"] = json!("owner-b");
+        assert_eq!(
+            parse_codex_sidebar(&owned).unwrap(),
+            want,
+            "another account's atoms"
+        );
+        // The account's own atoms win over stale shared ones.
+        let mut both = owned.clone();
+        both["electron-renderer-content-owner"] = json!("owner-a");
+        let mut stale = atoms.clone();
+        stale["sidebar-custom-sections-v3"]["acct-1"]["sectionOrder"] = json!(["chats"]);
+        both["electron-persisted-atom-state"] = stale;
+        assert_eq!(
+            parse_codex_sidebar(&both).unwrap(),
+            want,
+            "the owner's first"
+        );
+        // The fixture holds a section of a kind not known (`x-new`): one plain line says so.
+        let layout = codex_sidebar_layout(&CodexData::default(), &want);
+        assert_eq!(
+            layout.summary.as_deref(),
+            Some("Some of the Codex app's sections are not shown here")
+        );
+        let mut known = want.clone();
+        known.section_order.retain(|id| id != "x-new");
+        let layout = codex_sidebar_layout(&CodexData::default(), &known);
+        assert_eq!(layout.summary, None, "a faithful list says nothing over it");
     }
 
     /// #s387: threads in a project folder and in Chats follow the app's chats order: the newest
@@ -3621,11 +3733,16 @@ mod tests {
                 }],
             }],
             note: Some("n".into()),
+            summary: Some("s".into()),
         };
         let v = layout_json(Source::Herdr, &Ok(layout));
         assert_eq!(v["source"], "herdr");
         assert_eq!(v["available"], true);
         assert_eq!(v["note"], "n");
+        assert_eq!(
+            v["summary"], "s",
+            "the plain line, with the note its detail (#s579)"
+        );
         assert_eq!(v["sections"][0]["entries"][0]["children"][0]["id"], "b");
         assert_eq!(v["sections"][0]["entries"][0]["pane"], "work|w1:p1");
         assert_eq!(pending_json(Source::Herdr)["pending"], true);

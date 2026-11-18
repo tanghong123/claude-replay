@@ -184,10 +184,12 @@ Another app's own arrangement of the same sessions, for the list's Arrange choic
 `claude-app`, `codex-app` or `herdr` (an open set).
 
 - Without `source`: `{sources: [{source, label, available, reason, lastError}]}`.
-- With it: `{source, label, available, reason, note, sections, pending?, stale?}`, where a section
-  is `{id, label, collapsed, entries, groups: [{id, label, collapsed, keep, entries}]}` and an entry
-  is `{id: <session id>, title, pane: "<server>|<pane>" or null, children: Entry[]}`. The first ask
-  may answer `pending: true` with no sections.
+- With it: `{source, label, available, reason, note, summary, sections, pending?, stale?}`, where a
+  section is `{id, label, collapsed, entries, groups: [{id, label, collapsed, keep, entries}]}` and
+  an entry is `{id: <session id>, title, pane: "<server>|<pane>" or null, children: Entry[]}`. The
+  first ask may answer `pending: true` with no sections. `summary` is one plain line, or null, said
+  only when the list differs from the app's in a way the reader would notice; `note` is its detail,
+  which the page shows on a click.
 - 404 for a source it does not know.
 
 **Without it:** the list offers only its own arrangements.

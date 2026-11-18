@@ -285,7 +285,7 @@ export const APP_CHROME = Object.freeze([
 export const LIST_CHROME = Object.freeze([
   "#sessionList", ".session-list", ".session-list-head", ".pl-max-w-231",
   ".agent-label", ".agent-monogram",
-  ".arrange-strip", ".arrange-strip-box", ".arrange-strip-close", ".arrange-strip-text",
+  ".arrange-strip", ".arrange-strip-box", ".arrange-strip-close", ".arrange-strip-detail", ".arrange-strip-more", ".arrange-strip-text",
   ".arranged-empty", ".arranged-group", ".arranged-head", ".arranged-label", ".arranged-rest", ".arranged-view",
   ".no-results",
   ".machine-stale",

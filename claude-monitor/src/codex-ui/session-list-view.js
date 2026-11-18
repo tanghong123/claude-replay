@@ -313,6 +313,8 @@ let sourceState = {};
 let layoutRetry = null;
 function retryLayout() { clearTimeout(layoutRetry); layoutRetry = setTimeout(() => { layoutRetry = null; refreshLayout(); }, 1000); }
 let arrangeStrip = null;
+// #s579: what the strip last drew, and whether its Details are open.
+let arrangeStripSource = null, arrangeStripLayout = null, arrangeDetailsOpen = false;
 const ARRANGE_LABELS = { "claude-app": "the Claude app", "codex-app": "the Codex app", herdr: "Herdr" };
 // An arranged section shows this many sessions before "Show more", the selected one always.
 const ARRANGED_LIMIT = 30;
@@ -1098,22 +1100,34 @@ function paintArrangeStrip(source, layout) {
     arrangeStrip.className = "arrange-strip"; arrangeStrip.id = "arrangeStrip"; arrangeStrip.hidden = true;
     arrangeStrip.setAttribute("role", "status");
     tree.insertAdjacentElement("beforebegin", arrangeStrip);
-    arrangeStrip.addEventListener("click", event => { if (event.target.closest("[data-arrange-off]")) setArrange(indexState.arrangeBefore); });
+    arrangeStrip.addEventListener("click", event => {
+      if (event.target.closest("[data-arrange-off]")) setArrange(indexState.arrangeBefore);
+      // #s579: the detail behind the plain line opens and shuts on a click, and stays as chosen.
+      if (event.target.closest("[data-arrange-details]")) { arrangeDetailsOpen = !arrangeDetailsOpen; paintArrangeStrip(arrangeStripSource, arrangeStripLayout); }
+    });
   }
+  arrangeStripSource = source; arrangeStripLayout = layout;
   if (!source) { arrangeStrip.hidden = true; return; }
   const label = ARRANGE_LABELS[source];
   const back = indexState.arrangeBefore === "flat" ? "one list by activity" : "by agent and project";
-  let text, detail = "", warn = false;
+  let text, detail = "", warn = false, more = "";
   if (layout?.available) {
     text = layout.stale ? `Arranged like ${label} · updating…` : `Arranged like ${label} · follows it`;
     const empty = (layout.sections || []).every(section => !(section.entries || []).length && (section.groups || []).every(group => !(group.entries || []).length));
-    detail = layout.note || (empty ? `${label[0].toUpperCase()}${label.slice(1)} lists no sessions right now` : "");
+    // #s579: one plain line, and only when the list differs from the app's in a way the reader would
+    // notice; the source's own words for it wait behind Details. A server from before sends no line,
+    // so its note is shown as it was.
+    if (layout.summary) { detail = layout.summary; more = layout.note || ""; }
+    else if (!("summary" in layout)) detail = layout.note || "";
+    if (!detail && empty) detail = `${label[0].toUpperCase()}${label.slice(1)} lists no sessions right now`;
   }
   // A failed read from before the reader last stopped is old news: the source is being read again.
   else if (layout?.stale) text = `Reading ${label}'s list…`;
   else if (layout || layoutState.error) { warn = true; text = `Showing ${back}: ${label}'s list could not be read`; detail = layout?.reason || layoutState.error || ""; }
   else text = `Reading ${label}'s list…`;
-  const html = `<div class="arrange-strip-box"><span class="arrange-strip-text"><span>${escapeText(text)}</span>${detail ? `<small>${escapeText(detail)}</small>` : ""}</span><button class="arrange-strip-close" type="button" data-arrange-off aria-label="${escapeText(`Stop arranging like ${label}`)}" title="${escapeText(`Stop arranging like ${label} — back to ${back}`)}">${svg("x")}</button></div>`;
+  const details = more ? ` <button class="arrange-strip-more" type="button" data-arrange-details aria-expanded="${arrangeDetailsOpen}">${arrangeDetailsOpen ? "Hide details" : "Details"}</button>` : "";
+  const opened = more && arrangeDetailsOpen ? `<small class="arrange-strip-detail">${escapeText(more)}</small>` : "";
+  const html = `<div class="arrange-strip-box"><span class="arrange-strip-text"><span>${escapeText(text)}</span>${detail ? `<small>${escapeText(detail)}${details}</small>` : ""}${opened}</span><button class="arrange-strip-close" type="button" data-arrange-off aria-label="${escapeText(`Stop arranging like ${label}`)}" title="${escapeText(`Stop arranging like ${label} — back to ${back}`)}">${svg("x")}</button></div>`;
   if (arrangeStrip.dataset.html !== html) { arrangeStrip.innerHTML = html; arrangeStrip.dataset.html = html; }
   arrangeStrip.classList.toggle("warn", warn);
   arrangeStrip.hidden = false;
