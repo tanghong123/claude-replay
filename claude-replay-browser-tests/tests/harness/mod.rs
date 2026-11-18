@@ -4183,18 +4183,128 @@ pub struct Answer {
 /// or a wrapper in front of one of the monitor's modules, and the monitor serves nothing new: no
 /// route, no flag, nothing a reader could reach. Call it before the navigation it answers.
 pub fn answer_in_browser(tab: &headless_chrome::Tab, answers: Vec<Answer>) {
+    answer_and_relay_in_browser(tab, answers, Vec::new());
+}
+
+/// A prefix of the page's origin relayed to another monitor (#s541), as a host relays a part's
+/// server under a prefix of its page's origin (the kit guide's section 2): a request whose path
+/// starts with `<prefix>/` is asked of the monitor on `port` by the harness itself, over a plain
+/// socket with the rest of its path, its query, its method and its body, as a reader paired with
+/// `token` (the legacy cookie, which the gate still reads), and answered with that monitor's status,
+/// type and body. Once nothing answers on the port the request fails as refused, as a relay to a
+/// machine that has gone away does. The page sees only its own origin.
+pub struct Relay {
+    pub prefix: String,
+    pub port: u16,
+    pub token: Option<String>,
+}
+
+/// One request relayed by [`Relay`]: the monitor's status, `Content-Type` and body.
+fn relay_fetch(
+    relay: &Relay,
+    method: &str,
+    path: &str,
+    body: Option<&str>,
+) -> std::io::Result<(u32, String, Vec<u8>)> {
+    use std::io::{Read, Write};
+    let address = std::net::SocketAddr::from(([127, 0, 0, 1], relay.port));
+    let mut stream = std::net::TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
+    stream.set_read_timeout(Some(Duration::from_secs(20)))?;
+    let cookie = relay
+        .token
+        .as_ref()
+        .map(|token| format!("Cookie: cmauth={token}\r\n"))
+        .unwrap_or_default();
+    let body = body.unwrap_or("");
+    let sized = if body.is_empty() && method == "GET" {
+        String::new()
+    } else {
+        format!(
+            "Content-Type: application/json\r\nContent-Length: {}\r\n",
+            body.len()
+        )
+    };
+    write!(
+        stream,
+        "{method} {path} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n{cookie}{sized}Accept-Encoding: identity\r\nConnection: close\r\n\r\n{body}",
+        relay.port
+    )?;
+    let mut reply = Vec::new();
+    stream.read_to_end(&mut reply)?;
+    let split = reply
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| std::io::Error::other("a reply with no end to its head"))?;
+    let head = String::from_utf8_lossy(&reply[..split]).into_owned();
+    let mut rest = reply[split + 4..].to_vec();
+    let status = head
+        .split_whitespace()
+        .nth(1)
+        .and_then(|code| code.parse().ok())
+        .ok_or_else(|| std::io::Error::other(format!("a reply with no status: {head}")))?;
+    let header = |name: &str| {
+        head.lines().find_map(|line| {
+            let (key, value) = line.split_once(':')?;
+            key.trim()
+                .eq_ignore_ascii_case(name)
+                .then(|| value.trim().to_string())
+        })
+    };
+    if header("transfer-encoding").is_some_and(|value| value.eq_ignore_ascii_case("chunked")) {
+        let mut body = Vec::new();
+        let mut at = 0;
+        // A reply cut short (its monitor stopped mid-reply) is an error, never a panic in the
+        // interception handler.
+        let cut = || std::io::Error::other("a chunked reply cut short");
+        loop {
+            let line_end = rest
+                .get(at..)
+                .ok_or_else(cut)?
+                .windows(2)
+                .position(|window| window == b"\r\n")
+                .ok_or_else(|| std::io::Error::other("a chunk with no size"))?;
+            let size = String::from_utf8_lossy(&rest[at..at + line_end]);
+            let size = usize::from_str_radix(size.split(';').next().unwrap_or("").trim(), 16)
+                .map_err(|_| std::io::Error::other("a chunk size that is no number"))?;
+            at += line_end + 2;
+            if size == 0 {
+                break;
+            }
+            body.extend_from_slice(rest.get(at..at + size).ok_or_else(cut)?);
+            at += size + 2;
+        }
+        rest = body;
+    }
+    let content_type = header("content-type").unwrap_or_else(|| "text/plain".into());
+    Ok((status, content_type, rest))
+}
+
+/// [`answer_in_browser`], and some prefixes relayed to other servers ([`Relay`]).
+pub fn answer_and_relay_in_browser(
+    tab: &headless_chrome::Tab,
+    answers: Vec<Answer>,
+    relays: Vec<Relay>,
+) {
     use headless_chrome::browser::tab::RequestPausedDecision;
     use headless_chrome::protocol::cdp::Fetch::{
-        FulfillRequest, HeaderEntry, RequestPattern, RequestStage,
+        FailRequest, FulfillRequest, HeaderEntry, RequestPattern, RequestStage,
     };
+    use headless_chrome::protocol::cdp::Network::ErrorReason;
     let patterns: Vec<RequestPattern> = answers
         .iter()
-        .map(|answer| RequestPattern {
-            url_pattern: Some(answer.pattern.clone()),
+        .map(|answer| answer.pattern.clone())
+        .chain(
+            relays
+                .iter()
+                .map(|relay| format!("*{}/*", relay.prefix.trim_end_matches('/'))),
+        )
+        .map(|pattern| RequestPattern {
+            url_pattern: Some(pattern),
             resource_Type: None,
             request_stage: Some(RequestStage::Request),
         })
         .collect();
+    let relays = std::sync::Arc::new(relays);
     tab.enable_fetch(Some(&patterns), None)
         .expect("the Fetch domain is enabled");
     let answers = std::sync::Arc::new(answers);
@@ -4226,7 +4336,54 @@ pub fn answer_in_browser(tab: &headless_chrome::Tab, answers: Vec<Answer>) {
                     body: Some(history::base64(answer.body.as_bytes())),
                     response_phrase: None,
                 }),
-                None => RequestPausedDecision::Continue(None),
+                None => {
+                    let from = url
+                        .split_once("://")
+                        .map(|(_, rest)| rest.find('/').map_or("/", |at| &rest[at..]))
+                        .unwrap_or(url);
+                    let relayed = relays.iter().find_map(|relay| {
+                        let prefix = relay.prefix.trim_end_matches('/');
+                        from.strip_prefix(prefix)
+                            .filter(|rest| rest.starts_with('/'))
+                            .map(|rest| (relay, rest))
+                    });
+                    match relayed {
+                        Some((relay, rest)) => {
+                            let request = &event.params.request;
+                            match relay_fetch(
+                                relay,
+                                &request.method,
+                                rest,
+                                request.post_data.as_deref(),
+                            ) {
+                                Ok((status, content_type, body)) => {
+                                    RequestPausedDecision::Fulfill(FulfillRequest {
+                                        request_id: event.params.request_id.clone(),
+                                        response_code: status,
+                                        response_headers: Some(vec![
+                                            HeaderEntry {
+                                                name: "Content-Type".into(),
+                                                value: content_type,
+                                            },
+                                            HeaderEntry {
+                                                name: "Cache-Control".into(),
+                                                value: "no-store".into(),
+                                            },
+                                        ]),
+                                        binary_response_headers: None,
+                                        body: Some(history::base64(&body)),
+                                        response_phrase: None,
+                                    })
+                                }
+                                Err(_) => RequestPausedDecision::Fail(FailRequest {
+                                    request_id: event.params.request_id.clone(),
+                                    error_reason: ErrorReason::ConnectionRefused,
+                                }),
+                            }
+                        }
+                        None => RequestPausedDecision::Continue(None),
+                    }
+                }
             }
         },
     ))

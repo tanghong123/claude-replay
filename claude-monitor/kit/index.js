@@ -9,4 +9,5 @@ export { mountSessionView } from "./session-view.js";
 export { mountSessionList } from "./session-list-view.js";
 export { mountDetached } from "./detached.js";
 export { backendHandle, useBackend } from "./backend.js";
+export { mergedBackend, splitMachineId } from "./merged-source.js";
 export { persist } from "./state.js";

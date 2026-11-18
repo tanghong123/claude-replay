@@ -171,6 +171,11 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/session-index-store.js").as_slice(),
         ),
+        // The merged source over several machines' session lists, for a host (#s541): the kit's.
+        "monitor-ui/merged-source.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/merged-source.js").as_slice(),
+        ),
         "monitor-ui/session-list.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/session-list.js").as_slice(),
@@ -1154,6 +1159,10 @@ mod tests {
             ),
             ("record-store.js", include_str!("codex-ui/record-store.js")),
             ("sandbox.js", include_str!("codex-ui/sandbox.js")),
+            (
+                "merged-source.js",
+                include_str!("codex-ui/merged-source.js"),
+            ),
             (
                 "session-index-store.js",
                 include_str!("codex-ui/session-index-store.js"),
