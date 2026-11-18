@@ -883,7 +883,30 @@ function renderParent(meta) {
 /** The top bar for the selected session, and its title to the host (`onTitle`, when it changed). */
 function renderHeader() {
   paintHeader();
+  markTitleWord();
   sayTitle(sessionTitle.textContent);
+}
+// #s520: off the phone the title keeps at least its first word, whatever else the top bar holds:
+// the bar's rules give it that much room (`--title-word` on the heading, production.css) and let
+// the crumb, the status chip and the search box give way first. Measured with the title's own font
+// on a canvas, so nothing is laid out for it, and again only when the text or the font changed (a
+// host's stylesheet may arrive after the first header). `var`: a header can be drawn during module
+// evaluation.
+var titleRuler = null, titleWordKey = "";
+function markTitleWord() {
+  const heading = sessionTitle.parentElement, text = sessionTitle.textContent.trim();
+  titleRuler ||= document.createElement("canvas").getContext("2d");
+  if (!heading || !titleRuler) return;
+  // From the longhands: Chrome answers "" for the `font` shorthand when a longhand has no place in
+  // it.
+  const style = getComputedStyle(sessionTitle);
+  const font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+  if (`${font}\n${text}` === titleWordKey) return;
+  titleWordKey = `${font}\n${text}`;
+  const word = text.split(/\s+/)[0] || "";
+  titleRuler.font = font;
+  const width = word ? titleRuler.measureText(word).width + (text.length > word.length ? titleRuler.measureText("…").width : 0) : 0;
+  heading.style.setProperty("--title-word", `${Math.ceil(width) + 1}px`);
 }
 function paintHeader() {
   if (sessionNewTab) sessionNewTab.hidden = !selectedId();
@@ -909,6 +932,7 @@ function paintHeader() {
     byId("sessionCrumb").textContent = "Scanning sessions";
     byId("statusChip").className = "status-chip idle";
     byId("statusChip").textContent = "None selected";
+    byId("statusChip").title = "";
     sessionTitle.tabIndex = -1;
     sessionCopyMenu.hidden = true;
     setSessionCopyMenu(false);
@@ -923,7 +947,8 @@ function paintHeader() {
     : `${agentName(row.agent)} · ${row._group?.label || ""}`;
   byId("statusChip").className = `status-chip ${state.state} ${state.reason}`;
   byId("statusChip").innerHTML = `<span class="state-dot ${escapeText(state.state)} ${escapeText(state.reason)}" style="margin:0"></span>${escapeText(state.label)}${row.stateConfidence === "inferred" ? " · inferred" : ""}`;
-  byId("statusChip").title = row.stateDetail || "";
+  // #s520: where the glyphs' bar draws the chip as its dot, its words are its title.
+  byId("statusChip").title = `${row.stateDetail || state.label}${row.stateConfidence === "inferred" ? " · inferred" : ""}`;
   const meta = recordState.session === row.id ? (recordState.meta || {}) : {};
   const sid = meta.sid || row.id || "";
   const path = meta.path || "";
@@ -2514,7 +2539,7 @@ byId("transcriptSearchInput").onkeydown = event => {
   // Escape leaves the box as a click outside would (#298, the owner; the classic page's `q.blur()`):
   // the query, its count and its marks stay, and the next key is the page's keymap's again. An open
   // filter popover closes with it, as the page-wide Escape closes it.
-  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPopover(null); event.currentTarget.blur(); setPhoneSearch(false); return; }
+  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPopover(null); event.currentTarget.blur(); setPhoneSearch(false); releaseSearch(); return; }
   // An Enter that commits an input method's composition (pinyin, kana) is the input method's; Safari
   // sends it with `isComposing` false and keyCode 229.
   if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
@@ -2654,8 +2679,15 @@ function setPhoneSearch(open) {
   if (open && phoneSearch.matches) byId("transcriptSearchInput").focus();
 }
 searchBox.addEventListener("click", event => {
+  // #s520: off the phone a click anywhere in the box but its buttons is a click for its field, as a
+  // native search field takes it; where the box rests as its glyph (the bar the outline's glyphs
+  // join) that click is what opens it.
+  if (!phoneSearch.matches) {
+    if (!event.target.closest("button, input")) byId("transcriptSearchInput").focus();
+    return;
+  }
   // #333: with a query the closed box keeps its arrows, which step through the matches in place.
-  if (!phoneSearch.matches || searchBox.classList.contains("phone-open") || event.target.closest("#filterTranscriptBtn, .find-nav")) return;
+  if (searchBox.classList.contains("phone-open") || event.target.closest("#filterTranscriptBtn, .find-nav")) return;
   setPhoneSearch(true);
 });
 // A tap outside dismisses the TOP layer only (#s49, the owner: "after opening and closing the filter
@@ -2666,6 +2698,33 @@ document.addEventListener("pointerdown", event => {
   if (phoneSearch.matches && byId("navigatorOptions").classList.contains("open")) { setPopover(null); return; }
   setPhoneSearch(false);
 }, { capture: true, signal });
+// #s520: where the box rests as its glyph (the bar the outline's glyphs join), what holds it open
+// is the reader's use of the search, not the field's focus: `search-held` on its cluster, from a
+// focus or a mouse's press anywhere inside it (the box, its drop-down, the filter) until a press
+// outside it, a Tab out of it, a press inside the pane's page (which takes the focus into its frame
+// and sends this page no press) or Escape. Safari and Firefox on a Mac give a pressed button no
+// focus, so the field's blur at the press would fold the box and take the button from under the
+// pointer before its click. A finger's press holds nothing: WebKit spends a tap whose press shows
+// content as a hover and sends no click, so on an iPad the box opened at the press and its field
+// never took the focus (#s547's walk). A finger opens it by the click, which focuses the field, and
+// iOS leaves the focus in the field when a button is tapped. Leaving also closes the filter there,
+// so the box folds with it: a press outside closes it anyway (#s546), a Tab out or a press into the
+// pane's page does not.
+const searchCluster = viewRoot.$(".header-search-cluster");
+searchCluster.addEventListener("pointerdown", event => { if (event.pointerType === "mouse") searchCluster.classList.add("search-held"); }, { signal });
+searchCluster.addEventListener("focusin", () => searchCluster.classList.add("search-held"), { signal });
+searchCluster.addEventListener("focusout", event => { if (event.relatedTarget && !searchCluster.contains(event.relatedTarget)) releaseSearch(); }, { signal });
+document.addEventListener("pointerdown", event => {
+  if (searchCluster.classList.contains("search-held") && !searchCluster.contains(event.target)) releaseSearch();
+}, { capture: true, signal });
+addEventListener("blur", () => { if (viewRoot.active()?.tagName === "IFRAME") releaseSearch(); }, { signal });
+/** The search is no longer in use: the box may fold, and in the glyphs' bar its filter shuts. */
+function releaseSearch() {
+  const cluster = viewRoot.$(".header-search-cluster");
+  if (!cluster?.classList.contains("search-held")) return;
+  cluster.classList.remove("search-held");
+  if (layout.arrangement()?.outline === "bar" && byId("navigatorOptions").classList.contains("open")) setPopover(null);
+}
 phoneSearch.addEventListener("change", () => { if (!phoneSearch.matches) setPhoneSearch(false); }, { signal });
 byId("transcriptSearchInput").addEventListener("focus", () => { if (phoneSearch.matches && byId("navigatorOptions").classList.contains("open")) setPopover(null); });
 const SCOPE_ROWS = [["u", "User messages"], ["a", "Agent replies"], ["t", "Thinking"], ["o", "Tools"], ["w", "Whole words"]];
@@ -3104,7 +3163,12 @@ readingSection.innerHTML = `<div class="scope-menu-head"><strong>Reading</strong
 <div class="reading-row reading-wide"><span>Wide transcript</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wide" aria-label="Wide transcript" aria-checked="false"><span></span></button></div>
 <div class="reading-row reading-wrap"><span>Wrap long lines</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="wrap" aria-label="Wrap long lines — the baseline every code block starts from" aria-checked="false"><span></span></button></div>
 <div class="reading-row"><span>User turns as raw text</span><button class="mode-switch" type="button" role="switch" data-reading-toggle="rawUser" aria-label="Show user turns as raw text — exactly as typed, whitespace intact" aria-checked="false"><span></span></button></div>
+<div class="reading-row reading-fold-all"><span>Agent processes</span><button class="scope-menu-action" type="button" data-fold-all title="Collapse every agent process; with none open, open them all">Collapse all</button></div>
 <div class="reading-row"><span>Viewport history</span><button class="scope-menu-action" type="button" data-history-save title="Save the last hour of what you did and what the page did — kinds, heights and timings, no content">Save</button></div>`;
+// #s520: where the outline's glyphs share the top bar, the bar's fold-all control moves into this
+// menu (production.css shows the row only there, and only while the menu is drawn); the row presses
+// it.
+readingSection.querySelector("[data-fold-all]").addEventListener("click", () => byId("sessionFoldAll").click());
 // A host may switch the viewport history's Save off (stage 6): it is this repository's bug report.
 if (!shows("history")) readingSection.querySelector("[data-history-save]").closest(".reading-row").remove();
 // Production-only chrome, built here so the extracted demo shell stays byte-identical (the
@@ -4260,8 +4324,17 @@ byId("findPrev").title = `Previous match (${hintFor("hit-prev")})`; byId("findNe
 byId("turnPrev").title = `Previous turn (${hintFor("turn-prev")})`; byId("turnNext").title = `Next turn (${hintFor("turn-next")})`;
 // The header's own turn steppers were in the design but never bound; they step the same way the keys do.
 byId("turnPrev").onclick = () => stepTurn(-1); byId("turnNext").onclick = () => stepTurn(1);
+// #s520: Escape leaves the search wherever the focus is: on a step or the funnel after a press
+// (Chrome focuses a pressed button), or nowhere (Safari and Firefox on a Mac). It is the view's
+// Escape only while the reader works in the view (#s535, `viewEscape`); a hover's copy menu closes
+// on it too (#s557).
 addEventListener("keydown", event => {
-  if (viewEscape(event)) { setSessionCopyMenu(false); setPopover(null); }
+  if (viewEscape(event)) {
+    setSessionCopyMenu(false); setPopover(null);
+    const active = viewRoot.active(), cluster = viewRoot.$(".header-search-cluster");
+    if (active && cluster?.contains(active)) active.blur();
+    releaseSearch();
+  }
   else if (event.key === "Escape" && hovered(sessionTitle, sessionCopyMenu)) setSessionCopyMenu(false);
 }, { signal });
 

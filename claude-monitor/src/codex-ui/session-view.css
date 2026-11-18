@@ -1933,14 +1933,25 @@
 :where(#sessionView) .header-searchbox .find-count{flex:none}
 :where(#sessionView) .session-heading>.crumb{min-width:0;flex-shrink:8;overflow:hidden;text-overflow:ellipsis}
 :where(#sessionView) .session-heading>.status-chip{min-width:0;flex-shrink:4}
+#sessionView:not(.pl-phone) .workspace>.topbar>.session-heading>#sessionTitle{min-width:calc(min(var(--title-word,0px),160px) + 10px)}
+#sessionView:not(.pl-phone) .workspace>.topbar>.session-heading{min-width:calc(min(var(--title-word,0px),160px) + 65px)}
+#sessionView.pl-outline-bar .workspace>.topbar>.session-heading{min-width:calc(min(var(--title-word,0px),160px) + 30px)}
+#sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster{flex-shrink:1;min-width:150px}
+#sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster>.header-searchbox{max-width:100%}
 :where(#sessionView:is(.pl-min-w-1181.pl-min-h-501,.pl-min-w-1181.pl-fine)) .header-searchbox:focus-within,:where(#sessionView:is(.pl-min-w-1181.pl-min-h-501,.pl-min-w-1181.pl-fine)) .header-searchbox:has(input:not(:placeholder-shown)),:where(#sessionView:is(.pl-min-w-1181.pl-min-h-501,.pl-min-w-1181.pl-fine)) .header-searchbox:has(.search-chips.has-chips){width:min(460px,calc(36 * var(--pl-b) / 100))}
 :where(#sessionView:is(.pl-min-w-901.pl-max-w-1180.pl-min-h-501,.pl-min-w-901.pl-max-w-1180.pl-fine)) .header-searchbox:focus-within,:where(#sessionView:is(.pl-min-w-901.pl-max-w-1180.pl-min-h-501,.pl-min-w-901.pl-max-w-1180.pl-fine)) .header-searchbox:has(input:not(:placeholder-shown)),:where(#sessionView:is(.pl-min-w-901.pl-max-w-1180.pl-min-h-501,.pl-min-w-901.pl-max-w-1180.pl-fine)) .header-searchbox:has(.search-chips.has-chips){width:min(460px,calc(42 * var(--pl-b) / 100))}
 :where(#sessionView:is(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine)) .header-searchbox:focus-within{width:min(392px,calc(52 * var(--pl-b) / 100))}
 :where(#sessionView:is(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine)) .topbar:has(.header-searchbox:focus-within)>.session-heading{display:none}
 :where(#sessionView:is(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine)) .header-searchbox:not(:focus-within) .search-field~:is(.find-count,.find-nav,.search-clear){display:none}
+#sessionView:where(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine):not(.pl-phone) .search-held>.header-searchbox{width:min(392px,calc(52 * var(--pl-b) / 100))}
+#sessionView:where(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine):not(.pl-phone) .topbar:has(>.search-held)>.session-heading{display:none}
+#sessionView:where(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine):not(.pl-phone) .search-held>.header-searchbox:has(input:not(:placeholder-shown)) .search-field~.find-count{display:block}
+#sessionView:where(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine):not(.pl-phone) .search-held>.header-searchbox:has(input:not(:placeholder-shown)) .search-field~.find-nav{display:grid}
+#sessionView:where(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine):not(.pl-phone) .search-held>.header-searchbox.has-query .search-field~.search-clear{display:grid}
 :where(#sessionView) .search-chips{display:none;flex:0 1 auto;min-width:0;max-width:34%;gap:4px;align-items:center;overflow:hidden}
 :where(#sessionView) .search-chips.has-chips{display:flex}
 :where(#sessionView:is(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine)) .header-searchbox:focus-within:has(.search-chips.has-chips) .find-count{display:none}
+#sessionView:where(.pl-min-w-701.pl-max-w-900.pl-min-h-501,.pl-min-w-701.pl-max-w-900.pl-fine):not(.pl-phone) .search-held>.header-searchbox:has(.search-chips.has-chips) .search-field~.find-count{display:none}
 :where(#sessionView) .search-chip{display:inline-flex;align-items:center;min-width:0;height:22px;padding:0 2px 0 7px;border-radius:6px;background:color-mix(in srgb,var(--primary) 10%,var(--panel));color:var(--ink);font:10.5px/1 var(--mono);white-space:nowrap}
 :where(#sessionView) .search-chip-key{color:var(--primary);flex:none}
 :where(#sessionView) .search-chip-value{min-width:0;overflow:hidden;text-overflow:ellipsis;margin-left:2px}
@@ -2001,6 +2012,24 @@
 #sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-jumps{display:none}
 #sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 6px 6px}
 #sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-body .navigator-list{overflow:visible}
+#sessionView.pl-outline-bar .workspace>.topbar{column-gap:4px;padding-right:10px}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster{min-width:0}
+#sessionView .reading-options .reading-fold-all{display:none}
+#sessionView.pl-outline-bar .reading-options .reading-fold-all{display:grid}
+#sessionView.pl-outline-bar .workspace>.topbar:has(>.reading-cluster)>#sessionFoldAll{display:none}
+#sessionView.pl-outline-bar .workspace>.topbar>.session-heading{column-gap:6px}
+#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>:is(.header-divider,.crumb){display:none}
+#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>.status-chip{flex:none;gap:0;padding:0 4px;border-color:transparent;background:transparent;font-size:0}
+#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>.status-chip .state-dot{margin:0!important}
+#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>.status-chip:not(:has(.state-dot)){display:none}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox{width:34px;height:34px;padding:0;gap:0;justify-content:center;border-color:transparent;background:transparent;box-shadow:none;cursor:pointer}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox>:is(.find-count,.find-nav,.search-clear,.header-filter,.find-whole){display:none}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox>.search-field{flex:0 0 0;width:0;overflow:hidden}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox:hover{background:var(--hover)}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox.has-query{background:var(--selected);color:var(--blue)}
+#sessionView.pl-outline-bar .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held))>:is(.session-heading,.top-spacer,.phone-pane,#navigatorRailExpand){display:none}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:is(:focus-within,.search-held){flex:1 1 auto;min-width:0}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:is(:focus-within,.search-held)>.header-searchbox{width:100%;max-width:none}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) #mobileBack,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) #sidebarReopen{display:none!important}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500)>.workspace{isolation:isolate}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .workspace{grid-template-rows:auto minmax(0,1fr)}
