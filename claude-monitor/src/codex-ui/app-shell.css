@@ -330,6 +330,7 @@ body{padding:0;background:#eef1f4}
 html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 :root{color-scheme:light}
 :root[data-theme="dark"]{color-scheme:dark}
+.app-mount{display:contents}
 #app:not(.preview-off)>#sessionView.pl-boxed.pl-phone:has(>.review-sheet){z-index:95}
 #app:not(.preview-off)>#sessionView.pl-boxed.pl-phone>.review-sheet{left:calc(0px - var(--pane-x));right:calc(0px - var(--pane-r));--pl-cut-left:0px;--pl-cut-right:0px}
 #app:not(.preview-off)>#sessionView.pl-boxed.pl-phone.pl-coarse.pl-max-h-500.preview-full>.review-sheet{left:0;right:0}

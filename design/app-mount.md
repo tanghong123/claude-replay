@@ -1,6 +1,7 @@
 # The web app as one mount, for the native app
 
-> **DRAFT 5** (#s551, 2026-11-17). Not built. Reviewed on #s551. It carries Hong's rulings of the
+> **DRAFT 5** (#s551, 2026-11-17). Stage 2 (the mount for one server) is built; the rest is not.
+> Reviewed on #s551. It carries Hong's rulings of the
 > same day: #s553 (a Machines row), #s554 (shared review in the app) and #s555 (Review on an iPad).
 >
 > Hong's choice of 2026-11-17, closing agent-monitor-app #s9: *"I want the same experience as the
@@ -332,9 +333,11 @@ signal to free agent pages, `paneLayout` and the keyboard mode):
    `package.json`'s `exports`; the walk starting from both entries; `app-shell.css` added to the
    stylesheets; the bundle test widened to that set, and still asserting `app.js` is not in the
    kit. The guards ship with the entry: `mountApp` refuses any option it does not name, from a list
-   of its own as the view's `MOUNT_OPTIONS` is, and a second call throws; the declaration test
-   refuses `mountApp` and the names only the mount takes in `index.d.ts` and the guide (a list
-   beside `VIEW_WITHHELD`), and each later stage adds its options to both lists. The whole browser
+   of its own as the view's `MOUNT_OPTIONS` is, and a second call throws; before it draws it also
+   refuses options that are no object, a wrapper that is not on the page and a page that already
+   holds an `#app`; the declaration test refuses `mountApp` in `index.d.ts` and the guide, and the
+   names only the mount takes in the components' declarations (a list beside `VIEW_WITHHELD`), and
+   each later stage adds its options to both lists. The whole browser
    suite and a Simulator walk show nothing changed. Released.
 3. **Machines in the mount**, on #s541: `machines`, the view remounted per machine with the ids
    mapped, the keymap read at the key, write mode per machine, ⌘K's machines, `assets` and the

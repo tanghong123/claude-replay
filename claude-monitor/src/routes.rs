@@ -249,10 +249,12 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
         // The app shell, whatever `?ui=` says: `?ui=classic` and a `ui.json` that remembered the
         // classic view both get it since that view was retired (#s98).
         "" | "index.html" => HttpResponse::html(ui::app_page(front.version, front.paired)),
-        // A Markdown document from the preview pane, in a tab of its own (#271).
-        "markdown" => HttpResponse::html(ui::markdown_page()),
-        // An image from the preview pane, in a tab of its own (#s11).
-        "image" => HttpResponse::html(ui::image_page().to_string()),
+        // A tab of its own (#s433, Hong's yes on #s528): a session's transcript, a Markdown document
+        // (#271) or an image (#s11), read from the page's own address. `/markdown` and `/image` are
+        // the same page, so a tab opened before it still lands.
+        "detached" | "markdown" | "image" => {
+            HttpResponse::html(ui::detached_page(front.version, front.paired))
+        }
         // The session list — the shared index's, so a row's liveness, its counters, its
         // family and its `injectable`/`consented` facts are ONE derivation. The register
         // callback is what makes `?session=<id>` resolvable: the shells render by id, and the
@@ -419,38 +421,54 @@ mod tests {
         );
     }
 
-    /// A Markdown document's tab of its own (#271) is a STATIC page: it names the pin, loads its
-    /// module, and writes nothing its address carries into its HTML — the module reads the address
-    /// itself and every fetch it makes goes through the pane's own guarded routes.
+    /// A tab of its own (#s433; a Markdown document's since #271, an image's since #s11) is a STATIC
+    /// page: it names the pin, loads its module, and writes nothing its address carries into its
+    /// HTML — the module reads the address itself and every fetch it makes goes through the app's own
+    /// guarded routes. `/detached`, `/markdown` and `/image` serve the same page.
     #[test]
-    fn the_markdown_tab_is_a_static_page() {
+    fn the_detached_tab_is_a_static_page() {
         let front = Frontend {
             version: "0.0.0-test",
             paired: false,
         };
-        let serve = handler(make_backend("markdown"), front);
+        let serve = handler(make_backend("detached"), front);
         let hostile =
             "root=%3Cscript%3Ealert(1)%3C%2Fscript%3E&path=%22%3E%3Cimg%20src%3Dx%3E&cap=x";
-        let page = serve(&get("markdown", hostile));
+        let page = serve(&get("detached", hostile));
         assert_eq!(page.code, "200 OK");
         let html = body(&page);
         assert!(html.contains(&format!("data-mdrev=\"{}\"", mdrev::VERSION)));
-        assert!(html.contains(r#"src="monitor-ui/markdown-page.js""#));
+        assert!(html.contains(r#"src="monitor-ui/detached-page.js""#));
+        assert!(html.contains(r#"<div id="detachedView"></div>"#));
         for reflected in ["alert(1)", "<img", "%3Cscript", "src=x"] {
             assert!(
                 !html.contains(reflected),
                 "the address reached the HTML: {reflected}"
             );
         }
-        assert_eq!(
-            body(&serve(&get("markdown", ""))),
-            html,
-            "one page, whatever it is asked"
-        );
-        let module = serve(&get("monitor-ui/markdown-page.js", ""));
-        assert_eq!(
-            (module.code, module.content_type),
-            ("200 OK", "text/javascript; charset=utf-8")
+        // One page, whatever it is asked, and the tabs opened before it (#271, #s11) land on it.
+        for (name, query) in [
+            ("detached", ""),
+            ("markdown", hostile),
+            ("markdown", ""),
+            ("image", "name=a.png&path=%2Ftmp%2Fa.png&sig=x"),
+            ("detached", "session=abc"),
+        ] {
+            assert_eq!(body(&serve(&get(name, query))), html, "/{name}?{query}");
+        }
+        for module in [
+            "monitor-ui/detached-page.js",
+            "monitor-ui/detached.js",
+            "monitor-ui/detached.css",
+        ] {
+            let served = serve(&get(module, ""));
+            assert_eq!(served.code, "200 OK", "{module}");
+        }
+        // A page older than its monitor reads the mdrev version off `/markdown` (#s352): small.
+        assert!(
+            html.len() < 2048,
+            "the detached page is {} bytes",
+            html.len()
         );
     }
 

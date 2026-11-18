@@ -24,6 +24,7 @@ import { displayName, toolHead, stateLabel, nextHeadStep, headStepState, headSte
 import { DEFAULT_READING, READING_KEY, SIZE_MIN, clampSize, loadReading, parseReading, readingVars } from "../../claude-replay-html/src/html/shared/reading.js";
 import { COMMAND_KEY, KEYMAP, bindKeymap, hintFor, inGuest, isEditable, resolveKey } from "../../claude-replay-html/src/html/shared/keymap.js";
 import { isMarkdownName, standaloneFacts, standaloneHref } from "../../claude-monitor/src/codex-ui/mdrev-pane.js";
+import { DETACHED_OPTIONS, detachedKind, mountDetached } from "../../claude-monitor/src/codex-ui/detached.js";
 import { agentRecordTargets, currentTurnIndex, peerHue, peerLabelRest, Projection, taskRecordTargets, taskStatus, viewRecord, taskOrder, taskGroups, taskGroupKey, taskCenterTarget, taskDetails, artifactRoster, humanTokens, compactionTick } from "../../claude-monitor/src/codex-ui/view-model.js";
 import { revealNavigationContext } from "../../claude-monitor/src/codex-ui/viewport.js";
 import { PREVIEW_CSP, sandboxDocument } from "../../claude-monitor/src/codex-ui/sandbox.js";
@@ -39,7 +40,11 @@ const referenceCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/ref
 const referenceShell = readFileSync(new URL("../../claude-monitor/src/codex-ui/reference-shell.html", import.meta.url), "utf8");
 const productionCss = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
 const viewportSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
-const appSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+// #s551 (design/app-mount.md, stage 2): the app's code is app-mount.js, `mountApp`, and the monitor's
+// page mounts it from app.js; a pattern about the app reads both, as it read the one file they were.
+const mountSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/app-mount.js", import.meta.url), "utf8");
+const hostSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+const appSource = `${mountSource}\n${hostSource}`;
 // #s429 (design/session-view-component.md, stage 3): the session view's code is session-view.js and
 // the app's (the list, the drawer, the chrome) is app.js. A pattern reads the module that holds its
 // code; a ban reads both, as it read the one file both were.
@@ -62,6 +67,10 @@ assert.equal(referenceShell, extractedShell, "reference shell must remain an exa
 const appShell = readFileSync(new URL("../../claude-monitor/src/codex-ui/app-shell.html", import.meta.url), "utf8");
 const { SESSION_VIEW_MARKUP } = await import("../src/codex-ui/session-view-markup.js");
 const { SESSION_LIST_MARKUP } = await import("../src/codex-ui/session-list-markup.js");
+// #s551 stage 2: the page carries an empty wrapper, and `mountApp` draws the app's shell into it from
+// its module, which is the shell file exactly.
+const { APP_SHELL_MARKUP } = await import("../src/codex-ui/app-shell-markup.js");
+assert.equal(APP_SHELL_MARKUP, appShell, "the shell's module is app-shell.html, byte for byte (run scripts/extract-agent-monitor-demo.mjs)");
 // #s430 stage 3: the demo's two attention controls (the Needs attention button and the rail's bell),
 // which the list removed as it mounted, are cut from the app's shell and kept nowhere. Their markup,
 // as the demo has it: the reference rules that style them stay the app's (`APP_CHROME`), so the
@@ -477,7 +486,7 @@ let droppedAttention = "";
     for (const m of readFileSync(file, "utf8").matchAll(/^import [^;]*? from "(\.[^"]+)";/gm)) reach(new URL(m[1], file), seen);
     return seen;
   };
-  const appModules = ["app.js", "state.js", "view-root.js", "backend.js", "icons.js"];
+  const appModules = ["app.js", "app-mount.js", "app-shell-markup.js", "state.js", "view-root.js", "backend.js", "icons.js"];
   for (const href of reach(new URL("../src/codex-ui/session-view.js", import.meta.url))) {
     const name = href.slice(href.indexOf("/codex-ui/") + "/codex-ui/".length);
     if (appModules.includes(name)) continue;
@@ -677,7 +686,7 @@ assert.match(viewSource, /footerCost\.textContent = display\.label \|\| ownCost 
 assert.match(classicExportSource, /var usageCost = u\.cost \|\| \(u\.cost_partial \? "unpriced" : null\)/, "the classic transcript Usage panel must distinguish wholly unpriced from no usage");
 assert.match(classicExportSource, /if \(usageCost\) row\("est\. cost", usageCost, "total"\)/, "the classic transcript Usage row must render the four-state cost label");
 
-for (const moduleName of ["app.js", "session-list-view.js", "session-view.js", "control-store.js", "preview.js"]) {
+for (const moduleName of ["app-mount.js", "session-list-view.js", "session-view.js", "control-store.js", "preview.js"]) {
   const module = readFileSync(new URL(`../../claude-monitor/src/codex-ui/${moduleName}`, import.meta.url), "utf8");
   for (const [, id] of module.matchAll(/byId\("([^"]+)"\)/g)) {
     // The page as it is drawn: the app's shell, the view's markup inside #sessionView (stage 4), and
@@ -1626,7 +1635,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // room changes (the magnifier gives way, the keyboard, a pane), through the view's own observer.
   assert.match(viewSource, /const SEARCH_PLACEHOLDERS = \["Search this session", "Search"\];/, "the shorter texts, longest first");
   assert.match(viewSource, /input\.placeholder = \[hint, \.\.\.SEARCH_PLACEHOLDERS\]\.find\(fits\) \|\| SEARCH_PLACEHOLDERS\[SEARCH_PLACEHOLDERS\.length - 1\];\n    input\.style\.width = `\$\{room\}px`;\n    searchField\.scrollLeft = chips \? searchField\.scrollWidth : 0;/, "an empty field fills its room, from its start");
-  assert.match(viewSource, /\nnew ResizeObserver\(\(\) => fitSearchField\(\)\)\.observe\(searchField\);\n/, "the field is fitted again as the strip's room changes");
+  assert.match(viewSource, /\nconst searchFit = new ResizeObserver\(\(\) => fitSearchField\(\)\);\nsearchFit\.observe\(searchField\);\n/, "the field is fitted again as the strip's room changes");
+  // And as the bar's room changes with no window resize (the pane opening, its drag): a floor fitted
+  // to the old room held the box past the session's column (#s520, train2's review).
+  assert.match(viewSource, /\nconst searchBar = viewRoot\.\$\("\.workspace>\.topbar"\);\nif \(searchBar\) searchFit\.observe\(searchBar\);\n/, "the field is fitted again as the bar's room changes");
   assert.match(viewSource, /byId\("composer"\)\.dataset\.commandKeys = "";/, "the view marks its compose box");
   // ENGAGEMENT: a click on a guest's prose leaves the focus on <body>, so the keydown's target is
   // <body> — and the key is still the guest's until the reader clicks elsewhere. bindKeymap tracks
@@ -1657,6 +1669,26 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(trip({ ...local, range: { from: "abc123", to: "WORKTREE", since: "1w" } }), { ...local, range: { from: "abc123", since: "1w" } }, "a time window keeps its window");
   assert.deepEqual(trip({ ...local, range: { from: null, to: "def456" } }), { ...local, range: { from: null, to: "def456" } }, "a plain read AT a revision — what mdrev reports for a pick in clean mode — is still a range");
   assert.deepEqual(trip({ root: "held", path: "0123456789abcdef/NOTES.md", cap: "d".repeat(64), range: null }), { root: "held", path: "0123456789abcdef/NOTES.md", cap: "d".repeat(64), range: null }, "held text, by the path the store gave it");
+  // #s433: a tab of its own reads what to show from its address, the transcript first, then a
+  // document, then an image, so every address the monitor's `/markdown` and `/image` tabs were opened
+  // with still lands on the one page that serves them now.
+  assert.equal(detachedKind("?session=s1&root=held&path=a.md"), "session", "a session's address names its transcript");
+  assert.equal(detachedKind(standaloneHref({ root: "held", path: "0123/NOTES.md", cap: "d".repeat(64) }).split("?")[1]), "markdown", "a document's, as the pane writes it");
+  assert.equal(detachedKind("name=a.png&path=%2Fx%2Fa.png&sig=s"), "image", "an offered image file's");
+  assert.equal(detachedKind("?name=a.png&held=am-image%3Ak"), "image", "an embedded image's copy");
+  assert.equal(detachedKind("?root=&path=shot.png"), "markdown", "an empty root is still a document's address, whose tab says it names none");
+  assert.equal(detachedKind(""), "none", "an address that names nothing");
+  assert.deepEqual([...DETACHED_OPTIONS], ["backend", "theme", "address"]);
+  {
+    const element = { nodeType: 1, id: "", childNodes: [], dataset: {} };
+    assert.throws(() => mountDetached(element, { detachTo: "/x" }), /takes no option named detachTo/, "an option it does not take is refused");
+    assert.throws(() => mountDetached({ ...element, id: "pane" }, {}), /no id or the id detachedView/, "an element with another id is refused");
+    assert.throws(() => mountDetached(element, { theme: "blue" }), /theme/, "a theme it does not know is refused");
+  }
+  // The app opens the transcript's tab at `/detached` and a document's or an image's where it opened
+  // before (`/markdown`, `/image`), all one page: the server's own, the `href` the view hands it.
+  assert.match(appSource, /detachTo:\s*\(\s*\{\s*href\s*\}\s*\)\s*=>\s*href\s*,/, "the app opens each tab at the server's own page");
+  assert.match(viewSource, /return\s+backend\(\)\.url\(\s*`\/detached\?\$\{query\}`\s*\)/, "the server's own transcript tab is /detached");
   assert.deepEqual(standaloneFacts(""), { root: "", path: "", cap: "", range: null }, "an empty address names nothing");
   assert.equal(hintFor("hit-prev"), "N"); assert.equal(hintFor("page-up"), "⇧Space"); assert.equal(hintFor("nope"), "");
   assert.match(appSource, /bindKeymap\(document, /, "the shell binds the keymap once, at the document");
@@ -4606,7 +4638,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(q("a project:x b").text, "a b", "the token's own space goes with it");
   assert.deepEqual(q("ub: tool:Bash scope:u foo"), { agents: [], projects: [], text: "ub: tool:bash scope:u foo" },
     "the session box's filters mean nothing here: they are text like any other");
-  const appSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/app.js", import.meta.url), "utf8");
+  const appSrc = mountSource;
   const globalRowsSrc = appSrc.slice(appSrc.indexOf("function globalRows("), appSrc.indexOf("function renderGlobalSearch("));
   assert.doesNotMatch(globalRowsSrc, /splitQuery|querySpans|parseScope|takeTokens|takeTools/, "⌘K calls nothing of the session grammar");
   console.log("#294 qualifier grammar cases passed");
@@ -4890,7 +4922,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   walk(new URL("../src/codex-ui/native-mode.js", import.meta.url));
   const viewModules = [...closure].map(href => href.slice(href.indexOf("/codex-ui/") + "/codex-ui/".length));
   for (const name of ["control-store.js", "preview.js", "record-store.js", "viewport.js", "components.js", "dialog-card.js", "view-state.js", "view-root.js", "shared/virtual-window.js"]) assert.ok(viewModules.includes(name), `the view's import closure holds ${name}`);
-  assert.ok(!viewModules.includes("app.js"), "and not the app");
+  assert.ok(!viewModules.includes("app.js") && !viewModules.includes("app-mount.js"), "and not the app");
   for (const href of closure) assert.doesNotMatch(readFileSync(new URL(href), "utf8"), /from "\.\.?\/state\.js"/, `${href.slice(href.indexOf("/codex-ui/") + 10)} imports nothing from state.js`);
   assert.ok(!viewModules.includes("state.js"), "the view's modules reach state.js by no path");
   // The confirm, run: the last ask goes on with the passcode given, an earlier or cancelled one does
@@ -4931,7 +4963,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // list reads is documented and passed, every member of the handle the app calls is one the list
 // returns, and the list finds its elements inside its own element.
 {
-  const call = /^const listHandle = mountSessionList\(page\.byId\("sessionList"\), \{\n([\s\S]*?)\n\}\);/m.exec(appSource);
+  const call = /^listHandle = mountSessionList\(page\.byId\("sessionList"\), \{\n([\s\S]*?)\n\}\);/m.exec(appSource);
   assert.ok(call, "the app mounts the list in one call with an options literal, on the shell's empty #sessionList (stage 3)");
   const passed = new Set([...call[1].matchAll(/^  ([A-Za-z]+)(?=[:,])/gm)].map(m => m[1]));
   const destructured = /^const \{ (.+) \} = options;$/m.exec(listSource);
@@ -5166,6 +5198,61 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   console.log("#s430 list options and unmount cases passed");
 }
 
+// #s551 (design/app-mount.md, stage 2): the web app as one mount. Its options are one list, which it
+// refuses any other name by, which is exactly what it reads, and which its doc comment documents; it
+// checks its backend, its version and its element before it touches anything, so a refused call draws
+// nothing and may be made again; a second call throws; it reads its own server and version, never the
+// page's; and the monitor's page mounts it once, with the page's server and version, on its wrapper.
+{
+  const listed = /^export const MOUNT_OPTIONS = Object\.freeze\(\[([^\]]*)\]\);$/m.exec(mountSource);
+  assert.ok(listed, "the mount lists its options in MOUNT_OPTIONS");
+  const MOUNT = [...listed[1].matchAll(/"([^"]+)"/g)].map(m => m[1]);
+  assert.deepEqual(MOUNT, ["backend", "version"], "stage 2 takes one server and the brand's version");
+  const body = mountSource.slice(mountSource.indexOf("export function mountApp("), mountSource.indexOf("export async function installNativeController("));
+  const read = new Set([...body.matchAll(/\boptions\??\.([A-Za-z]+)/g)].map(m => m[1]));
+  assert.deepEqual([...read].sort(), [...MOUNT].sort(), "MOUNT_OPTIONS is exactly the options the mount reads");
+  const doc = mountSource.slice(mountSource.indexOf("/** Draw the web app into"), mountSource.indexOf("export function mountApp("));
+  for (const name of MOUNT) assert.match(doc, new RegExp(`^ \\*  - \`${name}\``, "m"), `the mount's doc comment documents ${name}`);
+  // The guards, run over fakes: from the once check to the element's.
+  const guards = /^(if \(appMounted\)[\s\S]*?this one holds the host's nodes"\);)$/m.exec(mountSource);
+  assert.ok(guards, "the mount checks it is not drawn yet, its options and its element before it touches anything");
+  const guard = new Function("element", "options", "MOUNT_OPTIONS", "appMounted", "page", `${guards[1]}\nreturn "drawn";`);
+  const empty = () => ({ isConnected: true, childNodes: [{ nodeType: 3, data: "\n  " }] });
+  const handle = { base: "/m", paired: true, fetch: () => {} };
+  const bare = { byId: () => null };
+  const mount = (options, element = empty(), mounted = false, onPage = bare) => { try { return guard(element, options, MOUNT, mounted, onPage); } catch (error) { return `refused: ${error.message}`; } };
+  assert.equal(mount({ backend: handle }), "drawn", "a backend handle is all it needs");
+  assert.equal(mount({ backend: handle, version: "1.2.3" }), "drawn", "and a version for its brand");
+  assert.equal(mount({ backend: handle, version: null }), "drawn", "a version left empty is none");
+  for (const [options, why] of [
+    [{}, "needs its backend"],
+    [{ backend: "/m" }, "backend handle.*\"/m\""],
+    [{ backend: { base: "/m" } }, "backend handle"],
+    [{ backend: handle, version: 3 }, "version as a string.*3"],
+    [{ backend: handle, machines: [] }, "no option named machines"],
+    [{ backend: handle, theme: "dark" }, "no option named theme"],
+    [{ backend: handle, frame: () => "" }, "no option named frame"],
+  ]) assert.match(String(mount(options)), new RegExp(`^refused: .*${why}`), `refused: ${why}`);
+  for (const [options, why] of [[null, "as an object, not null"], ["/m", "as an object, not \"/m\""], [[handle], "as an object"]]) {
+    assert.match(String(mount(options)), new RegExp(`^refused: .*${why}`), `options that are no object are refused: ${why}`);
+  }
+  assert.match(String(mount({ backend: handle }, null)), /^refused: .*none was given/, "no element is refused");
+  assert.match(String(mount({ backend: handle }, { isConnected: false, childNodes: [] })), /^refused: .*not on it/, "nor one off the page, whose ids the app could not find");
+  assert.match(String(mount({ backend: handle }, empty(), false, { byId: id => (id === "app" ? {} : null) })), /^refused: .*holds one already/, "nor on a page holding an #app of its own, which the app would take for its own");
+  assert.match(String(mount({ backend: handle }, { isConnected: true, childNodes: [{ nodeType: 1 }] })), /^refused: .*host's nodes/, "and one holding the host's nodes");
+  assert.match(String(mount({ backend: handle }, { isConnected: true, childNodes: [{ nodeType: 8, data: "" }] })), /^refused: .*host's nodes/, "a comment too");
+  assert.match(String(mount({ backend: handle }, empty(), true)), /^refused: .*once per page/, "a second call throws, whatever it passes");
+  assert.match(mountSource, /this one holds the host's nodes"\);\nappMounted = true;\nuseBackend\(options\.backend\);\nelement\.classList\.add\("app-mount"\);\nelement\.innerHTML = APP_SHELL_MARKUP;\n/, "the page counts as holding the app only once every guard has passed, and nothing is drawn before");
+  // Its own server and version, never the page's.
+  assert.doesNotMatch(mountSource, /\bbackend\(\)|dataset\.version|import \{[^}]*\bbackend\b[^}]*\} from "\.\/backend\.js"/, "the mount reads no page-wide server and no body's version");
+  assert.match(mountSource, /^  backend: options\.backend,$/m, "the view is mounted on the mount's server");
+  assert.match(mountSource, /\.textContent = `v\$\{options\.version \|\| "dev"\}`;/, "the brand names the mount's version");
+  // The monitor's page: one call, on its wrapper, with its own server and the version its body carries.
+  assert.equal((hostSource.match(/\bmountApp\(/g) || []).length, 1, "app.js mounts the web app once");
+  assert.match(hostSource, /^mountApp\(page\.byId\("appMount"\), \{ backend: backend\(\), version: page\.body\(\)\.dataset\.version \|\| undefined \}\);$/m, "on the page's wrapper, with the page's server and version");
+  assert.match(hostSource, /^export \{ installNativeController \} from "\.\/app-mount\.js";$/m, "and native mode's entry still finds its hook there");
+  console.log("#s551 app mount cases passed");
+}
 // #s429 stage 6: the optional controls and the keys a host may change. A control switched off is
 // not drawn and takes no key; engaged, the view's keys answer only while the reader works in it.
 {

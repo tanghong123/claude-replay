@@ -2395,15 +2395,21 @@ function elementFrame(scroller) {
     // page's own). Any other key there (the page's `+`, `\` folding the list), one after a press
     // elsewhere (the browser scrolls that box, or nothing), and one a host's keymap took are no move
     // of the reader's in this box (the review of 500ae62b).
+    //
+    // The box ITSELF with the focus (a page may make it focusable, as the app shell does on a
+    // mouse's press, #s488) is the body's case, not a control's: the browser scrolls it with a
+    // scroll key nothing took, and any other key there is the page's, so it is heard by the body's
+    // rule, without the press, which the focus stands in for.
     onKey: (fn, options) => {
-      scroller.addEventListener("keydown", fn, options);
+      scroller.addEventListener("keydown", event => { if (event.target !== scroller) fn(event); }, options);
       const doc = scroller.ownerDocument, win = doc?.defaultView;
       if (!win) return;
       let pressedInside = false;
       win.addEventListener("pointerdown", event => { pressedInside = !!event.target?.nodeType && scroller.contains(event.target); }, { passive: true, capture: true });
       win.addEventListener("keydown", event => {
         const target = event.target;
-        if (pressedInside && !event.defaultPrevented && (target === doc.body || target === doc.documentElement) && NATIVE_SCROLL_KEYS.has(event.key)) fn(event);
+        if (event.defaultPrevented || !NATIVE_SCROLL_KEYS.has(event.key)) return;
+        if (target === scroller || (pressedInside && (target === doc.body || target === doc.documentElement))) fn(event);
       }, { passive: true });
     },
     // A pointer that lands on the scroller ITSELF is on its scrollbar OR in a GUTTER: content

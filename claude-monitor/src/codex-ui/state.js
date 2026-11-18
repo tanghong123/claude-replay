@@ -5,7 +5,7 @@ const json = (key, fallback) => {
   catch (_) { return fallback; }
 };
 
-// The app's stores (#s429, design/session-view-component.md, stages 3 and 7). The app is app.js (the
+// The app's stores (#s429, design/session-view-component.md, stages 3 and 7). The app is app-mount.js (the
 // session list, the drawer, the chrome) with session-list.js and the session index; native mode, the
 // monitor's own, reads them too (native-entry.js, codex-workspace/monitor-controls.js). The session
 // view (session-view.js and the modules under it) imports none of this: it makes its own stores as it

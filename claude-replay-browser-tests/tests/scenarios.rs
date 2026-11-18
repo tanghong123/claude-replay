@@ -15687,7 +15687,7 @@ fn app_shell_the_search_box_shows_its_own_query() {
     let page = open(Surface::AppShell, &fx, 3046);
     let tab = &page.tab;
     let query = "uo(R): needle";
-    let probe = "(function(){ var box = document.querySelector('.header-searchbox'); var input = document.getElementById('transcriptSearchInput'); var count = document.getElementById('transcriptSearchCount'); var ids = ['findPrev', 'findNext', 'transcriptWholeWords', 'filterTranscriptBtn']; var rects = ids.map(function (id) { var el = document.getElementById(id); if (!el || !el.offsetWidth) return null; var r = el.getBoundingClientRect(); var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { id: id, left: Math.round(r.left), right: Math.round(r.right), hit: !!hit && el.contains(hit) }; }); return JSON.stringify({ bar: [...document.querySelector('.topbar').children].filter(function (c) { return c.offsetWidth; }).map(function (c) { return (c.id || c.className) + ':' + Math.round(c.getBoundingClientRect().width); }).join(' '), head: [...document.querySelector('.session-heading').children].map(function (c) { var cs = getComputedStyle(c); return (c.id || c.className) + ':' + Math.round(c.getBoundingClientRect().width) + '/' + cs.flexShrink + '/' + cs.minWidth; }).join(' '), box: Math.round(box.getBoundingClientRect().width), title: (function(){ var t = document.getElementById('sessionTitle'); t.textContent = 'A session whose name needs every pixel the top bar can give it'; var r = t.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.right), Math.round(box.getBoundingClientRect().left), t.scrollWidth, t.clientWidth, t.textContent]; })(), input: [input.scrollWidth, input.clientWidth], count: [count.scrollWidth, count.clientWidth, count.textContent], rects: rects }); })()";
+    let probe = "(function(){ var box = document.querySelector('.header-searchbox'); var input = document.getElementById('transcriptSearchInput'); var count = document.getElementById('transcriptSearchCount'); var ids = ['findPrev', 'findNext', 'transcriptWholeWords', 'filterTranscriptBtn']; var rects = ids.map(function (id) { var el = document.getElementById(id); if (!el || !el.offsetWidth) return null; var r = el.getBoundingClientRect(); var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { id: id, left: Math.round(r.left), right: Math.round(r.right), hit: !!hit && el.contains(hit) }; }); return JSON.stringify({ bar: [...document.querySelector('.topbar').children].filter(function (c) { return c.offsetWidth; }).map(function (c) { return (c.id || c.className) + ':' + Math.round(c.getBoundingClientRect().width); }).join(' '), head: [...document.querySelector('.session-heading').children].map(function (c) { var cs = getComputedStyle(c); return (c.id || c.className) + ':' + Math.round(c.getBoundingClientRect().width) + '/' + cs.flexShrink + '/' + cs.minWidth; }).join(' '), box: Math.round(box.getBoundingClientRect().width), title: (function(){ var t = document.getElementById('sessionTitle'); t.textContent = 'A session whose name needs every pixel the top bar can give it'; var r = t.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.right), Math.round(box.getBoundingClientRect().left), t.scrollWidth, t.clientWidth, t.textContent]; })(), input: [input.scrollWidth, input.clientWidth], field: (function(){ var f = document.getElementById('searchField'); return f ? [f.scrollWidth, f.clientWidth] : null; })(), chips: (function(){ var c = document.querySelector('.search-chips'); return c ? [c.scrollWidth, c.clientWidth, c.classList.contains('has-chips')] : null; })(), values: [...document.querySelectorAll('.search-chip-value')].map(function (v) { return [v.scrollWidth, v.clientWidth, v.textContent]; }), parts: [...box.children].filter(function (c) { return c.offsetWidth; }).map(function (c) { return (c.id || c.className.split(' ')[0]) + ':' + Math.round(c.getBoundingClientRect().width); }).join(' '), count: [count.scrollWidth, count.clientWidth, count.textContent], rects: rects }); })()";
     for (width, height) in [(1440.0, 900.0), (1100.0, 860.0), (820.0, 860.0)] {
         harness::resize(tab, width, height);
         harness::until(
@@ -15718,7 +15718,9 @@ fn app_shell_the_search_box_shows_its_own_query() {
         settle();
         for moment in ["focused", "clicked away"] {
             if moment == "clicked away" {
-                eval(tab, "(function(){ document.getElementById('transcriptSearchInput').blur(); var t = document.querySelector('.transcript'); if (t) t.dispatchEvent(new MouseEvent('mousedown', {bubbles: true})); return 'away'; })()");
+                // A mouse's press on the transcript, as a reader clicks away: the pointerdown is what
+                // releases the search (#s520), the mousedown and the blur follow it.
+                eval(tab, "(function(){ var t = document.querySelector('.transcript'); if (t) { t.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true, pointerType: 'mouse', isPrimary: true})); t.dispatchEvent(new MouseEvent('mousedown', {bubbles: true})); } document.getElementById('transcriptSearchInput').blur(); return 'away'; })()");
                 settle();
             }
             let seen: serde_json::Value =
@@ -15732,6 +15734,23 @@ fn app_shell_the_search_box_shows_its_own_query() {
                 assert!(
                     input[0].as_i64() <= input[1].as_i64() && input[1].as_i64() > Some(0),
                     "at {width}px, {moment}: the box shows the whole query (scrollWidth <= clientWidth): {seen}"
+                );
+                // The strip scrolls (`overflow-x:auto`), so an input sized to its text could still
+                // leave the scope and tool chips scrolled out of the box: the strip shows whole too.
+                let field = &seen["field"];
+                assert!(
+                    field[0].as_i64() <= field[1].as_i64() && field[1].as_i64() > Some(0),
+                    "at {width}px, {moment}: the box shows the whole strip, its chips and the field (scrollWidth <= clientWidth): {seen}"
+                );
+                // And each chip whole: a chip's value shrinks to an ellipsis inside it, which neither
+                // the strip's nor the chips' own scroll width shows.
+                let values = seen["values"].as_array().cloned().unwrap_or_default();
+                assert!(
+                    values.len() == 2
+                        && values
+                            .iter()
+                            .all(|v| v[0].as_i64() <= v[1].as_i64() && v[1].as_i64() > Some(0)),
+                    "at {width}px, {moment}: the scope and tool chips show their values whole (scrollWidth <= clientWidth): {seen}"
                 );
             }
             let count = &seen["count"];
@@ -15760,7 +15779,8 @@ fn app_shell_the_search_box_shows_its_own_query() {
                 );
             }
             // The box grows into the spacer and never over the session's name, which stays
-            // readable: whole, or at least 120px, or what it had at rest if that was less. The
+            // readable: whole, or at least 80px (a word or two, what it gives way to while the box
+            // holds a query, `TITLE_GIVES_TO`), or what it had at rest if that was less. The
             // probe gives the title a long name, so this measures the squeeze, not the fixture.
             let title = &seen["title"];
             if narrow && moment == "focused" {
@@ -15773,7 +15793,7 @@ fn app_shell_the_search_box_shows_its_own_query() {
                 let wide = title[0].as_i64().unwrap_or(0);
                 let whole = title[3].as_i64() <= title[4].as_i64();
                 assert!(
-                    (whole || wide >= 120.min(rest_title - 1))
+                    (whole || wide >= 80.min(rest_title - 1))
                         && title[1].as_i64() <= title[2].as_i64(),
                     "at {width}px, {moment}: the session title stays readable (at rest it was \
                  {rest_title}px) and clear of the box: {seen}"
@@ -15791,6 +15811,128 @@ fn app_shell_the_search_box_shows_its_own_query() {
             );
         }
     }
+    // The floor's limits (train2's reviews), measured with the floor set: the session's name is a long
+    // one, held against the header's repaints, and its first word is emulated by its measure,
+    // `--title-word` on the bar, which the bar's rules and the fit read. Every limit is read and the
+    // failures reported together, so a change that breaks one shows which.
+    let long = "uo(R): needle beside a query far longer than any search box shows";
+    let short = "uo(R): needle";
+    let limits = "(function(){ var bar = document.querySelector('.workspace>.topbar'), cluster = document.querySelector('.header-search-cluster'), box = document.querySelector('.header-searchbox'), t = document.getElementById('sessionTitle'), h = t.parentElement, b = bar.getBoundingClientRect(), w = function (e) { return Math.round(e.getBoundingClientRect().width); }; var past = [...bar.children].filter(function (c) { return c.offsetWidth && c.getBoundingClientRect().right > b.right + 1; }).map(function (c) { return (c.id || c.className) + ':' + Math.round(c.getBoundingClientRect().right - b.right); }); return JSON.stringify({ floor: cluster.style.getPropertyValue('--search-floor'), cluster: w(cluster), box: w(box), title: [w(t), parseFloat(getComputedStyle(t).minWidth), t.scrollWidth], heading: [w(h), parseFloat(getComputedStyle(h).minWidth)], edges: [t.getBoundingClientRect().right, h.getBoundingClientRect().right, cluster.getBoundingClientRect().left].map(Math.round), past: past, bar: Math.round(b.width), view: w(document.getElementById('sessionView')), layout: document.getElementById('sessionView').className.split(' ').filter(function (c) { return /^pl-outline-|^pl-phone$/.test(c); }).join(' ') }); })()";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(eval(tab, limits).as_str().unwrap_or("{}")).unwrap()
+    };
+    let mut failed: Vec<String> = Vec::new();
+    // The box fills its cluster (a floor past the box's own width rule left a blank gap beside it),
+    // nothing in the bar goes past the session's column, and the title, held at its first word by its
+    // `min-width`, stays inside its heading, which stays clear of the search: a floor that kept the
+    // word by overflowing would lay the name under the box while nothing went past the bar.
+    let check = |what: &str, seen: &serde_json::Value| -> Vec<String> {
+        let mut out = Vec::new();
+        let gap = seen["cluster"].as_i64().unwrap_or(0) - seen["box"].as_i64().unwrap_or(0);
+        if gap.abs() > 1 {
+            out.push(format!(
+                "{what}: the cluster is {gap}px wider than its box: {seen}"
+            ));
+        }
+        if !seen["past"].as_array().is_some_and(|p| p.is_empty()) {
+            out.push(format!(
+                "{what}: the bar's controls go past the session's column: {seen}"
+            ));
+        }
+        let edge = |i: usize| seen["edges"][i].as_i64().unwrap_or(0);
+        if edge(0) > edge(1) + 1 || edge(1) > edge(2) + 1 {
+            out.push(format!(
+                "{what}: the title goes past its heading, or the heading under the search: {seen}"
+            ));
+        }
+        out
+    };
+    let hold = |word: &str, query: &str| {
+        eval(
+            tab,
+            &format!("(function(){{ var b = document.getElementById('transcriptSearchInput'); b.value = ''; b.dispatchEvent(new Event('input', {{bubbles: true}})); b.blur(); var t = document.getElementById('sessionTitle'); var name = 'A session whose name needs every pixel the top bar can give it'; if (!window.__heldTitle) {{ window.__heldTitle = new MutationObserver(function () {{ if (t.textContent !== name) t.textContent = name; }}); window.__heldTitle.observe(t, {{childList: true, characterData: true, subtree: true}}); }} t.textContent = name; document.querySelector('.workspace>.topbar').style.setProperty('--title-word', {word:?}); document.getElementById('sessionView').style.maxWidth = ''; return 'held'; }})()"),
+        );
+        settle();
+        eval(
+            tab,
+            &format!("(function(){{ var b = document.getElementById('transcriptSearchInput'); b.focus(); b.value = {query:?}; b.dispatchEvent(new Event('input', {{bubbles: true}})); b.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', bubbles: true, cancelable: true}})); return 'typed'; }})()"),
+        );
+        settle();
+    };
+    // The bar's room changes with no window resize (the pane's drag, as the view sees it: its own box
+    // narrows); the floor must be what a fit made now would set, which an input re-fits at once.
+    let narrowed = |what: &str,
+                    by: i64,
+                    before: &serde_json::Value|
+     -> (serde_json::Value, Vec<String>) {
+        let view = before["view"].as_i64().unwrap_or(0);
+        eval(tab, &format!("(function(){{ document.getElementById('sessionView').style.maxWidth = '{}px'; return 1; }})()", view - by));
+        settle();
+        settle();
+        let now = read();
+        eval(tab, "(function(){ document.getElementById('transcriptSearchInput').dispatchEvent(new Event('input', {bubbles: true})); return 1; })()");
+        let fresh = read();
+        let mut out = check(what, &now);
+        if now["floor"] != fresh["floor"] {
+            out.push(format!("{what}: the floor was not fitted again as the bar narrowed ({} held, a fit now sets {}): {now}", now["floor"], fresh["floor"]));
+        }
+        if now["layout"]
+            .as_str()
+            .is_some_and(|l| l.contains("pl-outline-bar") || l.contains("pl-phone"))
+        {
+            out.push(format!(
+                "{what}: the narrowing reached a layout the floor does not apply to: {now}"
+            ));
+        }
+        (now, out)
+    };
+    let resize = |width: f64| {
+        harness::resize(tab, width, 860.0);
+        harness::until(
+            tab,
+            &format!("innerWidth <= {width} && innerWidth > {width} - 40"),
+            "the window to take its new width",
+            Duration::from_secs(10),
+            "innerWidth",
+        );
+        harness::until_preview_parked(tab);
+    };
+    // At 1440px a long query asks more than the box's own width rule gives: the floor stops there.
+    resize(1440.0);
+    hold("110px", long);
+    let wide = read();
+    if wide["floor"].as_str().is_none_or(|f| f.is_empty()) {
+        failed.push(format!("at 1440px, a long query: a floor is set (the case measures nothing without one): {wide}"));
+    }
+    failed.extend(check("at 1440px, a long query", &wide));
+    // Narrowed by 340px, the title's first word leaves the query less than the floor held: a floor fitted
+    // to the old room pushed the bar's last controls out of the column.
+    let (after, out) = narrowed("at 1440px, the column narrowed by 340px", 340, &wide);
+    failed.extend(out);
+    if after["floor"] == wide["floor"] {
+        failed.push(format!("at 1440px narrowed by 340px: the narrowing changes what a fit sets (the case measures nothing otherwise): before {wide}, after {after}"));
+    }
+    // At 1100px the longest first word the bar keeps (160px), and a long one: the floor's default leaves
+    // the word its room, and the title's share is what its heading can give, at the window's width and
+    // narrowed by 40px.
+    resize(1100.0);
+    for word in ["160px", "110px"] {
+        hold(word, short);
+        let at = read();
+        failed.extend(check(&format!("at 1100px, a {word} first word"), &at));
+        let (_, out) = narrowed(
+            &format!("at 1100px with a {word} first word, the column narrowed by 40px"),
+            40,
+            &at,
+        );
+        failed.extend(out);
+    }
+    eval(tab, "(function(){ if (window.__heldTitle) window.__heldTitle.disconnect(); document.getElementById('sessionView').style.maxWidth = ''; return 1; })()");
+    assert!(
+        failed.is_empty(),
+        "the floor's limits:\n{}",
+        failed.join("\n")
+    );
 }
 
 /// #298 — the owner: "after / focuses on the search box, we should offer esc to defocus (same effect
