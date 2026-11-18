@@ -23264,6 +23264,175 @@ fn the_list_scrolls(tab: &headless_chrome::Tab, at: &str) {
     );
 }
 
+/// #s583, Hong at the narrowest desktop window: with the session list a drawer, opened from its ☰
+/// handle, the brand's first letters sat under the handle, and the session's turn strip drew
+/// across the drawer. A list the window had narrowed below 272px (the reader's own 240px here)
+/// kept its `sidebar-tight` into the drawer, whose 10px head padding beat the drawer's room for
+/// the handle; and the view, which fills such a window and is no box of its own there, stacked its
+/// layers (the strip at 26) against the drawer (20). Here, at 500px with a mouse and the strip
+/// showing, the open drawer's brand starts clear of the handle, and the drawer is what a point
+/// anywhere along the strip's row inside it hits; once it closes, the strip is back on top.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_desktop_drawer_keeps_its_brand_clear_of_the_handle_and_lies_over_the_whole_view() {
+    let _serial = serial();
+    let base = harness::base("desktop-drawer");
+    let stores = harness::Stores::new(&base);
+    let t: String = (0..24)
+        .map(|i| {
+            [
+                harness::user_at(
+                    &format!("question {i}: the open session"),
+                    &format!("2026-09-01T05:{i:02}:00.000Z"),
+                ),
+                harness::assistant_at(
+                    &format!("answer {i}: {}", "a long enough answer to fill a line of the transcript, so the column has text in it. ".repeat(8)),
+                    &format!("2026-09-01T05:{i:02}:01.000Z"),
+                ),
+            ]
+            .concat()
+        })
+        .collect();
+    stores.claude_session(PHONE_SID, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3063, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1100.0, 860.0);
+    m.pair(&tab);
+    // The reader's list dragged narrow, below the 272px where its head is squeezed.
+    harness::eval(
+        &tab,
+        "(function(){ localStorage.setItem('am-sidebar-width', '240'); return 'ok'; })()",
+    );
+    harness::show_every_session(&tab, &m.url(&format!("?ui=app&session={PHONE_SID}")));
+    let classes = "innerWidth + 'x' + innerHeight + ' ' + document.getElementById('app').className";
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user') && innerWidth === 1100 && document.getElementById('app').classList.contains('sidebar-tight')",
+        "the premise: the session open beside a list narrow enough to be tight",
+        Duration::from_secs(20),
+        classes,
+    );
+    harness::resize(&tab, 500.0, 860.0);
+    harness::until(
+        &tab,
+        "innerWidth === 500 && document.getElementById('app').classList.contains('app-drawer') && document.getElementById('app').classList.contains('mobile-detail')",
+        "a 500px window: the list a drawer, shut",
+        Duration::from_secs(10),
+        classes,
+    );
+    harness::wheel_scroll(
+        &tab,
+        harness::APP_SCROLLER,
+        "s.scrollTop = Math.round(s.scrollHeight / 2)",
+    );
+    let strip_on = "(function(){ var b = document.getElementById('turnStickyBar'); if (!b || !b.classList.contains('on')) return false; var r = b.getBoundingClientRect(); var e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return r.height > 0 && !!e && b.contains(e); })()";
+    harness::until(
+        &tab,
+        strip_on,
+        "the premise: the turn strip shows, on top, in the middle of the session",
+        Duration::from_secs(10),
+        "document.getElementById('turnStickyBar').className",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('drawerHandle').click(); return 'ok'; })()",
+    );
+    let facts = "(function(){ var app = document.getElementById('app'), sb = document.querySelector('#app>.sidebar'), s = sb.getBoundingClientRect(); \
+        var brand = sb.querySelector('.side-head .brand'), b = brand.getBoundingClientRect(), h = document.getElementById('drawerHandle').getBoundingClientRect(); \
+        var at = document.elementFromPoint(b.left + 3, b.top + b.height / 2); \
+        var strip = document.getElementById('turnStickyBar').getBoundingClientRect(), y = strip.top + strip.height / 2, over = []; \
+        for (var x = s.left + 8; x < s.right - 4; x += 24) { var e = document.elementFromPoint(x, y); if (!e || !sb.contains(e)) over.push([Math.round(x), e ? (e.id || e.className || e.tagName) : null]); } \
+        return JSON.stringify({ open: !app.classList.contains('mobile-detail'), sbLeft: Math.round(s.left), tight: app.classList.contains('sidebar-tight'), strip: document.getElementById('turnStickyBar').classList.contains('on') && strip.height > 0, \
+          brandLeft: Math.round(b.left), handleRight: Math.round(h.right), brandHit: !!at && brand.contains(at), notInDrawer: over }); })()";
+    harness::until(
+        &tab,
+        &format!("(function(){{ var f = JSON.parse({facts}); return f.open && Math.abs(f.sbLeft) < 1; }})()"),
+        "the drawer open and in place",
+        Duration::from_secs(10),
+        facts,
+    );
+    let open: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default();
+    assert!(
+        open["brandHit"] == true
+            && open["brandLeft"].as_i64().unwrap_or(0)
+                >= open["handleRight"].as_i64().unwrap_or(i64::MAX)
+            && open["tight"] == false,
+        "the open drawer's brand starts clear of the handle, its own first letter on top: {open}"
+    );
+    assert!(
+        open["strip"] == true && open["notInDrawer"] == serde_json::json!([]),
+        "the strip still drawn beneath, and along its row the open drawer on top everywhere inside it: {open}"
+    );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('drawerHandle').click(); return 'ok'; })()",
+    );
+    harness::until(
+        &tab,
+        strip_on,
+        "the drawer shut: the strip on top again",
+        Duration::from_secs(10),
+        facts,
+    );
+}
+
+/// #s583's review: a wide phone held sideways shows the list as a column under the same `app-drawer`,
+/// and its handle hides the column without touching `mobile-detail`, so the drawer's open flag can
+/// stand where no drawer is drawn (here: opened upright, then turned sideways). With the column
+/// hidden the view fills the window and is no box of its own, and isolating it there would sink
+/// its layers under the handle (the review sheet's close sits right under it). So there the view
+/// stays level with the handle's layer.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_wide_phone_s_hidden_column_leaves_the_view_s_layers_where_they_were() {
+    let _serial = serial();
+    let (_m, _b, tab) = drawer_world(3065, "wide-hidden-column", 390, 844, false, 8, None);
+    let classes = "innerWidth + 'x' + innerHeight + ' ' + document.getElementById('app').className + ' view ' + document.getElementById('sessionView').className + ' isolation ' + getComputedStyle(document.getElementById('sessionView')).isolation";
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('drawerHandle').click(); return 'ok'; })()",
+    );
+    harness::until(
+        &tab,
+        "!document.getElementById('app').classList.contains('mobile-detail')",
+        "upright, the drawer open",
+        Duration::from_secs(10),
+        classes,
+    );
+    harness::phone(&tab, 956, 440);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    harness::until(
+        &tab,
+        "innerWidth === 956 && document.getElementById('app').classList.contains('app-drawer') && !document.getElementById('app').classList.contains('mobile-detail') && getComputedStyle(document.querySelector('#app>.sidebar')).position !== 'fixed'",
+        "the premise: turned sideways, the list a column, the drawer's open flag still standing",
+        Duration::from_secs(10),
+        classes,
+    );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('drawerHandle').click(); return 'ok'; })()",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('phone-column-off') && !document.getElementById('app').classList.contains('mobile-detail') && !document.getElementById('sessionView').classList.contains('pl-boxed')",
+        "the premise: the column hidden, the view filling the window unboxed",
+        Duration::from_secs(10),
+        classes,
+    );
+    let isolation = harness::eval(
+        &tab,
+        "getComputedStyle(document.getElementById('sessionView')).isolation",
+    );
+    assert_eq!(
+        isolation.as_str(),
+        Some("auto"),
+        "no drawer lies over the view, so it is no stacking context of its own: {}",
+        harness::eval(&tab, classes)
+    );
+}
+
 /// #s33, the owner on 1.356.0 with a phone held sideways (956×440): the drawer showed its list and
 /// the session view behind it was blank grey. A `min-width:761px` rule — "not a phone" until #s32
 /// made a landscape phone a phone at any width — put the drawer back into the page's flow, and it
