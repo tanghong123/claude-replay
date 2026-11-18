@@ -31,6 +31,39 @@ export function groupAcrossMachines(groups = [], build = groupSessions) {
   return [...agents.values()];
 }
 
+/**
+ * The name a row and a head show for a machine (#s561, Hong: "show the host the agent is running
+ * on (limit to the first dot component maybe)"): a host name's first label (`aries-black.tail…ts.net`
+ * shows `aries-black`). A name with no dot, and an address written in numbers, are shown whole.
+ */
+export function machineShortLabel(label) {
+  const text = String(label ?? "").trim();
+  if (!text.includes(".") || /^[\d.]+$/.test(text) || text.includes(":")) return text;
+  return text.slice(0, text.indexOf(".")) || text;
+}
+
+/**
+ * The list arranged machine first (#s561, Group by machine): one section per machine of a merged
+ * source, each holding that machine's own agents and their projects (`agents` is the grouped tree,
+ * filtered or not, from `groupAcrossMachines`, whose projects name their `machine`). The sections are
+ * in the order the merged source lists its `machines` (the host's order), each machine listed once,
+ * a machine with no rows in view kept with no agents (its head still says how it answers), and a
+ * machine the rows name that the list of machines does not is put after them.
+ */
+export function machineSections(agents = [], machines = []) {
+  const order = [];
+  const seen = new Set();
+  const add = entry => { if (entry?.machine && !seen.has(entry.machine)) { seen.add(entry.machine); order.push(entry); } };
+  for (const entry of machines) add(entry);
+  for (const agent of agents) for (const project of agent.projects || []) if (project.machine) add({ machine: project.machine, label: project.machine, state: "live", since: null, error: null });
+  return order.map(entry => ({
+    machine: entry,
+    agents: agents
+      .map(agent => ({ ...agent, projects: (agent.projects || []).filter(project => project.machine === entry.machine) }))
+      .filter(agent => agent.projects.length)
+  }));
+}
+
 /** How long a session counts as active for the list's ORDER — the server's `ACTIVE_WINDOW`
  *  (claude-monitor/src/index.rs, which a test holds to this), not the filter's hour. */
 export const CALM_SECS = 10 * 60;

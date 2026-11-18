@@ -290,7 +290,7 @@ export const LIST_CHROME = Object.freeze([
   ".no-results",
   ".machine-stale",
   ".session-age", ".session-end", ".session-state", ".sessions-arranged", ".sessions-flat",
-  ".tree", ".tree-action", ".tree-agent", ".tree-context", ".tree-forks", ".tree-machine", ".tree-machine-head", ".tree-machine-head-failed", ".tree-machine-head-stale", ".tree-machine-stale", ".tree-machines", ".tree-main", ".tree-project", ".tree-project-more", ".tree-row", ".tree-side", ".tree-title",
+  ".tree", ".tree-action", ".tree-agent", ".tree-context", ".tree-forks", ".tree-machine", ".tree-machine-empty", ".tree-machine-group", ".tree-machine-group-failed", ".tree-machine-group-stale", ".tree-machine-group-waiting", ".tree-machine-head", ".tree-machine-head-failed", ".tree-machine-head-stale", ".tree-machine-name", ".tree-machine-note", ".tree-machine-stale", ".tree-machines", ".tree-main", ".tree-project", ".tree-project-more", ".tree-row", ".tree-side", ".tree-title",
 ]);
 
 /** The names of the list's body that the page also shows OUTSIDE `#sessionList`: the rows the rail's

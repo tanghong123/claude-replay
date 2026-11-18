@@ -405,6 +405,15 @@ body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){displa
 .tree-machine-head{padding:5px 8px;border-radius:7px;background:color-mix(in srgb,var(--faint) 12%,transparent);color:var(--sub);font-size:11px;line-height:15px}
 .tree-machine-head.tree-machine-head-stale{color:var(--amber)}
 .tree-machine-head.tree-machine-head-failed{color:var(--red)}
+/* #s561: Group by machine — a head per machine over its own tree, one step above the agents' heads (its
+   name in the list's text, not their small capitals), with how it answers beside it while it does not;
+   a machine with nothing in view keeps its head over one quiet line. */
+.agent-label.tree-machine-group{min-width:0;padding-top:14px;color:var(--sub);font-size:12px;font-weight:650;letter-spacing:0;text-transform:none}
+.tree-machine-name{flex:none;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree-machine-note{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;font-weight:450}
+.tree-machine-group.tree-machine-group-stale .tree-machine-note{color:var(--amber)}
+.tree-machine-group.tree-machine-group-failed .tree-machine-note{color:var(--red)}
+.tree-machine-empty{padding:2px 12px 6px;color:var(--faint);font-size:11px}
 #sessionList.sessions-flat .tree-row.session.is-member{padding-left:30px}
 #sessionList.sessions-flat .tree-row.session.is-side{padding-left:calc(16px + var(--side-depth,1) * 14px)}
 /* A list narrower than the app's minimum sidebar (#s431 stage 2, design/pane-layout.md; the list sets

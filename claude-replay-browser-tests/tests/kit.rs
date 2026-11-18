@@ -771,3 +771,297 @@ fn sessions_of(monitor: &Monitor, wanted: &str) -> String {
     }
     panic!("the list's server never listed {wanted}");
 }
+
+const SID_A: &str = "cccccccc-0000-4000-8000-000000005611";
+const SID_B: &str = "cccccccc-0000-4000-8000-000000005612";
+
+/// #s561 — Group by machine in the filter (Hong, on the iOS app, 2026-11-17: "extend the filter menu
+/// to have another check box to group agents by machine (right above include idle)"; "When group
+/// agents by machine is unchecked, need to show the host the agent is running on (limit to the first
+/// dot component maybe)"). The #s541 host over two hermetic monitors, the machines named by their full
+/// host names. With the box off the list is arranged as before, each project's head and each row of
+/// the list by activity naming its machine by the host name's first label; the box sits between Idle
+/// and Include hidden; ticked, a head per machine (its short name) holds that machine's own agents,
+/// projects and rows, which no longer name it, in the tree and the list by activity alike; the choice
+/// survives a reload; unticked, the project arrangement comes back. A list of one machine offers no
+/// box, whatever was chosen. Run on a desktop and on a phone.
+fn groups_by_machine_from_the_filter(phone: bool, here_port: u16, there_port: u16) {
+    let _serial = serial();
+    let base = base(if phone {
+        "kit-by-machine-phone"
+    } else {
+        "kit-by-machine"
+    });
+    let stores = Stores::new(&base);
+    stores.claude_session(
+        SID_A,
+        &(harness::user_at(
+            "where do the terns nest this spring?",
+            &harness::at("00:01"),
+        ) + &harness::assistant_at("on the north spit", &harness::at("00:02"))),
+    );
+    let monitor = Monitor::spawn(Kind::V1, here_port, &base, Some(&stores), true);
+    let there_base = base.join("machine-b");
+    let there_stores = Stores::new(&there_base);
+    there_stores.claude_session(
+        SID_B,
+        &(harness::user_at("count the skua burrows on the ridge", &harness::at("00:03"))
+            + &harness::assistant_at("forty-one", &harness::at("00:04"))),
+    );
+    let there = Monitor::spawn(Kind::V1, there_port, &there_base, Some(&there_stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    if phone {
+        harness::phone(&tab, 390, 844);
+    }
+    monitor.pair(&tab);
+    let page = HOST_MERGED
+        .replace("{{MERMAID}}", claude_replay_html::mermaid_runtime_path())
+        .replace(
+            r#"label: "tern-mini""#,
+            r#"label: "tern-mini.tail5e1f.ts.net""#,
+        )
+        .replace(
+            r#"label: "skua-book""#,
+            r#"label: "skua-book.tail5e1f.ts.net""#,
+        );
+    let mut answers = kit_answers();
+    answers.push(Answer {
+        pattern: "*/kit-merged*".into(),
+        path: "/kit-merged".into(),
+        content_type: "text/html; charset=utf-8".into(),
+        body: page,
+    });
+    harness::answer_and_relay_in_browser(
+        &tab,
+        answers,
+        vec![harness::Relay {
+            prefix: "/machine-b".into(),
+            port: there.port,
+            token: there.token(),
+        }],
+    );
+    let open_host = |what: &str| {
+        harness::until(
+            &tab,
+            "!!(window.__host && (window.__host.mounted || window.__host.error))",
+            what,
+            Duration::from_secs(20),
+            "JSON.stringify(window.__host || null)",
+        );
+        assert_eq!(
+            harness::probe(&tab, "window.__host.error"),
+            serde_json::Value::Null,
+            "the host mounts its list: {what}"
+        );
+    };
+    tab.navigate_to(&monitor.url("kit-merged")).unwrap();
+    tab.wait_until_navigated().unwrap();
+    open_host("the host to mount the list over two machines");
+    let both = format!(
+        "!!document.querySelector('#sessionList .tree-row.session[data-session=\"a/{SID_A}\"]') && !!document.querySelector('#sessionList .tree-row.session[data-session=\"b/{SID_B}\"]')"
+    );
+    harness::until(
+        &tab,
+        &both,
+        "both machines' sessions in the one list",
+        Duration::from_secs(30),
+        "JSON.stringify({ host: window.__host, list: (document.getElementById('sessionList') || {}).innerText })",
+    );
+    // The tree's children in order: a machine's head (its key and the name it shows), an agent's
+    // head, a project's head and a session row, each under a machine's head checked to be that
+    // machine's; the machine labels drawn; and the box's state.
+    let layout = "(function () { var tree = document.getElementById('tree'), machine = null, seq = [], wrong = []; Array.from(tree.children).forEach(function (el) { var c = el.classList; if (c.contains('tree-machine-group')) { machine = el.dataset.machine; seq.push('M:' + machine + ':' + el.querySelector('.tree-machine-name').textContent); } else if (c.contains('agent-label')) { seq.push('A'); if (machine && el.dataset.toggle.indexOf('a:' + machine + '/') !== 0) wrong.push(el.dataset.toggle); } else if (c.contains('project')) { seq.push('P'); if (machine && el.dataset.toggle.indexOf('p:' + machine + '/') !== 0) wrong.push(el.dataset.toggle); } else if (c.contains('session')) { seq.push('S'); if (machine && el.dataset.session.indexOf(machine + '/') !== 0) wrong.push(el.dataset.session); } else seq.push('?' + el.className); }); var box = document.querySelector('#sessionFilter [data-by-machine]'); return { seq: seq, wrong: wrong, tags: Array.from(tree.querySelectorAll('.tree-machine')).map(function (t) { return t.textContent; }).sort(), banner: !!tree.querySelector('.tree-machines'), box: box ? box.getAttribute('aria-checked') : null, errors: window.__host.errors }; })()";
+    let click = |selector: &str| {
+        harness::probe(
+            &tab,
+            &format!("document.querySelector('{selector}').click(), true"),
+        );
+    };
+    let until_seq = |seq: serde_json::Value, what: &str| {
+        harness::until(
+            &tab,
+            &format!("JSON.stringify(({layout}).seq) === {:?}", seq.to_string()),
+            what,
+            Duration::from_secs(20),
+            &format!("JSON.stringify({layout})"),
+        );
+        harness::probe(&tab, layout)
+    };
+
+    // The box off: the arrangement of #s541, each project's head naming its machine by the first
+    // label of its host name.
+    let off = until_seq(
+        serde_json::json!(["A", "P", "S", "P", "S"]),
+        "the list by agent and project",
+    );
+    assert_eq!(
+        (&off["tags"], &off["banner"], &off["box"], &off["errors"]),
+        (
+            &serde_json::json!(["skua-book", "tern-mini"]),
+            &serde_json::json!(false),
+            &serde_json::json!("false"),
+            &serde_json::json!([])
+        ),
+        "each project's head names its machine by its host name's first label: {off}"
+    );
+    // The filter's sheet: the box between Idle and Include hidden.
+    click("#filterBtn");
+    let options = harness::probe(
+        &tab,
+        "Array.from(document.querySelectorAll('#sessionFilter .scope-option')).filter(function (o) { return o.getClientRects().length > 0; }).map(function (o) { return o.dataset.bucket || (o.hasAttribute('data-by-machine') ? 'machine' : o.hasAttribute('data-include-hidden') ? 'hidden' : 'arrange:' + o.dataset.arrange); })",
+    );
+    assert_eq!(
+        options.as_array().map(|all| all[..5].to_vec()),
+        Some(vec![
+            serde_json::json!("recent"),
+            serde_json::json!("blocked"),
+            serde_json::json!("idle"),
+            serde_json::json!("machine"),
+            serde_json::json!("hidden")
+        ]),
+        "Group by machine comes right after the states, before Include hidden: {options}"
+    );
+    // One list by activity names each row's machine after its project.
+    click("#sessionFilter [data-arrange=\"flat\"]");
+    let flat = until_seq(serde_json::json!(["S", "S"]), "the list by activity");
+    assert_eq!(
+        harness::probe(
+            &tab,
+            "Array.from(document.querySelectorAll('#tree .tree-row.session.flat .tree-context')).map(function (c) { var kids = Array.from(c.children).map(function (k) { return k.className; }); return kids.indexOf('tree-project') >= 0 && kids.indexOf('tree-machine') > kids.indexOf('tree-project') ? c.querySelector('.tree-machine').textContent : 'NOT AFTER THE PROJECT'; }).sort()"
+        ),
+        serde_json::json!(["skua-book", "tern-mini"]),
+        "each row of the list by activity names its machine after its project: {flat}"
+    );
+
+    // Ticked: a head per machine, each holding its own rows, in the list by activity and the tree.
+    click("#sessionFilter [data-by-machine]");
+    let flat_grouped = until_seq(
+        serde_json::json!(["M:a:tern-mini", "S", "M:b:skua-book", "S"]),
+        "the list by activity under a head per machine",
+    );
+    assert_eq!(
+        (
+            &flat_grouped["tags"],
+            &flat_grouped["wrong"],
+            &flat_grouped["box"]
+        ),
+        (
+            &serde_json::json!([]),
+            &serde_json::json!([]),
+            &serde_json::json!("true")
+        ),
+        "each machine's rows under its own head, which alone names it: {flat_grouped}"
+    );
+    click("#sessionFilter [data-arrange=\"flat\"]");
+    let grouped = until_seq(
+        serde_json::json!([
+            "M:a:tern-mini",
+            "A",
+            "P",
+            "S",
+            "M:b:skua-book",
+            "A",
+            "P",
+            "S"
+        ]),
+        "the tree under a head per machine",
+    );
+    assert_eq!(
+        (
+            &grouped["tags"],
+            &grouped["wrong"],
+            &grouped["banner"],
+            &grouped["errors"]
+        ),
+        (
+            &serde_json::json!([]),
+            &serde_json::json!([]),
+            &serde_json::json!(false),
+            &serde_json::json!([])
+        ),
+        "each machine's own agents, projects and rows under its head, none naming the machine again: {grouped}"
+    );
+    // A machine's head folds its tree away.
+    click("#tree .tree-machine-group[data-machine=\"b\"]");
+    until_seq(
+        serde_json::json!(["M:a:tern-mini", "A", "P", "S", "M:b:skua-book"]),
+        "the other machine folded under its head",
+    );
+    click("#tree .tree-machine-group[data-machine=\"b\"]");
+
+    // Remembered across a reload.
+    tab.reload(false, None).unwrap();
+    tab.wait_until_navigated().unwrap();
+    open_host("the host to mount the list again after a reload");
+    let again = until_seq(
+        serde_json::json!([
+            "M:a:tern-mini",
+            "A",
+            "P",
+            "S",
+            "M:b:skua-book",
+            "A",
+            "P",
+            "S"
+        ]),
+        "the list still grouped by machine after a reload",
+    );
+    assert_eq!(
+        again["box"],
+        serde_json::json!("true"),
+        "the box still ticked: {again}"
+    );
+
+    // Unticked: the project arrangement and the labels come back.
+    click("#filterBtn");
+    click("#sessionFilter [data-by-machine]");
+    let back = until_seq(
+        serde_json::json!(["A", "P", "S", "P", "S"]),
+        "the list by agent and project again",
+    );
+    assert_eq!(
+        (&back["tags"], &back["box"]),
+        (
+            &serde_json::json!(["skua-book", "tern-mini"]),
+            &serde_json::json!("false")
+        ),
+        "the labels back on the projects' heads: {back}"
+    );
+
+    // A list of one machine offers no box, even with Group by machine chosen.
+    click("#sessionFilter [data-by-machine]");
+    tab.navigate_to(&monitor.url("kit-host")).unwrap();
+    tab.wait_until_navigated().unwrap();
+    open_host("the one-machine host to mount its list");
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('#sessionList .tree-row.session[data-session=\"{SID_A}\"]')"),
+        "the one machine's session in its list",
+        Duration::from_secs(30),
+        "JSON.stringify({ host: window.__host, list: (document.getElementById('sessionList') || {}).innerText })",
+    );
+    click("#filterBtn");
+    let lone = harness::probe(
+        &tab,
+        "(function () { var part = document.querySelector('#sessionFilter [data-machine-part]'); return { chosen: localStorage.getItem('am-prod-by-machine'), part: !!part, shown: !!part && part.getClientRects().length > 0, heads: document.querySelectorAll('#tree .tree-machine-group').length }; })()",
+    );
+    drop(there);
+    drop(monitor);
+    assert_eq!(
+        lone,
+        serde_json::json!({ "chosen": "1", "part": true, "shown": false, "heads": 0 }),
+        "one machine: the box is not offered and the list has no machine heads, though the choice is kept"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_list_over_two_machines_groups_by_machine_from_the_filter() {
+    groups_by_machine_from_the_filter(false, 3321, 3322);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_list_over_two_machines_groups_by_machine_from_the_filter() {
+    groups_by_machine_from_the_filter(true, 3323, 3324);
+}

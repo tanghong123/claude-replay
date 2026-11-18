@@ -212,7 +212,14 @@ list.start();
 What the list then shows:
 
 - Every machine's sessions. A project's head carries its machine's name, and so does a row in a
-  flat arrangement. The same folder on two machines is two projects.
+  flat arrangement. The same folder on two machines is two projects. A `label` that is a host name
+  is shown by its first part (`studio.tail1234.ts.net` shows `studio`); give the whole name, and the
+  list keeps it for the label's title.
+- The filter offers **Group by machine** (between Idle and Include hidden, while the list holds more
+  than one machine): a head for each machine, in the order you listed them, holding that machine's
+  own agents, projects and sessions, and saying how the machine answers while it does not. The
+  reader's choice is remembered like the filter's others. It is part of the `filter` control: with
+  `show: { filter: false }` the list is not grouped.
 - The list's ids are `<machine>/<that machine's own id>`; `splitMachineId(id)` takes one apart.
 - A hide or a restore goes to the row's own machine.
 - Each read asks every machine that is not still answering the last one, and waits at most

@@ -5465,4 +5465,33 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const listRules = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.doesNotMatch(listRules, /\.tree-machine(?:-head)?\.(?:stale|failed|live|waiting)(?![\w-])/, "and no rule styles a bare state name on them");
   console.log("#s541 merged source cases passed");
+
+  // #s561 (Hong, on the iOS app: "a check box to group agents by machine"; "show the host the agent
+  // is running on (limit to the first dot component maybe)"): the list machine first, and a
+  // machine's short name.
+  const { machineSections, machineShortLabel } = await import("../../claude-monitor/src/codex-ui/session-list.js");
+  for (const [label, shown] of [["aries-black.tail1234.ts.net", "aries-black"], ["Studio Mac", "Studio Mac"], ["mac-mini", "mac-mini"], ["100.64.0.7", "100.64.0.7"], ["fd7a:115c::1", "fd7a:115c::1"], [".hidden", ".hidden"], [undefined, ""]]) {
+    assert.equal(machineShortLabel(label), shown, `${label} shows as ${shown}`);
+  }
+  const sections = machineSections(tree, [...late.machines].reverse());
+  assert.deepEqual(sections.map(section => [section.machine.machine, section.machine.state]), [["b", "stale"], ["a", "live"]], "a section per machine, in the order the machines are listed, each saying how it answers");
+  assert.deepEqual(sections.map(section => section.agents.map(agent => [agent.id, agent.projects.map(project => project.id)])), [
+    [["claude", ["b/p:~/code/x", "b/claude:desktop"]]],
+    [["claude", ["a/p:~/code/x", "a/claude:desktop"]]],
+  ], "each holding its own machine's agents and projects alone");
+  assert.deepEqual(machineSections(tree, [{ machine: "c", label: "c", state: "failed", since: null, error: "connection refused" }, ...late.machines]).map(section => [section.machine.machine, section.agents.length]), [["c", 0], ["a", 1], ["b", 1]], "a machine with no rows keeps its section");
+  assert.deepEqual(machineSections(tree, [late.machines[0]]).map(section => section.machine.machine), ["a", "b"], "a machine the rows name and the list does not comes after it");
+  assert.equal(tree[0].projects.length, 4, "the tree it was handed is left as it was");
+  // The view: the box between the states and Include hidden, shown for more than one machine, the
+  // choice remembered; under a machine's head no project or row repeats its machine.
+  assert.match(listViewSource, /if \(shows\("filter"\)\) sheetParts\[0\] \+= `\n<div data-machine-part hidden>/, "the box comes right after the states, before Include hidden");
+  assert.match(listViewSource, /machinePart\.hidden = machineCount\(\) < 2;/, "and is offered only over more than one machine");
+  assert.match(listViewSource, /const groupedByMachine = \(\) => shows\("filter"\) && indexState\.byMachine && machineCount\(\) > 1;/);
+  assert.match(listViewSource, /const entry = drawingMachine \? null : machineState\(key\);/, "under its head, a machine is not named again");
+  const stateSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/state.js", import.meta.url), "utf8");
+  assert.match(stateSource, /byMachine: localStorage\.getItem\("am-prod-by-machine"\) === "1",/, "remembered");
+  assert.match(stateSource, /localStorage\.setItem\("am-prod-by-machine", indexState\.byMachine \? "1" : "0"\);/);
+  assert.match(listViewSource, /const GROUP_STATE = Object\.freeze\(\{ stale: " tree-machine-group-stale", failed: " tree-machine-group-failed", waiting: " tree-machine-group-waiting" \}\);/, "a machine's head says its state under a prefixed name too");
+  assert.doesNotMatch(listRules, /\.tree-machine-group\.(?:stale|failed|live|waiting)(?![\w-])/, "and no rule styles a bare state name on it");
+  console.log("#s561 group by machine cases passed");
 }

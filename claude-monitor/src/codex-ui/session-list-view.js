@@ -11,7 +11,7 @@ import { SessionIndexStore } from "./session-index-store.js";
 import { SESSION_LIST_MARKUP } from "./session-list-markup.js";
 import { indexState, selectedRow } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
-import { ARRANGE_SOURCES, arrangeSessions, familyHolds, flatFamilies, isDefaultView, nestSideSessions, paneLookup, rowLookup, sectionView, viewSection } from "./session-list.js";
+import { ARRANGE_SOURCES, arrangeSessions, familyHolds, flatFamilies, isDefaultView, machineSections, machineShortLabel, nestSideSessions, paneLookup, rowLookup, sectionView, viewSection } from "./session-list.js";
 import { displayState, denoteState, sessionBucket, sessionFilterBuckets, FILTER_BUCKETS, FILTER_LABELS, BLOCKED_SUMMARY } from "./shared/state-labels.js";
 import { agentName, escapeText } from "./view-model.js";
 import { page } from "./view-root.js";
@@ -444,21 +444,39 @@ function machineState(key) {
   return indexState.machines.find(entry => entry.machine === key) || { machine: key, label: key, state: "live", since: null, error: null };
 }
 const clockTime = iso => { const at = iso ? new Date(iso) : null; return at && !Number.isNaN(at.getTime()) ? at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""; };
-function machineWords(entry) {
-  if (entry.state === "stale") return `${entry.label}: not answering${entry.since ? ` since ${clockTime(entry.since)}` : ""}${entry.error ? ` (${entry.error})` : ""}`;
-  if (entry.state === "failed") return `${entry.label}: no answer${entry.error ? ` (${entry.error})` : ""}`;
-  if (entry.state === "waiting") return `${entry.label}: waiting for its first answer`;
-  return entry.label;
+/** How a machine answers, in words, or "" while it answers (#s561 puts it beside the machine's head). */
+function machineNote(entry) {
+  if (entry.state === "stale") return `not answering${entry.since ? ` since ${clockTime(entry.since)}` : ""}${entry.error ? ` (${entry.error})` : ""}`;
+  if (entry.state === "failed") return `no answer${entry.error ? ` (${entry.error})` : ""}`;
+  if (entry.state === "waiting") return "waiting for its first answer";
+  return "";
+}
+/** A machine and how it answers. It goes by its host name's first label (#s561, Hong: "limit to the
+ *  first dot component maybe"); `name` gives the whole label instead, for a title. */
+function machineWords(entry, name = machineShortLabel(entry.label)) {
+  const note = machineNote(entry);
+  return note ? `${name}: ${note}` : name;
 }
 const machineStale = key => machineState(key)?.state === "stale";
+/** #s561: how many machines the list holds; Group by machine is offered only for more than one. */
+const machineCount = () => new Set(indexState.machines.map(entry => entry.machine)).size;
+/** #s561: whether the list is arranged machine first: chosen, offered (the filter's sheet holds the
+ *  box) and over more than one machine. */
+const groupedByMachine = () => shows("filter") && indexState.byMachine && machineCount() > 1;
+/** Set while the tree draws under a machine's head (#s561), whose head names the machine, so its
+ *  project heads and rows do not repeat it. The rail's flyout, drawn by the same functions over
+ *  every machine, keeps the label. */
+let drawingMachine = false;
 function machineTag(key) {
-  const entry = machineState(key);
-  return entry ? `<span class="tree-machine${machineStale(key) ? " tree-machine-stale" : ""}" title="${escapeText(machineWords(entry))}">${escapeText(entry.label)}</span>` : "";
+  const entry = drawingMachine ? null : machineState(key);
+  return entry ? `<span class="tree-machine${machineStale(key) ? " tree-machine-stale" : ""}" title="${escapeText(machineWords(entry, entry.label))}">${escapeText(machineShortLabel(entry.label))}</span>` : "";
 }
 /** The heads over the list, one for each machine of a merged source that is not answering, coloured
- *  by its state (prefixed names: a host's page may style `.stale` or `.failed` for itself). */
+ *  by its state (prefixed names: a host's page may style `.stale` or `.failed` for itself). Grouped
+ *  by machine, each machine's own head says it instead. */
 const HEAD_STATE = Object.freeze({ stale: " tree-machine-head-stale", failed: " tree-machine-head-failed" });
 function machineHeadsHtml() {
+  if (groupedByMachine()) return "";
   const heads = indexState.machines.filter(entry => entry.state !== "live");
   return heads.length ? `<div class="tree-machines" role="status">${heads.map(entry => `<div class="tree-machine-head${HEAD_STATE[entry.state] || ""}" data-machine="${escapeText(entry.machine)}">${escapeText(machineWords(entry))}</div>`).join("")}</div>` : "";
 }
@@ -625,6 +643,35 @@ function agentProjectsHtml(agent) {
   }
   return html;
 }
+/** An agent's head in the tree, folding under `key`. */
+function agentHeadHtml(agent, key, open) {
+  return `<div class="agent-label" role="treeitem" tabindex="0" data-toggle="${escapeText(key)}" aria-expanded="${open}">${escapeText(agent.name)}${agent.id === "codex" && options.projectActions?.() ? `<button class="native-project-add" type="button" data-native-add-project aria-label="Add Codex project" title="Add project"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 19H3V5h6l2 2h10v5M17 14v8m-4-4h8"/></svg></button>` : ""}</div>`;
+}
+/** The list machine first (#s561, Group by machine): a head per machine, its name and, while it does
+ *  not answer, how it answers, folding under `m:<machine>`; under it that machine's own tree (its
+ *  agents folding under `a:<machine>/<agent>`, its projects under their own keys, which already name
+ *  the machine), or its own list by activity. A machine with nothing in view keeps its head. */
+const GROUP_STATE = Object.freeze({ stale: " tree-machine-group-stale", failed: " tree-machine-group-failed", waiting: " tree-machine-group-waiting" });
+function machineGroupsHtml(agents, flat, filtered) {
+  let html = "";
+  drawingMachine = true;
+  try {
+    for (const { machine: entry, agents: own } of machineSections(agents, indexState.machines)) {
+      const key = `m:${entry.machine}`, open = !indexState.collapsed.has(key);
+      const note = machineNote(entry);
+      html += `<div class="agent-label tree-machine-group${GROUP_STATE[entry.state] || ""}" role="treeitem" tabindex="0" data-toggle="${escapeText(key)}" data-machine="${escapeText(entry.machine)}" aria-expanded="${open}" title="${escapeText(machineWords(entry, entry.label))}"><span class="tree-machine-name">${escapeText(machineShortLabel(entry.label))}</span>${note ? `<span class="tree-machine-note">${escapeText(note)}</span>` : ""}</div>`;
+      if (!open) continue;
+      if (!own.length) { html += `<div class="tree-machine-empty">${filtered ? "None in this filter" : "No sessions"}</div>`; continue; }
+      if (flat) { html += flatSessionsHtml(own, `flat:${entry.machine}`); continue; }
+      for (const agent of own) {
+        const agentKey = `a:${entry.machine}/${agent.id}`, openAgent = !indexState.collapsed.has(agentKey);
+        html += agentHeadHtml(agent, agentKey, openAgent);
+        if (openAgent) html += agentProjectsHtml(agent);
+      }
+    }
+  } finally { drawingMachine = false; }
+  return html;
+}
 function renderTree() {
   // A host that unmounts the list from inside one of its own callbacks (`onIndex`, `onOpen`) is back
   // in the list's code when it returns, which would draw, tell the host and ask the monitor again.
@@ -657,10 +704,11 @@ function renderTree() {
   // they carry the mark themselves.
   for (const control of [collapseBtn, expandBtn]) control.toggleAttribute("data-flat", flat || arranged);
   if (arranged) html = arrangedSessionsHtml(layout, agents, shownAgents);
+  else if (groupedByMachine()) html = machineGroupsHtml(shownAgents, flat, filtered);
   else if (flat) html = flatSessionsHtml(shownAgents);
   else for (const agent of shownAgents) {
     const agentKey = `a:${agent.id}`, openAgent = !indexState.collapsed.has(agentKey);
-    html += `<div class="agent-label" role="treeitem" tabindex="0" data-toggle="${escapeText(agentKey)}" aria-expanded="${openAgent}">${escapeText(agent.name)}${agent.id === "codex" && options.projectActions?.() ? `<button class="native-project-add" type="button" data-native-add-project aria-label="Add Codex project" title="Add project"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 19H3V5h6l2 2h10v5M17 14v8m-4-4h8"/></svg></button>` : ""}</div>`;
+    html += agentHeadHtml(agent, agentKey, openAgent);
     if (!openAgent) continue;
     html += agentProjectsHtml(agent);
   }
@@ -749,6 +797,13 @@ if (shows("arrangements")) sheetParts.push(`<div class="scope-menu-head"><strong
 <button class="scope-option" type="button" role="radio" aria-checked="false" data-arrange="flat" data-flat title="One list, most recent activity first, without the agent and project groups: each session names its project and agent"><span class="scope-check"></span><span>One list by activity</span></button>
 ${ARRANGE_SOURCES.map(key => `<button class="scope-option arrange-app" type="button" role="radio" aria-checked="false" data-arrange="${key}" title="${escapeText(`The sessions ${ARRANGE_LABELS[key]} shows, in its sections and order, following it as it changes; everything else under “Not in ${ARRANGE_LABELS[key]}”`)}"><span class="scope-check"></span><span class="arrange-text"><span>Like ${escapeText(ARRANGE_LABELS[key])}</span><small class="arrange-note" data-arrange-note="${key}"></small></span></button>`).join("")}
 </div>`);
+// #s561 (Hong: "extend the filter menu to have another check box to group agents by machine (right
+// above include idle)"): Group by machine, after the states and before Include hidden, drawn with the
+// states and shown while the list holds more than one machine (`renderFilterControl`).
+if (shows("filter")) sheetParts[0] += `
+<div data-machine-part hidden><div class="scope-menu-divider"></div><div class="scope-menu-list">
+<button class="scope-option" type="button" role="checkbox" aria-checked="false" data-by-machine title="A head for each machine, holding its own agents and projects"><span class="scope-check"></span><span>Group by machine</span></button>
+</div></div>`;
 filterSheet.innerHTML = sheetParts.join(`\n<div class="scope-menu-divider"></div>\n`);
 /** Whether the filter offers anything: with its three controls off, neither its glyph nor its sheet is
  *  drawn or handed to the host. */
@@ -803,6 +858,7 @@ filterMini.onclick = () => { if (railFlyoutFor === "filter" && railFlyoutPinned)
 filterSheet.addEventListener("click", event => {
   if (event.target.closest("[data-filter-reset]")) { setBuckets(FILTER_BUCKETS); return; }
   if (event.target.closest("[data-include-hidden]")) { indexState.showHidden = !indexState.showHidden; renderTree(); return; }
+  if (event.target.closest("[data-by-machine]")) { indexState.byMachine = !indexState.byMachine; persist(); renderTree(); return; }
   // #s387: an arrangement. One list by activity keeps its checkbox's toggle (#s206): chosen again,
   // it goes back to the tree. A source that cannot be read is not chosen.
   const arrange = event.target.closest("[data-arrange]");
@@ -1048,6 +1104,12 @@ function renderFilterControl(counts, shown, total) {
   }
   const include = filterSheet.querySelector("[data-include-hidden]");
   if (include) { include.classList.toggle("on", indexState.showHidden); include.setAttribute("aria-checked", String(indexState.showHidden)); }
+  const machinePart = filterSheet.querySelector("[data-machine-part]");
+  if (machinePart) {
+    machinePart.hidden = machineCount() < 2;
+    const box = machinePart.querySelector("[data-by-machine]");
+    box.classList.toggle("on", indexState.byMachine); box.setAttribute("aria-checked", String(indexState.byMachine));
+  }
   for (const option of filterSheet.querySelectorAll("[data-arrange]")) {
     const key = option.dataset.arrange, on = indexState.arrange === key;
     option.classList.toggle("on", on); option.setAttribute("aria-checked", String(on));
@@ -1114,7 +1176,15 @@ railMarks.onclick = event => {
   if (event.detail === 0) railFlyout.querySelector("[role=treeitem]")?.focus();
 };
 railMarks.onkeydown = event => { if (event.key === "ArrowRight") { const mark = event.target.closest("[data-mini-agent]"); if (mark) { event.preventDefault(); mark.click(); } } };
-collapseBtn.onclick = () => { for (const agent of groupedSessions()) { indexState.collapsed.add(`a:${agent.id}`); for (const project of agent.projects) indexState.collapsed.add(`p:${project.id}`); } persist(); renderTree(); };
+collapseBtn.onclick = () => {
+  for (const agent of groupedSessions()) {
+    indexState.collapsed.add(`a:${agent.id}`);
+    // #s561: grouped by machine, each machine's head and its agents' heads fold under their own keys.
+    for (const project of agent.projects) { indexState.collapsed.add(`p:${project.id}`); if (project.machine) indexState.collapsed.add(`a:${project.machine}/${agent.id}`); }
+  }
+  if (groupedByMachine()) for (const entry of indexState.machines) indexState.collapsed.add(`m:${entry.machine}`);
+  persist(); renderTree();
+};
 expandBtn.onclick = () => { indexState.collapsed.clear(); persist(); renderTree(); };
 /** The next or the previous session row from the focused one, chosen. It answers `false` when it
  *  moves nothing (no session row has the focus, or the focused one is the last that way), so the

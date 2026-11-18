@@ -44,6 +44,10 @@ export const indexState = {
   // #s387: each arranged section's own order and grouping (the reader's, beside the app's), keyed
   // `L:<source>:<section id>` — the reader's, never the app's — remembered like the arrangement.
   sectionViews: json("am-prod-section-views", {}),
+  // #s561 (Hong: "a check box to group agents by machine"): a list over several machines arranged
+  // machine first, a head per machine holding its own tree. Remembered like the arrangement; it
+  // changes nothing while the list holds one machine.
+  byMachine: localStorage.getItem("am-prod-by-machine") === "1",
   // Fork families opened in the tree (view state, like classic famOpen), and whether the
   // selected id was a LIST row when chosen — a sub-agent child never is, and must not be
   // declared gone by the index poll for that reason.
@@ -74,6 +78,7 @@ export function persist() {
   const appChosen = ["claude-app", "codex-app", "herdr"].includes(indexState.arrange);
   localStorage.setItem("am-prod-session-flat", indexState.flat || (appChosen && indexState.arrangeBefore === "flat") ? "1" : "0");
   localStorage.setItem("am-prod-section-views", JSON.stringify(indexState.sectionViews));
+  localStorage.setItem("am-prod-by-machine", indexState.byMachine ? "1" : "0");
   if (["claude-app", "codex-app", "herdr"].includes(indexState.arrange)) localStorage.setItem("am-prod-session-arrange", indexState.arrange);
   else localStorage.removeItem("am-prod-session-arrange");
 }

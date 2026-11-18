@@ -423,11 +423,25 @@ herdr looked). A wait herdr saw publishes at once, and the row's `stateSource` s
 `derived`. The app shell's session filter (a glyph in the sidebar's head-actions row,
 between Expand every group and the sidebar collapse, opening Active recently / Blocked / Idle /
 Include hidden checkboxes; Active recently and Blocked by default, remembered, never an empty
-set; "Everything" checks the three and leaves Include hidden alone) filters by a COVER of that partition: Active recently is six hours of
+set; "Everything" checks the three and leaves Include hidden alone; over several machines a Group
+by machine box sits between Idle and Include hidden, #s561, below) filters by a COVER of that partition: Active recently is six hours of
 activity or busy now (`RECENT_SECS`; #202 set an hour, and #s253, the owner, "make it 6 hours", after
 an idle session an hour and five minutes old dropped out of view; the checkbox reads "Active in the
 last 6 hours") and overlaps Blocked by design (`sessionFilterBuckets`). It replaced the
 Needs attention and Show Hidden controls.
+
+**One list over several machines can be arranged machine first** (#s561, Hong on the iOS app:
+"extend the filter menu to have another check box to group agents by machine (right above include
+idle)"; "When group agents by machine is unchecked, need to show the host the agent is running on
+(limit to the first dot component maybe)"). A merged source's list (#s541) names each project's head
+and each row of the list by activity with its machine, as its host name's first label
+(`machineShortLabel` in `session-list.js`: an address in numbers, or a name with no dot, shown
+whole). The filter's sheet then offers Group by machine, drawn with the states and shown only while
+the list holds more than one machine; ticked (remembered, `am-prod-by-machine`), the list is a head
+per machine (`.tree-machine-group`, its state beside it while it does not answer, folding under
+`m:<machine>`) over that machine's own tree or list by activity (`machineSections`), whose project
+heads and rows do not repeat the machine, and the heads over the list give way to them
+(`a_list_over_two_machines_groups_by_machine_from_the_filter`, and its phone twin).
 
 **Which process a session is linked to** (#269, `index.rs` `link()`) decides liveness AND whether
 the compose box appears, and Claude Code 2.1.278 changed the shape it has to read: the session's
