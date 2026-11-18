@@ -36,7 +36,8 @@ The tiers say what a host must serve:
 
 - **core**: the parts show nothing without it;
 - **optional**: a feature goes away (each section says which);
-- **write**: sending, granting and answering; a host that serves none of these says it is not paired;
+- **write**: sending, granting and answering; a host that serves none of these says so on its page
+  (`<body data-write="host">`, "The page's facts" below);
 - **page**: the detached tabs, which `design/embedding.md` moves to a later kit;
 - **native**: Codex native mode, which is outside contract 1 (see "Codex native mode");
 - **listener**: answered by the monitor's listener itself, before any route sees the request (see
@@ -167,11 +168,14 @@ A `Row` (the fields the page reads; the server sends a few more for other reader
 | `injectable` | `true`, optional | a send may type into the pane |
 | `sendsImages` | `true`, optional | the pane takes images |
 | `consented` | bool, optional | a standing grant covers the pane |
+| `sendBlock` | string, optional, open set | why a live row takes no message from the page, a lasting fact about the session: `project-busy`, `unsupported-agent`, `unproven-pane`, `no-pane`, `herdr-codex`, `pane-shared`, `not-foreground`, `other-terminal`, `continued`, `parked`. Absent when the row takes one, and for a refusal another control answers (a grant still to give) |
+| `pid` | number, optional | the process the row is linked to; the page reads a live row by it |
+| `continuedIn` | string, optional | the session this conversation went on in; such a row is finished and takes no resume |
 | `dialog` | `"question"`, `"permission"` or `"plan"`, optional | a dialog the page can answer |
 | `cost`, `costPartial`, `costOwn`, `costSubs` | number or `true`, optional | the cost, its own and its sub-agents' |
 
 Also sent, for the attention report and the fleet page rather than the parts: `conf`, `visited`,
-`continuedIn`, `ambig`, `pid`, `pidSource`, `sock`, `turns`, `tools`, `subs`, `child`,
+`ambig`, `pidSource`, `sock`, `turns`, `tools`, `subs`, `child`,
 `costSubsPartial` and `stateSource`. They are part of the contract all the same: removing one
 moves the version.
 
@@ -382,6 +386,10 @@ every answer.
 
 A `held` refusal's `error` says what the reader should do, and the page shows it as is.
 
+A `dialog` is `{kind: "question", "permission" or "plan", fingerprint, title, text, detail, note,
+multi, choices: [{n, label, description, checked?, freeText?}], tabs?: [{label, done}], plan?}`.
+An answer names the fingerprint, and is refused when the pane shows another dialog.
+
 ### Pairing from the page
 
 `POST /api/pair/self` pairs the browser the page runs in, as `agent-monitor --pair` does, while
@@ -392,14 +400,19 @@ the monitor requires pairing from every reader; or a status of 403, 405 or 409 w
 `{ok: false, why}`, words the page shows as they are. `<body data-write>` says which reason the
 page names beside its Write mode switch.
 
-A `dialog` is `{kind: "question", "permission" or "plan", fingerprint, title, text, detail, note,
-multi, choices: [{n, label, description, checked?, freeText?}], tabs?: [{label, done}], plan?}`.
-An answer names the fingerprint, and is refused when the pane shows another dialog.
+### The page's facts
 
-The page offers writes only when its server says it is paired (`<body data-paired="true">`), and
-only for a row whose facts allow it (`injectable`, `state`, `projActive`, `agent`). **A host that
-serves no writes says it is not paired**, and the page then draws no compose box and no answer
-buttons.
+The page offers writes only when its server says this reader's writes reach it, as
+`<body data-write>`: `open`, or what is missing, in the order a reader can act on it: `host` (the
+server serves no writes), `monitor` (the monitor is not paired) or `browser` (it is, and this
+request carried no token: a paired monitor on Linux lets a same-user browser read without one). The
+page names the reason beside its Write mode switch, and draws no compose box and no answer buttons
+until it is `open`. `<body data-paired>` still says whether the server gates its readers.
+
+With writing open, a row takes a message when its facts allow it (`injectable`, `state`,
+`projActive`, `agent`, `continuedIn`). A row that does not keeps a greyed compose button with the
+reason: its `sendBlock` for a live row, else the page's own reading of `agent`, `pid`,
+`continuedIn`, `state` and `projActive`.
 
 ## The detached tabs
 

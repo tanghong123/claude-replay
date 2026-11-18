@@ -59,7 +59,7 @@ pub fn handler(
     }
     index.require_shared_codex_runtime(Arc::new(Ownership(Arc::downgrade(&runtime))));
     Arc::new(move |request| {
-        if let Some(reply) = asset(request.name) {
+        if let Some(reply) = workspace_page(request).or_else(|| asset(request.name)) {
             return reply.into();
         }
         if matches!(
@@ -262,16 +262,25 @@ fn native_reader_page(page: String) -> String {
     page.replace("</head>", "<link rel=\"stylesheet\" href=\"monitor-ui/native-entry.css\"><script type=\"module\" src=\"monitor-ui/native-entry.js\"></script></head>")
 }
 
-fn monitor_page() -> String {
-    native_reader_page(crate::ui::page(env!("CARGO_PKG_VERSION"), true))
-        .replace(
-            "href=\"/manifest.webmanifest\"",
-            "href=\"/codex-workspace/manifest.webmanifest\"",
-        )
-        .replace(
-            "</head>",
-            "<meta name=\"apple-mobile-web-app-capable\" content=\"yes\"></head>",
-        )
+/// The workspace's page, naming what this request's writes still need (#s577) as the monitor's own
+/// page does: native mode needs pairing too, so a page drawn unpaired, or for a browser without the
+/// token, says so beside its Write mode switch.
+fn monitor_page(request: &Request) -> String {
+    let paired = claude_replay_html::gate_paired().unwrap_or(request.authenticated);
+    let write = crate::routes::write_gate(paired, true, request.authenticated);
+    native_reader_page(crate::ui::app_page(
+        env!("CARGO_PKG_VERSION"),
+        paired,
+        write,
+    ))
+    .replace(
+        "href=\"/manifest.webmanifest\"",
+        "href=\"/codex-workspace/manifest.webmanifest\"",
+    )
+    .replace(
+        "</head>",
+        "<meta name=\"apple-mobile-web-app-capable\" content=\"yes\"></head>",
+    )
 }
 
 fn invalid(message: &str) -> HttpResponse {
@@ -282,14 +291,18 @@ fn invalid(message: &str) -> HttpResponse {
     reply
 }
 
-/// Embed the workspace at build time, preserving Monitor's standalone binary.
-pub fn asset(name: &str) -> Option<HttpResponse> {
-    if matches!(
-        name,
+/// The workspace's page itself, drawn for `request` ([`monitor_page`]).
+pub fn workspace_page(request: &Request) -> Option<HttpResponse> {
+    matches!(
+        request.name,
         "codex-workspace" | "codex-workspace/" | "codex-workspace/index.html"
-    ) {
-        return Some(HttpResponse::html(monitor_page()));
-    }
+    )
+    .then(|| HttpResponse::html(monitor_page(request)))
+}
+
+/// Embed the workspace at build time, preserving Monitor's standalone binary. The page itself is
+/// [`workspace_page`]'s, since it depends on the request.
+pub fn asset(name: &str) -> Option<HttpResponse> {
     if name == "codex-workspace/pair" {
         // Keep navigation inside the standalone app's scope so Safari cannot
         // redeem the code into a different cookie context. The return path is
@@ -488,9 +501,41 @@ mod tests {
         assert!(!root.exists());
     }
 
+    /// #s577 review: the workspace's page names what this request's writes need, as the monitor's
+    /// own page does, rather than saying writing is open whatever the pairing.
+    #[test]
+    fn the_workspace_page_says_what_writing_needs_for_this_request() {
+        let draw = |authenticated| {
+            String::from_utf8(
+                workspace_page(&claude_replay_html::get_request(
+                    "codex-workspace",
+                    "",
+                    authenticated,
+                ))
+                .unwrap()
+                .body,
+            )
+            .unwrap()
+        };
+        assert!(draw(true).contains(r#"data-write="open""#));
+        assert!(
+            draw(false).contains(r#"data-write="monitor""#),
+            "no gate, no token: the page names pairing"
+        );
+    }
+
     #[test]
     fn workspace_entry_keeps_original_reader_and_loads_only_the_enabling_control() {
-        let page = String::from_utf8(asset("codex-workspace").unwrap().body).unwrap();
+        let page = String::from_utf8(
+            workspace_page(&claude_replay_html::get_request(
+                "codex-workspace",
+                "",
+                true,
+            ))
+            .unwrap()
+            .body,
+        )
+        .unwrap();
         assert!(
             !page.contains("maximum-scale=1"),
             "A reader starts with ordinary viewport behavior"
@@ -546,14 +591,19 @@ mod tests {
         assert!(!pairing.contains("location.replace(\"/\")"));
         for name in [
             "codex-workspace/monitor.css",
-            "codex-workspace",
-            "codex-workspace/",
-            "codex-workspace/index.html",
             "codex-workspace/pair",
             "codex-workspace/api.js",
             "codex-workspace/sw.js",
         ] {
             assert!(asset(name).is_some());
+            assert!(!PUBLIC_ASSETS.contains(&name));
+        }
+        for name in [
+            "codex-workspace",
+            "codex-workspace/",
+            "codex-workspace/index.html",
+        ] {
+            assert!(workspace_page(&claude_replay_html::get_request(name, "", true)).is_some());
             assert!(!PUBLIC_ASSETS.contains(&name));
         }
         for name in [

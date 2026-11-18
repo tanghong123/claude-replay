@@ -234,7 +234,7 @@ pub fn install_mdrev(scratch: &Path, state: Option<PathBuf>) {
 /// monitor is paired, and the request carries the token (`Request::deny_mutation`). Each failure
 /// names what would fix it, so the first named is the one a reader can act on: pairing does not
 /// help a table that serves no writes, and a token does not help an unpaired monitor.
-fn write_gate(paired: bool, serves_writes: bool, authenticated: bool) -> ui::WriteGate {
+pub(crate) fn write_gate(paired: bool, serves_writes: bool, authenticated: bool) -> ui::WriteGate {
     if !serves_writes {
         ui::WriteGate::NotServed
     } else if !paired {

@@ -26968,3 +26968,196 @@ fn a_phone_search_held_sideways_lands_a_match_below_its_process_head() {
         );
     }
 }
+
+/// The session the write-mode cases open (#s577).
+const WRITE_SID: &str = "aaaa5770-0000-4000-8000-000000000577";
+/// A Qoder session beside it, which the compose box cannot write to (#s577).
+const WRITE_QODER: &str = "aaaa5770-0000-4000-8000-000000000578";
+
+/// What the write-mode cases read off the page (#s577): the server's word for what writing needs,
+/// the switch, the line under it, the help, the compose button and its notice, the dock's ✎ and the
+/// toast.
+const WRITE_FACTS: &str = "(function(){ var $ = function (id) { return document.getElementById(id); }, shown = function (el) { return !!el && !el.hidden && el.getClientRects().length > 0; }, d = $('dockCompose'), t = $('toast'); return JSON.stringify({ write: document.body.dataset.write, disabled: $('writeSwitch').getAttribute('aria-disabled'), checked: $('writeSwitch').getAttribute('aria-checked'), reason: $('writeReason').hidden ? null : $('writeReason').textContent, pair: !!document.querySelector('#writeReason .write-pair'), help: $('writeHelp').hidden ? null : $('writeHelp').textContent, fab: $('composeFab').className, fabTitle: $('composeFab').title, notice: $('writeNotice').classList.contains('show') && getComputedStyle($('writeNotice')).display !== 'none' ? $('writeNotice').textContent : null, composing: $('composer').classList.contains('production-show'), dock: d && shown(d) ? { cls: d.className, disabled: d.getAttribute('aria-disabled'), label: d.getAttribute('aria-label') } : null, toast: t && t.classList.contains('show') ? t.textContent : null }); })()";
+
+fn write_facts(tab: &headless_chrome::Tab) -> serde_json::Value {
+    serde_json::from_str(harness::eval(tab, WRITE_FACTS).as_str().unwrap_or("{}"))
+        .unwrap_or_default()
+}
+
+/// #s577: with write mode on, a session the compose box cannot write to keeps its compose button,
+/// greyed, with the reason beside it; a click says it again and opens nothing. On a phone ✎ stays
+/// in the dock, greyed, and a tap says why. A page whose server serves no writes (a host's,
+/// `data-write="host"`, which `mount_host.rs` holds a reads-only table to) has its switch disabled
+/// with that reason and no pairing offered.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_session_the_box_cannot_write_to_keeps_its_button_greyed_and_says_why() {
+    let _serial = serial();
+    let base = harness::base("write-blocked");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        WRITE_SID,
+        &harness::long_session(3, harness::Shape::default()),
+    );
+    let mut qoder = String::new();
+    for (i, q) in ["first prompt", "second prompt"].iter().enumerate() {
+        let at = 300 - i as u64 * 30;
+        qoder += &harness::user_at(q, &harness::now_minus(at));
+        qoder += &harness::assistant_at("An answer.", &harness::now_minus(at - 5));
+    }
+    stores.qoder_session(WRITE_QODER, &qoder);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3161, &base, Some(&stores), true);
+    const WHY: &str = "Can't write here: only Claude and Codex sessions take messages here.";
+
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1280.0, 900.0);
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={WRITE_QODER}"));
+    harness::until(
+        &tab,
+        "document.body.dataset.write === 'open' && !!document.querySelector('.transcript .turn.user')",
+        "the paired page to open on the Qoder session",
+        Duration::from_secs(20),
+        WRITE_FACTS,
+    );
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composeFab').classList.contains('show') && document.getElementById('composeFab').classList.contains('disabled') && document.getElementById('writeNotice').classList.contains('show')",
+        "write mode to keep the Qoder session's compose button, greyed, with the reason beside it",
+        Duration::from_secs(10),
+        WRITE_FACTS,
+    );
+    let blocked = write_facts(&tab);
+    assert!(
+        blocked["notice"] == WHY && blocked["fabTitle"] == WHY,
+        "the reason beside the button and in its title: {blocked}"
+    );
+    harness::eval(&tab, "document.getElementById('composeFab').click(); 'ok'");
+    harness::until(
+        &tab,
+        &format!("document.getElementById('toast').classList.contains('show') && document.getElementById('toast').textContent === {WHY:?}"),
+        "a click on the greyed button to say why",
+        Duration::from_secs(5),
+        WRITE_FACTS,
+    );
+    assert_eq!(
+        write_facts(&tab)["composing"],
+        false,
+        "the click opened no compose box"
+    );
+    // A new page load starts with write mode off, as every load does.
+    m.open(&tab, &format!("?ui=app&session={WRITE_SID}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user') && document.getElementById('writeSwitch').getAttribute('aria-checked') === 'false'",
+        "the Claude session to open",
+        Duration::from_secs(20),
+        WRITE_FACTS,
+    );
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user') && document.getElementById('composeFab').classList.contains('show') && !document.getElementById('composeFab').classList.contains('disabled') && !document.getElementById('writeNotice').classList.contains('show')",
+        "a Claude session to offer its compose button, with no reason beside it",
+        Duration::from_secs(20),
+        WRITE_FACTS,
+    );
+
+    // A phone: ✎ stays in the dock, greyed, and a tap says why.
+    let (_phone_browser, phone) = harness::chrome_tab();
+    harness::phone(&phone, 390, 844);
+    m.pair(&phone);
+    m.open(&phone, &format!("?ui=app&session={WRITE_QODER}"));
+    harness::until(
+        &phone,
+        "document.getElementById('app').classList.contains('mobile-detail') && !!document.querySelector('.transcript .turn.user')",
+        "the phone to open on the Qoder session",
+        Duration::from_secs(20),
+        "document.getElementById('app').className",
+    );
+    harness::eval(
+        &phone,
+        "document.getElementById('writeSwitch').click(); 'ok'",
+    );
+    harness::until(
+        &phone,
+        &format!("(function(){{ var b = document.getElementById('dockCompose'); return !b.hidden && ({PHONE_HITTABLE})(b) && b.classList.contains('blocked') && b.getAttribute('aria-disabled') === 'true'; }})()"),
+        "✎ to stay in the dock, greyed",
+        Duration::from_secs(10),
+        WRITE_FACTS,
+    );
+    let dock = write_facts(&phone);
+    assert_eq!(
+        dock["dock"]["label"], WHY,
+        "✎ says why to a screen reader: {dock}"
+    );
+    assert_eq!(
+        dock["notice"],
+        serde_json::Value::Null,
+        "a phone shows no notice beside the dock: {dock}"
+    );
+    phone_tap(&phone, "#dockCompose");
+    harness::until(
+        &phone,
+        &format!("document.getElementById('toast').classList.contains('show') && document.getElementById('toast').textContent === {WHY:?}"),
+        "a tap on the greyed ✎ to say why",
+        Duration::from_secs(5),
+        WRITE_FACTS,
+    );
+    assert!(
+        !harness::eval(
+            &phone,
+            "document.getElementById('sessionView').classList.contains('composing')"
+        )
+        .as_bool()
+        .unwrap_or(true),
+        "the tap opened no reply box"
+    );
+
+    // A page whose server serves no writes, as a reads-only host's says (`data-write="host"`):
+    // the page's own code draws it from that attribute alone.
+    let (_host_browser, host) = harness::chrome_tab();
+    harness::resize(&host, 1280.0, 900.0);
+    m.pair(&host);
+    {
+        use headless_chrome::protocol::cdp::Page;
+        host.call_method(Page::AddScriptToEvaluateOnNewDocument {
+            source: "document.addEventListener('readystatechange', function () { if (document.readyState === 'interactive' && document.body) document.body.dataset.write = 'host'; });".to_string(),
+            world_name: None,
+            include_command_line_api: None,
+            run_immediately: None,
+        })
+        .expect("the host's word is set before the page's scripts run");
+    }
+    m.open(&host, &format!("?ui=app&session={WRITE_SID}"));
+    harness::until(
+        &host,
+        "document.body.dataset.write === 'host' && !!document.querySelector('.transcript .turn.user') && !document.getElementById('writeReason').hidden",
+        "a reads-only page to open, its switch saying why",
+        Duration::from_secs(20),
+        WRITE_FACTS,
+    );
+    let reads = write_facts(&host);
+    assert!(
+        reads["disabled"] == "true"
+            && reads["pair"] == false
+            && reads["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("This page only reads sessions")),
+        "a reads-only page's switch is disabled, says why and offers no pairing: {reads}"
+    );
+    harness::eval(
+        &host,
+        "document.getElementById('writeSwitch').click(); 'ok'",
+    );
+    let help = write_facts(&host);
+    assert!(
+        help["checked"] == "false"
+            && help["help"]
+                .as_str()
+                .is_some_and(|h| h.contains("This page does not write"))
+            && !help["fab"].as_str().unwrap_or_default().contains("show"),
+        "a click turns nothing on and says the page does not write: {help}"
+    );
+}
