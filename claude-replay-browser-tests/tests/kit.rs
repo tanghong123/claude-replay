@@ -1078,13 +1078,15 @@ fn groups_by_machine_from_the_filter(phone: bool, here_port: u16, there_port: u1
             .is_some_and(|head| head.starts_with("b:not answering since ")),
         "its head says since when it has not answered: {stopped}"
     );
-    // A list too narrow for both: the note gives way first, so the machine keeps its whole name, and
-    // enough of the note shows for its colour to say the machine stopped (#s561's walk: an iPad's
-    // 320px list cut both). Narrowed and put back in one read, so no frame draws it; the note shrinking
-    // as the name does (the rule before) cuts the name there, so the width is narrow enough to tell.
+    // A list too narrow for both: the note gives way, so the machine keeps its name to the fraction of
+    // a pixel it had at the host's width, its head draws nothing past its edge, and enough of the note
+    // shows for its colour to say the machine stopped (#s561's walk: an iPad's 320px list cut both).
+    // Narrowed and put back in one read, so no frame draws it: this reads the CSS alone, not a class
+    // the list's script sets on a resize. The note shrinking as the name does (the rule before) cuts
+    // the name there, so the width is narrow enough to tell.
     let narrow = harness::probe(
         &tab,
-        "(function () { var host = document.querySelector('.host-sessions'); host.style.width = '240px'; var g = document.querySelector('#tree .tree-machine-group[data-machine=\"b\"]'), name = g.querySelector('.tree-machine-name'), note = g.querySelector('.tree-machine-note'); var seen = { nameWhole: name.scrollWidth <= name.clientWidth + 1, noteCut: note.scrollWidth > note.clientWidth + 1, noteWide: note.clientWidth >= 30, inside: g.getBoundingClientRect().right <= document.getElementById('sessionList').getBoundingClientRect().right + 0.5, name: name.clientWidth + '/' + name.scrollWidth, note: note.clientWidth + '/' + note.scrollWidth }; note.style.flex = '0 1 auto'; note.style.minWidth = '0'; seen.evenShareCutsName = name.scrollWidth > name.clientWidth + 1; note.style.flex = ''; note.style.minWidth = ''; host.style.width = ''; return seen; })()",
+        "(function () { var host = document.querySelector('.host-sessions'); var g = document.querySelector('#tree .tree-machine-group[data-machine=\"b\"]'), name = g.querySelector('.tree-machine-name'), note = g.querySelector('.tree-machine-note'); var whole = name.getBoundingClientRect().width; host.style.width = '240px'; var seen = { nameWhole: name.getBoundingClientRect().width === whole && name.scrollWidth <= name.clientWidth + 1, noteCut: note.scrollWidth > note.clientWidth + 1, noteWide: note.clientWidth >= 30, inside: g.scrollWidth <= g.clientWidth + 1, name: whole + ' then ' + name.getBoundingClientRect().width + ' (' + name.clientWidth + '/' + name.scrollWidth + ')', note: note.clientWidth + '/' + note.scrollWidth }; note.style.flex = '0 1 auto'; note.style.minWidth = '0'; seen.evenShareCutsName = name.scrollWidth > name.clientWidth + 1; note.style.flex = ''; note.style.minWidth = ''; host.style.width = ''; return seen; })()",
     );
     assert_eq!(
         (
