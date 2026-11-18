@@ -2422,7 +2422,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /data-task-open="\$\{index\}" title="Task details" aria-haspopup="dialog"/, "a row opens the details");
   assert.doesNotMatch(shellSource, /class="work-task-head" \$\{nav\}/, "…and no longer jumps by itself");
   assert.match(viewSource, /class="task-popover-jump" data-task-record="\$\{d\.target\}"/, "the jump is an action inside the popover");
-  assert.match(viewSource, /if \(event\.key === "Escape" && !taskPopover\.hidden\)/, "Escape dismisses it");
+  assert.match(viewSource, /if \(viewEscape\(event\) && !taskPopover\.hidden\)/, "Escape dismisses it, while the reader works in the view (#s535)");
   assert.match(viewSource, /if \(restoreFocus && taskPopoverOpener\?\.isConnected\) taskPopoverOpener\.focus\(\);/, "focus returns to the row");
   console.log("#60 task details cases passed");
 }
@@ -5172,8 +5172,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // keymap is one table for both pages: the offline pages inline it, so a change to it moves the
   // byte gate's pages too (#s509 changed it).
   assert.match(viewSource, /if \(keyboardMode === "engaged"\) \{/, "the view binds its own keys only when engaged");
-  assert.match(viewSource, /const engage = event => \{ engaged = inView\(event\.target\) && !inGuest\(event\.target\); \};/, "engagement is the last press or focus inside the view and outside its guest");
-  assert.match(viewSource, /const inView = target => !!target && typeof target\.closest === "function" && element\.contains\(target\);/, "inside the view is inside its element");
+  assert.match(viewSource, /const engage = event => \{ engaged = inView\(event\.target\); \};/, "engagement is the last press or focus inside the view and outside its guest");
+  assert.match(viewSource, /const inView = target => !!target && typeof target\.closest === "function" && element\.contains\(target\) && !inGuest\(target\);/, "inside the view is inside its element and outside its guest (#s560: an Escape the browser hands to the view is the view's too)");
   // #s431 stage 4: the task card and its dim are drawn in the view's element, so they are inside it.
   assert.match(viewSource, /\nelement\.append\(taskScrim, taskPopover\);\n/, "the task card and its dim are the view's");
   assert.doesNotMatch(viewSource, /viewRoot\.layer\(\)\.append\(taskScrim/, "and float over the page no longer");
@@ -5216,7 +5216,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // document, the view's element, a host's node and a guest. The task card is a node in the view's
   // element like any other since stage 4 (`element.append(taskScrim, taskPopover)`, held above), so
   // the view's node stands for it here.
-  const engagement = /^let engaged = keyboardMode === "page";\nif \(keyboardMode === "engaged"\) \{\n[\s\S]*?\n\}\n/m.exec(viewSource);
+  const engagement = /^let engaged = keyboardMode === "page";\nconst inView = [^\n]*\nif \(keyboardMode === "engaged"\) \{\n[\s\S]*?\n\}\n/m.exec(viewSource);
   const keymap = /^if \(keyboardMode === "engaged"\) \{\n  document\.addEventListener\("keydown"[\s\S]*?\n\}\n/m.exec(viewSource);
   assert.ok(engagement && keymap, "the view's engagement and its engaged keymap are where the contract reads them");
   const node = (inside, guest = false) => ({ tagName: "DIV", closest: sel => (sel === "[data-guest-keys]" && guest ? {} : null), inside });

@@ -13193,9 +13193,11 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
         "{narrow}"
     );
     no_footer(&narrow);
+    // A press before the click, as a reader's own click has (#s535: the view's Escape closes its
+    // layers only while the reader works in it, and a script's click alone engages nothing).
     harness::eval(
         &tab,
-        "document.getElementById('phonePane-turns').click(); 'ok'",
+        "var t = document.getElementById('phonePane-turns'); t.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })); t.click(); 'ok'",
     );
     let panel = harness::probe(&tab, "(function(){ var m = document.getElementById('phonePaneMenu'), w = document.querySelector('#sessionView .workspace'), b = m.getBoundingClientRect(), wb = w.getBoundingClientRect(), bar = w.querySelector('.topbar').getBoundingClientRect(); return { shown: !m.hidden && b.width > 0, inCard: m.parentElement === w, width: Math.round(b.width), gap: Math.round(wb.right - b.right), below: b.top >= bar.bottom, rows: m.querySelectorAll('.outline-turn-row').length }; })()");
     assert_eq!(panel["shown"], true, "{panel}");

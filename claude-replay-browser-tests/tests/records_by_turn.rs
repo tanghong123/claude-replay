@@ -896,8 +896,18 @@ fn a_pull_in_flight_when_the_session_starts_over_leaves_no_empty_slot() {
         Some("[]"),
         "no error after the late reply (the old store applied it to the emptied one and left empty slots)"
     );
-    release_until(&tab, WHOLE, "the head to be read whole after the start over");
-    harness::until(&tab, drawn, "the open turn drawn again", Duration::from_secs(10), STATE);
+    release_until(
+        &tab,
+        WHOLE,
+        "the head to be read whole after the start over",
+    );
+    harness::until(
+        &tab,
+        drawn,
+        "the open turn drawn again",
+        Duration::from_secs(10),
+        STATE,
+    );
     let whole = state(&tab);
     assert_eq!(whole["rows"], 61, "{whole}");
     assert_eq!(
