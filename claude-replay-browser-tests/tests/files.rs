@@ -2032,25 +2032,47 @@ fn a_touch_screen_beside_the_list_reveals_nothing_on_a_hover_inside_a_record() {
     let away = centre("#sessionList");
     tab.move_mouse_to_point(headless_chrome::browser::tab::point::Point { x: away.x, y: 8.0 })
         .unwrap();
-    let force = |target: &str, on: bool| {
-        use headless_chrome::protocol::cdp::CSS;
-        let chain = eval(&tab, &format!("(function(){{ var e = document.querySelector({target:?}), n = 0; for (; e; e = e.parentElement) e.setAttribute('data-hk-hover', n++); return n; }})()"))
+    // The chain's node ids, read in ONE document request: headless_chrome's `find_element` asks
+    // for the document each time, which renumbers the DOM agent's nodes and drops the state forced
+    // on the ones before (only `<html>`, forced last, kept its hover). CSS.forcePseudoState needs
+    // the CSS agent, which needs the DOM agent first (Linux's Chrome refuses CSS.enable without
+    // it; the Mac's took it).
+    let chain = |target: &str| -> Vec<headless_chrome::protocol::cdp::DOM::NodeId> {
+        use headless_chrome::protocol::cdp::{CSS, DOM};
+        let n = eval(&tab, &format!("(function(){{ document.querySelectorAll('[data-hk-hover]').forEach(function (e) {{ e.removeAttribute('data-hk-hover'); }}); var e = document.querySelector({target:?}), n = 0; for (; e; e = e.parentElement) {{ e.setAttribute('data-hk-hover', ''); n++; }} return n; }})()"))
             .as_i64()
             .unwrap_or_else(|| panic!("{target} is drawn, to give a tap's hover"));
-        // CSS.forcePseudoState needs the CSS agent, which needs the DOM agent first (Linux's Chrome
-        // refuses CSS.enable without it; the Mac's took it).
-        tab.call_method(headless_chrome::protocol::cdp::DOM::Enable {
+        tab.call_method(DOM::Enable {
             include_whitespace: None,
         })
         .expect("the DOM agent is enabled");
         tab.call_method(CSS::Enable(None))
             .expect("the CSS agent is enabled");
-        for i in 0..chain {
-            let node = tab
-                .find_element(&format!("[data-hk-hover='{i}']"))
-                .unwrap_or_else(|e| panic!("{target}'s ancestor {i}: {e}"))
-                .node_id;
-            tab.call_method(CSS::ForcePseudoState {
+        let root = tab
+            .call_method(DOM::GetDocument {
+                depth: Some(0),
+                pierce: Some(false),
+            })
+            .expect("the document")
+            .root
+            .node_id;
+        let ids = tab
+            .call_method(DOM::QuerySelectorAll {
+                node_id: root,
+                selector: "[data-hk-hover]".to_string(),
+            })
+            .expect("the tapped element and its ancestors")
+            .node_ids;
+        assert_eq!(
+            ids.len() as i64,
+            n,
+            "{target} and every element above it are found"
+        );
+        ids
+    };
+    let force = |ids: &[headless_chrome::protocol::cdp::DOM::NodeId], on: bool| {
+        for &node in ids {
+            tab.call_method(headless_chrome::protocol::cdp::CSS::ForcePseudoState {
                 node_id: node,
                 forced_pseudo_classes: if on {
                     vec!["hover".to_string()]
@@ -2060,19 +2082,18 @@ fn a_touch_screen_beside_the_list_reveals_nothing_on_a_hover_inside_a_record() {
             })
             .unwrap();
         }
-        if !on {
-            eval(&tab, "document.querySelectorAll('[data-hk-hover]').forEach(function (e) { e.removeAttribute('data-hk-hover'); }); 1");
-        }
     };
     let revealed = |target: &str| -> Vec<String> {
         std::thread::sleep(Duration::from_millis(400));
         let before: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str(eval(&tab, VIEW_ELEMENTS).as_str().unwrap_or("{}")).unwrap();
-        force(target, true);
+        let ids = chain(target);
+        force(&ids, true);
         std::thread::sleep(Duration::from_millis(400));
         let after: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str(eval(&tab, VIEW_ELEMENTS).as_str().unwrap_or("{}")).unwrap();
-        force(target, false);
+        force(&ids, false);
+        eval(&tab, "document.querySelectorAll('[data-hk-hover]').forEach(function (e) { e.removeAttribute('data-hk-hover'); }); 1");
         // Hidden before and still there, shown now: an element the page drew or dropped meanwhile
         // is not a hover's reveal.
         before
