@@ -2642,7 +2642,7 @@ function fitSearchField() {
   if (!searchField || !fieldMeasure) return;
   const input = byId("transcriptSearchInput");
   const hint = input.dataset.hint || input.placeholder;
-  if (!viewRoot.$(".header-searchbox")?.classList.contains("phone-open")) { input.style.width = ""; input.placeholder = hint; return; }
+  if (!viewRoot.$(".header-searchbox")?.classList.contains("phone-open")) { input.style.width = ""; input.placeholder = hint; fitDeskSearch(input); return; }
   const cs = getComputedStyle(input);
   fieldMeasure.style.font = cs.font; fieldMeasure.style.letterSpacing = cs.letterSpacing;
   const chips = searchChips.classList.contains("has-chips") ? searchChips.getBoundingClientRect().width + 4 : 0;
@@ -2660,6 +2660,31 @@ function fitSearchField() {
   const text = Math.ceil(fieldMeasure.getBoundingClientRect().width) + 8;
   input.style.width = `${Math.max(room, text)}px`;
   if (input.selectionStart === input.value.length) searchField.scrollLeft = searchField.scrollWidth;
+}
+/** Above a phone the box in use asks for the room its query needs (#s520): its chips and its text,
+ *  measured as a phone's field is, beside the box's own controls. The title gives way first, down to
+ *  120px (or its whole name, if shorter), and the box takes no more than that leaves. A fixed floor of
+ *  400px left `uo(R): needle` 17px short at a 1100px window on a Mac and short on Linux's wider fonts,
+ *  since the count names the scope too ("2 hits in uo(R)"). Only the floor's rule reads
+ *  `--search-floor` (production.css, #s520), so it means nothing on a phone or in the bar the outline's
+ *  glyphs join, and it is worked out again from the floor that rule gives without it. */
+function fitDeskSearch(input) {
+  const cluster = viewRoot.$(".header-search-cluster");
+  if (!cluster) return;
+  cluster.style.removeProperty("--search-floor");
+  if (!input.value || sessionView.classList.contains("pl-phone") || sessionView.classList.contains("pl-outline-bar")) return;
+  const cs = getComputedStyle(input);
+  fieldMeasure.style.font = cs.font; fieldMeasure.style.letterSpacing = cs.letterSpacing;
+  fieldMeasure.textContent = input.value;
+  const text = Math.ceil(fieldMeasure.getBoundingClientRect().width) + 8;
+  const gap = parseFloat(getComputedStyle(searchField).columnGap) || 0;
+  const chips = searchChips.classList.contains("has-chips") ? searchChips.scrollWidth + gap : 0;
+  const box = cluster.getBoundingClientRect().width;
+  const need = Math.ceil(box - searchField.getBoundingClientRect().width + chips + text);
+  if (need <= box) return;
+  const title = byId("sessionTitle");
+  const give = title ? Math.max(0, title.getBoundingClientRect().width - Math.min(120, title.scrollWidth)) : 0;
+  cluster.style.setProperty("--search-floor", `${Math.floor(Math.min(need, box + give))}px`);
 }
 addEventListener("resize", () => fitSearchField(), { signal });
 // The strip's room changes without the window's (#s516): the magnifier gives way while the field holds

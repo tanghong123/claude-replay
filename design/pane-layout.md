@@ -454,7 +454,9 @@ screen up to 760px):
   title keeps at least its first word (at most 160px), the crumb, the chip and the resting search
   box (down to 150px) giving way first. While the search is in use or holds a query, above a 900px
   window and outside that bar, the order turns round: the title gives way first and the box keeps
-  at least 400px, less where the bar cannot spare it, so the query keeps a field to show in.
+  at least 400px, less where the bar cannot spare it, so the query keeps a field to show in. With a
+  query it keeps what the query needs (its chips, its text and the box's own controls, measured),
+  the title giving way down to 120px.
 
 **Who decides what.** The view decides its own parts from its own box (#s461): whether it is the phone
 reader, the pane, the glyphs, the outline, and how the slack splits between the session and the pane
