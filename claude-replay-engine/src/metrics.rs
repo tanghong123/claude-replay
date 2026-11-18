@@ -65,6 +65,14 @@ pub struct RuntimeInfo {
     /// `version` on every record); last value wins, like every field here.
     #[serde(default)]
     pub client_version: Option<String>,
+    /// The model the person picked in the client, when the transcript's `runtime-config`
+    /// head names it: the Qoder family writes its picker's key there (`qmodel_latest`,
+    /// `qfmodel`, …) while its assistant records name the router ("auto") instead, so the
+    /// head is the reliable place the selection is written (the per-turn
+    /// `businessModelKey` carries it too where present). Last value wins, like every field
+    /// here; an empty or absent head model names nothing.
+    #[serde(default)]
+    pub model: Option<String>,
     /// Which of this snapshot's facts the agent's transcript FORMAT records at all, by the
     /// wire's own key names (`context`, `effort`, `mode`, `sandbox`, `approvals`, `permission`,
     /// `tier`, `plan`, `client`) — declared by the family's accumulator, so a presenter can

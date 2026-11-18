@@ -33,7 +33,8 @@ pub(crate) struct Home {
 /// `workspace-directories` {directories: list} and `worktree-state` {worktreeSession: null so far} —
 /// bookkeeping; `active-leaf` {leafUuid, explicit, timestamp, compactBoundaryUuid?} — names the live
 /// branch of a rewound conversation, which the page does not draw as branches (revisit if it ever
-/// does). None carries anything the page renders.
+/// does). `runtime-config.model` is read by the metrics fold: a reply naming the router buckets
+/// under the head's selection; the other records carry nothing the page renders.
 pub(crate) const FAMILY_RECORD_TYPES: &[&str] = &[
     "active-leaf",
     "runtime-config",
@@ -111,17 +112,20 @@ pub(crate) const FAMILY_RECORD_KEYS: &[&str] = &[
     "queue_max_wait_ms",
     "service_available",
     // Qwenwork 1.1.71 (#s228, measured 2026-10-23): only on the user records that open a turn,
-    // naming the model the turn was sent to, which `runtime-config.model` and the reply's
-    // `message.model` already say. Revisit if it ever differs from the model (then it may be worth
-    // drawing, the owner's call) or turns up on a tool result, an `isMeta` or a non-user record.
+    // naming the model the turn was sent to. Where present it matched the `runtime-config`
+    // head's selection on every keyed turn (12/12 across three switch sessions, 2026-11-18),
+    // but some turn-openers carry no key at all (2 of 3 in one session), so the metrics fold
+    // reads the head, which the client rewrites on every picker change. Revisit if the key
+    // turns up on a tool result, an `isMeta` or a non-user record.
     "businessModelKey",
     // #s468 (the Qoder desktop app, client 1.1.86-hotfix.2, measured 2026-11-13 on hong-devserver,
     // one session in the Qoder store, keys and value types only): an object `{product: "app",
     // type: "agent", id, model_key: "auto"}` on the 2 user records that open a turn, beside
     // `businessModelKey` "auto", its `id` the record's `requestSetId`. The sibling of
-    // `businessModelKey`: the product surface and the model key the turn was sent with, where the
-    // reply's `message.model` names the model that answered. REVISIT if `model_key` names a
-    // concrete model that differs from the reply's, or the key turns up on another record type.
+    // `businessModelKey`: the product surface and the model key the turn was sent with, where
+    // the reply's `message.model` names the router for this family (the fold resolves it
+    // through the head). REVISIT if `model_key` names a concrete model that differs from the
+    // head's selection, or the key turns up on another record type.
     "businessIdentity",
     // #s468 (same session): a uuid string on every assistant record (28), constant over the
     // records of one API answer and paired one to one with `requestId`, which already groups an
