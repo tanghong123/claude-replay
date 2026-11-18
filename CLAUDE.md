@@ -45,7 +45,9 @@ and any other is refused, and the contract's mount interface cases hold them): `
 optional controls by name (`reading`, `history`, `detach`, each shown unless `false`, booleans only;
 a control off is not drawn and takes no key; the app passes none); and `keyboard`, `"engaged"` by
 default (the view binds its keymap in the capture phase and answers, as the pane's image viewer
-does, only while the reader's last press or focus is inside it, as mdrev does) or `"page"`, the
+does, only while the reader's last press or focus is inside it, as mdrev does, and so does the
+Escape that closes its layers, except a layer a hover holds open and an Escape the focus inside
+the view receives, #s535, #s560) or `"page"`, the
 app's: the view binds none and the app's one keymap at the document routes keys to the handle's
 `keys`; and `room`, a function answering how much wider the host could make the view by narrowing
 what it lays beside it (the app: its list's width less 232; 0 without it, #s476). What the view
@@ -271,7 +273,10 @@ never wraps (#352, `a_phone_dock_keeps_one_row_with_a_query_and_a_chip`): the CL
 is its count, steps and ✕ — its chips (a scope chip is its letters alone, a tool chip wears a wrench;
 the word visually hidden, #353) wait in the open box. There the chips and the field are ONE strip
 (`.search-field`, wrapped at load) that scrolls as a whole, the field as wide as its text, so the end
-being typed stays in view; the count hangs as a tag ABOVE the find pill at its left; and the step
+being typed stays in view (an EMPTY field fills the strip from its start and shows the whole hint, or
+the first of "Search this session" and "Search" that fits, refitted by the strip's resize observer as
+the magnifier gives way while the field holds the focus, #s516: the hint cut its first letters on a 17 Pro
+upright); the count hangs as a tag ABOVE the find pill at its left; and the step
 arrows are SVG, centred. A tool chip is its wrench and the tools' own single-character
 selectors (`o(B)` reads "B", #355), and beside chips the field shows no placeholder. **The query is
 ONE prefix at the start of the box** (#367, `design/in-session-search.md` §9): letters u a t o w
@@ -1528,9 +1533,12 @@ merge path** (owner, 2026-10-16): the owner's agent reviews a teammate's change 
 risk, approves and lands it under the owner's account without asking, once all three hold:
 
 1. **Reviewed twice.** The agent's own review: the gates below, the browser cases the change
-   touches, the whole local browser suite for a change to page code, and an iOS Simulator walk for a
-   phone UI change. Then an independent review of the exact head commit by a fresh subagent or
-   another agent, never the session that lands it. Every thread on the change is answered.
+   touches, and an iOS Simulator walk for a phone UI change. Then an independent review of the exact
+   head commit by a fresh subagent or another agent, never the session that lands it. Every thread
+   on the change is answered. For a change to page code the whole local browser suite runs ONCE, on
+   the head that lands (main merged in), and a review round before that leans on CI's browser legs on
+   the change (the owner, 2026-11-18: the local Mac suite once per landing, review rounds on CI Linux
+   through draft PRs).
 2. **Green.** CI passed on that exact head: `fmt · clippy · test`, `secrets · blocked emails`,
    `version guard` and `browser (real Chrome)`.
 3. **Current.** main is merged in (or the branch rebased onto it), and the result is still green.
