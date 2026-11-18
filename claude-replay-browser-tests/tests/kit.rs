@@ -188,10 +188,173 @@ fn a_page_mounts_both_components_from_the_kit_alone_and_reads_a_session() {
         serde_json::json!([]),
         "every script and stylesheet is the kit's: {loaded}"
     );
-    let modules = claude_monitor::kit::modules().unwrap().len();
+    // The modules the first entry imports: the second entry's (the app's mount) are not this page's.
+    let modules = claude_monitor::kit::component_modules().unwrap().len();
     assert!(
         loaded["kit"].as_u64().unwrap_or(0) as usize > modules,
         "the page loaded the kit's entry and its {modules} modules: {loaded}"
+    );
+}
+
+/// A page of the native app's kind (#s551, design/app-mount.md, stage 2), written from the design alone,
+/// since the guide offers none of it: the app's three stylesheets in order, the viewport meta with
+/// `viewport-fit=cover`, the Mermaid runtime the view reads, an empty wrapper, and the kit's second
+/// entry. Before it mounts, it makes two calls the mount must refuse (an option no stage takes yet, and
+/// no backend); then it mounts with a server and a version of its own, which its body does not carry:
+/// a paired server where the page's own handle would say unpaired, whose every `fetch` it counts, and
+/// a version the page names nowhere. Then a second mount, which must throw.
+const APP_HOST: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>The web app from the kit</title>
+<meta name="mermaid-runtime" content="{{MERMAID}}">
+<link rel="stylesheet" href="/kit/bundle/app-shell.css">
+<link rel="stylesheet" href="/kit/bundle/session-list.css">
+<link rel="stylesheet" href="/kit/bundle/session-view.css">
+</head>
+<body>
+<div id="appRoot"></div>
+<script type="module">
+const host = window.__host = { mounted: false, error: null, refused: [], again: null, asks: [], errors: [] };
+addEventListener("error", event => host.errors.push(String(event.message)));
+addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
+const refusal = run => { try { run(); return null; } catch (error) { return String(error && error.message || error); } };
+try {
+  const native = await import("/kit/bundle/native-app.js");
+  host.exports = Object.keys(native).sort();
+  const { backendHandle } = await import("/kit/bundle/index.js");
+  const server = backendHandle({ paired: true });
+  const backend = { ...server, fetch: (path, init) => { host.asks.push(String(path).split("?")[0]); return server.fetch(path, init); } };
+  const root = document.getElementById("appRoot");
+  host.refused.push(refusal(() => native.mountApp(root, { backend, machines: [] })));
+  host.refused.push(refusal(() => native.mountApp(root, { version: "9.9.9-kit" })));
+  native.mountApp(root, { backend, version: "9.9.9-kit" });
+  host.again = refusal(() => native.mountApp(document.createElement("div"), { backend }));
+  host.mounted = true;
+} catch (error) {
+  host.error = String(error && error.stack || error);
+}
+</script>
+</body>
+</html>
+"#;
+
+/// #s551 stage 2 — the web app mounted from the kit alone (its second entry, `native-app.js`), on a page
+/// of its own: a refused call draws nothing and the next is taken; the app's shell is drawn into the
+/// wrapper, which draws no box, so `#app` fills the window as on the monitor's page; the list fills
+/// from the mount's own server and the mount opens its first session in the view, which reads it;
+/// the brand names the mount's version and write mode reads the mount's server as paired, where the
+/// page's body says neither; a second mount throws; and every script and stylesheet the page loaded
+/// is the kit's.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_web_app_mounts_from_the_kits_second_entry_with_its_own_server_and_version() {
+    let _serial = serial();
+    let base = base("kit-app-host");
+    let stores = Stores::new(&base);
+    stores.claude_session(
+        SID,
+        &(harness::user_at(
+            "where do the terns nest this spring?",
+            &harness::rfc3339_secs_ago(120),
+        ) + &harness::assistant_at(
+            "on the north spit, past the second dune",
+            &harness::rfc3339_secs_ago(60),
+        )),
+    );
+    let monitor = Monitor::spawn(Kind::V1, 3314, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let mut answers = kit_answers();
+    answers.push(Answer {
+        pattern: "*/native-app-host*".into(),
+        path: "/native-app-host".into(),
+        content_type: "text/html; charset=utf-8".into(),
+        body: APP_HOST.replace("{{MERMAID}}", claude_replay_html::mermaid_runtime_path()),
+    });
+    harness::answer_in_browser(&tab, answers);
+    tab.navigate_to(&monitor.url("native-app-host")).unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "!!(window.__host && (window.__host.mounted || window.__host.error))",
+        "the page to mount the web app from the kit",
+        Duration::from_secs(20),
+        "JSON.stringify(window.__host || null)",
+    );
+    harness::until(
+        &tab,
+        "(document.getElementById('transcript') || {}).innerText.includes('past the second dune')",
+        "the mount to open its first session and the view to read it",
+        Duration::from_secs(30),
+        "JSON.stringify({ host: window.__host, list: (document.getElementById('sessionList') || {}).innerText, transcript: (document.getElementById('transcript') || {}).innerText.slice(0, 300) })",
+    );
+    let mounted = harness::probe(
+        &tab,
+        "(function () { var root = document.getElementById('appRoot'), app = document.getElementById('app'), r = app.getBoundingClientRect(); return { error: window.__host.error, exports: window.__host.exports, refused: window.__host.refused, again: window.__host.again, wrapper: root.className, contents: getComputedStyle(root).display, children: [].map.call(root.children, function (e) { return e.id; }), fills: Math.round(r.left) === 0 && Math.round(r.top) === 0 && Math.round(r.width) === innerWidth && Math.round(r.height) === innerHeight, brand: document.querySelector('.brand small').textContent, address: new URLSearchParams(location.search).get('session') }; })()",
+    );
+    let row = harness::probe(
+        &tab,
+        &format!(
+            "!!document.querySelector('#sessionList .tree-row.session[data-session=\"{SID}\"]')"
+        ),
+    );
+    let asks_before_write = harness::probe(&tab, "window.__host.asks.slice()");
+    let write = harness::probe(
+        &tab,
+        "(function () { var info = document.getElementById('writeInfo').hidden; document.getElementById('writeSwitch').click(); return { infoHidden: info, on: document.getElementById('writeSwitch').getAttribute('aria-checked'), help: !document.getElementById('writeHelp').classList.contains('show') }; })()",
+    );
+    let loaded = harness::probe(
+        &tab,
+        "(function () { var names = performance.getEntriesByType('resource').map(function (e) { return new URL(e.name).pathname; }); return { monitorUi: names.filter(function (p) { return p.indexOf('/monitor-ui/') >= 0; }), notKit: names.filter(function (p) { return /\\.(js|css)$/.test(p) && p.indexOf('/kit/bundle/') !== 0; }), mount: names.indexOf('/kit/bundle/app-mount.js') >= 0 && names.indexOf('/kit/bundle/app-shell-markup.js') >= 0 && names.indexOf('/kit/bundle/app-shell.css') >= 0, errors: window.__host.errors }; })()",
+    );
+    drop(monitor);
+    assert_eq!(
+        mounted,
+        serde_json::json!({
+            "error": null,
+            "exports": ["mountApp"],
+            "refused": [
+                "mountApp takes no option named machines; its options are backend, version",
+                "mountApp needs its backend: the server the web app reads, as a backend handle (backendHandle())",
+            ],
+            "again": "mountApp draws the web app once per page, and this page holds it already",
+            "wrapper": "app-mount",
+            "contents": "contents",
+            "children": ["app", "searchLayer", "confirmLayer", "toast"],
+            "fills": true,
+            "brand": "v9.9.9-kit",
+            "address": SID,
+        }),
+        "the kit's second entry gives the mount alone, which refuses before it draws, draws the app's \
+         shell into the wrapper, opens the first session and names the mount's version"
+    );
+    assert_eq!(
+        row,
+        serde_json::json!(true),
+        "the session is listed in the mount's list"
+    );
+    let asks: Vec<String> = serde_json::from_value(asks_before_write).unwrap();
+    assert!(
+        asks.iter().any(|path| path == "/api/sessions"),
+        "the list reads its index through the mount's own server: {asks:?}"
+    );
+    assert!(
+        asks.iter().any(|path| path == "/pull"),
+        "and the view its session's records: {asks:?}"
+    );
+    assert_eq!(
+        write,
+        serde_json::json!({ "infoHidden": true, "on": "true", "help": true }),
+        "write mode reads the mount's server as paired, where the page's body says nothing"
+    );
+    assert_eq!(
+        loaded,
+        serde_json::json!({ "monitorUi": [], "notKit": [], "mount": true, "errors": [] }),
+        "every script and stylesheet is the kit's, the mount and the app's stylesheet among them"
     );
 }
 
