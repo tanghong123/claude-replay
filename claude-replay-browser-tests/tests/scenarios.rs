@@ -1793,12 +1793,21 @@ fn app_shell_pages_and_steps_around_a_deep_jump() {
 /// before it settles on the second (or on whatever the engine wrote since). Chrome never does, so the
 /// shim hooks the scroller's `scrollTop` setter: once armed, the engine's write after its first puts
 /// the first back on the next task with its scroll event, and 12ms later the latest, with its own.
-/// WebKit did it for writes 10ms apart; the shim takes any gap (`gap` records it), because a loaded
-/// headless tab can be several frames between the two, and the echo, not the gap, is what the engine
-/// must survive (an 80ms window missed the second write in half the runs on a busy Mac). Once per
-/// arming, so it plays one echo and cannot feed on its own writes. A case's `next`, set after arming,
-/// runs in the frame after the engine's first write: the growth that makes the second.
+/// Only where a browser could: WebKit did it for writes 0-50ms apart, the earlier offset coming back
+/// up to 26ms after the later write, and the engine takes an echo within `ECHO_MS` (120ms) of both.
+/// So the shim plays one only for two writes within `ECHO_WINDOW_MS` of each other, and only while it
+/// can still play it within as much of the second; a pair a loaded headless tab spaced further apart
+/// (a frame there can take a second) is set aside in `skips`, and the case grows the content again.
+/// Playing any gap made the case fail on the head: an "echo" a second late is the reader's move as
+/// far as any engine can tell. Once per arming, so it plays one echo and cannot feed on its own
+/// writes. A case's `next`, set after arming, runs in the frame after the engine's first write: the
+/// growth that makes the second.
+/// How close the engine's two writes, and the echo after the second, must come for the shim to play
+/// it (`echo_shim`): inside the engine's own `ECHO_MS`, 120ms.
+const ECHO_WINDOW_MS: u32 = 100;
+
 fn echo_shim(surface: Surface) -> String {
+    let window = ECHO_WINDOW_MS;
     let (scroller, target) = match surface {
         Surface::Classic => ("document.scrollingElement", "window"),
         Surface::AppShell => ("document.querySelector('.transcript')", "s"),
@@ -1810,7 +1819,7 @@ fn echo_shim(surface: Surface) -> String {
         if (!s.__echoHooked) {{
             var desc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
             var raw = function (v) {{ desc.set.call(s, v); }};
-            var st = window.__echo = {{ armed: false, last: null, echoes: [] }};
+            var st = window.__echo = {{ armed: false, last: null, echoes: [], skips: [] }}, w = {window};
             Object.defineProperty(s, 'scrollTop', {{ configurable: true,
                 get: function () {{ return desc.get.call(this); }},
                 set: function (v) {{
@@ -1824,8 +1833,12 @@ fn echo_shim(surface: Surface) -> String {
                     if (!st.armed || !prev || Math.abs(prev.top - top) <= 1) return;
                     st.armed = false;
                     var echo = {{ from: Math.round(prev.top), to: Math.round(top), gap: Math.round(now - prev.at) }};
-                    st.echoes.push(echo);
+                    if (now - prev.at > w) {{ echo.skipped = 'the writes came ' + echo.gap + 'ms apart'; st.skips.push(echo); return; }}
                     setTimeout(function () {{
+                        var late = performance.now() - now;
+                        if (late > w) {{ echo.skipped = 'the echo would come ' + Math.round(late) + 'ms after the second'; st.skips.push(echo); return; }}
+                        echo.late = Math.round(late);
+                        st.echoes.push(echo);
                         raw(prev.top); {target}.dispatchEvent(new Event('scroll'));
                         setTimeout(function () {{ raw(st.last.top); echo.rested = Math.round(st.last.top); {target}.dispatchEvent(new Event('scroll')); }}, 12);
                     }}, 0);
@@ -1873,28 +1886,46 @@ fn scenario_an_echoed_write_keeps_the_jump(
         jumped.0.is_some() && (jumped_turn - target as i64).abs() <= 1,
         "the jump put turn {target} under `P`: {jumped:?}"
     );
-    assert_eq!(
-        eval(tab, &echo_shim(surface)),
-        serde_json::Value::Bool(true),
-        "the shim is on the scroller"
-    );
     let view_top = match surface {
         Surface::Classic => "0",
         Surface::AppShell => "document.querySelector('.transcript').getBoundingClientRect().top",
     };
-    let grown = eval(
-        tab,
-        &format!(
-            "(function(){{ var vt = {view_top}; var above = [...document.querySelectorAll('[data-unit-index]')].filter(function (u) {{ return u.getBoundingClientRect().bottom < vt - 4; }}).pop(); if (!above) return null; window.__s568t0 = performance.now(); window.__echo.next = function () {{ above.style.paddingTop = '3700px'; }}; above.style.paddingTop = '700px'; return above.dataset.unitKey; }})()"
-        ),
-    );
-    assert!(grown.is_string(), "a unit above the view to grow: {grown}");
-    until(
-        tab,
-        "window.__echo.echoes.length > 0 && window.__echo.echoes[0].rested != null",
-        "the engine to write twice as the content above grows, and the shim to play the first back",
-        Duration::from_secs(10),
-        "JSON.stringify(window.__echo)",
+    // The content just above the view grows twice, a frame apart; where the tab spaced the two writes
+    // too far apart for an echo (`echo_shim`), it grows again, up to six times.
+    const TRIES: usize = 6;
+    let mut grown = serde_json::Value::Null;
+    for attempt in 0..TRIES {
+        assert_eq!(
+            eval(tab, &echo_shim(surface)),
+            serde_json::Value::Bool(true),
+            "the shim is on the scroller"
+        );
+        let (first, second) = (700 + 4000 * attempt, 3700 + 4000 * attempt);
+        grown = eval(
+            tab,
+            &format!(
+                "(function(){{ var vt = {view_top}; var above = window.__s568above || [...document.querySelectorAll('[data-unit-index]')].filter(function (u) {{ return u.getBoundingClientRect().bottom < vt - 4; }}).pop(); if (!above) return null; window.__s568above = above; if (window.__s568t0 == null) window.__s568t0 = performance.now(); window.__echo.next = function () {{ above.style.paddingTop = '{second}px'; }}; above.style.paddingTop = '{first}px'; return above.dataset.unitKey; }})()"
+            ),
+        );
+        assert!(grown.is_string(), "a unit above the view to grow: {grown}");
+        until(
+            tab,
+            &format!("window.__echo.echoes.some(function (e) {{ return e.rested != null; }}) || window.__echo.skips.length > {attempt}"),
+            "the engine to write twice as the content above grows, and the shim to play the first back or set the pair aside",
+            Duration::from_secs(10),
+            "JSON.stringify(window.__echo)",
+        );
+        if eval(tab, "window.__echo.echoes.length > 0") == serde_json::Value::Bool(true) {
+            break;
+        }
+        settle();
+        until_engine_quiet(tab);
+    }
+    let played = eval(tab, "JSON.stringify(window.__echo)");
+    assert_eq!(
+        eval(tab, "window.__echo.echoes.length > 0"),
+        serde_json::Value::Bool(true),
+        "the engine to write twice within {ECHO_WINDOW_MS}ms in one of {TRIES} growths, for the shim to play an echo: {played}"
     );
     settle();
     until_engine_quiet(tab);
