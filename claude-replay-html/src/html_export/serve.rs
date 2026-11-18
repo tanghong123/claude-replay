@@ -2299,9 +2299,9 @@ pub fn spawn_streaming_listener_gated(
 /// The accept loop behind injectable accept and handle, so a test can drive its error paths.
 /// Neither an accept error nor a refused thread may spin or kill the loop: at the fd/thread
 /// ceiling both fail instantly, and a tight retry burns a core forever without recovering.
-/// Back off (50 ms doubling to 1 s) until a connection is served. Say the first error of a
-/// streak once; the say resets only after a quiet second, since near the ceiling accepts and
-/// errors alternate and a per-success reset would log up to twenty lines a second.
+/// Back off (50 ms doubling to 1 s) until a connection is served. Say one line per error
+/// streak — errors less than a second apart share a line, and a new streak after a quiet
+/// second says its own, so a listener that hits the ceiling again after hours idle is seen.
 fn accept_loop(
     mut accept: impl FnMut() -> std::io::Result<std::net::TcpStream>,
     mut handle: impl FnMut(std::net::TcpStream) -> std::io::Result<()>,
@@ -2314,13 +2314,15 @@ fn accept_loop(
         match accept().and_then(&mut handle) {
             Ok(()) => {
                 backoff = std::time::Duration::from_millis(50);
-                if said && last_error.elapsed() >= std::time::Duration::from_secs(1) {
-                    said = false;
-                }
             }
             Err(error) => {
+                // One line per streak: a streak is errors less than a second apart, so a
+                // quiet listener that hits the ceiling again hours later says so again —
+                // resetting on success would swallow that line when the last streak ended
+                // in a success under a second after its last error.
+                let quiet = last_error.elapsed() >= std::time::Duration::from_secs(1);
                 last_error = std::time::Instant::now();
-                if !said {
+                if !said || quiet {
                     // writeln, not eprintln: a closed stderr pipe (EPIPE) must not panic
                     // this thread and take the listener down with it.
                     let _ = writeln!(std::io::stderr(), "loopback listener: {error}");
@@ -2418,8 +2420,14 @@ const REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs
 /// How long one write of a buffered reply held in RAM may block. A peer that stops reading
 /// (a suspended phone, a relay gone to a zero window) otherwise pins the writer thread AND
 /// the whole multi-MB body it holds. SSE keeps a shorter bound; a streamed disk download,
-/// which holds no body in RAM, waits unbounded (see the write-timeout match below).
+/// which holds no body in RAM, keeps a much longer one (see the write-timeout match below).
 const RESPONSE_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// How long one write of a streamed disk download may wait for progress. The bound is per
+/// send, not per transfer: a reader paused for minutes (a locked phone, Chrome's paused
+/// download) resumes where it left off, while a peer stuck at a zero window forever is
+/// released instead of holding a thread and two descriptors for the life of the process.
+const STREAM_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// The largest artifact `/file` will hand over. The route exists so a click can SHOW a file
 /// the agent touched; anything bigger is a download, and the page falls back to revealing it
@@ -2899,9 +2907,10 @@ fn serve_connection_timed<R: Into<HttpReply>>(
         }
         HttpReply::Buffered(response) if response.stream.is_some() => {
             // A streamed download holds its body on DISK, not in RAM, and `/file` has no
-            // Range: a reader paused past a bound (a locked phone, Chrome's paused download)
-            // could only start over. Let it wait — the cost is one connection, not a body.
-            stream.set_write_timeout(None)?;
+            // Range: a reader paused past a short bound (a locked phone, Chrome's paused
+            // download) could only start over. The long bound is per send, so a paused
+            // reader resumes, while a forever-zero-window peer is still released.
+            stream.set_write_timeout(Some(STREAM_WRITE_TIMEOUT))?;
         }
         _ => {}
     }
@@ -3913,14 +3922,16 @@ mod tests {
 
     /// The accept loop must back off errors instead of spinning (the EMFILE busy-spin), and
     /// a refused thread must be an error like any accept error — not a panic that unwinds
-    /// the loop and drops the listener. Three accept failures and one refused handle, then
-    /// two connections: the loop must have slept 50+100+200+400 ms and still be serving.
+    /// the loop and drops the listener. The gaps between successive accepts are checked one
+    /// by one: the 50/100/200/400/800 ms ladder, the 1 s cap (a fixed or uncapped sleep
+    /// fails), and the reset to 50 ms after a success (an error AFTER the success proves
+    /// it). A refused handle backs off at the cap like any error.
     #[test]
     fn the_accept_loop_backs_off_errors_and_survives_a_refused_thread() {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
-        let clients: Vec<std::net::TcpStream> = (0..2)
+        let clients: Vec<std::net::TcpStream> = (0..3)
             .map(|_| std::net::TcpStream::connect(("127.0.0.1", port)).unwrap())
             .collect();
         let mut streams = clients
@@ -3929,20 +3940,25 @@ mod tests {
             .collect::<Vec<_>>()
             .into_iter();
         let accepts = AtomicUsize::new(0);
+        let at = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let at_in = at.clone();
         let handles = std::sync::Arc::new(AtomicUsize::new(0));
         let served = std::sync::Arc::new(AtomicUsize::new(0));
         let handles_in = handles.clone();
         let served_in = served.clone();
-        let started = std::time::Instant::now();
         std::thread::spawn(move || {
             accept_loop(
-                || match accepts.fetch_add(1, Ordering::SeqCst) {
-                    0..=2 => Err(std::io::Error::other("fd ceiling (test)")),
-                    3 | 4 => Ok(streams.next().unwrap()),
-                    // Park like a quiet listener: the loop under test stays alive.
-                    _ => loop {
-                        std::thread::park();
-                    },
+                || {
+                    at_in.lock().unwrap().push(std::time::Instant::now());
+                    match accepts.fetch_add(1, Ordering::SeqCst) {
+                        0..=4 => Err(std::io::Error::other("fd ceiling (test)")),
+                        5 | 6 | 8 => Ok(streams.next().unwrap()),
+                        7 => Err(std::io::Error::other("fd ceiling again (test)")),
+                        // Park like a quiet listener: the loop under test stays alive.
+                        _ => loop {
+                            std::thread::park();
+                        },
+                    }
                 },
                 |stream| {
                     let n = handles_in.fetch_add(1, Ordering::SeqCst);
@@ -3957,25 +3973,39 @@ mod tests {
                 },
             );
         });
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while served.load(Ordering::SeqCst) == 0 && std::time::Instant::now() < deadline {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        while served.load(Ordering::SeqCst) < 2 && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         assert_eq!(
             served.load(Ordering::SeqCst),
-            1,
-            "the loop must serve past the errors"
+            2,
+            "the loop must serve past the errors and the refused thread"
         );
+        assert_eq!(handles.load(Ordering::SeqCst), 3);
+        let at = at.lock().unwrap();
+        let gap = |i: usize| at[i + 1].duration_since(at[i]).as_millis();
+        for (i, least) in [(0, 50), (1, 100), (2, 200), (3, 400), (4, 800)] {
+            assert!(
+                gap(i) >= least,
+                "accept gap {i} must sleep at least {least} ms"
+            );
+        }
+        // The sixth error (the refused handle) sleeps at the cap, not past it.
+        assert!(gap(5) >= 1000, "the ladder must reach the 1 s cap");
+        assert!(gap(5) < 1400, "the cap must hold: gap 5 was {} ms", gap(5));
+        // The error after the success sleeps the reset 50 ms, not the old 1 s.
+        assert!(gap(7) >= 50, "the post-reset error must still back off");
         assert!(
-            started.elapsed() >= std::time::Duration::from_millis(700),
-            "four errors must have slept 50+100+200+400 ms, not spun: {:?}",
-            started.elapsed()
+            gap(7) < 400,
+            "success must reset the backoff: gap 7 was {} ms",
+            gap(7)
         );
-        assert_eq!(handles.load(Ordering::SeqCst), 2);
     }
 
     /// The timeout tests drive the timed core directly with short bounds; only the source
-    /// holds the wiring that the listener's own wrapper passes the PRODUCTION bounds.
+    /// holds the production wiring. Match the whole call, not the constant names — a
+    /// comment mentioning them must not pass — and pin the fallible spawns.
     #[test]
     fn the_listener_serves_with_the_production_socket_bounds() {
         let source = include_str!("serve.rs");
@@ -3984,8 +4014,22 @@ mod tests {
             .nth(1)
             .expect("the serve_connection wrapper");
         let wrapper = &wrapper[..wrapper.find("fn serve_connection_timed").unwrap()];
-        assert!(wrapper.contains("REQUEST_READ_TIMEOUT"));
-        assert!(wrapper.contains("RESPONSE_WRITE_TIMEOUT"));
+        assert!(
+            wrapper.contains(
+                "serve_connection_timed(\n        stream,\n        handler,\n        gate,\n        REQUEST_READ_TIMEOUT,\n        RESPONSE_WRITE_TIMEOUT,\n    )"
+            ),
+            "the wrapper must pass the production bounds to the timed core"
+        );
+        let listener = source
+            .split("pub fn spawn_streaming_listener_gated")
+            .nth(1)
+            .expect("the listener");
+        let listener = &listener[..listener.find("fn accept_loop").unwrap()];
+        assert_eq!(
+            listener.matches("std::thread::Builder::new()").count(),
+            2,
+            "the loop thread and every connection thread must spawn fallibly"
+        );
     }
 
     #[test]
