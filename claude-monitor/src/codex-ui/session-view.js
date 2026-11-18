@@ -2778,25 +2778,27 @@ document.addEventListener("pointerdown", event => {
 // iOS leaves the focus in the field when a button is tapped. Leaving also closes the filter there,
 // so the box folds with it: a press outside closes it anyway (#s546), a Tab out or a press into the
 // pane's page does not.
+// #s531: where the search took the focus from. A mouse's press on the transcript focuses it (#s488),
+// so its keys reach a scroller no redraw replaces; a blur on leaving the search put them on the body
+// again, where in Safari Page Up after a live redraw scrolled nothing until the next click. So
+// leaving the search by Escape gives the focus back to the transcript when the search took it from
+// there (by ⌘F or /, a click on the field, or the phone's open, all one focus), and otherwise
+// blurs, as before: from nothing focused the focus goes nowhere still. Only a focus that comes from
+// an element says where: one from nothing (back from a press on a step or the funnel, which Safari
+// leaves unfocused, or from another app) is the same search going on. Cleared whenever the search
+// is released, since what the reader did then is where they are.
+let searchFrom = null;
 const searchCluster = viewRoot.$(".header-search-cluster");
 searchCluster.addEventListener("pointerdown", event => { if (event.pointerType === "mouse") searchCluster.classList.add("search-held"); }, { signal });
 searchCluster.addEventListener("focusin", event => {
   searchCluster.classList.add("search-held");
-  if (!searchCluster.contains(event.relatedTarget)) searchFrom = event.relatedTarget === transcript ? transcript : null;
+  if (event.relatedTarget && !searchCluster.contains(event.relatedTarget)) searchFrom = event.relatedTarget === transcript ? transcript : null;
 }, { signal });
 searchCluster.addEventListener("focusout", event => { if (event.relatedTarget && !searchCluster.contains(event.relatedTarget)) releaseSearch(); }, { signal });
 document.addEventListener("pointerdown", event => {
   if (searchCluster.classList.contains("search-held") && !searchCluster.contains(event.target)) releaseSearch();
 }, { capture: true, signal });
 addEventListener("blur", () => { if (viewRoot.active()?.tagName === "IFRAME") releaseSearch(); }, { signal });
-// #s531: where the search took the focus from. A mouse's press on the transcript focuses it (#s488),
-// so its keys reach a scroller no redraw replaces; a blur on leaving the search put them on the body
-// again, where in Safari Page Up after a live redraw scrolled nothing until the next click. So
-// leaving the search by Escape gives the focus back to the transcript when the search took it from
-// there (by ⌘F or /, a click on the field, or the phone's open, all one focus), and otherwise
-// blurs, as before: from nothing focused the focus goes nowhere still. Cleared whenever the search
-// is released, since what the reader did then is where they are.
-let searchFrom = null;
 function leaveSearch(active) {
   const from = searchFrom;
   searchFrom = null;

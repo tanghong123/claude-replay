@@ -27683,8 +27683,8 @@ fn a_click_in_a_growing_transcript_leaves_its_keys_a_scroller_no_redraw_takes() 
 /// ⌘F (Ctrl+F off a Mac) from the clicked transcript opens the search and a second press is the
 /// browser's; Escape puts the focus back on the transcript, where a redraw leaves it; so does Escape
 /// after a click on the field, and after the field lost the focus to nothing (Safari gives a pressed
-/// button none); from nothing focused, Escape leaves the focus on nothing as before. A real Page Up
-/// moves the transcript, last.
+/// button none) and came back from it; from nothing focused, Escape leaves the focus on nothing as
+/// before. A real Page Up moves the transcript, last.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn escape_from_the_search_gives_the_keys_back_to_the_transcript_it_took_them_from() {
@@ -27816,6 +27816,24 @@ fn escape_from_the_search_gives_the_keys_back_to_the_transcript_it_took_them_fro
     escape();
     focus_on(
         "Escape with the focus on nothing, the search still held",
+        "the transcript",
+    );
+
+    // The field's focus lost to nothing and back (Safari after a press on a step, or another app and
+    // back): the same search, still from the transcript.
+    assert_eq!(
+        command_f("⌘F, once more"),
+        (true, true),
+        "⌘F opens the search"
+    );
+    harness::eval(&tab, "(function(){ var f = document.getElementById('transcriptSearchInput'); f.blur(); f.focus(); return 'ok'; })()");
+    focus_on(
+        "the field's focus lost to nothing and back",
+        "transcriptSearchInput",
+    );
+    escape();
+    focus_on(
+        "Escape after the focus came back from nothing",
         "the transcript",
     );
 
