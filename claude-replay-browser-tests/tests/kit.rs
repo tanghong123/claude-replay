@@ -824,7 +824,18 @@ fn groups_by_machine_from_the_filter(phone: bool, here_port: u16, there_port: u1
         .replace(
             r#"label: "skua-book""#,
             r#"label: "skua-book.tail5e1f.ts.net""#,
-        );
+        )
+        // The list remembers the reader's choices through the `persist` its host passes (the guide's
+        // section 6); #s541's host passes none.
+        .replace(
+            "const { backendHandle, mergedBackend, mountSessionList, mountSessionView } = await import",
+            "const { backendHandle, mergedBackend, mountSessionList, mountSessionView, persist } = await import",
+        )
+        .replace("    backend: merged,\n    onOpen:", "    backend: merged,\n    persist,\n    onOpen:");
+    assert!(
+        page.contains("mountSessionView, persist }") && page.contains("    persist,\n    onOpen:"),
+        "the host page passes the list its persist"
+    );
     let mut answers = kit_answers();
     answers.push(Answer {
         pattern: "*/kit-merged*".into(),

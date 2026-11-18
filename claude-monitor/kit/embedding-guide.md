@@ -218,7 +218,7 @@ What the list then shows:
 - The filter offers **Group by machine** (between Idle and Include hidden, while the list holds more
   than one machine): a head for each machine, in the order you listed them, holding that machine's
   own agents, projects and sessions, and saying how the machine answers while it does not. The
-  reader's choice is remembered like the filter's others. It is part of the `filter` control: with
+  reader's choice is remembered like the filter's others, through the `persist` you pass. It is part of the `filter` control: with
   `show: { filter: false }` the list is not grouped.
 - The list's ids are `<machine>/<that machine's own id>`; `splitMachineId(id)` takes one apart.
 - A hide or a restore goes to the row's own machine.
