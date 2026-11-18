@@ -8162,10 +8162,12 @@ fn a_follower_the_browser_moves_with_no_input_keeps_following() {
     // In one task: the transcript's scroll events held from the engine (delivered late, as WebKit's
     // was); the last three units gone and the layout read, so the browser clamps the offset to the
     // shorter content; the units back; and a mounted unit a few pixels taller, so the engine measures
-    // in the next frame, before the held event.
+    // in the next frame, before the held event. Taller by its own padding and 7px: a fixed padding was no change
+    // to a first unit already padded so (a process card's 14px, once #s580's user turns shifted the
+    // window), and the engine had nothing to measure.
     let moved = harness::probe(
         &tab,
-        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__held = 0; window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__held++; window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); units[0].style.paddingBottom = '7px'; return { top: Math.round(top), clamped: Math.round(clamped), gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
+        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__held = 0; window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__held++; window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); units[0].style.paddingBottom = (parseFloat(getComputedStyle(units[0]).paddingBottom) + 7) + 'px'; return { top: Math.round(top), clamped: Math.round(clamped), gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
     );
     // Read once the engine has transacted, well inside the two seconds the tail waits for the event.
     harness::until(
@@ -8189,7 +8191,7 @@ fn a_follower_the_browser_moves_with_no_input_keeps_following() {
     // again, every two seconds, for as long as no event came (the review of 68a629b3).
     let moved_again = harness::probe(
         &tab,
-        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__held = 0; window.__heldEvents = []; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); units[0].style.paddingBottom = '14px'; return { top: Math.round(top), clamped: Math.round(clamped), gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
+        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__held = 0; window.__heldEvents = []; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); units[0].style.paddingBottom = (parseFloat(getComputedStyle(units[0]).paddingBottom) + 7) + 'px'; return { top: Math.round(top), clamped: Math.round(clamped), gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
     );
     harness::until(
         &tab,
