@@ -1647,7 +1647,6 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #sessionView .sv-session-main .transcript-inner{width:calc(100% - 48px);padding-top:16px}
   #sessionView.wide .sv-session-main .transcript-inner{width:calc(100% - 26px)}
   #sessionView .turn-stickybar{margin:0 8px}
-  #sessionView .turn.user{flex-wrap:wrap}
   #sessionView .turn.user .user-prompt{max-width:100%}
   #sessionView .turn.user .turn-time{margin:4px 2px 0 8px}
   #sessionView .spot-link,#sessionView .renderer>.renderer-spot{display:none!important}
@@ -2135,7 +2134,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 
 /* #s296: a file changed on disk that the client told the agent about, drawn after a prompt as a
    line of its own below the turn, from the left: it is the client speaking, never the person's
-   attachment (`promptNoticesHtml`). The prompt's row wraps to take it. */
-#sessionView .turn.user:has(> .turn-notice){flex-wrap:wrap}
+   attachment (`promptNoticesHtml`). The prompt's row wraps at every width (#s580), so it takes a
+   line of its own after the times. */
 #sessionView .turn-notice{flex:0 0 100%;order:3;margin:6px 0 0;color:var(--faint);font:12px/1.45 var(--sans);text-align:left}
 #sessionView .turn-notice-file{padding:0;border:0;background:none;color:var(--sub);font:inherit;cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px}
