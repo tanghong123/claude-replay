@@ -1791,6 +1791,11 @@ fn app_shell_pages_and_steps_around_a_deep_jump() {
 /// it (`echo_shim`): inside the engine's own `ECHO_MS`, 120ms.
 const ECHO_WINDOW_MS: u32 = 100;
 
+/// How long the engine's writes must have stopped before the shim plays an echo with `during`: a
+/// frame and a little, so what the engine's second write set off (a measure of what the move mounted)
+/// has run and written too.
+const ECHO_QUIET_MS: u32 = 20;
+
 /// What the shim does, as iOS WebKit does it (#s568, measured on the iPad Simulator):
 /// WebKit scrolls on a thread of its own, and given two of the engine's writes close together it can
 /// hand the page the FIRST again after the second, the offset and the layout at it with a scroll event,
@@ -1806,12 +1811,17 @@ const ECHO_WINDOW_MS: u32 = 100;
 /// far as any engine can tell. Once per arming, so it plays one echo and cannot feed on its own
 /// writes. A case's `next`, set after arming, runs in the frame after the engine's first write: the
 /// growth that makes the second. Its `during`, set after arming too, runs as the echo is played: the
-/// shim then keeps the echo until the engine has recorded a transaction, or until `ECHO_WINDOW_MS`
-/// after the second write, so a transaction runs while the page shows the echoed layout (each echo
-/// says which ran, in `during`). `done` counts the pairs played or set aside, and each echo records
-/// what the offset read once played back (`read`), so a playback that did not take shows.
+/// shim then plays the echo only once the engine's burst of writes has stopped for `ECHO_QUIET_MS`
+/// (a move mounts units, and their measure writes too, which would end the echoed layout before any
+/// check read it), still within `ECHO_WINDOW_MS` of the first write, and keeps the echo until the
+/// engine has recorded a transaction or that window has run out, so a transaction places while the
+/// page shows the echoed layout (each echo says which ran and whether it placed, in `during`, and
+/// whether the engine wrote meanwhile, `wroteDuring`). `done` counts the pairs played or set aside,
+/// and each echo records what the offset read once played back (`read`), so a playback that did not
+/// take shows.
 fn echo_shim(surface: Surface) -> String {
     let window = ECHO_WINDOW_MS;
+    let quiet = ECHO_QUIET_MS;
     let (scroller, target) = match surface {
         Surface::Classic => ("document.scrollingElement", "window"),
         Surface::AppShell => ("document.querySelector('.transcript')", "s"),
@@ -1840,7 +1850,21 @@ fn echo_shim(surface: Surface) -> String {
                     var skip = function (why) {{ echo.skipped = why; st.skips.push(echo); st.done++; }};
                     if (now - prev.at > w) return skip('the writes came ' + echo.gap + 'ms apart');
                     var during = st.during; st.during = null;
-                    setTimeout(function () {{
+                    // With `during`, the echo waits for the engine's burst of writes to end (what the
+                    // second write set off: a measure of what the move mounted writes too), so the
+                    // transaction `during` sets off places without writing and checks itself in the
+                    // echoed layout; still within the window of the FIRST write, which the engine
+                    // keeps as one it made for `ECHO_MS`.
+                    var play = function (go) {{
+                        if (!during) return setTimeout(go, 0);
+                        (function quiet() {{
+                            var at = performance.now();
+                            if (at - prev.at > w) return skip('the engine kept writing ' + Math.round(at - prev.at) + 'ms after the first write');
+                            if (at - st.last.at >= {quiet}) {{ echo.burst = Math.round(st.last.at - prev.at); echo.atEcho = Math.round(st.last.top); return go(); }}
+                            setTimeout(quiet, 2);
+                        }})();
+                    }};
+                    play(function () {{
                         var late = performance.now() - now;
                         if (late > w) return skip('the echo would come ' + Math.round(late) + 'ms after the second');
                         echo.late = Math.round(late);
@@ -1852,11 +1876,11 @@ fn echo_shim(surface: Surface) -> String {
                         during();
                         (function wait() {{
                             var now2 = performance.now(), after = window.__viewportHistory.states;
-                            if (after.length > n0) {{ echo.during = after.slice(n0).map(function (x) {{ return x.cause; }}); echo.duringAt = Math.round(now2 - now); return rest(); }}
-                            if (now2 - now > w) {{ echo.during = null; return rest(); }}
+                            if (after.length > n0) {{ echo.during = after.slice(n0).map(function (x) {{ return x.cause + '/' + x.placed; }}); echo.duringAt = Math.round(now2 - now); echo.wroteDuring = Math.round(st.last.top) !== echo.atEcho; return rest(); }}
+                            if (now2 - prev.at > w) {{ echo.during = null; return rest(); }}
                             setTimeout(wait, 2);
                         }})();
-                    }}, 0);
+                    }});
                 }} }});
             s.__echoHooked = true;
         }}
@@ -1914,7 +1938,7 @@ fn scenario_an_echoed_write_keeps_the_jump(
     // grows again, up to six times.
     const TRIES: usize = 6;
     let played_well = if during {
-        "window.__echo.echoes.some(function (e) { return e.rested != null && e.during && e.during.length > 0; })"
+        "window.__echo.echoes.some(function (e) { return e.rested != null && e.during && e.during.some(function (d) { return /\\/placed$/.test(d); }) && e.wroteDuring === false; })"
     } else {
         "window.__echo.echoes.some(function (e) { return e.rested != null; })"
     };
@@ -1956,7 +1980,7 @@ fn scenario_an_echoed_write_keeps_the_jump(
         eval(tab, played_well),
         serde_json::Value::Bool(true),
         "the engine to write twice within {ECHO_WINDOW_MS}ms in one of {TRIES} growths, for the shim to play an echo{}: {played}",
-        if during { " with a transaction while it showed" } else { "" }
+        if during { " with a placement that wrote nothing while it showed" } else { "" }
     );
     assert_eq!(
         eval(
