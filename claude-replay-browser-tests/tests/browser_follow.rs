@@ -13885,6 +13885,79 @@ fn the_tight_session_top_bar_reads_glyphs_search_aa_info_and_pane() {
         Duration::from_secs(5),
         box_width,
     );
+    // A press that ends without a lift the page hears ends the hold too (1f316742's review): a context
+    // menu (a Ctrl-click on a Mac is the main button, and the menu may keep the release from the page)
+    // and the window losing the focus. Each is dispatched with the button still down, so the class
+    // must go on that event alone; a real Ctrl-click opens no menu on Linux, hence the script.
+    for (what, ends) in [
+        (
+            "a context menu",
+            "document.getElementById('transcriptSearchInput').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); 1",
+        ),
+        ("the window blurring", "window.dispatchEvent(new Event('blur')); 1"),
+    ] {
+        use headless_chrome::protocol::cdp::Input::{
+            DispatchMouseEvent, DispatchMouseEventTypeOption, MouseButton,
+        };
+        let field = harness::probe(
+            &tab,
+            "(function(){ var r = document.getElementById('transcriptSearchInput').getBoundingClientRect(); return { x: r.right - Math.min(12, r.width / 4), y: r.top + r.height / 2 }; })()",
+        );
+        let (x, y) = (
+            field["x"].as_f64().expect("the field's x"),
+            field["y"].as_f64().expect("the field's y"),
+        );
+        let mouse = |kind: DispatchMouseEventTypeOption, buttons: u32| {
+            tab.call_method(DispatchMouseEvent {
+                Type: kind,
+                x,
+                y,
+                modifiers: None,
+                timestamp: None,
+                button: Some(MouseButton::Left),
+                buttons: Some(buttons),
+                click_count: Some(1),
+                force: None,
+                tangential_pressure: None,
+                tilt_x: None,
+                tilt_y: None,
+                twist: None,
+                delta_x: None,
+                delta_y: None,
+                pointer_Type: None,
+            })
+            .unwrap();
+        };
+        let state = "({ pressing: document.querySelector('.header-search-cluster').classList.contains('search-pressing'), next: document.getElementById('findNext').getClientRects().length })";
+        mouse(DispatchMouseEventTypeOption::MouseMoved, 0);
+        mouse(DispatchMouseEventTypeOption::MousePressed, 1);
+        let down = harness::probe(&tab, state);
+        harness::eval(&tab, ends);
+        let ended = harness::probe(&tab, state);
+        mouse(DispatchMouseEventTypeOption::MouseReleased, 0);
+        assert!(
+            down["pressing"] == true
+                && down["next"].as_u64() == Some(0)
+                && ended["pressing"] == false
+                && ended["next"].as_u64().unwrap_or(0) > 0,
+            "{what} with the button still down ends the press's hold and the box takes the glyphs' room: down {down}, after {ended}"
+        );
+        harness::until(
+            &tab,
+            &reopened,
+            &format!("the box in use after {what}"),
+            Duration::from_secs(5),
+            &format!("JSON.stringify({{ width: {box_width}, held: document.querySelector('.header-search-cluster').className }})"),
+        );
+        press_outside();
+        harness::until(
+            &tab,
+            &folded,
+            &format!("a press outside to let the box rest after {what}"),
+            Duration::from_secs(5),
+            box_width,
+        );
+    }
     // As Chrome presses a button, which takes the focus: a Tab out of the open filter's rows shuts
     // the filter and lets the box rest, and Escape with the focus on ↓ does too.
     harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
