@@ -99,6 +99,38 @@ struct TaskqCall {
     status: String,
 }
 
+/// The flags of taskq's mutating verbs that take no value (from `taskq <verb> --help`, taskq as
+/// of 2026-11-19); every other flag, and `-m`, takes the word after it. A flag taskq adds later
+/// without a value reads as one that takes it, which costs at most the field after it, as every
+/// flag did before #s609.
+const VALUELESS: &[&str] = &[
+    "--any",
+    "--dry-run",
+    "--fifo",
+    "--force",
+    "--force-new",
+    "--help",
+    "--here",
+    "--init",
+    "--json",
+    "--landing-lock",
+    "--local",
+    "--lock",
+    "--new",
+    "--next",
+    "--no-accept",
+    "--no-checks",
+    "--retire",
+    "--shared",
+    "--skip-checks",
+    "--steal",
+    "--stranded",
+    "--top-level",
+    "--unwait",
+    "--user",
+    "--yes",
+];
+
 /// The `taskq` calls in one Bash command, in order — subject, description, active form.
 ///
 /// The RECORDS a create prints carry no description (measured: their `changes` hold only
@@ -161,17 +193,29 @@ fn taskq_calls(cmd: &str) -> Vec<TaskqCall> {
             call.task = words[i].clone();
             i += 1;
         }
-        // `stop` takes bare flags rather than values; read them before the value loop.
-        while i < words.len() && matches!(words[i].as_str(), "--cancel" | "--release") {
-            call.status = if words[i] == "--cancel" {
-                "cancelled"
-            } else {
-                "pending"
+        while i < words.len() && (words[i].starts_with("--") || words[i] == "-m") {
+            // `stop`'s directions take no value; `--retire` closes a lock as cancelled.
+            if matches!(words[i].as_str(), "--cancel" | "--release" | "--retire") {
+                call.status = if words[i] == "--release" {
+                    "pending"
+                } else {
+                    "cancelled"
+                }
+                .into();
+                i += 1;
+                continue;
             }
-            .into();
-            i += 1;
-        }
-        while i + 1 < words.len() && words[i].starts_with("--") {
+            // A flag that takes no value is skipped alone, or it would take the next flag as its
+            // value and the reading would stop at that flag's value (#s609:
+            // `create --top-level --subject X` lost its subject and description). So is a flag
+            // written with its value in the same word (`--type=bug`).
+            if VALUELESS.contains(&words[i].as_str()) || words[i].contains('=') {
+                i += 1;
+                continue;
+            }
+            if i + 1 >= words.len() {
+                break;
+            }
             let value = if unexpanded(&words[i + 1]) {
                 String::new()
             } else {
@@ -633,6 +677,65 @@ fn git_root(dir: &Path) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #s609: a flag that takes no value is skipped alone, so the flags after it still give the
+    /// draft its text; a flag with a value still takes it, `stop`'s directions read wherever they
+    /// stand, and `-m` takes its message.
+    #[test]
+    fn valueless_taskq_flags_are_skipped_alone() {
+        // Each valueless flag, and a flag written with its value, alone before the text.
+        for flag in VALUELESS.iter().copied().chain(["--type=bug"]) {
+            let calls = taskq_calls(&format!(
+                "taskq create {flag} --subject 'Fix it' --description 'Why'"
+            ));
+            assert_eq!(
+                (calls[0].subject.as_str(), calls[0].description.as_str()),
+                ("Fix it", "Why"),
+                "{flag}"
+            );
+        }
+        // A flag with a value still takes it: the word after it is not read as a flag.
+        let calls = taskq_calls("taskq create --type --subject --subject 'Fix it'");
+        assert_eq!(calls[0].subject, "Fix it");
+        let calls = taskq_calls("taskq stop s15 --retire -m 'no longer needed'");
+        assert_eq!(calls[0].status, "cancelled");
+
+        let calls = taskq_calls(concat!(
+            "taskq create --top-level --local --subject 'Fix it' --json --description 'Why and how' ",
+            "--active-form Fixing --meta k=v --user",
+        ));
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].verb, "create");
+        assert_eq!(calls[0].subject, "Fix it");
+        assert_eq!(calls[0].description, "Why and how");
+        assert_eq!(calls[0].active_form, "Fixing");
+
+        let calls = taskq_calls(concat!(
+            "taskq update s12 --shared --no-checks --status completed --subject New\n",
+            "taskq stop s13 -m 'gone' --cancel\ntaskq claim --next --any\n",
+            "taskq done s14 --skip-checks --outcome shipped",
+        ));
+        let got: Vec<_> = calls
+            .iter()
+            .map(|c| {
+                (
+                    c.verb.as_str(),
+                    c.task.as_str(),
+                    c.status.as_str(),
+                    c.subject.as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("update", "s12", "completed", "New"),
+                ("stop", "s13", "cancelled", ""),
+                ("claim", "", "", ""),
+                ("done", "s14", "", ""),
+            ]
+        );
+    }
 
     /// `taskq` records ride a Bash result's stdout and become the same task ops the native
     /// tools produce — the queue exists precisely because those tools are absent from some
