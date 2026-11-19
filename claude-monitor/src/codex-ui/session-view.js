@@ -2869,12 +2869,15 @@ addEventListener("resize", () => fitSearchField(), { signal });
 // (`fitHeadingSoon`; #s624): it writes the cluster's floor and the heading's classes, both above the
 // field in the page, and a write there while the field's new size was being reported resized them
 // inside the same delivery, which the browser answers with a "ResizeObserver loop" error event at the
-// window, where a host page's error handler receives it: each / that took a held query up again with
-// the right pane open, at 1400px. The search coming into use fits at once anyway, from its focus
-// (below), so that bar is drawn fitted in its first frame; a pane opening or dragged has the floor a
-// frame behind it. A phone's open box fits at once, as before: there the fit writes only the field's
-// width and its scroll, inside the strip, which keeps its size as the one growing item in a box of
-// fixed width.
+// window, where a host page's error handler receives it (measured: a held query emptied with the focus
+// taken from the field in one go, beside the open pane at 1400px, where the second fit took the cluster
+// from 252px to 246px). So a change the fit did not make itself (a blur, a script, the pane opening or
+// dragged) has the box settle a frame after it. The search coming into use fits at once anyway, from
+// its focus (below), so a bar that draws differently in use is drawn fitted in its first frame (read,
+// not measured: in the case the box in use draws as at rest). A phone's open box
+// fits at once, as before: there the fit writes the field's width, its scroll, its placeholder and a
+// measuring span placed absolutely, all inside the strip, which keeps its size as the one growing
+// item in a box of fixed width (read, not measured: no phone case counts the notice).
 let searchFitFrame = 0;
 const searchFit = new ResizeObserver(() => {
   if (viewRoot.$(".header-searchbox")?.classList.contains("phone-open")) { fitSearchField(); return; }
@@ -2954,8 +2957,9 @@ for (const type of ["pointerup", "pointercancel", "contextmenu"]) document.addEv
 addEventListener("blur", pressEnded, { signal });
 searchCluster.addEventListener("focusin", event => {
   searchCluster.classList.add("search-held");
-  // The box in use asks for its room now, outside any size report (#s624): by /, ⌘F, a click or Tab,
-  // the observer's own fit would come a frame after the bar was drawn.
+  // The box in use asks for its room now, from the focus (#s624): by /, ⌘F, a click or Tab, the
+  // observer's own fit would come a frame after the bar was drawn. No size report of the view's
+  // focuses the box.
   fitSearchField();
   if (event.relatedTarget && !searchCluster.contains(event.relatedTarget)) searchFrom = event.relatedTarget === transcript ? transcript : null;
 }, { signal });

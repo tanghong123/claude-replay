@@ -2373,10 +2373,13 @@ impl Drop for Chrome {
 /// that passes still says where one came (#s624). It reads the page each tab shows as the browser
 /// ends: a page the case reloaded or left took its own list with it. Written to stderr itself, past
 /// libtest's capture of a passing case's `eprintln!`, one line per tab that kept any, counted by the
-/// step the case set (`window.__step`) with the first and last time; and one line for each tab that
-/// did not answer. Every tab is asked at once, on a thread of its own, against one deadline of 2 s:
-/// a tab that has not answered by then is left to the SIGTERM that follows, which also ends the
-/// question. The time it takes is a `CR_PROFILE` row of its own.
+/// step the case set (`window.__step`) with the first and last time in the order kept; and one line
+/// counting the tabs that did not answer in time. A tab whose page could not be read at all (gone,
+/// crashed) says nothing, and nor does one no thread could be started for. The list of tabs is taken
+/// first, under headless_chrome's own lock; then every tab is asked at once, each on a thread of its
+/// own, against one deadline of 2 s from the asking: a tab that has not answered by then is left to
+/// the SIGTERM that follows, which also ends the question. The time it takes is a `CR_PROFILE` row of
+/// its own.
 fn report_loop_notices(browser: &headless_chrome::Browser) {
     let t0 = Instant::now();
     let tabs: Vec<std::sync::Arc<headless_chrome::Tab>> = match browser.get_tabs().lock() {
@@ -2404,7 +2407,7 @@ fn report_loop_notices(browser: &headless_chrome::Browser) {
         }
     }
     drop(tx);
-    let deadline = t0 + Duration::from_secs(2);
+    let deadline = Instant::now() + Duration::from_secs(2);
     let mut answered = 0;
     while answered < asked {
         let left = deadline.saturating_duration_since(Instant::now());
@@ -2422,7 +2425,7 @@ fn report_loop_notices(browser: &headless_chrome::Browser) {
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 let line = format!(
-                    "harness: {} of {asked} tabs gave no loop notices in 2 s in {case}, so any they kept go unsaid (#s624)\n",
+                    "harness: {} of {asked} tabs did not answer in 2 s in {case}, so any loop notices they kept go unsaid (#s624)\n",
                     asked - answered
                 );
                 let _ = std::io::stderr().write_all(line.as_bytes());
