@@ -7412,15 +7412,15 @@ fn scenario_a_call_stopped_before_it_ran_says_why(
             .contains("PreToolUse:Bash hook error: [guard] deploys need a person"),
         "the client's reason is the blocked call's output: {reason:?}"
     );
-    // #s620: the record the three calls fold into (the last turn's, so the last such head) says what ran and what was stopped before it
-    // ran, never "Ran 3 shell commands"; and opened, each stopped call's word is drawn where a
-    // reader sees it, a box and not only a node (hd-replay's walk found the words in the DOM of
-    // a record nobody had opened).
+    // #s620: the record the three calls fold into (the last turn's, so the last such head) says
+    // what ran and what was stopped before it ran, never "Ran 3 shell commands"; and opened, each
+    // stopped call's word is drawn where a reader sees it, a box and not only a node (hd-replay's
+    // walk found the words in the DOM of a record nobody had opened).
     let summaries = probe(
         tab,
         match surface {
-            Surface::Classic => "[...document.querySelectorAll('#stream .fold > .fold-h .summary')].map(s => s.textContent.replace(/\\s+/g, ' ').trim()).filter(t => /shell command|call (blocked|declined)/.test(t)).slice(-1)",
-            Surface::AppShell => "[...document.querySelectorAll('.renderer[data-renderer-kind=\"activity\"]')].map(r => ((r.querySelector('.renderer-head .renderer-target') || {}).textContent || '').replace(/\\s+/g, ' ').trim()).filter(t => /shell command|call (blocked|declined)/.test(t)).slice(-1)",
+            Surface::Classic => "[...document.querySelectorAll('#stream .fold > .fold-h .summary')].map(s => s.textContent.replace(/\\s+/g, ' ').trim()).filter(t => /shell command|calls? (blocked|declined)/.test(t)).slice(-1)",
+            Surface::AppShell => "[...document.querySelectorAll('.renderer[data-renderer-kind=\"activity\"]')].map(r => ((r.querySelector('.renderer-head .renderer-target') || {}).textContent || '').replace(/\\s+/g, ' ').trim()).filter(t => /shell command|calls? (blocked|declined)/.test(t)).slice(-1)",
         },
     );
     assert_eq!(
@@ -7447,6 +7447,10 @@ fn scenario_a_call_stopped_before_it_ran_says_why(
     assert_eq!(drawn_lines.len(), 2, "both stopped calls measured: {drawn}");
     for line in drawn_lines {
         let line = line.as_str().unwrap_or("").to_string();
+        assert!(
+            line.contains("blocked") || line.contains("declined"),
+            "the stopped call's word, drawn: {drawn}"
+        );
         let size = line.rsplit(' ').next().unwrap_or("");
         let (w, h) = size.split_once('x').unwrap_or(("0", "0"));
         assert!(
