@@ -13459,17 +13459,21 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
 /// the menu alone, and the next the card, the focus back on Info.
 fn card_heads_with_the_session(tab: &headless_chrome::Tab, what: &str) {
     harness::click_when_settled(tab, "#phoneInfo", "Info in the bar");
-    let card = "(function(){ var c = document.getElementById('infoPopover'), h = c && c.querySelector(':scope>.session-heading'), t = document.getElementById('sessionTitle'), k = document.getElementById('sessionCrumb'); if (!c || !c.classList.contains('open') || !h) return { open: !!c && c.classList.contains('open'), head: !!h }; var C = c.getBoundingClientRect(), T = t.getBoundingClientRect(), K = k.getBoundingClientRect(); var inside = function (b) { return b.width > 0 && b.left >= C.left - 0.5 && b.right <= C.right + 0.5 && b.top >= C.top - 0.5; }; var hit = document.elementFromPoint(T.left + Math.min(20, T.width / 2), T.top + T.height / 2); var bar = document.querySelector('#sessionView .workspace>.topbar'); var tabbable = c.querySelector('button, [href], input, [tabindex]:not([tabindex=\"-1\"])'); return { open: true, head: true, first: c.firstElementChild === h, whole: t.scrollWidth <= t.clientWidth + 1, title: inside(T), crumb: inside(K) && k.textContent.trim().length > 0, hits: !!hit && t.contains(hit), afterBar: bar.nextElementSibling === c, nameFirst: tabbable === t, expanded: document.getElementById('phoneInfo').getAttribute('aria-expanded') }; })()";
+    let card = "(function(){ var c = document.getElementById('infoPopover'), h = c && c.querySelector(':scope>.session-heading'), t = document.getElementById('sessionTitle'), k = document.getElementById('sessionCrumb'); if (!c || !c.classList.contains('open') || !h) return { open: !!c && c.classList.contains('open'), head: !!h }; var C = c.getBoundingClientRect(), T = t.getBoundingClientRect(), K = k.getBoundingClientRect(); var inside = function (b) { return b.width > 0 && b.left >= C.left - 0.5 && b.right <= C.right + 0.5 && b.top >= C.top - 0.5; }; var hit = document.elementFromPoint(T.left + Math.min(20, T.width / 2), T.top + T.height / 2); var bar = document.querySelector('#sessionView .workspace>.topbar'); var tabbable = c.querySelector('button, [href], input, [tabindex]:not([tabindex=\"-1\"])'); return { open: true, head: true, first: c.firstElementChild === h, whole: t.scrollWidth <= t.clientWidth + 1, title: inside(T), crumb: inside(K) && k.textContent.trim().length > 0, hits: !!hit && t.contains(hit), hitWhat: hit ? hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') + (typeof hit.className === 'string' && hit.className ? '.' + hit.className.trim().split(/\\s+/).join('.') : '') + (hit.closest('#infoPopover') ? ' in the card' : '') : null, afterBar: bar.nextElementSibling === c, nameFirst: tabbable === t, expanded: document.getElementById('phoneInfo').getAttribute('aria-expanded') }; })()";
     harness::until(
         tab,
-        &format!("(function(){{ var s = {card}; return s.open && s.head; }})()"),
+        &format!("(function(){{ var s = {card}; return s.open && s.head && document.getElementById('infoPopover').getAnimations({{ subtree: true }}).length === 0; }})()"),
         &format!("{what}: Info's card pinned, with the session at its head"),
         Duration::from_secs(5),
         &format!("JSON.stringify({card})"),
     );
     let seen = harness::probe(tab, card);
+    let mut core = seen.clone();
+    if let Some(fields) = core.as_object_mut() {
+        fields.remove("hitWhat");
+    }
     assert_eq!(
-        seen,
+        core,
         serde_json::json!({ "open": true, "head": true, "first": true, "whole": true, "title": true, "crumb": true, "hits": true, "afterBar": true, "nameFirst": true, "expanded": "true" }),
         "{what}: the card heads with the session's name, whole, and its agent and project, right after the bar (a Tab from Info reaches the name), and Info says it is open: {seen}"
     );
