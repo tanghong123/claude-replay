@@ -90,8 +90,9 @@ must read and type cannot reach a browser they are not using.
   browser that asked, and redeeming it pairs only the browser that types it.
 - **At most one ask every 10 seconds.** After three page codes in a row expire or are burned unused,
   asks are refused for an hour. The reply says until when. `--pair-code` in a terminal still works.
-  An ask is visible where a dialog can show: on the owner's screen, naming the monitor's port. Where
-  none can (another platform, nobody at the console, the dialog switched off), nobody sees the ask;
+  An ask that is given a new code is visible where a dialog can show: on the owner's screen, naming
+  the monitor's port (an ask that finds a code waiting, comes too soon or falls in the hour's rest
+  shows nothing, and a code burned by quick misses may come down as its dialog opens). Where none can (another platform, nobody at the console, the dialog switched off), nobody sees the ask;
   its code waits for `--pair-code` in a terminal, so an asker who is not at the machine can only
   guess it.
 
@@ -109,11 +110,12 @@ good, a wrong one is not counted, and the miss that would burn the code burns no
 the code stays up). So no page code pairs until the file can be written again, and a guess there
 teaches nothing about which code is right. With no page code waiting, a guess is judged as a phone
 code. The guess bound below counts saved misses, which is all a guess can pair by. Phone codes keep
-their path, with one change that reaches every gate (`agent-replay --html` and agent-metrics too): a
-right phone code also pairs only once its use is saved.
+their path, with one change that reaches every gate that has them (the monitor's and agent-metrics';
+`agent-replay --html` has none): a right phone code also pairs only once its use is saved.
 
 Where the lock file beside the codes cannot be taken (it is created at start, so only if it is
-replaced afterwards by one this user cannot open), nothing is minted, paired, ignored or cleared. A
+replaced afterwards by one this user cannot open, or removed where the state directory can no longer
+be written), nothing is minted, paired, ignored or cleared. A
 guess typed in this Mac's browser is then answered as a miss, a right phone code included, and a
 dialog just shown may be taken down while its code is still good. The token's own link
 (`agent-monitor --pair`) still pairs.
@@ -185,7 +187,7 @@ This part is a separate stage, and a separate choice (section 6). Paired monitor
 | **A page on another site, in the owner's browser** | No. Its POST carries a foreign `Origin`, and it cannot read a reply. It can open `/pair` in a tab, where only the person's own click asks; it cannot frame that page (`frame-ancestors 'none'`, `X-Frame-Options: DENY`), and a code its link carries is judged as a phone code alone. | No. |
 | **DNS rebinding** | No. The `Host` is a foreign name. | No. |
 | **Another tailnet device, through `tailscale serve`** | No. It carries a relay's headers or a tailnet name; it keeps `--pair-phone`. | No. A page code is never redeemed through the relay. |
-| **A raw relay (`tailscale serve --tcp`) or a same-user forwarder (`ssh -R`, `socat`, Docker Desktop's proxy)** | Yes. It can forge the loopback `Host` and `Origin`. An ask that is given a new code raises a dialog on the owner's screen, where a dialog can show (macOS, someone at the console, the dialog not switched off); an ask that finds a code waiting, comes too soon or falls in the hour's rest raises none; elsewhere an ask is seen by nobody, and its code waits for `--pair-code`. | No. It never sees the code, which is in the dialog or the terminal. It gets five guesses at 1 in 31⁸ (about 8.5 × 10¹¹) per code, one code at a time, at most three codes before an hour's back-off: at most 360 guesses a day, about 1 in 2 × 10⁹. The bound holds because a miss is counted and a use saved before either is answered (4.4). Each code it is given is shown to the owner where a dialog can show, though one it burns with five quick misses may come down before its dialog has finished opening (at most three codes an hour). |
+| **A raw relay (`tailscale serve --tcp`) or a same-user forwarder (`ssh -R`, `socat`, Docker Desktop's proxy)** | Yes. It can forge the loopback `Host` and `Origin`. An ask that is given a new code raises a dialog on the owner's screen, where a dialog can show (macOS, someone at the console, the dialog not switched off); an ask that finds a code waiting, comes too soon or falls in the hour's rest raises none; elsewhere an ask is seen by nobody, and its code waits for `--pair-code`. | No. It never sees the code, which is in the dialog or the terminal. It gets five guesses at 1 in 31⁸ (about 8.5 × 10¹¹) per code, one code at a time, at most three codes before an hour's back-off: at most 360 guesses a day, about 1 in 2 × 10⁹. The bound holds because a miss is counted and a use saved before either is answered (4.4). Each code minted for its asks is shown to the owner where a dialog can show, though one it burns with five quick misses may come down before its dialog has finished opening (at most three codes an hour). |
 | **A program running as the owner** | Not in scope. | It can read the token file today. |
 
 What is left is a person typing the code somewhere other than the page that asked. The dialog says
