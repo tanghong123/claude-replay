@@ -2564,12 +2564,19 @@ fn tail_pulse_keeps_an_image_only_message_s_place_in_the_queue() {
         tail_pulse(&ClaudeAdapter, &tmp1(&later)).queued_prompt,
         "a pop matching nothing takes nothing: the next prompt still reads as queued"
     );
-    let delivered = format!(
-        "{later}{}\n",
-        r#"{"type":"user","message":{"role":"user","content":"and the petrels"},"timestamp":"2026-08-14T10:00:13Z"}"#,
+    // A prompt delivered with no pop recorded (#52; a restarted client re-delivers what was queued
+    // without writing the dequeue) is taken by its delivery. A count still held it, so it read as
+    // queued for the rest of the window.
+    let delivered = concat!(
+        r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":null,"content":[{"type":"text","text":"working"}]},"timestamp":"2026-08-14T10:00:05Z"}"#,
+        "\n",
+        r#"{"type":"queue-operation","operation":"enqueue","content":"and the petrels","timestamp":"2026-08-14T10:00:06Z"}"#,
+        "\n",
+        r#"{"type":"user","message":{"role":"user","content":"and the petrels"},"timestamp":"2026-08-14T10:00:07Z"}"#,
+        "\n",
     );
     assert!(
-        !tail_pulse(&ClaudeAdapter, &tmp1(&delivered)).queued_prompt,
+        !tail_pulse(&ClaudeAdapter, &tmp1(delivered)).queued_prompt,
         "a prompt delivered with no pop recorded is no longer queued (#52)"
     );
 }
