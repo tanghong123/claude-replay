@@ -1680,31 +1680,58 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
         "the sheet covers the window, its document is what a click hits, and its close is a 44px target on top: {covers}"
     );
     // The keys are the sheet's while it is open (the #s596 review): `/` would open the session's
-    // find under it and take the focus, and `\` fold the list, where the reader cannot see either.
-    // Pressed as the reader would, right after Review, with nothing clicked inside the sheet.
+    // find under it and take the focus, `\` fold the list, and ⌘K (Ctrl+K off a Mac) open the
+    // jump-to, where the reader cannot see any of them. Pressed as the reader would, right after
+    // Review, with nothing clicked inside the sheet. Every keydown is recorded on the window, after
+    // the sheet's own listener, so a press that never arrived cannot pass by doing nothing.
     harness::quiet_keys(&tab);
-    eval(&tab, "window.__keys = []; document.addEventListener('keydown', e => window.__keys.push(e.key), true); 'ok'");
+    eval(&tab, "window.__keys = []; addEventListener('keydown', e => window.__keys.push(e.key), true); 'ok'");
     let page_state = || {
-        eval(
+        let state = eval(
             &tab,
-            "JSON.stringify({ find: (document.activeElement || {}).id === 'transcriptSearchInput', list: document.getElementById('app').className, keys: window.__keys, sheet: !!document.querySelector('.review-sheet') })",
-        )
-        .as_str()
-        .unwrap_or("")
-        .to_string()
+            "JSON.stringify({ find: (document.activeElement || {}).id === 'transcriptSearchInput', jump: document.getElementById('searchLayer').classList.contains('production-open'), list: document.getElementById('app').className, keys: window.__keys, sheet: !!document.querySelector('.review-sheet'), active: (document.activeElement || {}).className || (document.activeElement || {}).tagName })",
+        );
+        serde_json::from_str::<serde_json::Value>(state.as_str().unwrap_or("{}")).unwrap()
     };
+    let ctrl_k = "document.activeElement.dispatchEvent(new KeyboardEvent('keydown', {key: 'k', ctrlKey: true, bubbles: true, cancelable: true})); 'ok'";
     let before = page_state();
     tab.press_key("/").unwrap();
     tab.press_key("\\").unwrap();
+    eval(&tab, ctrl_k);
     std::thread::sleep(Duration::from_millis(400));
-    let after: serde_json::Value = serde_json::from_str(&page_state()).unwrap();
-    let before: serde_json::Value = serde_json::from_str(&before).unwrap();
+    let after = page_state();
     assert!(
-        after["keys"] == serde_json::json!(["/", "\\"])
+        after["keys"] == serde_json::json!(["/", "\\", "k"])
             && after["find"] == false
+            && after["jump"] == false
             && after["list"] == before["list"]
             && after["sheet"] == true,
         "the keys reached the page and moved nothing under the sheet: {before} then {after}"
+    );
+    // The focus stays inside: one moved to a control under the sheet (Tab past its first control,
+    // or a script) is put back, and the same keys still move nothing.
+    eval(
+        &tab,
+        "window.__keys = []; document.querySelector('.preview-review').focus(); 'ok'",
+    );
+    until(
+        &tab,
+        "!!(document.activeElement && document.activeElement.closest('.review-sheet'))",
+        "the focus put back inside the sheet",
+        Duration::from_secs(5),
+        "(document.activeElement || {}).className || (document.activeElement || {}).tagName",
+    );
+    tab.press_key("/").unwrap();
+    eval(&tab, ctrl_k);
+    std::thread::sleep(Duration::from_millis(400));
+    let after = page_state();
+    assert!(
+        after["keys"] == serde_json::json!(["/", "k"])
+            && after["find"] == false
+            && after["jump"] == false
+            && after["list"] == before["list"]
+            && after["sheet"] == true,
+        "with the focus put back, the keys moved nothing under the sheet: {after}"
     );
     harness::click_when_settled(
         &tab,
@@ -1713,14 +1740,13 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
     );
     until(
         &tab,
-        "!document.querySelector('.review-sheet') && !!document.querySelector('#previewBody .mdrev-host h1')",
-        "the sheet gone and the pane as it was",
+        "!document.querySelector('.review-sheet') && !!document.querySelector('#previewBody .mdrev-host h1') && (document.activeElement || {}).classList?.contains('preview-review')",
+        "the sheet gone, the pane as it was, and the focus back on Review",
         Duration::from_secs(10),
-        PANE,
+        "(document.activeElement || {}).className + ' | ' + document.getElementById('previewBody').className",
     );
-    // The control: with the sheet gone the same key is the app's again, so the step above is not
-    // vacuous.
-    tab.find_element(".transcript").unwrap().click().unwrap();
+    // The control: with the sheet gone the same keys are the app's again, pressed with nothing
+    // clicked (the focus where the close left it), so the steps above are not vacuous.
     tab.press_key("/").unwrap();
     until(
         &tab,
@@ -1728,6 +1754,14 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
         "the same key with the sheet gone to open the session's find",
         Duration::from_secs(5),
         "JSON.stringify(window.__keys) + ' active=' + ((document.activeElement || {}).id || (document.activeElement || {}).tagName)",
+    );
+    eval(&tab, ctrl_k);
+    until(
+        &tab,
+        "document.getElementById('searchLayer').classList.contains('production-open')",
+        "Ctrl+K with the sheet gone to open the jump-to",
+        Duration::from_secs(5),
+        "JSON.stringify(window.__keys)",
     );
     let host = eval(&tab, "JSON.stringify(window.__host)");
     let host: serde_json::Value = serde_json::from_str(host.as_str().unwrap_or("{}")).unwrap();

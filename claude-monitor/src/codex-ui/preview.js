@@ -425,28 +425,45 @@ export class Preview {
     sheet.setAttribute("role", "dialog");
     sheet.setAttribute("aria-label", `Review ${item.name || "document"}`);
     // The keys are the sheet's while it is open (#s596 review): it covers the window, so a key the
-    // page's keymap answered would act on the transcript and the list hidden under it (`/` opening
-    // the find there and taking the focus). Marked as a guest (shared/keymap.js), and its close
-    // takes the focus as it opens, which engages it before any key is pressed; nothing outside the
-    // sheet can be pressed or focused while it covers the window, and once it is gone the keymap
-    // answers again. mdrev's own keys act once the reader clicks into the document, as in the pane.
+    // page answered would act on the transcript and the list hidden under it (`/` opening the find
+    // there and taking the focus, ⌘K the jump-to). Marked as a guest (shared/keymap.js), and its
+    // close takes the focus as it opens, which engages it before any key is pressed. The focus stays
+    // inside: one that leaves it (Tab past either end, a control under the sheet focused) is put
+    // back where it was, after the move's own work has run (mdrev's copy focuses a textarea of its
+    // own on the body for a moment). ⌘K, the jump-to, has a listener of its own outside the keymap:
+    // the sheet takes it, and leaves every other key to mdrev, which binds its own on the window.
+    // On close the focus goes back to the Review control, and the keymap answers again.
     sheet.dataset.guestKeys = "";
     sheet.innerHTML = `<div class="review-sheet-head"><button type="button" class="review-sheet-close" data-review-close aria-label="Close the review">${svg("x")}</button><strong>${escapeText(item.name || "document")}</strong></div><div class="review-sheet-body mdrev-pane"></div>`;
     (viewRoot.element() || viewRoot.layer()).append(sheet);
+    const closeBtn = sheet.querySelector("[data-review-close]");
     const state = { sheet, handle: null, close: null };
     this.reviewSheet = state;
     const close = () => {
       if (this.reviewSheet !== state) return;
       this.reviewSheet = null;
       removeEventListener("keydown", onKey, true);
+      removeEventListener("focusin", onFocus, true);
       state.handle?.unmount();
+      const inside = sheet.contains(viewRoot.active());
       sheet.remove();
+      if (inside && this.reviewBtn.isConnected && !this.reviewBtn.hidden) this.reviewBtn.focus({ preventScroll: true });
     };
-    const onKey = event => { if (event.key === "Escape") { event.preventDefault(); close(); } };
+    const onKey = event => {
+      if (event.key === "Escape") { event.preventDefault(); close(); }
+      else if ((event.metaKey || event.ctrlKey) && event.key?.toLowerCase() === "k") { event.preventDefault(); event.stopPropagation(); }
+    };
+    const onFocus = event => {
+      if (sheet.contains(event.target)) return;
+      const from = event.relatedTarget;
+      const back = from && from.isConnected && sheet.contains(from) ? from : closeBtn;
+      queueMicrotask(() => { if (this.reviewSheet === state && !sheet.contains(viewRoot.active())) back.focus({ preventScroll: true }); });
+    };
     state.close = close;
     addEventListener("keydown", onKey, true);
-    sheet.querySelector("[data-review-close]").onclick = close;
-    sheet.querySelector("[data-review-close]").focus({ preventScroll: true });
+    addEventListener("focusin", onFocus, true);
+    closeBtn.onclick = close;
+    closeBtn.focus({ preventScroll: true });
     mountMarkdown(sheet.querySelector(".review-sheet-body"), item, { review: true }).then(handle => {
       if (this.reviewSheet !== state) { handle?.unmount(); return; }
       if (!handle) throw new Error("no mdrev");
