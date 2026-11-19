@@ -2989,28 +2989,34 @@ pub fn reap_own_browsers() {
     else {
         return;
     };
-    let (helpers, browsers): (Vec<(u32, bool)>, Vec<(u32, bool)>) =
-        String::from_utf8_lossy(&out.stdout)
-            .lines()
-            .filter_map(|line| line.trim().split_once(' '))
-            .filter(|(_, command)| {
-                command.split(' ').any(|arg| {
-                    arg.strip_prefix("--user-data-dir=")
-                        .is_some_and(|dir| dir.starts_with(&mark))
-                })
-            })
-            .filter_map(|(pid, command)| {
-                let helper = command.split(' ').any(|arg| arg.starts_with("--type="));
-                pid.parse().ok().map(|pid| (pid, helper))
-            })
-            .partition(|(_, helper)| *helper);
-    for (pid, _) in &helpers {
+    let listing = String::from_utf8_lossy(&out.stdout);
+    let (mut helpers, mut browsers) = (Vec::new(), Vec::new());
+    for (pid, command) in listing
+        .lines()
+        .filter_map(|line| line.trim().split_once(' '))
+    {
+        let ours = command.split(' ').any(|arg| {
+            arg.strip_prefix("--user-data-dir=")
+                .is_some_and(|dir| dir.starts_with(&mark))
+        });
+        let Ok(pid) = pid.parse::<u32>() else {
+            continue;
+        };
+        if !ours {
+            continue;
+        }
+        if command.split(' ').any(|arg| arg.starts_with("--type=")) {
+            helpers.push(pid);
+        } else {
+            browsers.push(pid);
+        }
+    }
+    for pid in &helpers {
         let _ = std::process::Command::new("kill")
             .args(["-KILL", &pid.to_string()])
             .stderr(std::process::Stdio::null())
             .status();
     }
-    let browsers: Vec<u32> = browsers.into_iter().map(|(pid, _)| pid).collect();
     end_processes(&browsers);
 }
 
