@@ -17,16 +17,20 @@ import { sessionFilterBuckets, FILTER_BUCKETS, FILTER_LABELS } from "./shared/st
 import { bindKeymap, hintFor } from "./shared/keymap.js";
 import { parseJumpQuery } from "./jump-query.js";
 import { escapeText } from "./view-model.js";
-import { mountSessionList } from "./session-list-view.js";
-import { mountSessionView, PHONE_PANES } from "./session-view.js";
+import { mountSessionList, OPTIONAL_CONTROLS as LIST_CONTROLS } from "./session-list-view.js";
+import { mountSessionView, OPTIONAL_CONTROLS as VIEW_CONTROLS, PHONE_PANES } from "./session-view.js";
 import { page, viewRoot } from "./view-root.js";
 import { arrangeApp, GLIDE_MS, LIST_MIN } from "./pane-layout.js";
 
 /** Every option `mountApp` takes; any other name is refused (stage 2: one server; stage 3, #s595:
- *  several machines and the assets the app carries). Later stages add theirs here and to the kit's
- *  list beside `VIEW_WITHHELD` (`kit.rs`), which holds each out of the guide and the declarations: no
- *  host is offered the mount. */
-export const MOUNT_OPTIONS = Object.freeze(["backend", "machines", "assets", "version"]);
+ *  several machines and the assets the app carries; stage 4, #s596: the native app's own). Each is in
+ *  the kit's list beside `VIEW_WITHHELD` too (`kit.rs`), which holds it out of the guide and the
+ *  declarations: no host is offered the mount. */
+export const MOUNT_OPTIONS = Object.freeze(["backend", "machines", "assets", "version", "theme", "show", "onMachines", "reviewSheet", "frame"]);
+
+/** The theme the app opens in (#s596): the reader's stored "dark"; with nothing stored, the start
+ *  theme the app passed ("light" or "dark"); else null, the page's own, as a stored "light" leaves it. */
+export const themeToStart = (stored, start) => (stored === "dark" ? "dark" : stored == null && (start === "dark" || start === "light") ? start : null);
 
 // The session view's handle and the session list's, once each is mounted (below). Module-wide, since
 // native mode's activation reaches them after the mount (`installNativeController`). The view's is
@@ -65,7 +69,23 @@ let appMounted = false;
  *    itself, `{ mdrev, mdrevVersion, mermaid }`, passed to the view as it is (the view's doc comment
  *    says each); `machines` requires it, since no one machine's bundle may serve every machine. The
  *    mount names the runtime in the page's head where the page names none.
- *  - `version`: the release the brand names (`v<version>`), "dev" without one. */
+ *  - `version`: the release the brand names (`v<version>`), "dev" without one.
+ *
+ *  The native app's own (stage 4, #s596, design/app-mount.md, "Kept for the native app"), each
+ *  optional:
+ *  - `theme`: "light" or "dark", the theme to start in where the reader has stored none (the native
+ *    app sets it from the device's appearance); a stored one wins, and the theme toggle stores the
+ *    reader's choice as on the monitor's page.
+ *  - `show`: the optional controls the app switches off, by name, as `{ detach: false }`: the view's
+ *    (`reading`, `history`, `detach`) and the list's (`filter`, `hiding`, `arrangements`), each passed
+ *    on to the part that declares it; true or false only.
+ *  - `onMachines`: the function a Machines row calls, in the sidebar's nav after Search, and a glyph
+ *    on the rail after the filter (Hong on #s553: "A Machines row in the sidebar (native app only)"):
+ *    the native app's way into its pairing and machines screens. Neither is drawn without it.
+ *  - `reviewSheet`: passed on to the view (Hong on #s555): `true` offers the pane's Review and its
+ *    sheet at every width, where a phone reader alone is offered them otherwise.
+ *  - `frame`: passed on to the view (its doc comment says it): the native app's frame for an
+ *    agent's HTML page, on a scheme of its own. */
 export function mountApp(element, options = {}) {
 if (appMounted) throw new Error("mountApp draws the web app once per page, and this page holds it already");
 /** A value as a refusal names it: its JSON, or its kind where it has none (a function, a BigInt). */
@@ -79,6 +99,15 @@ if (options.machines != null && !(Array.isArray(options.machines) && options.mac
 if (options.machines != null && options.assets == null) throw new Error("mountApp takes its machines with its assets: where mdrev's bundle and the Mermaid runtime load from, which no one machine may serve for every machine");
 checkAssets(options.assets ?? undefined, "mountApp");
 if (options.version != null && typeof options.version !== "string") throw new Error(`mountApp takes its version as a string, the release its brand names, not ${said(options.version)}`);
+if (options.theme != null && options.theme !== "light" && options.theme !== "dark") throw new Error(`mountApp takes its theme as "light" or "dark", the theme to start in, not ${said(options.theme)}`);
+if (options.show != null && (typeof options.show !== "object" || Array.isArray(options.show))) throw new Error(`mountApp takes show as an object naming the controls it switches off, as { detach: false }, not ${said(options.show)}`);
+for (const [name, shown] of Object.entries(options.show || {})) {
+  if (!VIEW_CONTROLS.includes(name) && !LIST_CONTROLS.includes(name)) throw new Error(`mountApp has no optional control named ${name}; the controls it switches off are ${[...VIEW_CONTROLS, ...LIST_CONTROLS].join(", ")}`);
+  if (typeof shown !== "boolean") throw new Error(`mountApp shows ${name} or not by true or false, not ${said(shown)}`);
+}
+if (options.onMachines != null && typeof options.onMachines !== "function") throw new Error(`mountApp takes onMachines as the function its Machines row calls, not ${said(options.onMachines)}`);
+if (options.reviewSheet != null && typeof options.reviewSheet !== "boolean") throw new Error(`mountApp offers the review sheet at every width or not by true or false, not ${said(options.reviewSheet)}`);
+if (options.frame != null && typeof options.frame !== "function") throw new Error(`mountApp takes its frame as a function from a page's HTML to the address its frame loads, not ${said(options.frame)}`);
 if (!element) throw new Error("mountApp draws into an element the page gives it, and none was given");
 if (!element.isConnected) throw new Error("mountApp draws into an element on the page, and this one is not on it");
 if (page.byId("app")) throw new Error("mountApp draws the web app's #app, and this page holds one already");
@@ -109,6 +138,8 @@ const place = id => {
   const where = merged.locate(id);
   return where && { machine: where.machine, id: where.id };
 };
+/** The optional controls the app switched off that a part declares (`show`, #s596), for that part. */
+const showFor = controls => Object.fromEntries(Object.entries(options.show || {}).filter(([name]) => controls.includes(name)));
 // Whether the reader wants the outline, as the view says it (`onOutline`).
 let viewOutlineWanted = true;
 /** Remember the app's choices, and the view's with them (#s429 stage 7): the one `persist` wrote both
@@ -154,14 +185,18 @@ function toast(message) {
 // body, its listeners, the parts it asks the app to place) comes in the order it did. What it needs of
 // the view (native mode's projects) is read as it draws, once the view is mounted; it starts reading
 // the index at the end, as it did.
+// The rail's filter as the list places it (`placeListPart`), for the Machines glyph to follow (#s596).
+let railFilter = null;
 listHandle = mountSessionList(page.byId("sessionList"), {
   // Over several machines the list reads all of them at once (#s541's merged source, #s595).
   ...(merged ? { backend: merged } : {}),
   // The page's theme as it stands; the stored one, put on the root below, reaches the list through the
   // root's observer, as every later change does.
   theme: page.html().dataset.theme === "dark" ? "dark" : "light",
-  // Every optional control stays on, and the app keeps the page's keyboard (`keyboard: "page"`, the
-  // keymap below), as it does for the view.
+  // The optional controls the native app switched off (#s596); every one stays on for the monitor's
+  // page. The app keeps the page's keyboard (`keyboard: "page"`, the keymap below), as it does for
+  // the view.
+  show: showFor(LIST_CONTROLS),
   keyboard: "page",
   onToast: toast,
   persist,
@@ -174,6 +209,24 @@ listHandle = mountSessionList(page.byId("sessionList"), {
   layer: kind => (kind === "flyout" ? page.body() : app),
   place: placeListPart,
 });
+if (options.onMachines) drawMachines(options.onMachines);
+
+/** The native app's way into its own screens (#s596, Hong on #s553: "A Machines row in the sidebar
+ *  (native app only)"): a Machines row in the nav after Search, which shows at every width the nav does
+ *  (the drawer and a wide phone's column), and a glyph on the rail, which hides the nav, after the
+ *  list's filter (after Search where the app switched the filter off). Each calls `onMachines`; drawn
+ *  after the list, so its rail filter is in place. */
+function drawMachines(onMachines) {
+  const glyph = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>';
+  const row = Object.assign(document.createElement("button"), { type: "button", className: "navbtn", id: "machinesBtn" });
+  row.innerHTML = `<span>${glyph}</span><span class="label">Machines</span>`;
+  const rail = Object.assign(document.createElement("button"), { type: "button", className: "sidebar-mini-button", id: "sidebarMiniMachines", title: "Machines" });
+  rail.innerHTML = glyph;
+  rail.setAttribute("aria-label", "Machines");
+  row.onclick = rail.onclick = () => onMachines();
+  page.byId("searchBtn").after(row);
+  (railFilter || page.byId("sidebarMiniSearch")).after(rail);
+}
 
 /** Where the list's parts go in the sidebar (stage 3), node for node where the list put them when it
  *  found the sidebar itself: its strip of head controls in the head's one row before the sidebar's
@@ -184,7 +237,7 @@ listHandle = mountSessionList(page.byId("sessionList"), {
 function placeListPart(part, node) {
   if (part === "controls") page.byId("sidebarCollapse").before(node);
   else if (part === "sheet") page.$("#app>.sidebar>.side-head").append(node);
-  else if (part === "rail-filter") page.byId("sidebarMiniSearch").after(node);
+  else if (part === "rail-filter") page.byId("sidebarMiniSearch").after(railFilter = node);
   else if (part === "marks") page.byId("sidebarMini").append(node);
 }
 
@@ -381,7 +434,10 @@ page.byId("themeBtn").onclick = () => { const dark = page.html().dataset.theme !
 // theme just below): the list and the view follow it, as everything on the page did while they read
 // the root's.
 new MutationObserver(() => tellTheme(page.html().dataset.theme === "dark" ? "dark" : "light")).observe(page.html(), { attributes: true, attributeFilter: ["data-theme"] });
-if (localStorage.getItem("am-demo-theme") === "dark") page.html().dataset.theme = "dark";
+// The reader's stored theme, else the app's start theme (#s596), else the page's own.
+const openTheme = themeToStart(localStorage.getItem("am-demo-theme"), options.theme);
+if (openTheme === "dark") page.html().dataset.theme = "dark";
+else if (openTheme === "light") delete page.html().dataset.theme;
 // #s33: the collapsed rail is the DESKTOP's. On a phone the sidebar is the drawer, and the rail's
 // rules hide its head, its nav and its list: a phone that had the rail stored (1.355 drew a phone
 // held sideways as a desktop, and the owner collapsed it there) opened a blank drawer with no
@@ -738,8 +794,9 @@ paintWrite();
 
 // The session view (session-view.js): its three parts are columns of this grid, and it draws into
 // the page, as it does in every host (design/session-view-component.md, #s438). What it needs from
-// the app is passed in here; what the app asks of it is the handle. Every optional control stays on,
-// and the app keeps the page's keyboard (`keyboard: "page"`, the keymap below).
+// the app is passed in here; what the app asks of it is the handle. Every optional control stays on
+// unless the native app switched it off (`show`, #s596), and the app keeps the page's keyboard
+// (`keyboard: "page"`, the keymap below).
 // The list is laid out before the view mounts, so the view's first decision (and the outline's default
 // for a reader with none remembered) reads the box it will have beside the list.
 arrangeList();
@@ -753,13 +810,17 @@ viewHandle = mountSessionView(viewRoot.element(), {
   theme: page.html().dataset.theme === "dark" ? "dark" : "light",
   backend: handleOf(viewMachine),
   assets: options.assets ?? undefined,
+  // The native app's (#s596): the controls it switched off, Review at every width, and its frame.
+  show: showFor(VIEW_CONTROLS),
+  reviewSheet: options.reviewSheet ?? undefined,
+  frame: options.frame ?? undefined,
   grid: app,
   keyboard: "page",
   write: { on: writeOn, confirm: confirmWrite },
   // A tab of its own (#s433): the server's own pages, one page at three addresses that say what it
   // shows (`/detached?session=…` for the transcript's ↗; `/markdown?…` and `/image?…` for the pane's,
-  // as before it). The native app turns every ↗ off with `detach` once the mount takes `show`
-  // (design/app-mount.md); until then it has the transcript's ↗ beside the pane's, as a browser does.
+  // as before it). The native app turns every ↗ off with `show: { detach: false }` (#s596) until it
+  // opens windows of its own.
   detachTo: ({ href }) => href,
   selectedId: rows ? rows.selectedId : () => listHandle.selected(),
   sessionRow: rows ? rows.sessionRow : id => listHandle.row(id),

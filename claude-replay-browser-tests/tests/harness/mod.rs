@@ -2300,6 +2300,10 @@ impl Chrome {
     }
 
     fn finish(&mut self) -> Ended {
+        // Before the clock: the end's own time is what a profile row measures.
+        if let Some(browser) = self.browser.as_ref() {
+            report_loop_notices(browser);
+        }
         let t0 = Instant::now();
         let Some(browser) = self.browser.take() else {
             return Ended {
@@ -2360,6 +2364,50 @@ impl Chrome {
 impl Drop for Chrome {
     fn drop(&mut self) {
         self.finish();
+    }
+}
+
+/// The ResizeObserver loop notices a host page kept apart from its errors (`host.loops`, `tab.loops`,
+/// #s596), said as the case's browser ends: the browser's report that a size observation waited for
+/// the next frame is no throw and fails nothing, but it can mean a layout feedback loop, so a run
+/// that passes still says where one came (#s624). Written to stderr itself, past libtest's capture of
+/// a passing case's `eprintln!`. Each tab is asked on a thread of its own and given 2 s: a tab that
+/// does not answer is left to the SIGTERM that follows, which also ends the question.
+fn report_loop_notices(browser: &headless_chrome::Browser) {
+    let tabs: Vec<std::sync::Arc<headless_chrome::Tab>> = match browser.get_tabs().lock() {
+        Ok(tabs) => tabs.clone(),
+        Err(_) => return,
+    };
+    let case = std::thread::current().name().unwrap_or("?").to_string();
+    for tab in tabs {
+        let (tx, rx) = std::sync::mpsc::channel();
+        // A builder, not `spawn`: this runs in a drop, perhaps as a failed case unwinds, where a panic
+        // (a box too loaded to start a thread) would abort the whole test binary.
+        let started = std::thread::Builder::new().spawn(move || {
+            let found = tab.evaluate(
+                "(function () { var l = [].concat((window.__host && window.__host.loops) || [], (window.__tab && window.__tab.loops) || []); return l.length ? location.href + ': ' + JSON.stringify(l) : ''; })()",
+                false,
+            );
+            let _ = tx.send(
+                found
+                    .ok()
+                    .and_then(|o| o.value)
+                    .and_then(|v| v.as_str().map(str::to_string)),
+            );
+        });
+        if started.is_err() {
+            return;
+        }
+        let Ok(Some(text)) = rx.recv_timeout(Duration::from_secs(2)) else {
+            continue;
+        };
+        if text.is_empty() {
+            continue;
+        }
+        // The page names its own address: the tab's record of it sits behind a lock this drop must
+        // not panic on.
+        let line = format!("harness: ResizeObserver loop notices in {case} at {text} (#s624)\n");
+        let _ = std::io::stderr().write_all(line.as_bytes());
     }
 }
 
@@ -4424,6 +4472,30 @@ pub struct Answer {
     pub path: String,
     pub content_type: String,
     pub body: String,
+}
+
+/// The kit as a host serves it (#s432): every file of its `bundle/` at `/kit/bundle/…` on the page's
+/// origin, answered by the browser itself from what `kit::files` lays out, so nothing a case loads
+/// from there comes from the monitor's own `/monitor-ui/`.
+pub fn kit_bundle() -> Vec<Answer> {
+    let files = claude_monitor::kit::files().expect("the kit is laid out");
+    files
+        .into_iter()
+        .filter_map(|(path, bytes)| {
+            let name = path.strip_prefix("bundle/")?;
+            let content_type = match name.rsplit_once('.')?.1 {
+                "js" => "text/javascript; charset=utf-8",
+                "css" => "text/css; charset=utf-8",
+                _ => return None,
+            };
+            Some(Answer {
+                pattern: format!("*/kit/bundle/{name}*"),
+                path: format!("/kit/{path}"),
+                content_type: content_type.into(),
+                body: String::from_utf8(bytes).expect("the kit's bundle is text"),
+            })
+        })
+        .collect()
 }
 
 /// Answer some of a tab's requests from the case, before they leave the browser (#s429 stage 6),

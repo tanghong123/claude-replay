@@ -57,14 +57,15 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    whole insets, and while it is open the view's stacking rises to the sheet's own level, 95: over a
    wide phone's column, the sidebar beside a narrow view and the drawer's handle, under the toasts. Its
    height is the view's, the app's whole height. These rules read the view's own classes, so they hold
-   exactly where its layout is contained (a phone reader in a box: `pl-phone` and `pl-boxed`), and the
-   pane's state the app keeps (the sheet opens from the open pane's Review control). They are the
+   exactly where its layout is contained (`pl-boxed`: a phone reader in a box, and since #s596 a wider
+   view beside the app's list, where the native app's `reviewSheet` offers Review: Hong on #s555, "The
+   phone's Review sheet on an iPad too"), and the pane's state the app keeps (the sheet opens from the open pane's Review control). They are the
    app's alone: in a host the sheet is drawn inside the pane like the rest of the view, the screen's
    insets counted where they fall in it, and the view's stacking left alone. At ⤢ (held sideways) the
    view no longer contains its layout, so the sheet is the window's from its own edges, with the
    screen's whole insets, in the app and in a host alike, as the pane is. */
-#app:not(.preview-off)>#sessionView.pl-boxed.pl-phone:has(>.review-sheet){z-index:95}
-#app:not(.preview-off)>#sessionView.pl-boxed.pl-phone>.review-sheet{left:calc(0px - var(--pane-x));right:calc(0px - var(--pane-r));--pl-cut-left:0px;--pl-cut-right:0px}
+#app:not(.preview-off)>#sessionView.pl-boxed:has(>.review-sheet){z-index:95}
+#app:not(.preview-off)>#sessionView.pl-boxed>.review-sheet{left:calc(0px - var(--pane-x));right:calc(0px - var(--pane-r));--pl-cut-left:0px;--pl-cut-right:0px}
 #app:not(.preview-off)>#sessionView.pl-boxed.pl-phone.pl-coarse.pl-max-h-500.preview-full>.review-sheet{left:0;right:0}
 /* The task card's dim on a phone (#319) dims everything behind the card and takes the tap that closes
    it. The card and its dim are the view's (#s431 stage 4), so a phone reader in a box dims its box;
