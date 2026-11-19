@@ -99,7 +99,7 @@ fn a_paired_monitor_writes_no_token_to_a_log() {
     drop(serving);
     // #s604: the running monitor was paired with this token, so the hand-off says nothing more.
     assert!(
-        !handoff.contains("does not take this token"),
+        !handoff.contains("was started without this token"),
         "the hand-off to a monitor paired with the token said it was not: {handoff}"
     );
 
@@ -130,8 +130,10 @@ fn a_paired_monitor_writes_no_token_to_a_log() {
 }
 
 /// #s604: `--pair` handed off to a monitor that started unpaired writes a token the running
-/// monitor does not know until it restarts. The hand-off says so, and how to restart it, rather
-/// than opening a browser that would not be paired; it still writes no token to a log.
+/// monitor does not know until it restarts. The hand-off says so, and how to restart it, and
+/// opens and prints the address bare: that gate answers a tokened address with its page, not the
+/// 302 that strips the token, so the token would stay in the browser's history. Neither the
+/// hand-off nor the serving monitor writes the token to its log.
 #[test]
 fn a_pair_handed_to_an_unpaired_monitor_says_it_needs_a_restart() {
     let base = scratch("unpaired");
@@ -161,16 +163,28 @@ fn a_pair_handed_to_an_unpaired_monitor_says_it_needs_a_restart() {
     assert!(status.success(), "the hand-off exited with {status}");
     let handoff = std::fs::read_to_string(&handoff_log).unwrap();
     drop(serving);
+    let served = std::fs::read_to_string(&log).unwrap();
 
     let token = std::fs::read_to_string(base.join("state/auth-token")).unwrap();
     let token = token.trim();
     assert!(!token.is_empty(), "--pair minted no token");
+    for (what, text) in [("hand-off", &handoff), ("serving monitor", &served)] {
+        assert!(
+            !text.contains(token),
+            "the {what} wrote the token to its log"
+        );
+        assert!(
+            !text.contains("?token="),
+            "the {what} wrote a tokened URL to its log"
+        );
+    }
+    let url = format!("http://127.0.0.1:{port}/");
     assert!(
-        !handoff.contains(token),
-        "the hand-off wrote the token to its log"
+        handoff.lines().any(|l| l.trim() == url),
+        "the hand-off printed no bare URL on a line of its own: {handoff}"
     );
     assert!(
-        handoff.contains("the monitor already running does not take this token yet")
+        handoff.contains("the monitor already running was started without this token")
             && handoff.contains("Restart the monitor")
             && handoff.contains("launchctl kickstart -k"),
         "the hand-off to an unpaired monitor did not say it needs a restart: {handoff}"

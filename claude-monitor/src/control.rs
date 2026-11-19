@@ -81,10 +81,10 @@ pub fn running_takes_token(base: &str, token: &str) -> Option<bool> {
 
 /// What the hand-off says when the running monitor does not take the token (#s604).
 pub fn stale_pairing_note() -> &'static str {
-    "  note: the monitor already running does not take this token yet: it read its pairing when \
-     it started, before the token was written, so a browser opened with it is not paired. Restart \
-     the monitor (Ctrl-C where it runs, or restart its service: under launchd, `launchctl \
-     kickstart -k gui/$(id -u)/<its label>`), then run `agent-monitor --pair` again."
+    "  note: the monitor already running was started without this token, so it does not take it: \
+     this opens its page unpaired. Restart the monitor (Ctrl-C where it runs, or restart its \
+     service: under launchd, `launchctl kickstart -k gui/$(id -u)/<its label>`), then run \
+     `agent-monitor --pair` again."
 }
 
 /// The pairing token's file — the monitor's STATE dir, mode 0600 (#197). It moved OUT of the
@@ -2198,6 +2198,57 @@ pub fn consent_route(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #s604: what the hand-off reads off the running monitor's answer to a tokened `/`: the 302
+    /// that sets the cookie takes the token, the page or a refusal does not, anything else (or no
+    /// answer) is unknown and says nothing.
+    #[test]
+    fn running_takes_token_reads_only_the_302_as_taking_it() {
+        fn answering(status: &'static str) -> (String, std::thread::JoinHandle<String>) {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            let base = format!(
+                "http://127.0.0.1:{}/",
+                listener.local_addr().unwrap().port()
+            );
+            let server = std::thread::spawn(move || {
+                use std::io::{Read, Write};
+                let (mut conn, _) = listener.accept().unwrap();
+                let mut request = [0u8; 512];
+                let n = conn.read(&mut request).unwrap();
+                let _ = conn.write_all(
+                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\n\r\n").as_bytes(),
+                );
+                String::from_utf8_lossy(&request[..n]).into_owned()
+            });
+            (base, server)
+        }
+        for (status, want) in [
+            ("302 Found", Some(true)),
+            ("200 OK", Some(false)),
+            ("401 Unauthorized", Some(false)),
+            ("500 Internal Server Error", None),
+        ] {
+            let (base, server) = answering(status);
+            assert_eq!(running_takes_token(&base, "tok"), want, "{status}");
+            let request = server.join().unwrap();
+            assert!(
+                request.starts_with("GET /?token=tok HTTP/1.0\r\n"),
+                "{request}"
+            );
+        }
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let nobody = format!("http://127.0.0.1:{port}/");
+        assert_eq!(
+            running_takes_token(&nobody, "tok"),
+            None,
+            "nothing listening"
+        );
+        assert_eq!(running_takes_token("not an address", "tok"), None);
+    }
 
     const SID: &str = "bdc93d7b-cd2b-4853-87d8-e88f9e6d71e3";
 
