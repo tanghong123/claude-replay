@@ -14415,6 +14415,126 @@ fn a_narrow_session_column_keeps_a_held_query_whole_and_the_chip_whole_or_its_do
     drop(monitor);
 }
 
+/// #s624: at a desktop's width, a query held in the search box and / pressed to take it up again, the
+/// right pane shut and open: the box refits once its new size is reported, and the browser raises no
+/// "ResizeObserver loop" notice at the window, where a host page's error handler receives it as an
+/// error (the native app's sheet case found it). Red before #s624 on every such / with the pane open
+/// (at 1400px the shut pane leaves the box its room, and stays here as the other layout's check): the
+/// field's own observer wrote the cluster's floor and the heading's classes, both above the field in
+/// the page, inside the delivery that reported the field's new size, so the browser put the cluster's
+/// report off a frame with that notice.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_held_query_taken_up_again_raises_no_resize_observer_loop() {
+    let _serial = serial();
+    let base = base("held-slash-loop");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000624".to_string();
+    let mut jsonl = harness::long_session(6, harness::Shape::default());
+    jsonl.push_str("{\"type\":\"custom-title\",\"customTitle\":\"Harbour tide table notes\"}\n");
+    stores.claude_session(&sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3624, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    {
+        use headless_chrome::protocol::cdp::Page;
+        tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+            source: "window.__loops = []; addEventListener('error', function (e) { if (!e.error && /^ResizeObserver loop/.test(String(e.message))) window.__loops.push(window.__step || null); });".to_string(),
+            world_name: None,
+            include_command_line_api: None,
+            run_immediately: None,
+        })
+        .expect("the notice counter is installed");
+    }
+    harness::resize(&tab, 1400.0, 900.0);
+    tab.navigate_to(&monitor.url(&format!("?ui=app&session={sid}")))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window .turn.user') && document.getElementById('sessionTitle').textContent === 'Harbour tide table notes'",
+        "the app shell to mount the fixture",
+        Duration::from_secs(30),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let field = "(document.activeElement || {}).id === 'transcriptSearchInput'";
+    // Escape releases the search and keeps its query in the field: the box at rest with a held query.
+    let held = "(function(){ var c = document.querySelector('.workspace>.topbar>.header-search-cluster'); return !c.matches(':focus-within') && !c.classList.contains('search-held') && document.getElementById('transcriptSearchInput').value.indexOf('needle') >= 0; })()";
+    for open in [false, true] {
+        let toggle = format!("(function(){{ var v = document.getElementById('sessionView'); if (v.classList.contains('preview-off') === {open}) document.getElementById('previewBtn').click(); return true; }})()");
+        harness::eval(&tab, &toggle);
+        harness::until(
+            &tab,
+            &format!(
+                "document.getElementById('sessionView').classList.contains('preview-off') === {}",
+                !open
+            ),
+            "the pane as the round wants it",
+            Duration::from_secs(10),
+            "document.getElementById('sessionView').className",
+        );
+        harness::until_preview_parked(&tab);
+        for round in 0..2 {
+            let step = format!("{} pane, round {round}", if open { "open" } else { "shut" });
+            harness::eval(
+                &tab,
+                &format!("window.__step = {:?}; 'ok'", format!("{step}: find")),
+            );
+            tab.press_key("/").unwrap();
+            harness::until(
+                &tab,
+                field,
+                "/ to open find",
+                Duration::from_secs(5),
+                "(document.activeElement || {}).id",
+            );
+            tab.type_str("needle").unwrap();
+            harness::until(
+                &tab,
+                "document.getElementById('transcriptSearchInput').value.indexOf('needle') >= 0",
+                "the query typed",
+                Duration::from_secs(5),
+                "document.getElementById('transcriptSearchInput').value",
+            );
+            harness::eval(&tab, TWO_FRAMES);
+            tab.press_key("Escape").unwrap();
+            harness::until(
+                &tab,
+                held,
+                "Escape to hold the query",
+                Duration::from_secs(5),
+                "document.querySelector('.header-search-cluster').className",
+            );
+            harness::eval(&tab, TWO_FRAMES);
+            harness::eval(
+                &tab,
+                &format!(
+                    "window.__step = {:?}; 'ok'",
+                    format!("{step}: / with the query held")
+                ),
+            );
+            tab.press_key("/").unwrap();
+            harness::until(
+                &tab,
+                field,
+                "/ to take the held query up again",
+                Duration::from_secs(5),
+                "(document.activeElement || {}).id",
+            );
+            harness::eval(&tab, TWO_FRAMES);
+            harness::eval(&tab, TWO_FRAMES);
+            harness::eval(&tab, "(function(){ var i = document.getElementById('transcriptSearchInput'); i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })); i.blur(); return 'ok'; })()");
+            harness::eval(&tab, TWO_FRAMES);
+        }
+    }
+    let loops = harness::eval(&tab, "JSON.stringify(window.__loops)");
+    assert_eq!(
+        loops.as_str().unwrap_or(""),
+        "[]",
+        "no ResizeObserver loop notice as / takes a held query up again, by step"
+    );
+}
+
 /// #s581 (Hong: "when the pane is too narrow to hold all of the agent name, agent type, and repo
 /// name, give room to agent name, and show agent type and repo name in the drop down menu when user
 /// clicks the agent name"): where the bar holds the session's name beside its crumb (the agent and the
