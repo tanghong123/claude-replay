@@ -2060,6 +2060,7 @@
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .workspace>.topbar>#sessionParent.is-live .session-parent-label{display:none}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .workspace>.topbar>#sessionParent.is-live .icon{width:20px;height:20px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .workspace>.topbar:has(>#sessionParent.is-live)>.session-heading{padding-left:6px}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500).pl-max-w-700 .session-copy-menu{top:var(--phone-top,51px)}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .workspace>.topbar>.phone-info{order:2}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .workspace>.topbar>#previewBtn{order:3}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .phone-only{display:grid}
