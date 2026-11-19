@@ -2558,6 +2558,107 @@ fn app_shell_keeps_a_turn_steps_hold_through_a_wheel_over_its_session_list() {
     scenario_a_wheel_beside_the_transcript_keeps_a_turn_steps_hold(&page.tab, Surface::AppShell);
 }
 
+/// #s526: on the classic page the full-size image view's own input zooms and pans the image and
+/// leaves the reader where a turn step put them, so the turn the step landed stays the current one:
+/// from the end, where turn N-1 is in view and `[` moves nothing, `[`, an image opened full size, a
+/// real wheel over it, `1` (its actual size, past its box), ArrowDown (which pans it), Escape, and
+/// `[` again go to N-1 and then N-2. The page ended the hold on that wheel, and then on that arrow
+/// key, so its second `[` counted from N again and landed N-1 a second time. The image is opened
+/// through the page's own opener (a click on an `.aimg` anywhere opens it), on an image drawn
+/// nowhere: an image in the last turns brings its attachment row, the turns no longer fit, the step
+/// moves the view, and the hold no longer decides anything. The app shell's image opens in its pane,
+/// outside the transcript, and already kept the hold.
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_keeps_a_turn_steps_hold_through_zooming_and_panning_the_full_size_image() {
+    let _serial = serial();
+    let fx = fixture_short_last_turns("scenario-turnhold-lightbox-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    let (tab, surface) = (&page.tab, Surface::Classic);
+    let at_bottom = |tab: &headless_chrome::Tab| {
+        eval(
+            tab,
+            "(function(){ var s = document.scrollingElement; return s.scrollHeight - innerHeight - s.scrollTop <= 1; })()",
+        )
+        .as_bool()
+    };
+    let stage = |tab: &headless_chrome::Tab| {
+        eval(
+            tab,
+            "(function(){ var s = document.querySelector('.lightbox .lb-stage'), i = s && s.querySelector('img'); return s ? JSON.stringify([s.dataset.zoom || '', s.dataset.pannable || '', i ? i.style.transform : '']) : '[]'; })()",
+        )
+        .as_str()
+        .unwrap_or("[]")
+        .to_string()
+    };
+    let mut readings = Vec::new();
+    step_back_from_the_end(tab, surface, &mut readings);
+    assert_eq!(
+        at_bottom(tab),
+        Some(true),
+        "the premise: the step moved nothing, so only the hold names turn 29: {readings:?}"
+    );
+    // A picture far larger than the window, so its actual size is past its box and the arrows pan it.
+    let opened = eval(
+        tab,
+        "(function(){ var c = document.createElement('canvas'); c.width = 3000; c.height = 3000; var i = document.createElement('img'); i.className = 'aimg'; i.alt = 'a screenshot'; i.src = c.toDataURL('image/png'); i.style.display = 'none'; document.body.appendChild(i); i.click(); i.remove(); return !!document.querySelector('.lightbox .lb-stage'); })()",
+    );
+    assert_eq!(
+        opened.as_bool(),
+        Some(true),
+        "the premise: the image opens full size: {readings:?}"
+    );
+    settle();
+    let fitted = stage(tab);
+    wheel_over(
+        tab,
+        "document.querySelector('.lightbox .lb-stage')",
+        &readings,
+    );
+    settle();
+    let wheeled = stage(tab);
+    key(tab, "1", false);
+    settle();
+    let actual = stage(tab);
+    key(tab, "ArrowDown", false);
+    settle();
+    let panned = stage(tab);
+    let zoom = |s: &str| serde_json::from_str::<Vec<String>>(s).unwrap_or_default();
+    let (f, w, a, p) = (zoom(&fitted), zoom(&wheeled), zoom(&actual), zoom(&panned));
+    assert!(
+        f.len() == 3
+            && w.len() == 3
+            && f[0] != w[0]
+            && a.get(..2) == Some(&["100".to_string(), "yes".to_string()][..])
+            && p.len() == 3
+            && p[2] != a[2],
+        "the premise: the wheel zoomed the image, `1` put it at its actual size past its box, and ArrowDown panned it: fitted {fitted}, wheeled {wheeled}, actual {actual}, panned {panned}: {readings:?}"
+    );
+    until_engine_quiet(tab);
+    key(tab, "Escape", false);
+    settle();
+    until_engine_quiet(tab);
+    let closed = eval(tab, "!document.querySelector('.lightbox')");
+    let after = named_turn(tab, surface);
+    readings.push(after.clone());
+    assert_eq!(
+        (
+            closed.as_bool(),
+            at_bottom(tab),
+            after["bar"].as_i64(),
+            after["pane"].as_i64()
+        ),
+        (Some(true), Some(true), Some(29), Some(29)),
+        "the full-size view closes, the view has not moved, and turn 29 is still the current one: {readings:?}"
+    );
+    let (first, later) = press_and_name(tab, surface, "[", &mut readings);
+    assert_eq!(
+        names_both(&first, &later),
+        [Some(28); 4],
+        "…so the next `[` goes to turn 28, and stays: {readings:?}"
+    );
+}
+
 /// Twenty-eight long turns, then two short ones.
 fn fixture_short_last_turns(name: &str) -> Fixture {
     let base = base(name);
@@ -14466,6 +14567,108 @@ fn both_shells_say_how_long_a_turn_took_and_stay_silent_when_unrecorded() {
              cannot word it differently: {seen}"
         );
     }
+}
+
+/// #s580: a turn the transcript timed (#257's), a prompt that carries a changed-on-disk notice, and a
+/// slash command, each with the time it was sent.
+fn turn_time_layout_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(4, Shape::default());
+    t += &user_at("question 5: and the notes?", &now_minus(600));
+    t += &harness::edited_file_at("/w/notes/plan.md", &now_minus(599));
+    t += &assistant_at("Read them.", &now_minus(590));
+    t += &harness::command_at("review", "the plan", "", &now_minus(500));
+    t += &assistant_at("Reviewed.", &now_minus(490));
+    t += &user_at("question 7: how long did that take?", &now_minus(300));
+    t += &harness::named_tool_at("d1", "Bash", "cargo build", &now_minus(298));
+    t += &harness::tool_result_text("d1", "Finished", &now_minus(296));
+    t += &assistant_at("Built it.", &now_minus(200));
+    t += &harness::turn_duration_at(151_000, &now_minus(199));
+    let path = stores.claude_session(name, &t);
+    Fixture {
+        base,
+        path,
+        turns: 7,
+    }
+}
+
+/// #s580, Hong: a user turn's time and its duration sit on one line BELOW its bubble, ending at the
+/// bubble's right edge, at every width. Beside the bubble they took its room, "particularly bad
+/// when we are on narrow screens". At a desktop window, a narrow one and a phone, for a plain
+/// prompt with its duration, a prompt with a changed-on-disk notice and a slash command's card:
+/// nothing beside the bubble (its right edge is the turn's), the times under it on one line, in
+/// order, the last ending at the bubble's edge, and a notice below them. The classic page draws its
+/// prompt as a card the width of the column, the time in the card's own head row, and is left as
+/// it is.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_puts_a_turns_time_and_duration_below_its_bubble() {
+    let _serial = serial();
+    let fx = turn_time_layout_fixture("turn-time-below-app");
+    let page = open_with(Surface::AppShell, &fx, 3011, "mountall=1");
+    let tab = &page.tab;
+    let read = "(function(){ \
+        var r = function (e) { var b = e.getBoundingClientRect(); return [Math.round(b.left), Math.round(b.top), Math.round(b.right), Math.round(b.bottom)]; }; \
+        var turns = [...document.querySelectorAll('.turn.user')].filter(function (u) { return u.querySelector(':scope > .turn-time'); }).map(function (u) { \
+          var times = [...u.querySelectorAll(':scope > .turn-time')], n = u.querySelector(':scope > .turn-notice'); \
+          return { command: u.classList.contains('command'), turn: r(u), bubble: r(u.querySelector(':scope > .user-prompt')), times: times.map(r), \
+            titles: times.map(function (e) { return e.title; }), notice: n ? r(n) : null }; }); \
+        return JSON.stringify({ w: innerWidth, phone: document.getElementById('sessionView').classList.contains('pl-phone'), turns: turns }); })()";
+    let below = |v: &serde_json::Value| -> bool {
+        let n = |a: &serde_json::Value, i: usize| a[i].as_i64().unwrap_or(i64::MIN);
+        let Some(turns) = v["turns"].as_array() else {
+            return false;
+        };
+        let laid = |u: &serde_json::Value| {
+            let (turn, bubble) = (&u["turn"], &u["bubble"]);
+            let Some(t) = u["times"].as_array().filter(|t| !t.is_empty()) else {
+                return false;
+            };
+            let last = &t[t.len() - 1];
+            t.iter().all(|r| {
+                n(r, 1) >= n(bubble, 3)
+                    && n(r, 3) <= n(turn, 3)
+                    && (n(r, 1) - n(&t[0], 1)).abs() <= 1
+            }) && t.windows(2).all(|p| n(&p[0], 2) <= n(&p[1], 0))
+                && (n(last, 2) - n(bubble, 2)).abs() <= 5
+                && n(bubble, 2) >= n(turn, 2) - 2
+                && (u["notice"].is_null() || n(&u["notice"], 1) >= n(last, 3))
+        };
+        let timed = turns.iter().filter(|u| {
+            u["titles"] == serde_json::json!(["When this turn was sent", "How long this turn took"])
+        });
+        turns.iter().any(|u| u["command"] == true)
+            && turns.iter().any(|u| !u["notice"].is_null())
+            && timed.count() == 1
+            && turns.iter().all(laid)
+    };
+    let poll = |what: &str, done: &dyn Fn(&serde_json::Value) -> bool| {
+        let mut last = serde_json::Value::Null;
+        for _ in 0..40 {
+            last = serde_json::from_str(eval(tab, read).as_str().unwrap_or("null"))
+                .unwrap_or(serde_json::Value::Null);
+            if done(&last) {
+                return last;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        panic!("{what}: {last}");
+    };
+    harness::resize(tab, 1440.0, 900.0);
+    poll(
+        "a desktop window: each turn's times on one line below its bubble, at its edge, a notice below them",
+        &|v| v["w"] == 1440 && below(v),
+    );
+    harness::resize(tab, 900.0, 800.0);
+    poll("a narrow window: the same", &|v| {
+        v["w"] == 900 && v["phone"] == false && below(v)
+    });
+    harness::phone(tab, 390, 844);
+    poll(
+        "a phone: the same, the time and duration sharing one line rather than a line each",
+        &|v| v["w"] == 390 && v["phone"] == true && below(v),
+    );
 }
 
 /// An `AskUserQuestion` call and the answers that came back (#255).

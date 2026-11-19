@@ -8162,10 +8162,12 @@ fn a_follower_the_browser_moves_with_no_input_keeps_following() {
     // In one task: the transcript's scroll events held from the engine (delivered late, as WebKit's
     // was); the last three units gone and the layout read, so the browser clamps the offset to the
     // shorter content; the units back; and a mounted unit a few pixels taller, so the engine measures
-    // in the next frame, before the held event.
+    // in the next frame, before the held event. Taller by its own padding and 7px: a fixed padding was no change
+    // to a first unit already padded so (a process card's 14px, once #s580's user turns shifted the
+    // window), and the engine had nothing to measure.
     let moved = harness::probe(
         &tab,
-        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__held = 0; window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__held++; window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); units[0].style.paddingBottom = '7px'; return { top: Math.round(top), clamped: Math.round(clamped), gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
+        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__held = 0; window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__held++; window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); units[0].style.paddingBottom = (parseFloat(getComputedStyle(units[0]).paddingBottom) + 7) + 'px'; return { top: Math.round(top), clamped: Math.round(clamped), gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
     );
     // Read once the engine has transacted, well inside the two seconds the tail waits for the event.
     harness::until(
@@ -8189,7 +8191,7 @@ fn a_follower_the_browser_moves_with_no_input_keeps_following() {
     // again, every two seconds, for as long as no event came (the review of 68a629b3).
     let moved_again = harness::probe(
         &tab,
-        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__held = 0; window.__heldEvents = []; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); units[0].style.paddingBottom = '14px'; return { top: Math.round(top), clamped: Math.round(clamped), gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
+        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__held = 0; window.__heldEvents = []; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); units[0].style.paddingBottom = (parseFloat(getComputedStyle(units[0]).paddingBottom) + 7) + 'px'; return { top: Math.round(top), clamped: Math.round(clamped), gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
     );
     harness::until(
         &tab,
@@ -23262,6 +23264,175 @@ fn the_list_scrolls(tab: &headless_chrome::Tab, at: &str) {
     );
 }
 
+/// #s583, Hong at the narrowest desktop window: with the session list a drawer, opened from its ☰
+/// handle, the brand's first letters sat under the handle, and the session's turn strip drew
+/// across the drawer. A list the window had narrowed below 272px (the reader's own 240px here)
+/// kept its `sidebar-tight` into the drawer, whose 10px head padding beat the drawer's room for
+/// the handle; and the view, which fills such a window and is no box of its own there, stacked its
+/// layers (the strip at 26) against the drawer (20). Here, at 500px with a mouse and the strip
+/// showing, the open drawer's brand starts clear of the handle, and the drawer is what a point
+/// anywhere along the strip's row inside it hits; once it closes, the strip is back on top.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_desktop_drawer_keeps_its_brand_clear_of_the_handle_and_lies_over_the_whole_view() {
+    let _serial = serial();
+    let base = harness::base("desktop-drawer");
+    let stores = harness::Stores::new(&base);
+    let t: String = (0..24)
+        .map(|i| {
+            [
+                harness::user_at(
+                    &format!("question {i}: the open session"),
+                    &format!("2026-09-01T05:{i:02}:00.000Z"),
+                ),
+                harness::assistant_at(
+                    &format!("answer {i}: {}", "a long enough answer to fill a line of the transcript, so the column has text in it. ".repeat(8)),
+                    &format!("2026-09-01T05:{i:02}:01.000Z"),
+                ),
+            ]
+            .concat()
+        })
+        .collect();
+    stores.claude_session(PHONE_SID, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3063, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1100.0, 860.0);
+    m.pair(&tab);
+    // The reader's list dragged narrow, below the 272px where its head is squeezed.
+    harness::eval(
+        &tab,
+        "(function(){ localStorage.setItem('am-sidebar-width', '240'); return 'ok'; })()",
+    );
+    harness::show_every_session(&tab, &m.url(&format!("?ui=app&session={PHONE_SID}")));
+    let classes = "innerWidth + 'x' + innerHeight + ' ' + document.getElementById('app').className";
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user') && innerWidth === 1100 && document.getElementById('app').classList.contains('sidebar-tight')",
+        "the premise: the session open beside a list narrow enough to be tight",
+        Duration::from_secs(20),
+        classes,
+    );
+    harness::resize(&tab, 500.0, 860.0);
+    harness::until(
+        &tab,
+        "innerWidth === 500 && document.getElementById('app').classList.contains('app-drawer') && document.getElementById('app').classList.contains('mobile-detail')",
+        "a 500px window: the list a drawer, shut",
+        Duration::from_secs(10),
+        classes,
+    );
+    harness::wheel_scroll(
+        &tab,
+        harness::APP_SCROLLER,
+        "s.scrollTop = Math.round(s.scrollHeight / 2)",
+    );
+    let strip_on = "(function(){ var b = document.getElementById('turnStickyBar'); if (!b || !b.classList.contains('on')) return false; var r = b.getBoundingClientRect(); var e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return r.height > 0 && !!e && b.contains(e); })()";
+    harness::until(
+        &tab,
+        strip_on,
+        "the premise: the turn strip shows, on top, in the middle of the session",
+        Duration::from_secs(10),
+        "document.getElementById('turnStickyBar').className",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('drawerHandle').click(); return 'ok'; })()",
+    );
+    let facts = "(function(){ var app = document.getElementById('app'), sb = document.querySelector('#app>.sidebar'), s = sb.getBoundingClientRect(); \
+        var brand = sb.querySelector('.side-head .brand'), b = brand.getBoundingClientRect(), h = document.getElementById('drawerHandle').getBoundingClientRect(); \
+        var at = document.elementFromPoint(b.left + 3, b.top + b.height / 2); \
+        var strip = document.getElementById('turnStickyBar').getBoundingClientRect(), y = strip.top + strip.height / 2, over = []; \
+        for (var x = s.left + 8; x < s.right - 4; x += 24) { var e = document.elementFromPoint(x, y); if (!e || !sb.contains(e)) over.push([Math.round(x), e ? (e.id || e.className || e.tagName) : null]); } \
+        return JSON.stringify({ open: !app.classList.contains('mobile-detail'), sbLeft: Math.round(s.left), tight: app.classList.contains('sidebar-tight'), strip: document.getElementById('turnStickyBar').classList.contains('on') && strip.height > 0, \
+          brandLeft: Math.round(b.left), handleRight: Math.round(h.right), brandHit: !!at && brand.contains(at), notInDrawer: over }); })()";
+    harness::until(
+        &tab,
+        &format!("(function(){{ var f = JSON.parse({facts}); return f.open && Math.abs(f.sbLeft) < 1; }})()"),
+        "the drawer open and in place",
+        Duration::from_secs(10),
+        facts,
+    );
+    let open: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default();
+    assert!(
+        open["brandHit"] == true
+            && open["brandLeft"].as_i64().unwrap_or(0)
+                >= open["handleRight"].as_i64().unwrap_or(i64::MAX)
+            && open["tight"] == false,
+        "the open drawer's brand starts clear of the handle, its own first letter on top: {open}"
+    );
+    assert!(
+        open["strip"] == true && open["notInDrawer"] == serde_json::json!([]),
+        "the strip still drawn beneath, and along its row the open drawer on top everywhere inside it: {open}"
+    );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('drawerHandle').click(); return 'ok'; })()",
+    );
+    harness::until(
+        &tab,
+        strip_on,
+        "the drawer shut: the strip on top again",
+        Duration::from_secs(10),
+        facts,
+    );
+}
+
+/// #s583's review: a wide phone held sideways shows the list as a column under the same `app-drawer`,
+/// and its handle hides the column without touching `mobile-detail`, so the drawer's open flag can
+/// stand where no drawer is drawn (here: opened upright, then turned sideways). With the column
+/// hidden the view fills the window and is no box of its own, and isolating it there would sink
+/// its layers under the handle (the review sheet's close sits right under it). So there the view
+/// stays level with the handle's layer.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_wide_phone_s_hidden_column_leaves_the_view_s_layers_where_they_were() {
+    let _serial = serial();
+    let (_m, _b, tab) = drawer_world(3065, "wide-hidden-column", 390, 844, false, 8, None);
+    let classes = "innerWidth + 'x' + innerHeight + ' ' + document.getElementById('app').className + ' view ' + document.getElementById('sessionView').className + ' isolation ' + getComputedStyle(document.getElementById('sessionView')).isolation";
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('drawerHandle').click(); return 'ok'; })()",
+    );
+    harness::until(
+        &tab,
+        "!document.getElementById('app').classList.contains('mobile-detail')",
+        "upright, the drawer open",
+        Duration::from_secs(10),
+        classes,
+    );
+    harness::phone(&tab, 956, 440);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    harness::until(
+        &tab,
+        "innerWidth === 956 && document.getElementById('app').classList.contains('app-drawer') && !document.getElementById('app').classList.contains('mobile-detail') && getComputedStyle(document.querySelector('#app>.sidebar')).position !== 'fixed'",
+        "the premise: turned sideways, the list a column, the drawer's open flag still standing",
+        Duration::from_secs(10),
+        classes,
+    );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('drawerHandle').click(); return 'ok'; })()",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('phone-column-off') && !document.getElementById('app').classList.contains('mobile-detail') && !document.getElementById('sessionView').classList.contains('pl-boxed')",
+        "the premise: the column hidden, the view filling the window unboxed",
+        Duration::from_secs(10),
+        classes,
+    );
+    let isolation = harness::eval(
+        &tab,
+        "getComputedStyle(document.getElementById('sessionView')).isolation",
+    );
+    assert_eq!(
+        isolation.as_str(),
+        Some("auto"),
+        "no drawer lies over the view, so it is no stacking context of its own: {}",
+        harness::eval(&tab, classes)
+    );
+}
+
 /// #s33, the owner on 1.356.0 with a phone held sideways (956×440): the drawer showed its list and
 /// the session view behind it was blank grey. A `min-width:761px` rule — "not a phone" until #s32
 /// made a landscape phone a phone at any width — put the drawer back into the page's flow, and it
@@ -27699,6 +27870,203 @@ fn a_click_in_a_growing_transcript_leaves_its_keys_a_scroller_no_redraw_takes() 
         (after["on"].as_str(), after["outline"].as_bool()),
         (Some("the transcript"), Some(false)),
         "after Page Up the focus stays on the transcript and no outline is drawn ({after})"
+    );
+}
+
+/// #s531, from #s488's review: leaving the session's search by Escape gives the keys back to the
+/// transcript the search took them from. After a click on its text the transcript holds the focus
+/// (#s488), so in Safari a key after a live redraw still scrolls; a blur on leaving the search put
+/// the focus on nothing again, and Page Up after the next redraw scrolled nothing until another
+/// click. Chrome scrolls either way, so this case reads the focus a key depends on, as #s488's does:
+/// ⌘F (Ctrl+F off a Mac) from the clicked transcript opens the search and a second press is the
+/// browser's; Escape puts the focus back on the transcript, where a redraw leaves it; so does Escape
+/// after a click on the field, and after the field lost the focus to nothing (Safari gives a pressed
+/// button none) and came back from it; from nothing focused, Escape leaves the focus on nothing as
+/// before. A real Page Up moves the transcript, last.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn escape_from_the_search_gives_the_keys_back_to_the_transcript_it_took_them_from() {
+    let _serial = serial();
+    let base = harness::base("search-escape-focus");
+    let stores = harness::Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000053100";
+    let path = stores.claude_session(sid, &harness::long_session(30, harness::Shape::default()));
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3069, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1366.0, 1024.0);
+    m.pair(&tab);
+    harness::track_idle(&tab);
+    m.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#transcript .virtual-window .turn.assistant p').length >= 2 && document.getElementById('transcript').scrollTop > 0",
+        "the session drawn at its tail",
+        Duration::from_secs(30),
+        "JSON.stringify({ ps: document.querySelectorAll('#transcript .virtual-window p').length, top: (document.getElementById('transcript') || {}).scrollTop })",
+    );
+    // The last reply's paragraph the mouse can reach, kept on the page as `__clicked`: at the tail
+    // it is the one the next turn's commit draws again.
+    let click_paragraph = |what: &str| {
+        let at = harness::eval(&tab, "(function(){ var s = document.getElementById('transcript'), v = s.getBoundingClientRect(); var ps = [].slice.call(s.querySelectorAll('.virtual-window .turn.assistant p')); for (var i = ps.length - 1; i >= 0; i--) { var r = ps[i].getBoundingClientRect(); if (r.height < 4 || r.top < v.top + 60 || r.bottom > v.bottom - 8) continue; var x = r.left + Math.min(40, r.width / 2), y = r.top + r.height / 2, hit = document.elementFromPoint(x, y); if (hit && ps[i].contains(hit)) { window.__clicked = ps[i]; return JSON.stringify([x, y]); } } return '[]'; })()");
+        let at: Vec<f64> = serde_json::from_str(at.as_str().unwrap_or("[]")).unwrap_or_default();
+        assert_eq!(at.len(), 2, "a paragraph to click {what}");
+        tab.click_point(headless_chrome::browser::tab::point::Point { x: at[0], y: at[1] })
+            .expect("a click on a paragraph");
+    };
+    let on = "(function(){ var a = document.activeElement, s = document.getElementById('transcript'), cs = getComputedStyle(a); return JSON.stringify({ on: a === s ? 'the transcript' : a === document.body ? 'nothing' : (a.id || a.tagName.toLowerCase()), connected: a.isConnected, outline: cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0, clicked: !!(window.__clicked && window.__clicked.isConnected) }); })()";
+    let read = |what: &str| -> serde_json::Value {
+        let v: serde_json::Value =
+            serde_json::from_str(harness::eval(&tab, on).as_str().unwrap_or("{}")).unwrap();
+        eprintln!("#s531 {what}: {v}");
+        v
+    };
+    let focus_on = |what: &str, expect: &str| {
+        let v = read(what);
+        assert_eq!(
+            (
+                v["on"].as_str(),
+                v["connected"].as_bool(),
+                v["outline"].as_bool()
+            ),
+            (Some(expect), Some(true), Some(false)),
+            "{what}: the focus on {expect}, connected, no outline ({v})"
+        );
+    };
+    // ⌘F (Ctrl+F off a Mac), dispatched on what has the focus: whether the page took it, and whether
+    // the field has the focus after it. A dispatched press cannot become a stuck key (#270).
+    let command_f = |what: &str| -> (bool, bool) {
+        let v = harness::eval(&tab, "(function(){ var t = document.activeElement || document.body, command = /Mac|iPhone|iPad|iPod/.test(navigator.platform) ? 'metaKey' : 'ctrlKey', init = {key: 'f', bubbles: true, cancelable: true}; init[command] = true; var e = new KeyboardEvent('keydown', init); t.dispatchEvent(e); return JSON.stringify([e.defaultPrevented, document.activeElement === document.getElementById('transcriptSearchInput')]); })()");
+        let v: Vec<bool> = serde_json::from_str(v.as_str().unwrap_or("[]")).unwrap_or_default();
+        eprintln!("#s531 {what}: prevented, in the field: {v:?}");
+        (
+            v.first().copied().unwrap_or(false),
+            v.get(1).copied().unwrap_or(false),
+        )
+    };
+    let escape = || {
+        harness::eval(&tab, "(function(){ (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true})); return 'ok'; })()");
+    };
+
+    click_paragraph("to start");
+    focus_on("a click on the text", "the transcript");
+    assert_eq!(
+        command_f("⌘F from the transcript"),
+        (true, true),
+        "⌘F with the transcript focused opens the session's search"
+    );
+    assert_eq!(
+        command_f("⌘F in the field"),
+        (false, true),
+        "a second ⌘F, from the field, is the browser's"
+    );
+    escape();
+    focus_on("Escape from the field", "the transcript");
+    // A turn every second: the commit draws the clicked reply again.
+    let script = (0..4)
+        .flat_map(|i| {
+            [
+                harness::user_at(
+                    &format!("question {}: a late question", 900 + i),
+                    &harness::now_minus(60),
+                ),
+                harness::assistant_at(
+                    &format!(
+                        "answer {}: a late answer, a paragraph a reader could click",
+                        900 + i
+                    ),
+                    &harness::now_minus(55),
+                ),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let growth = harness::LiveGrowth::start(path.clone(), script, Duration::from_millis(1000));
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while Instant::now() < deadline
+        && harness::eval(&tab, "!!(window.__clicked && window.__clicked.isConnected)")
+            == serde_json::json!(true)
+    {
+        harness::pause("the growth", Duration::from_millis(100));
+    }
+    growth.finish(Duration::from_secs(20));
+    let after = read("after the growth");
+    assert_eq!(
+        after["clicked"], false,
+        "the growth drew the clicked reply again ({after})"
+    );
+    focus_on("after the growth", "the transcript");
+
+    click_paragraph("before a click on the field");
+    harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
+    focus_on("a click on the field", "transcriptSearchInput");
+    escape();
+    focus_on("Escape after a click on the field", "the transcript");
+
+    assert_eq!(
+        command_f("⌘F again"),
+        (true, true),
+        "⌘F opens the search again"
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('transcriptSearchInput').blur(); 'ok'",
+    );
+    focus_on("the field's focus lost to nothing", "nothing");
+    escape();
+    focus_on(
+        "Escape with the focus on nothing, the search still held",
+        "the transcript",
+    );
+
+    // The field's focus lost to nothing and back (Safari after a press on a step, or another app and
+    // back): the same search, still from the transcript.
+    assert_eq!(
+        command_f("⌘F, once more"),
+        (true, true),
+        "⌘F opens the search"
+    );
+    harness::eval(&tab, "(function(){ var f = document.getElementById('transcriptSearchInput'); f.blur(); f.focus(); return 'ok'; })()");
+    focus_on(
+        "the field's focus lost to nothing and back",
+        "transcriptSearchInput",
+    );
+    escape();
+    focus_on(
+        "Escape after the focus came back from nothing",
+        "the transcript",
+    );
+
+    harness::eval(&tab, "document.activeElement.blur(); 'ok'");
+    focus_on("nothing focused", "nothing");
+    assert_eq!(
+        command_f("⌘F from nothing"),
+        (true, true),
+        "⌘F from nothing focused opens the search"
+    );
+    escape();
+    focus_on(
+        "Escape from a search opened with nothing focused",
+        "nothing",
+    );
+
+    // A real Page Up after a click and the search moves the transcript (last: Chrome's CDP key a page
+    // does not prevent is never released, so nothing is typed after it).
+    click_paragraph("before Page Up");
+    assert_eq!(
+        command_f("⌘F before Page Up"),
+        (true, true),
+        "⌘F opens the search"
+    );
+    escape();
+    focus_on("before Page Up", "the transcript");
+    let top = "Math.round(document.getElementById('transcript').scrollTop)";
+    let before = harness::eval(&tab, top).as_i64().unwrap_or(0);
+    tab.press_key("PageUp").unwrap();
+    harness::until(
+        &tab,
+        &format!("{top} < {before} - 100"),
+        "Page Up to move the transcript",
+        Duration::from_secs(5),
+        top,
     );
 }
 

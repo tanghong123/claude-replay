@@ -421,6 +421,10 @@ function arrangeList({ remeasure = true } = {}) {
   if (hold) app.classList.add("app-holding");
   app.classList.toggle("app-drawer", decided.list === "drawer");
   if (typeof decided.list === "number") drawListWidth(decided.list);
+  // The drawer is a width of its own (`min(86vw, 360px)`), never one the order gave the list: a list
+  // narrowed toward 232px kept its `sidebar-tight` into the drawer, whose 10px head padding then
+  // put the brand under the ☰ handle (#s583).
+  else if (decided.list === "drawer") app.classList.remove("sidebar-tight");
   app.classList.toggle("sidebar-off", decided.list === "rail");
   listHandle.compact(app.classList.contains("sidebar-off"));
   paintRailExpand();
