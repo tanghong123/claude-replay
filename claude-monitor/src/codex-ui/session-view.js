@@ -512,10 +512,16 @@ if (infoRailButton) infoRailButton.title = "Info";
 let sessionCopyCloseTimer = 0;
 function setSessionCopyMenu(open) {
   clearTimeout(sessionCopyCloseTimer);
-  // #s581: the crumb's words at the menu's head, which show while the bar has no room for the crumb
-  // (`crumb-off`); read as it opens, so every header (a row's, a sub-agent's, a worker's) is the one
-  // drawn.
-  if (open) byId("sessionCopyAbout").textContent = byId("sessionCrumb")?.textContent || "";
+  // #s581: the crumb's words (the agent and the project) at the menu's head wherever they are not
+  // drawn whole beside the name: taken off for the name's room (`crumb-off`), cut short, or not drawn
+  // at all (a phone's bar). Read as it opens, so every header (a row's, a sub-agent's, a worker's) is
+  // the one drawn.
+  if (open) {
+    const crumb = byId("sessionCrumb"), words = crumb?.textContent.trim() || "";
+    const whole = !!crumb && crumb.getClientRects().length > 0 && crumb.scrollWidth <= crumb.clientWidth + 1;
+    byId("sessionCopyAbout").textContent = words;
+    sessionCopyMenu.classList.toggle("names-crumb", !!words && !whole);
+  }
   sessionCopyMenu.classList.toggle("open", open);
   sessionTitle.setAttribute("aria-expanded", String(open));
 }
@@ -991,7 +997,7 @@ function paintHeader() {
     : `${agentName(row.agent)} · ${row._group?.label || ""}`;
   byId("statusChip").className = `status-chip ${state.state} ${state.reason}`;
   byId("statusChip").innerHTML = `<span class="state-dot ${escapeText(state.state)} ${escapeText(state.reason)}" style="margin:0"></span>${escapeText(state.label)}${row.stateConfidence === "inferred" ? " · inferred" : ""}`;
-  // #s520: where the glyphs' bar draws the chip as its dot, its words are its title.
+  // The chip's words are its title too, for a bar that cuts them short.
   byId("statusChip").title = `${row.stateDetail || state.label}${row.stateConfidence === "inferred" ? " · inferred" : ""}`;
   const meta = recordState.session === row.id ? (recordState.meta || {}) : {};
   const sid = meta.sid || row.id || "";
@@ -2839,7 +2845,9 @@ document.addEventListener("pointerdown", event => {
 // is released, since what the reader did then is where they are.
 let searchFrom = null;
 const searchCluster = viewRoot.$(".header-search-cluster");
-searchCluster.addEventListener("pointerdown", event => { if (event.pointerType === "mouse") searchCluster.classList.add("search-held"); }, { signal });
+// A press on the field itself holds nothing either: its focus holds it, a moment later, so where the
+// glyphs give the box their room (#s582) the field does not move under the press that places its caret.
+searchCluster.addEventListener("pointerdown", event => { if (event.pointerType === "mouse" && event.target !== byId("transcriptSearchInput")) searchCluster.classList.add("search-held"); }, { signal });
 searchCluster.addEventListener("focusin", event => {
   searchCluster.classList.add("search-held");
   if (event.relatedTarget && !searchCluster.contains(event.relatedTarget)) searchFrom = event.relatedTarget === transcript ? transcript : null;
@@ -3867,8 +3875,18 @@ panesMenu.onclick = event => {
   // 140 ms close is a peek's.
   const pin = event => { from(event); clearTimeout(closeTimer); pinned = !pinned; show(pinned); if (pinned) sayInfo(); };
   trigger.addEventListener("click", pin);
-  // The phone's "i" in the top bar (#313) is this same control: a tap pins or unpins.
+  // The phone's "i" in the top bar (#313), which is also the glyphs' bar's Info (#s582), is this same
+  // control: a press pins or unpins. It is one of the card's triggers, so the card says on it whether
+  // it is open, a press on it is no press outside, and Escape gives a focus inside the card back to it
+  // (the review of #s582: in the glyphs' bar the footer's Info and the rail's are not drawn, and the
+  // focus was left on a hidden control).
   infoPopoverToggle = pin;
+  addInfoTrigger = node => {
+    if (triggers.includes(node)) return;
+    triggers.push(node);
+    node.setAttribute("aria-haspopup", "dialog");
+    node.setAttribute("aria-expanded", String(popover.classList.contains("open")));
+  };
   addEventListener("pointerdown", event => {
     if (pinned && !popover.contains(event.target) && !trigger.contains(event.target) && !event.target.closest?.("[data-info-trigger]")) { pinned = false; show(false); }
   }, { capture: true, signal });
@@ -3883,6 +3901,8 @@ panesMenu.onclick = event => {
   // on it or on an Info that opens it.
   addEventListener("keydown", event => {
     if (event.key !== "Escape" || !popover.classList.contains("open")) return;
+    // The name's menu open inside the card (#s582) closes alone on this Escape, the card on the next.
+    if (popover.contains(sessionCopyMenu) && sessionCopyMenu.classList.contains("open")) return;
     if (!viewEscape(event) && (pinned || !hovered(popover, ...triggers))) return;
     pinned = false;
     if (popover.contains(viewRoot.active())) {
@@ -4536,7 +4556,7 @@ var sessionLoading;
 //    `--phone-bottom`, the dock's top, the sheets that rise from the pill.
 // The drawer and a wide phone's column are the app's (app-mount.js); the rest of the shell is the view's.
 var mobileShell;
-var infoPopoverToggle;
+var infoPopoverToggle, addInfoTrigger;
 var phoneDock;
 {
   const PHONE = layout.query("phone");
@@ -4552,7 +4572,8 @@ var phoneDock;
   info.title = "Session details";
   info.setAttribute("aria-label", "Session details");
   info.innerHTML = svg("info");
-  info.onclick = () => infoPopoverToggle?.();
+  info.onclick = event => infoPopoverToggle?.(event);
+  addInfoTrigger?.(info);
   const panes = PHONE_PANES.map(([key, label, body]) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -4834,7 +4855,7 @@ var phoneDock;
   addEventListener("keydown", event => { if (viewEscape(event)) closePane(); }, { signal });
   // #s431 stage 3 (design/pane-layout.md, "The glyphs in the top bar"): off the phone reader, where the
   // owner's order leaves the outline's glyphs no column of their own, the same three glyphs join the
-  // session's top bar, after the title and its tools and before Info and the pane's control; each
+  // session's top bar, at its start (#s582), Info and the pane's control at its end; each
   // opens its list as a panel over the transcript's right edge, 290px wide, one at a time (this sheet,
   // drawn as a panel there), and a click elsewhere or Esc closes it. A glyph in the column opens the
   // same panel where the outline cannot open. The panel borrows the outline's own list, so it closes
@@ -4848,28 +4869,46 @@ var phoneDock;
     const inBar = !!arrangement && !arrangement.phone && arrangement.outline === "bar";
     // #s582 (Hong: "when the session view pane is really tight, I'd like to have the head row to show
     // from left to right: the three glyphs for the outline panes; search box, Aa, i, and the
-    // right-drawer toggle"): the glyphs lead the bar, where its first controls sit (the app's own,
-    // shown only while its list is folded away).
+    // right-drawer toggle"): the glyphs lead the bar, after its first controls (the app's own, shown
+    // only while its list is folded away), and a sub-agent's way back to its parent before them.
     if (inBar && panes[0].button.parentElement !== topbar) byId("sidebarReopen").after(...panes.map(pane => pane.button));
     if (!inBar && panes[0].button.parentElement !== dockPill) dockPill.prepend(...panes.map(pane => pane.button));
     // What the column held besides the glyphs comes with them: the session's Info, from the top bar's
-    // own Info control, its card hanging under the bar. The outline's expand control stays in the
-    // column, out of the bar ("get rid of the useless |> sign"). And the session's name leaves the bar
-    // for the head of Info's card ("hide the agent name under i's drop down menu"), with the agent,
-    // the project and the state beside it, its menu still opening from it.
+    // own Info control, its card hanging under the bar, right after it in the page so a Tab from Info
+    // reaches it. The outline's expand control joins them, before Info, only where it can open the
+    // outline (a host giving its room, `outlineCanOpen`); elsewhere it stays in the column ("get rid
+    // of the useless |> sign"). And the session's name leaves the bar for the head of Info's card
+    // ("hide the agent name under i's drop down menu"), with the agent, the project and the state
+    // beside it, its menu still opening from it.
     const card = viewRoot.$("#infoPopover"), heading = sessionTitle.parentElement;
-    for (const [node, into, first] of [[card, viewRoot.$(".workspace"), false], [heading, card, true]]) {
-      if (!node || !into) continue;
-      if (inBar && node.parentElement !== into) {
-        if (!columnHomes.has(node)) columnHomes.set(node, { parent: node.parentNode, next: node.nextSibling });
-        if (first) into.prepend(node); else into.append(node);
-      } else if (!inBar && columnHomes.has(node)) {
+    const headingHeld = !!heading && heading.contains(viewRoot.active());
+    const wasInCard = columnHomes.has(heading);
+    const moves = [
+      [byId("sessionParent"), inBar, node => byId("sidebarReopen").after(node)],
+      [byId("navigatorRailExpand"), inBar && !!arrangement.outlineCanOpen, node => info.before(node)],
+      [card, inBar, node => topbar.after(node)],
+      [heading, inBar && !!card, node => card.prepend(node)],
+    ];
+    for (const [node, wanted, place] of moves) {
+      if (!node) continue;
+      if (wanted && !columnHomes.has(node)) {
+        columnHomes.set(node, { parent: node.parentNode, next: node.nextSibling });
+        place(node);
+      } else if (!wanted && columnHomes.has(node)) {
         const home = columnHomes.get(node);
         columnHomes.delete(node);
         home.parent.insertBefore(node, home.next && home.next.parentNode === home.parent ? home.next : null);
       }
     }
     sessionView.classList.toggle("outline-in-bar", inBar);
+    // The name's menu does not travel open, nor the bar's crumb fit into the card, and a focus on the
+    // name goes on where the name is now: to it in the bar, to Info (the way to it) in the bar of
+    // glyphs, where the card is shut.
+    if (wasInCard !== columnHomes.has(heading)) {
+      setSessionCopyMenu(false);
+      heading.classList.remove("crumb-off");
+      if (headingHeld) (columnHomes.has(heading) ? info : sessionTitle).focus({ preventScroll: true });
+    }
     // Back in the bar, the title's least room is measured again in the bar's font.
     if (!inBar) { markTitleWord(); fitHeadingSoon(); }
     if (arrangement?.outline === "open") closePane();

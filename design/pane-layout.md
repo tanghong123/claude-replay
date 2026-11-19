@@ -448,17 +448,19 @@ screen up to 760px):
   control (Hong, #s582, replacing #s520's design for it), read from the arrangement
   (`pl-outline-bar`): the session's name leaves the bar for the head of Info's card, its agent and
   project and its state with it, whole there and still opening its menu (on a press or a focus, not a
-  hover: a mouse on its way into the card crosses it); the fold-all control moves into Aa's menu; the
-  outline's expand control stays in its column, where the outline cannot open anyway; a sub-agent's
-  way back to its parent stays as its glyph before the outline's, and a host's ↗ before the pane's
-  control. The search box is a box with the bar's room at rest (about 190px in a 480px column under
+  hover: a mouse on its way into the card crosses it), the card following the bar in the page so a
+  Tab from Info reaches the name; the fold-all control moves into Aa's menu; the outline's expand
+  control stays in its column, unless a host gives the room the outline would need there
+  (`outlineCanOpen`), when it stands before Info; a sub-agent's way back to its parent stays as its
+  glyph before the outline's, and a host's ↗ before the pane's control. The search box is a box with the bar's room at rest (about 190px in a 480px column under
   the drawer's handle). While it is in use (a click, a focus or the search key) the glyphs give it
   their room too, and they come back at a press outside the search (the pane's page included), a Tab
   out of it, or Escape wherever the focus is; each also shuts its filter there. It never rests at
   the field's blur alone, since Safari and Firefox give a pressed button no focus. The box that takes
   the heading's place while it is in use below a 900px window keeps it by the same rule. Outside that
   bar, wherever the name has too little room beside its crumb (the agent and the project), the crumb
-  goes and the name's menu names them at its head (#s581). Wherever a desktop's bar draws it, the
+  goes (#s581); the name's menu names them at its head wherever the bar does not draw them whole,
+  the phone's included. Wherever a desktop's bar draws it, the
   title keeps at least its first word (at most 160px), the crumb, the chip and the resting search
   box (down to 150px) giving way first. While the search is in use or holds a query, above a 900px
   window and outside that bar, the order turns round: the title gives way first and the box keeps

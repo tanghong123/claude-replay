@@ -13454,11 +13454,12 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
 /// Info's card in the glyphs' bar (#s582): pinned from the bar's Info, it heads with the session's
 /// name, whole and inside the card, its agent and project and its state beside it; a press on the
 /// name opens its menu (a hover does not: a mouse on its way into the card crosses the name), which
-/// lies inside the card where a pointer reaches it; a press on Info closes the menu and unpins the
-/// card.
+/// lies inside the card where a pointer reaches each of its rows. The card follows the bar in the
+/// page, so a Tab from Info reaches the name, and Info says whether the card is open; Escape closes
+/// the menu alone, and the next the card, the focus back on Info.
 fn card_heads_with_the_session(tab: &headless_chrome::Tab, what: &str) {
     harness::click_when_settled(tab, "#phoneInfo", "Info in the bar");
-    let card = "(function(){ var c = document.getElementById('infoPopover'), h = c && c.querySelector(':scope>.session-heading'), t = document.getElementById('sessionTitle'), k = document.getElementById('sessionCrumb'); if (!c || !c.classList.contains('open') || !h) return { open: !!c && c.classList.contains('open'), head: !!h }; var C = c.getBoundingClientRect(), T = t.getBoundingClientRect(), K = k.getBoundingClientRect(); var inside = function (b) { return b.width > 0 && b.left >= C.left - 0.5 && b.right <= C.right + 0.5 && b.top >= C.top - 0.5; }; var hit = document.elementFromPoint(T.left + Math.min(20, T.width / 2), T.top + T.height / 2); return { open: true, head: true, first: c.firstElementChild === h, whole: t.scrollWidth <= t.clientWidth + 1, title: inside(T), crumb: inside(K) && k.textContent.trim().length > 0, hits: !!hit && t.contains(hit) }; })()";
+    let card = "(function(){ var c = document.getElementById('infoPopover'), h = c && c.querySelector(':scope>.session-heading'), t = document.getElementById('sessionTitle'), k = document.getElementById('sessionCrumb'); if (!c || !c.classList.contains('open') || !h) return { open: !!c && c.classList.contains('open'), head: !!h }; var C = c.getBoundingClientRect(), T = t.getBoundingClientRect(), K = k.getBoundingClientRect(); var inside = function (b) { return b.width > 0 && b.left >= C.left - 0.5 && b.right <= C.right + 0.5 && b.top >= C.top - 0.5; }; var hit = document.elementFromPoint(T.left + Math.min(20, T.width / 2), T.top + T.height / 2); var bar = document.querySelector('#sessionView .workspace>.topbar'); var tabbable = c.querySelector('button, [href], input, [tabindex]:not([tabindex=\"-1\"])'); return { open: true, head: true, first: c.firstElementChild === h, whole: t.scrollWidth <= t.clientWidth + 1, title: inside(T), crumb: inside(K) && k.textContent.trim().length > 0, hits: !!hit && t.contains(hit), afterBar: bar.nextElementSibling === c, nameFirst: tabbable === t, expanded: document.getElementById('phoneInfo').getAttribute('aria-expanded') }; })()";
     harness::until(
         tab,
         &format!("(function(){{ var s = {card}; return s.open && s.head; }})()"),
@@ -13469,8 +13470,8 @@ fn card_heads_with_the_session(tab: &headless_chrome::Tab, what: &str) {
     let seen = harness::probe(tab, card);
     assert_eq!(
         seen,
-        serde_json::json!({ "open": true, "head": true, "first": true, "whole": true, "title": true, "crumb": true, "hits": true }),
-        "{what}: the card heads with the session's name, whole, and its agent and project: {seen}"
+        serde_json::json!({ "open": true, "head": true, "first": true, "whole": true, "title": true, "crumb": true, "hits": true, "afterBar": true, "nameFirst": true, "expanded": "true" }),
+        "{what}: the card heads with the session's name, whole, and its agent and project, right after the bar (a Tab from Info reaches the name), and Info says it is open: {seen}"
     );
     // A mouse resting on the name opens nothing there.
     let over = harness::probe(
@@ -13492,7 +13493,7 @@ fn card_heads_with_the_session(tab: &headless_chrome::Tab, what: &str) {
         "{what}: a hover on the name in Info's card opens no menu"
     );
     harness::click_when_settled(tab, "#sessionTitle", "the session's name in Info's card");
-    let menu = "(function(){ var m = document.getElementById('sessionCopyMenu'), c = document.getElementById('infoPopover'); if (!m || !m.classList.contains('open')) return { open: false }; var M = m.getBoundingClientRect(), C = c.getBoundingClientRect(); var b = m.querySelector('button'); var B = b ? b.getBoundingClientRect() : null; var hit = B && document.elementFromPoint(B.left + B.width / 2, B.top + B.height / 2); return { open: true, inside: M.left >= C.left - 0.5 && M.right <= C.right + 0.5, reached: !!hit && b.contains(hit), card: c.classList.contains('open') }; })()";
+    let menu = "(function(){ var m = document.getElementById('sessionCopyMenu'), c = document.getElementById('infoPopover'); if (!m || !m.classList.contains('open')) return { open: false }; var M = m.getBoundingClientRect(), C = c.getBoundingClientRect(); var reach = function (b) { var B = b.getBoundingClientRect(), hit = document.elementFromPoint(B.left + B.width / 2, B.top + B.height / 2); return !!hit && b.contains(hit); }; var rows = m.querySelectorAll('button'); return { open: true, inside: M.left >= C.left - 0.5 && M.right <= C.right + 0.5 && M.bottom <= C.bottom + 0.5, reached: rows.length > 1 && reach(rows[0]) && reach(rows[rows.length - 1]), card: c.classList.contains('open') }; })()";
     harness::until(
         tab,
         &format!("{menu}.open"),
@@ -13506,13 +13507,25 @@ fn card_heads_with_the_session(tab: &headless_chrome::Tab, what: &str) {
         serde_json::json!({ "open": true, "inside": true, "reached": true, "card": true }),
         "{what}: the name's menu opens inside the card, where a pointer reaches it: {opened}"
     );
-    harness::click_when_settled(tab, "#phoneInfo", "Info in the bar");
+    // Escape closes the menu alone, the card still open; the next closes the card and gives the focus
+    // inside it back to the bar's Info.
+    let escape = "(function(){ (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); return 1; })()";
+    let layers = "JSON.stringify({ card: document.getElementById('infoPopover').className, menu: document.getElementById('sessionCopyMenu').className, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName) })";
+    harness::eval(tab, escape);
     harness::until(
         tab,
-        "!document.getElementById('infoPopover').classList.contains('open') && !document.getElementById('sessionCopyMenu').classList.contains('open')",
-        &format!("{what}: the menu and the card to close"),
+        "!document.getElementById('sessionCopyMenu').classList.contains('open') && document.getElementById('infoPopover').classList.contains('open')",
+        &format!("{what}: Escape to close the name's menu and leave the card open"),
         Duration::from_secs(5),
-        "({ card: document.getElementById('infoPopover').className, menu: document.getElementById('sessionCopyMenu').className })",
+        layers,
+    );
+    harness::eval(tab, escape);
+    harness::until(
+        tab,
+        "!document.getElementById('infoPopover').classList.contains('open') && document.activeElement === document.getElementById('phoneInfo') && document.getElementById('phoneInfo').getAttribute('aria-expanded') === 'false'",
+        &format!("{what}: the next Escape to close the card, the focus back on the bar's Info"),
+        Duration::from_secs(5),
+        layers,
     );
 }
 
@@ -13547,7 +13560,7 @@ fn the_tight_session_top_bar_reads_glyphs_search_aa_info_and_pane() {
     // controls in the order they are drawn (its own children, the app's back and list controls set
     // apart); and where the title is, with its room against its first word when the bar draws it (a
     // Range over the word, and the ellipsis a longer title draws).
-    let probe = "(function(){ var v = document.getElementById('sessionView'); var ws = v.querySelector('.workspace'), bar = ws.querySelector(':scope>.topbar'); var pv = v.classList.contains('preview-off') ? null : v.querySelector('.preview'); var W = ws.getBoundingClientRect(), P = pv ? pv.getBoundingClientRect() : null; var r4 = function (b) { return [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)]; }; var name = function (e) { return !e ? 'nothing' : e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + String(e.getAttribute('class') || '').split(' ')[0]; }; var drawn = function (e) { var b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && getComputedStyle(e).visibility !== 'hidden'; }; var bad = []; var shown = [].filter.call(bar.querySelectorAll('button, .header-searchbox'), drawn); ['phoneInfo', 'previewBtn'].forEach(function (id) { if (shown.indexOf(document.getElementById(id)) < 0) bad.push('#' + id + ' is not shown'); }); shown.forEach(function (e) { var b = e.getBoundingClientRect(), hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2), why = []; if (b.left < W.left - 0.5 || b.right > W.right + 0.5) why.push('outside the session column ' + r4(W)); if (P && b.right > P.left + 0.5) why.push('under the pane from ' + Math.round(P.left)); if (!hit || !(hit === e || e.contains(hit))) why.push('its centre reaches ' + name(hit)); if (why.length) bad.push(name(e) + ' ' + r4(e.getBoundingClientRect()) + ': ' + why.join(', ')); }); var kids = [].filter.call(bar.children, drawn).sort(function (x, y) { return x.getBoundingClientRect().left - y.getBoundingClientRect().left; }).map(function (e) { return e.classList.contains('header-search-cluster') ? 'search' : e.classList.contains('reading-cluster') ? 'aa' : e.classList.contains('session-heading') ? 'title' : name(e); }); var lead = kids.filter(function (k) { return k === '#mobileBack' || k === '#sidebarReopen'; }); var order = kids.filter(function (k) { return lead.indexOf(k) < 0; }); if (kids.slice(0, lead.length).join() !== lead.join()) bad.push('the app\\'s own controls ' + lead.join() + ' do not lead the bar: ' + kids.join()); var t = document.getElementById('sessionTitle'), text = t.textContent.trim(), where = bar.contains(t) ? 'bar' : t.closest('#infoPopover') ? 'card' : 'elsewhere'; if (where === 'bar') { var word = text.split(/\\s+/)[0], node = t.firstChild, at = t.textContent.indexOf(word); var range = document.createRange(); range.setStart(node, at); range.setEnd(node, at + word.length); var cs = getComputedStyle(t), room = t.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); var ctx = document.createElement('canvas').getContext('2d'); ctx.font = cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily; var need = range.getBoundingClientRect().width + (text.length > word.length ? ctx.measureText('\\u2026').width : 0); var tb = t.getBoundingClientRect(); if (room + 0.5 < need) bad.push('the title has ' + Math.round(room) + 'px of the ' + Math.ceil(need) + 'px its first word \\\"' + word + '\\\" needs'); if (tb.left < W.left - 0.5 || tb.right > W.right + 0.5) bad.push('the title ' + r4(tb) + ' is outside the session column'); } var box = bar.querySelector('.header-searchbox'); return { width: innerWidth, classes: v.className, workspace: r4(W), pane: P ? r4(P) : null, title: text, where: where, cardHeads: !!document.querySelector('#infoPopover>.session-heading'), search: Math.round(box.getBoundingClientRect().width), field: Math.round(document.getElementById('transcriptSearchInput').getBoundingClientRect().width), focused: document.activeElement ? document.activeElement.id : '', order: order, bar: shown.map(function (e) { return name(e) + ' ' + r4(e.getBoundingClientRect()); }), bad: bad }; })()";
+    let probe = "(function(){ var v = document.getElementById('sessionView'); var ws = v.querySelector('.workspace'), bar = ws.querySelector(':scope>.topbar'); var pv = v.classList.contains('preview-off') ? null : v.querySelector('.preview'); var W = ws.getBoundingClientRect(), P = pv ? pv.getBoundingClientRect() : null; var r4 = function (b) { return [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)]; }; var name = function (e) { return !e ? 'nothing' : e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + String(e.getAttribute('class') || '').split(' ')[0]; }; var drawn = function (e) { var b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && getComputedStyle(e).visibility !== 'hidden'; }; var bad = []; var shown = [].filter.call(bar.querySelectorAll('button, .header-searchbox'), drawn); (v.classList.contains('pl-outline-bar') ? ['phoneInfo', 'previewBtn'] : ['previewBtn']).forEach(function (id) { if (shown.indexOf(document.getElementById(id)) < 0) bad.push('#' + id + ' is not shown'); }); shown.forEach(function (e) { var b = e.getBoundingClientRect(), hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2), why = []; if (b.left < W.left - 0.5 || b.right > W.right + 0.5) why.push('outside the session column ' + r4(W)); if (P && b.right > P.left + 0.5) why.push('under the pane from ' + Math.round(P.left)); if (!hit || !(hit === e || e.contains(hit))) why.push('its centre reaches ' + name(hit)); if (why.length) bad.push(name(e) + ' ' + r4(e.getBoundingClientRect()) + ': ' + why.join(', ')); }); var kids = [].filter.call(bar.children, drawn).sort(function (x, y) { return x.getBoundingClientRect().left - y.getBoundingClientRect().left; }).map(function (e) { return e.classList.contains('header-search-cluster') ? 'search' : e.classList.contains('reading-cluster') ? 'aa' : e.classList.contains('session-heading') ? 'title' : name(e); }); var lead = kids.filter(function (k) { return k === '#mobileBack' || k === '#sidebarReopen'; }); var order = kids.filter(function (k) { return lead.indexOf(k) < 0; }); if (kids.slice(0, lead.length).join() !== lead.join()) bad.push('the app\\'s own controls ' + lead.join() + ' do not lead the bar: ' + kids.join()); var t = document.getElementById('sessionTitle'), text = t.textContent.trim(), where = bar.contains(t) ? 'bar' : t.closest('#infoPopover') ? 'card' : 'elsewhere'; if (where === 'bar') { var word = text.split(/\\s+/)[0], node = t.firstChild, at = t.textContent.indexOf(word); var range = document.createRange(); range.setStart(node, at); range.setEnd(node, at + word.length); var cs = getComputedStyle(t), room = t.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); var ctx = document.createElement('canvas').getContext('2d'); ctx.font = cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily; var need = range.getBoundingClientRect().width + (text.length > word.length ? ctx.measureText('\\u2026').width : 0); var tb = t.getBoundingClientRect(); if (room + 0.5 < need) bad.push('the title has ' + Math.round(room) + 'px of the ' + Math.ceil(need) + 'px its first word \\\"' + word + '\\\" needs'); if (tb.left < W.left - 0.5 || tb.right > W.right + 0.5) bad.push('the title ' + r4(tb) + ' is outside the session column'); } var box = bar.querySelector('.header-searchbox'); return { width: innerWidth, classes: v.className, workspace: r4(W), pane: P ? r4(P) : null, title: text, where: where, cardHeads: !!document.querySelector('#infoPopover>.session-heading'), search: Math.round(box.getBoundingClientRect().width), field: Math.round(document.getElementById('transcriptSearchInput').getBoundingClientRect().width), focused: document.activeElement ? document.activeElement.id : '', order: order, bar: shown.map(function (e) { return name(e) + ' ' + r4(e.getBoundingClientRect()); }), bad: bad }; })()";
     let settled = |width: u32, open: bool| {
         format!("innerWidth === {width} && {VIEW_CAUGHT_UP} && document.getElementById('sessionView').classList.contains('preview-off') === {} && document.getElementById('sessionView').getAnimations({{ subtree: true }}).filter(function (a) {{ return a instanceof CSSTransition; }}).length === 0 && document.getElementById('sessionTitle').textContent === 'Harbour tide table notes'", !open)
     };
@@ -13962,6 +13975,27 @@ fn the_tight_session_top_bar_reads_glyphs_search_aa_info_and_pane() {
         Duration::from_secs(5),
         "document.getElementById('sessionCopyMenu').className",
     );
+    // The name focused in the bar, its menu open, and the window narrowed to the glyphs' bar: the
+    // name goes into the shut card with its menu closed, and the focus goes to the bar's Info.
+    harness::eval(&tab, "document.getElementById('sessionTitle').focus(); 1");
+    harness::until(
+        &tab,
+        "document.getElementById('sessionCopyMenu').classList.contains('open')",
+        "a focus on the name in the bar to open its menu",
+        Duration::from_secs(5),
+        "document.getElementById('sessionCopyMenu').className",
+    );
+    let moved = at(&tab, 600, false, "the app, the name's menu open");
+    fits(&moved, "the app at 600px after the move");
+    let after = harness::probe(
+        &tab,
+        "({ menu: document.getElementById('sessionCopyMenu').classList.contains('open'), expanded: document.getElementById('sessionTitle').getAttribute('aria-expanded'), card: document.getElementById('infoPopover').classList.contains('open'), focused: document.activeElement && document.activeElement.id })",
+    );
+    assert_eq!(
+        after,
+        serde_json::json!({ "menu": false, "expanded": "false", "card": false, "focused": "phoneInfo" }),
+        "a move into the glyphs' bar closes the name's menu and hands the focus to Info: {after}"
+    );
     // 1100px, the pane open beside the session: the session 512px, its bar beside the pane's tabs.
     fits(
         &at(&tab, 1100, true, "the app"),
@@ -14086,9 +14120,13 @@ fn a_squeezed_session_name_takes_the_crumbs_room_and_its_menu_names_them() {
     // The heading as drawn, and the name's width with the crumb drawn and without it, read in one
     // task (the class taken off and put back), so the room the crumb takes is measured, not assumed.
     let probe = "(function(){ var t = document.getElementById('sessionTitle'), h = t.parentElement, k = document.getElementById('sessionCrumb'), a = document.getElementById('sessionCopyAbout'), d = k.nextElementSibling; var drawn = function (e) { return !!e && e.getClientRects().length > 0 && e.getBoundingClientRect().width > 0; }; var off = h.classList.contains('crumb-off'); var now = t.getBoundingClientRect().width; h.classList.remove('crumb-off'); var withCrumb = t.getBoundingClientRect().width; h.classList.add('crumb-off'); var without = t.getBoundingClientRect().width; h.classList.toggle('crumb-off', off); return { off: off, crumb: drawn(k), divider: drawn(d), crumbText: k.textContent.trim(), crumbCut: k.scrollWidth > k.clientWidth + 1, title: Math.round(now), withCrumb: Math.round(withCrumb), without: Math.round(without), cap: parseFloat(getComputedStyle(t).maxWidth), menu: document.getElementById('sessionCopyMenu').classList.contains('open'), about: drawn(a), aboutText: a.textContent.trim(), layout: document.getElementById('sessionView').className }; })()";
-    let at = |width: u32| -> serde_json::Value {
-        harness::clear_metrics(&tab);
-        harness::resize(&tab, width as f64, 900.0);
+    let at = |width: u32, off: Option<bool>| -> serde_json::Value {
+        if width < 500 {
+            harness::mouse_window(&tab, width, 900);
+        } else {
+            harness::clear_metrics(&tab);
+            harness::resize(&tab, width as f64, 900.0);
+        }
         harness::until(
             &tab,
             &format!("innerWidth === {width} && {VIEW_CAUGHT_UP} && document.getElementById('sessionView').getAnimations({{ subtree: true }}).filter(function (a) {{ return a instanceof CSSTransition; }}).length === 0"),
@@ -14097,7 +14135,16 @@ fn a_squeezed_session_name_takes_the_crumbs_room_and_its_menu_names_them() {
             "innerWidth",
         );
         harness::until_preview_parked(&tab);
-        // The fit runs a frame after the bar's size changes.
+        // The fit runs a frame after the bar's size changes: wait for its verdict where one is expected.
+        if let Some(off) = off {
+            harness::until(
+                &tab,
+                &format!("document.getElementById('sessionTitle').parentElement.classList.contains('crumb-off') === {off}"),
+                &format!("the crumb's fit at {width}px"),
+                Duration::from_secs(5),
+                probe,
+            );
+        }
         harness::eval(&tab, TWO_FRAMES);
         harness::probe(&tab, probe)
     };
@@ -14140,8 +14187,8 @@ fn a_squeezed_session_name_takes_the_crumbs_room_and_its_menu_names_them() {
         Duration::from_secs(30),
         "document.body.innerText.slice(0, 200)",
     );
-    // 1440px: the name at its widest beside the whole crumb; the menu says nothing of them.
-    let wide = at(1440);
+    // 1800px: the name at its widest beside the whole crumb; the menu says nothing of them.
+    let wide = at(1800, Some(false));
     assert!(
         !wide["off"].as_bool().unwrap_or(true)
             && wide["crumb"] == true
@@ -14149,16 +14196,16 @@ fn a_squeezed_session_name_takes_the_crumbs_room_and_its_menu_names_them() {
             && wide["crumbCut"] == false
             && !wide["crumbText"].as_str().unwrap_or("").is_empty()
             && wide["title"].as_f64().unwrap_or(0.0) >= wide["cap"].as_f64().unwrap_or(0.0) - 1.0,
-        "at 1440px the name is at its widest beside the whole crumb: {wide}"
+        "at 1800px the name is at its widest beside the whole crumb: {wide}"
     );
-    let menu = open_menu("at 1440px");
+    let menu = open_menu("at 1800px");
     assert_eq!(
         menu["about"], false,
-        "at 1440px the menu does not repeat the crumb the bar draws: {menu}"
+        "at 1800px the menu does not repeat the crumb the bar draws: {menu}"
     );
     // 1000px: beside the crumb the name would be cut short of its widest, so the crumb and its divider
     // go, and the name takes their room.
-    let narrow = at(1000);
+    let narrow = at(1000, Some(true));
     assert!(
         narrow["off"] == true
             && narrow["crumb"] == false
@@ -14179,10 +14226,21 @@ fn a_squeezed_session_name_takes_the_crumbs_room_and_its_menu_names_them() {
         "at 1000px the name's menu names the agent and the project at its head: {menu}"
     );
     // The room back, the crumb back.
-    let again = at(1440);
+    let again = at(1800, Some(false));
     assert!(
         again["off"] == false && again["crumb"] == true && again["divider"] == true,
-        "at 1440px again the crumb is back beside the name: {again}"
+        "at 1800px again the crumb is back beside the name: {again}"
+    );
+    // The phone reader's bar draws no crumb at all: the menu names them there too.
+    let phone = at(480, None);
+    assert!(
+        phone["layout"].as_str().unwrap_or("").contains("pl-phone") && phone["crumb"] == false,
+        "at 480px the phone reader's bar draws no crumb: {phone}"
+    );
+    let menu = open_menu("the phone reader at 480px");
+    assert!(
+        menu["about"] == true && menu["aboutText"] == wide["crumbText"],
+        "the phone reader's menu names the agent and the project at its head: {menu}"
     );
     harness::clear_metrics(&tab);
     drop(monitor);

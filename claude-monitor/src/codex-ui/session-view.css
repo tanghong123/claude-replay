@@ -1941,7 +1941,7 @@
 :where(#sessionView) .session-heading>.status-chip{min-width:0;flex-shrink:4}
 :where(#sessionView) .session-heading.crumb-off>:is(.crumb,.crumb+.header-divider){display:none}
 :where(#sessionView) .session-copy-about{display:none;padding:6px 8px 8px;margin-bottom:2px;border-bottom:1px solid var(--line);color:var(--sub);font-size:11.5px;line-height:1.4;overflow-wrap:anywhere}
-:where(#sessionView) .session-heading.crumb-off .session-copy-about{display:block}
+:where(#sessionView) .session-copy-menu.names-crumb .session-copy-about{display:block}
 #sessionView:not(.pl-phone) .workspace>.topbar>.session-heading>#sessionTitle{min-width:calc(min(var(--title-word,0px),160px) + 10px)}
 #sessionView:not(.pl-phone) .workspace>.topbar>.session-heading{min-width:calc(min(var(--title-word,0px),160px) + 65px)}
 #sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster{flex-shrink:1;min-width:150px}
@@ -2030,8 +2030,7 @@
 #sessionView .reading-options .reading-fold-all{display:none}
 #sessionView.pl-outline-bar .reading-options .reading-fold-all{display:grid}
 #sessionView.pl-outline-bar .workspace>.topbar:has(>.reading-cluster)>#sessionFoldAll{display:none}
-#sessionView.pl-outline-bar .workspace>.topbar>:is(#mobileBack,#sidebarReopen){order:-2}
-#sessionView.pl-outline-bar .workspace>.topbar>#sessionParent.is-live{order:-1;width:34px;padding:0;justify-content:center}
+#sessionView.pl-outline-bar .workspace>.topbar>#sessionParent.is-live{width:34px;padding:0;justify-content:center}
 #sessionView.pl-outline-bar .workspace>.topbar>#sessionParent.is-live .session-parent-label{display:none}
 #sessionView .info-popover>.session-heading{display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;width:auto;max-width:none;min-width:0;height:auto;margin:0 0 6px;padding:2px 4px 8px 7px;border-bottom:1px solid var(--line)}
 #sessionView .info-popover>.session-heading>#sessionTitle{flex:1 1 100%;min-width:0;max-width:none;white-space:normal;overflow-wrap:anywhere;font-size:13px;line-height:1.35;color:var(--ink)}

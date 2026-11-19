@@ -1391,11 +1391,12 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .session-heading>.status-chip{min-width:0;flex-shrink:4}
 /* #s581: but where the title and the crumb do not both fit, the crumb goes whole, with its divider,
    rather than both being cut (Hong: the title read "ab-metr…" beside "Claude Code · a…"), and the
-   title takes its room; its menu then names the agent and the project at its head. `crumb-off` is
-   session-view.js's `fitHeading`, from what the bar draws. */
+   title takes its room. `crumb-off` is session-view.js's `fitHeading`, from what the bar draws. The
+   name's menu names the agent and the project at its head wherever the bar does not draw them whole
+   (`names-crumb`, set as it opens: taken off, cut short, or not drawn, as on a phone). */
 .session-heading.crumb-off>:is(.crumb,.crumb+.header-divider){display:none}
 .session-copy-about{display:none;padding:6px 8px 8px;margin-bottom:2px;border-bottom:1px solid var(--line);color:var(--sub);font-size:11.5px;line-height:1.4;overflow-wrap:anywhere}
-.session-heading.crumb-off .session-copy-about{display:block}
+.session-copy-menu.names-crumb .session-copy-about{display:block}
 /* #s520: and off the phone the session's name keeps at least its first word (`--title-word`, its
    width in the title's font with the ellipsis a longer title draws, measured by session-view.js; at
    most 160px). The heading holds that and what else it draws at its least (the crumb's two gaps and
@@ -1551,8 +1552,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    The panel is the phone's sheet, moved into the session's card. */
 #sessionView.outline-in-bar .workspace>.topbar>.phone-pane{display:grid;position:relative;flex:none}
 #sessionView.outline-in-bar .workspace>.topbar>:is(.phone-info,#navigatorRailExpand){display:grid;place-items:center;flex:none}
-/* In the bar the expand control stands where it was put, after the title and before Info: its rail
-   order (first in the column) would put it before the title. */
+/* In the bar the expand control (only where it can open the outline: a host giving its room, #s582)
+   stands where it was put, before Info: its rail order (first in the column) would put it first. */
 #sessionView.outline-in-bar .workspace>.topbar>#navigatorRailExpand{order:0}
 #sessionView.outline-in-bar .workspace>.info-popover{position:absolute;z-index:30;top:65px;right:8px;left:auto;bottom:auto;width:290px;max-height:calc(100% - 73px);overflow:auto}
 #sessionView.outline-in-bar .workspace>.info-popover:before{display:none}
@@ -1595,9 +1596,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 #sessionView.pl-outline-bar .reading-options .reading-fold-all{display:grid}
 #sessionView.pl-outline-bar .workspace>.topbar:has(>.reading-cluster)>#sessionFoldAll{display:none}
 /* A sub-agent's way back to its parent stays in the bar, as its glyph, after the app's own first
-   controls and before the outline's. */
-#sessionView.pl-outline-bar .workspace>.topbar>:is(#mobileBack,#sidebarReopen){order:-2}
-#sessionView.pl-outline-bar .workspace>.topbar>#sessionParent.is-live{order:-1;width:34px;padding:0;justify-content:center}
+   controls and before the outline's (`placeOutlineGlyphs` moves it there, so a Tab meets it there). */
+#sessionView.pl-outline-bar .workspace>.topbar>#sessionParent.is-live{width:34px;padding:0;justify-content:center}
 #sessionView.pl-outline-bar .workspace>.topbar>#sessionParent.is-live .session-parent-label{display:none}
 /* Info's card heads with the session there: its name whole, then the agent and the project, then
    its state, the name still opening its menu, which hangs inside the card. */
