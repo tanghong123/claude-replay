@@ -12,7 +12,7 @@
 // and options) are done.
 import { svg } from "./icons.js";
 import { SESSION_VIEW_MARKUP } from "./session-view-markup.js";
-import { backend, useBackend } from "./backend.js";
+import { assets, backend, checkAssets, useAssets, useBackend } from "./backend.js";
 import { AttachmentViewer } from "./attachment-viewer.js";
 import { bindComponentEvents, fleetHtml, pendingHeadText } from "./components.js";
 import { referenceAction } from "./shared/capabilities.js";
@@ -49,7 +49,7 @@ export const KEYBOARD_MODES = Object.freeze(["engaged", "page"]);
 /** Every option `mountSessionView` takes; any other name is refused, so a misspelt or retired one
  *  (the old `toast`, `keys` or `controls`) fails loudly rather than being dropped. */
 export const MOUNT_OPTIONS = Object.freeze([
-  "theme", "grid", "backend", "show", "keyboard", "write", "frame", "detachTo",
+  "theme", "grid", "backend", "show", "keyboard", "write", "frame", "assets", "detachTo",
   "selectedId", "sessionRow", "sessionWorkers", "selectSession", "renderList", "refreshIndex", "pauseIndex", "resumeIndex",
   "onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast", "onOutline",
   "room", "parentShown", "openList", "openSidebar", "paneLayout", "paneCount",
@@ -137,6 +137,15 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    needed: the native app keeps every address it gave for the life of the page, unless it decides
  *    otherwise itself. An answer that is not an address, or a refusal,
  *    shows the pane's own error (and is asked again the next time the tab is shown).
+ *  - `assets`: the native app's, which the kit's guide does not list (#s595, design/app-mount.md,
+ *    "Kept for the native app"): where mdrev's bundle and the Mermaid runtime load from when the
+ *    host carries them itself, rather than from the server: `{ mdrev, mdrevVersion, mermaid }`,
+ *    mdrev's base (its bundle at `<mdrev>/mdrev/<mdrevVersion>/mdrev.js` and `mdrev.css`), the release
+ *    that bundle is, and the Mermaid runtime's address. With it the view reads every document with
+ *    that release, never asks a server which one it serves (#s352's fallback is off), and loads the
+ *    runtime from `mermaid` rather than the address the page's head names; the head must still name
+ *    one, as it says the page draws diagrams (`mountApp` writes it there when it has none). Every
+ *    route, mdrev's included, still goes through `backend`.
  *  - `selectedId()`, `sessionRow(id)`, `sessionWorkers(id)`: what the app's session index says —
  *    the session it has selected, a session's row, and the headless workers a session started.
  *  - `selectSession(id, push)`: ask the app to select a session (the parent control, a descent).
@@ -205,6 +214,7 @@ if (!KEYBOARD_MODES.includes(keyboardMode)) throw new Error(`mountSessionView ta
 if (options.write !== undefined && !(typeof options.write?.on === "function" && typeof options.write?.confirm === "function")) throw new Error("mountSessionView takes its write as { on, confirm }, two functions, or none for a host that offers no writes");
 if (options.room !== undefined && typeof options.room !== "function") throw new Error("mountSessionView takes its room as a function answering how many pixels its host could give, or none");
 if (options.frame !== undefined && typeof options.frame !== "function") throw new Error("mountSessionView takes its frame as a function from a page's HTML to the address its frame loads");
+checkAssets(options.assets, "mountSessionView");
 if (options.detachTo !== undefined && !((typeof options.detachTo === "string" && options.detachTo) || typeof options.detachTo === "function")) throw new Error("mountSessionView takes its detachTo as the address of the page its tabs open at, or a function answering one, or none");
 /** Whether an optional control is drawn: each is, unless the host switched it off. */
 const shows = name => options.show?.[name] !== false;
@@ -289,6 +299,7 @@ function unwriteStyle(node, name) {
 // drawn, and how the view is laid out and read, with the reader's remembered choices.
 const recordState = createRecordState();
 if (options.backend) useBackend(options.backend);
+useAssets(options.assets);
 // The view builds its three parts inside its element from its own markup (stage 4), so a host's
 // page carries none of the view's markup, and draws the glyphs that markup names.
 if (element.id && element.id !== "sessionView") throw new Error(`mountSessionView draws into an element whose id is sessionView, or that has none; this one is #${element.id}`);
@@ -799,8 +810,8 @@ let controls = ordinaryControls;
 // reads a tail-first open's head turn by turn, in the order the view needs it; the desktop reads it
 // whole (stage 1). `?windowed=1|0` picks either path for a case.
 // The Mermaid runtime the page head names loads through the backend handle, as every other
-// request the page makes does (#s423).
-useMermaidRuntime(path => backend().url(path));
+// request the page makes does (#s423), unless the host carries it itself (`assets`, #s595).
+useMermaidRuntime(path => assets()?.mermaid || backend().url(path));
 // …and its diagrams are drawn in the view's theme, which the view's element carries (stage 5b).
 useMermaidTheme(() => sessionView);
 const WINDOWED = (() => { const q = new URLSearchParams(location.search).get("windowed"); return q === "1" ? true : q === "0" ? false : !backend().local; })();

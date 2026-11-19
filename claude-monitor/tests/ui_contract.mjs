@@ -1538,6 +1538,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // key plus its offset; anything else is not a memory at all.
 {
   assert.equal(viewMemoryKey("s1"), "am-view:s1");
+  // #s597: another server's session of the same id is remembered apart; the page's own keeps its key.
+  assert.equal(viewMemoryKey("s1", ""), "am-view:s1");
+  assert.equal(viewMemoryKey("s1", "/machine-b"), "am-view:/machine-b|s1");
+  assert.notEqual(viewMemoryKey("s1", "app://d/tern"), viewMemoryKey("s1", "app://d/skua"));
+  {
+    const viewportText = readFileSync(new URL("../src/codex-ui/viewport.js", import.meta.url), "utf8");
+    assert.equal((viewportText.match(/viewMemoryKey\(this\.session, backend\(\)\.base\)/g) || []).length, 2, "the viewport reads and writes the memory under the handle's base");
+    assert.equal((viewportText.match(/viewMemoryKey\(/g) || []).length, 2, "and keys it nowhere else");
+  }
   assert.deepEqual(parseViewMemory(serializeViewMemory({ following: true })), { following: true });
   assert.deepEqual(parseViewMemory(serializeViewMemory({ following: false, key: "user:b12", top: 17.6 })), { following: false, key: "user:b12", top: 18 }, "an anchor round-trips, rounded to the pixel");
   assert.equal(parseViewMemory(""), null); assert.equal(parseViewMemory("nope"), null); assert.equal(parseViewMemory('{"key":"","top":1}'), null); assert.equal(parseViewMemory('{"key":"x","top":"1"}'), null, "a non-numeric offset is rejected");
@@ -4357,7 +4366,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
   assert.equal((comp.match(/besideOf\(h\)/g) || []).length, 2, "both attachment cards ask the one rule");
   const pane = readFileSync(new URL("../../claude-monitor/src/codex-ui/mdrev-pane.js", import.meta.url), "utf8");
-  assert.match(pane, /if \(item\.path && item\.fsig\) \{\n    try \{ return \{ \.\.\.\(await opened\(item\.path, item\.fsig\)\), held: false \}; \}\n    catch \(error\) \{ if \(item\.text == null\) throw error; \}/, "a stamped file opens as itself, the carried text only when it cannot");
+  assert.match(pane, /if \(item\.path && item\.fsig\) \{\n    try \{ return \{ \.\.\.\(await opened\(item\.path, item\.fsig, handle\)\), held: false \}; \}\n    catch \(error\) \{ if \(item\.text == null\) throw error; \}/, "a stamped file opens as itself, the carried text only when it cannot");
   console.log("#s27/#s29 beside-a-file cases passed");
 }
 
@@ -4837,7 +4846,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(mermaid, /script\.src = runtimeUrl\(path\);/, "that place goes through the resolver");
   assert.match(mermaid, /let runtimeUrl = path => path;/, "the offline page loads the head's path as written");
   const viewSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-view.js", import.meta.url), "utf8");
-  assert.match(viewSrc, /^useMermaidRuntime\(path => backend\(\)\.url\(path\)\);$/m, "the app shell's resolver is its handle");
+  assert.match(viewSrc, /^useMermaidRuntime\(path => assets\(\)\?\.mermaid \|\| backend\(\)\.url\(path\)\);$/m, "the app shell's resolver is its handle, unless its host carries the runtime (#s595)");
   console.log("#s423 Mermaid runtime cases passed");
 }
 
@@ -4982,7 +4991,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     assert.ok(appSource.includes(`page.byId("${id}")`), `the app binds or paints its own #${id}`);
     assert.ok(!doc[0].includes(`\`${id}\``), `the doc comment no longer names #${id} as what a host's page must carry`);
   }
-  assert.match(call[1], /^  write: \{ on: \(\) => controlState\.write, confirm: confirmWrite \},$/m, "the app passes its write mode and its confirm layer");
+  assert.match(call[1], /^  write: \{ on: writeOn, confirm: confirmWrite \},$/m, "the app passes its write mode and its confirm layer");
+  assert.match(appSource, /^const writeOn = \(\) => controlState\.write && \(!merged \|\| writePaired\(\)\);$/m, "its write mode, over several machines while the open session's machine is paired (#s595)");
+  assert.match(appSource, /^  return place\(indexState\.selected\)\?\.machine === viewMachine && !!handleOf\(viewMachine\)\.paired;$/m, "which is the machine the view reads, holding the selection");
   assert.match(viewSource, /const controlActions = \{ write: options\.write, selectedId, selectedRow, /, "the compose box gets the host's write and the app's selection through the view");
   assert.match(storeSource, /writeOn\(\) \{ return !!this\.actions\.write\?\.on\(\); \}/, "with no write option, writing is never on");
   assert.match(storeSource, /answer = this\.actions\.write\?\.confirm\(\{ title: GRANT_TITLE, text, passcode \}\);/, "and the grant is the host's confirm");
@@ -5059,8 +5070,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual([...read].sort(), [...OPTIONS].sort(), "the list reads exactly the options the design gives it");
   assert.deepEqual([...documented].sort(), [...OPTIONS].sort(), "and its doc comment documents each");
   // Stage 4: the app keeps every optional control, as it does the view's, so it passes no `show`;
-  // and it reads one server for both parts, the page's (#s540), so it passes no `backend` either.
+  // and with one server it reads that server for both parts, the page's (#s540), so it passes no
+  // `backend` either; over several machines (#s595) it gives the list the merged source, alone.
   assert.deepEqual([...passed].sort(), OPTIONS.filter(name => name !== "show" && name !== "backend").sort(), "and the app passes every one but show and backend");
+  assert.match(call[1], /^  \.\.\.\(merged \? \{ backend: merged \} : \{\}\),$/m, "and over several machines, the merged source as the list's backend");
   // The handle, and what the app calls of it.
   const at = listSource.lastIndexOf("\nreturn fenced({\n");
   assert.ok(at > 0, "the list returns its handle as an object literal at the end of mountSessionList, fenced (stage 4)");
@@ -5193,7 +5206,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listSource, /^    if \(event\.detail > 0 && session\.contains\(page\.active\(\)\)\) page\.active\(\)\.blur\(\);\n    chooseSession\(session\.dataset\.session, true\); return;$/m, "while a row clicked with the mouse gives the page back its keys");
   assert.match(listSource, /const forks = event\.target\.closest\("\[data-family-toggle\]"\); if \(forks\) \{ event\.stopPropagation\(\); if \(event\.detail > 0 && tree\.contains\(page\.active\(\)\)\) page\.active\(\)\.blur\(\);/, "and so does a fork chip clicked with the mouse, which may redraw nothing (#s460)");
   assert.match(appSource, /^  keyboard: "page",$/m, "the app keeps the page's keyboard");
-  assert.match(appSource, /^  \.\.\.listHandle\.keys,$/m, "and its keymap calls the list's keys");
+  assert.match(appSource, /^  if \(Object\.hasOwn\(listHandle\.keys, action\)\) return listHandle\.keys\[action\];$/m, "and its keymap calls the list's keys");
   // Drawn small: the app's call, the flyouts' gate.
   assert.match(listSource, /^  compact: on => \{ compactOn = !!on; if \(!compactOn && !railFlyout\.hidden\) closeRailFlyout\(false\); \},$/m, "the host says when the list is drawn small, and a flyout open closes when it is no longer");
   assert.match(listSource, /clearTimeout\(railOpenTimer\); clearTimeout\(railCloseTimer\);\n  if \(!compactOn\) return;/, "the rail's flyouts open only then");
@@ -5287,21 +5300,30 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const listed = /^export const MOUNT_OPTIONS = Object\.freeze\(\[([^\]]*)\]\);$/m.exec(mountSource);
   assert.ok(listed, "the mount lists its options in MOUNT_OPTIONS");
   const MOUNT = [...listed[1].matchAll(/"([^"]+)"/g)].map(m => m[1]);
-  assert.deepEqual(MOUNT, ["backend", "version"], "stage 2 takes one server and the brand's version");
+  assert.deepEqual(MOUNT, ["backend", "machines", "assets", "version"], "stage 2 takes one server and the brand's version; stage 3 (#s595) several machines and the assets the app carries");
   const body = mountSource.slice(mountSource.indexOf("export function mountApp("), mountSource.indexOf("export async function installNativeController("));
   const read = new Set([...body.matchAll(/\boptions\??\.([A-Za-z]+)/g)].map(m => m[1]));
   assert.deepEqual([...read].sort(), [...MOUNT].sort(), "MOUNT_OPTIONS is exactly the options the mount reads");
   const doc = mountSource.slice(mountSource.indexOf("/** Draw the web app into"), mountSource.indexOf("export function mountApp("));
   for (const name of MOUNT) assert.match(doc, new RegExp(`^ \\*  - \`${name}\``, "m"), `the mount's doc comment documents ${name}`);
   // The guards, run over fakes: from the once check to the element's.
-  const guards = /^(if \(appMounted\)[\s\S]*?this one holds the host's nodes"\);)$/m.exec(mountSource);
-  assert.ok(guards, "the mount checks it is not drawn yet, its options and its element before it touches anything");
-  const guard = new Function("element", "options", "MOUNT_OPTIONS", "appMounted", "page", `${guards[1]}\nreturn "drawn";`);
+  const guards = /^(if \(appMounted\)[\s\S]*?this one holds the host's nodes"\);\nconst merged = options\.machines \? mergedBackend\(options\.machines\) : null;)$/m.exec(mountSource);
+  assert.ok(guards, "the mount checks it is not drawn yet, its options, its element and its machines before it touches anything");
+  const { checkAssets } = await import("../../claude-monitor/src/codex-ui/backend.js");
+  const { mergedBackend } = await import("../../claude-monitor/src/codex-ui/merged-source.js");
+  const guard = new Function("element", "options", "MOUNT_OPTIONS", "appMounted", "page", "checkAssets", "mergedBackend", `${guards[1]}\nreturn "drawn";`);
   const empty = () => ({ isConnected: true, childNodes: [{ nodeType: 3, data: "\n  " }] });
   const handle = { base: "/m", paired: true, fetch: () => {} };
   const bare = { byId: () => null };
-  const mount = (options, element = empty(), mounted = false, onPage = bare) => { try { return guard(element, options, MOUNT, mounted, onPage); } catch (error) { return `refused: ${error.message}`; } };
+  const mount = (options, element = empty(), mounted = false, onPage = bare) => { try { return guard(element, options, MOUNT, mounted, onPage, checkAssets, mergedBackend); } catch (error) { return `refused: ${error.message}`; } };
   assert.equal(mount({ backend: handle }), "drawn", "a backend handle is all it needs");
+  // #s595: several machines, each its handle, with the assets the app carries; or one server with them.
+  const assets = { mdrev: "app://monitor/vendor", mdrevVersion: "1.1.74", mermaid: "app://monitor/vendor/mermaid.min.js" };
+  const machines = [{ machine: "mini", label: "tern-mini", handle }, { machine: "book", label: "skua-book", handle: { ...handle, base: "/b" } }];
+  assert.equal(mount({ machines, assets }), "drawn", "machines and the assets the app carries");
+  assert.equal(mount({ machines: machines.slice(0, 1), assets, version: "1.2.3" }), "drawn", "one machine is a list too");
+  assert.equal(mount({ backend: handle, assets }), "drawn", "one server may take the assets as well");
+  assert.equal(mount({ backend: handle, assets: { ...assets, mdrev: "" } }), "drawn", "mdrev's bundle at the page's root");
   assert.equal(mount({ backend: handle, version: "1.2.3" }), "drawn", "and a version for its brand");
   assert.equal(mount({ backend: handle, version: null }), "drawn", "a version left empty is none");
   for (const [options, why] of [
@@ -5309,7 +5331,19 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     [{ backend: "/m" }, "backend handle.*\"/m\""],
     [{ backend: { base: "/m" } }, "backend handle"],
     [{ backend: handle, version: 3 }, "version as a string.*3"],
-    [{ backend: handle, machines: [] }, "no option named machines"],
+    [{ backend: handle, machines }, "one server .* or several machines .*, not both"],
+    [{ machines: [], assets }, "machines as a list .*never empty, not \\[\\]"],
+    [{ machines: "mini", assets }, "machines as a list .*not \"mini\""],
+    [{ machines }, "machines with its assets"],
+    [{ machines, assets: null }, "machines with its assets"],
+    [{ machines: [{ machine: "mini/1", handle }], assets }, "no \"/\" in it"],
+    [{ machines: [machines[0], machines[0]], assets }, "two machines named mini"],
+    [{ machines: [{ machine: "mini" }], assets }, "through a backend handle"],
+    [{ backend: handle, assets: "app://monitor" }, "assets as \\{ mdrev, mdrevVersion, mermaid \\}"],
+    [{ backend: handle, assets: { ...assets, styles: "x" } }, "no asset named styles"],
+    [{ backend: handle, assets: { ...assets, mdrevVersion: "" } }, "mdrevVersion as a string that is not empty"],
+    [{ backend: handle, assets: { mdrev: "/v", mdrevVersion: "1" } }, "mermaid as a string that is not empty"],
+    [{ backend: handle, assets: { ...assets, mdrev: null } }, "mdrev as a base"],
     [{ backend: handle, theme: "dark" }, "no option named theme"],
     [{ backend: handle, frame: () => "" }, "no option named frame"],
   ]) assert.match(String(mount(options)), new RegExp(`^refused: .*${why}`), `refused: ${why}`);
@@ -5322,16 +5356,53 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(String(mount({ backend: handle }, { isConnected: true, childNodes: [{ nodeType: 1 }] })), /^refused: .*host's nodes/, "and one holding the host's nodes");
   assert.match(String(mount({ backend: handle }, { isConnected: true, childNodes: [{ nodeType: 8, data: "" }] })), /^refused: .*host's nodes/, "a comment too");
   assert.match(String(mount({ backend: handle }, empty(), true)), /^refused: .*once per page/, "a second call throws, whatever it passes");
-  assert.match(mountSource, /this one holds the host's nodes"\);\nappMounted = true;\nuseBackend\(options\.backend\);\nelement\.classList\.add\("app-mount"\);\nelement\.innerHTML = APP_SHELL_MARKUP;\n/, "the page counts as holding the app only once every guard has passed, and nothing is drawn before");
+  assert.match(mountSource, /this one holds the host's nodes"\);\nconst merged = options\.machines \? mergedBackend\(options\.machines\) : null;\nappMounted = true;\nuseBackend\(options\.backend \|\| options\.machines\[0\]\.handle\);\nelement\.classList\.add\("app-mount"\);\nelement\.innerHTML = APP_SHELL_MARKUP;\n/, "the page counts as holding the app only once every guard has passed, and nothing is drawn before; over several machines the page's components start on the first machine's handle, never the merged source, whose URLs are refused");
   // Its own server and version, never the page's.
   assert.doesNotMatch(mountSource, /\bbackend\(\)|dataset\.version|import \{[^}]*\bbackend\b[^}]*\} from "\.\/backend\.js"/, "the mount reads no page-wide server and no body's version");
-  assert.match(mountSource, /^  backend: options\.backend,$/m, "the view is mounted on the mount's server");
+  assert.match(mountSource, /^  backend: handleOf\(viewMachine\),$/m, "the view is mounted on the mount's server, or on the machine it is mounted on now");
+  assert.match(mountSource, /^const handles = new Map\(\(options\.machines \|\| \[\]\)\.map\(entry => \[entry\.machine, entry\.handle\]\)\);\nconst handleOf = machine => \(merged \? handles\.get\(machine\) : options\.backend\);$/m, "which is the one server's, or that machine's own handle, as the app mounted with it");
   assert.match(mountSource, /\.textContent = `v\$\{options\.version \|\| "dev"\}`;/, "the brand names the mount's version");
   // The monitor's page: one call, on its wrapper, with its own server and the version its body carries.
   assert.equal((hostSource.match(/\bmountApp\(/g) || []).length, 1, "app.js mounts the web app once");
   assert.match(hostSource, /^mountApp\(page\.byId\("appMount"\), \{ backend: backend\(\), version: page\.body\(\)\.dataset\.version \|\| undefined \}\);$/m, "on the page's wrapper, with the page's server and version");
   assert.match(hostSource, /^export \{ installNativeController \} from "\.\/app-mount\.js";$/m, "and native mode's entry still finds its hook there");
   console.log("#s551 app mount cases passed");
+}
+// #s595 (design/app-mount.md, "Kept for the native app"): `assets`, the view's, withheld from hosts. The
+// app carries mdrev's bundle and the Mermaid runtime itself, so the view loads both from there and
+// every document is read with that release; every route, mdrev's included, still goes through the
+// handle of the machine the view is mounted on, and no server is asked which release it serves.
+{
+  const { assets, backend, backendHandle, useAssets, useBackend } = await import("../../claude-monitor/src/codex-ui/backend.js");
+  const before = backend();
+  const { mdrevVersion } = await import("../../claude-monitor/src/codex-ui/mdrev-pane.js");
+  const mdrevSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/mdrev-pane.js", import.meta.url), "utf8");
+  const viewText = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-view.js", import.meta.url), "utf8");
+  const machine = backendHandle({ base: "app://d/mini", mdrevVersion: "1.1.70" });
+  useBackend(machine);
+  useAssets(undefined);
+  assert.equal(mdrevVersion(), "1.1.70", "without assets the view reads the release its server pins");
+  useAssets({ mdrev: "app://monitor/vendor/", mdrevVersion: "1.1.74", mermaid: "app://monitor/vendor/mermaid.min.js" });
+  assert.equal(mdrevVersion(), "1.1.74", "with them, the release the app carries, whatever the machine pins");
+  assert.equal(assets().mdrevUrl("/mdrev/1.1.74/mdrev.js"), "app://monitor/vendor/mdrev/1.1.74/mdrev.js", "the bundle from the app's own copy");
+  assert.equal(assets().mermaid, "app://monitor/vendor/mermaid.min.js");
+  assert.throws(() => assets().mdrevUrl("mdrev.js"), /not a bundle path/, "a bundle path is a path");
+  assert.equal(machine.mdrevUrl("/api/mdrev/open?path=x"), "app://d/mini/api/mdrev/open?path=x", "mdrev's routes stay the machine's");
+  useAssets(undefined);
+  assert.equal(assets(), null, "a view mounted without assets reads its server's again");
+  useBackend(before);
+  // Both halves of the bundle load through the one join, the fallback asks no server under assets,
+  // and every route of mdrev's (the contract's two prefixes, `/markdown` for a tab) is the handle's.
+  assert.match(mdrevSource, /^const bundleUrl = \(path, handle\) => \(assets\(\) \? assets\(\)\.mdrevUrl\(path\) : handle\.mdrevUrl\(path\)\);$/m, "the bundle loads from the app's copy, or the mount's server's");
+  assert.equal((mdrevSource.match(/bundleUrl\(`\/mdrev\/\$\{version\}\/mdrev\.(css|js)`, handle\)/g) || []).length, 2, "the stylesheet and the module both");
+  assert.match(mdrevSource, /loading = importBundle\(version, handle\)\.catch\(async error => \{\n      if \(assets\(\)\) throw error;\n      const now = await servedVersion\(handle\);/, "#s352's fallback asks no server under assets");
+  for (const line of mdrevSource.split("\n").filter(line => /CONTRACT|"\/markdown|`\/markdown/.test(line) && /\b(fetch|Url)\(/.test(line))) {
+    assert.doesNotMatch(line, /assets\(\)|bundleUrl/, `a route of mdrev's goes through the handle: ${line.trim()}`);
+  }
+  assert.match(viewText, /^if \(options\.backend\) useBackend\(options\.backend\);\nuseAssets\(options\.assets\);$/m, "the view says its assets as it mounts, none where its host gave none");
+  assert.match(viewText, /^checkAssets\(options\.assets, "mountSessionView"\);$/m, "and refuses any but { mdrev, mdrevVersion, mermaid } before it draws");
+  assert.match(viewText, /^useMermaidRuntime\(path => assets\(\)\?\.mermaid \|\| backend\(\)\.url\(path\)\);$/m, "the Mermaid runtime from the app's copy, or the server");
+  console.log("#s595 assets cases passed");
 }
 // #s429 stage 6: the optional controls and the keys a host may change. A control switched off is
 // not drawn and takes no key; engaged, the view's keys answer only while the reader works in it.
@@ -5347,7 +5418,23 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(previewSrc, /\.\.\.\(this\.actions\.detach === false \? \[\] : \[this\.newTab\]\)/, "the ↗ is kept out of the pane's head with detach off");
   assert.match(viewSource, /detach: shows\("detach"\)/, "the view tells the pane");
   // The app's keymap leaves a key it has no action for to the page, as the view's own does.
-  assert.match(appSource, /\(action, event\) => \(keyActions\[action\] \? keyActions\[action\]\(event\) : false\)\);/, "the app takes no key it has no action for (#s509: the action sees the event, so ⌘F with no session selected is left to the browser)");
+  assert.match(appSource, /\(action, event\) => \{ const run = keyAction\(action\); return run \? run\(event\) : false; \}\);/, "the app takes no key it has no action for (#s509: the action sees the event, so ⌘F with no session selected is left to the browser)");
+  // #s595: a key reaches the view mounted when it comes, never the first view's keys copied at the
+  // mount (a view mounted again on another machine has keys of its own), in the order the app's one
+  // table gave: the sidebar's toggle, the list's keys, the app's search, the view's.
+  {
+    const lookup = /^function keyAction\(action\) \{\n[\s\S]*?\n\}$/m.exec(appSource);
+    assert.ok(lookup, "the app looks a key's action up as the key comes");
+    const said = [];
+    const state = { listHandle: { keys: { "list-next": () => said.push("list"), search: undefined } }, viewHandle: { keys: { search: () => said.push("view search"), wrap: () => said.push("first view") } } };
+    const resolve = new Function("appKeys", "state", `with (state) { ${lookup[0]}\nreturn action => keyAction(action); }`)({ search: () => said.push("app search"), "sidebar-toggle": () => said.push("app toggle") }, state);
+    for (const action of ["sidebar-toggle", "list-next", "wrap"]) resolve(action)?.();
+    state.viewHandle = { keys: { wrap: () => said.push("second view") } };
+    resolve("wrap")?.();
+    assert.equal(resolve("search"), undefined, "a list key the list holds as nothing is the list's, as the table's spread made it");
+    assert.equal(resolve("nothing"), undefined, "no action for a key nobody answers");
+    assert.deepEqual(said, ["app toggle", "list", "first view", "second view"], "each key goes where the table sent it, and the view's to the view mounted now");
+  }
   // Engaged: the shared keymap resolves and the view decides by engagement (mdrev's rule). The
   // keymap is one table for both pages: the offline pages inline it, so a change to it moves the
   // byte gate's pages too (#s509 changed it).

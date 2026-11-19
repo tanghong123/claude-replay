@@ -7,7 +7,9 @@
 // (app.js); the kit carries it for the native app from a second entry, `native-app.js`, which no host
 // is offered (design/app-mount.md, "Kept for the native app, as `frame` is").
 import { svg } from "./icons.js";
-import { useBackend } from "./backend.js";
+import { checkAssets, useBackend } from "./backend.js";
+import { mergedBackend } from "./merged-source.js";
+import { machineShortLabel } from "./session-list.js";
 import { APP_SHELL_MARKUP } from "./app-shell-markup.js";
 import { WIDE_PHONE_QUERY } from "./shared/capabilities.js";
 import { controlState, indexState, persist as persistIndex, searchState, selectedRow } from "./state.js";
@@ -20,10 +22,11 @@ import { mountSessionView, PHONE_PANES } from "./session-view.js";
 import { page, viewRoot } from "./view-root.js";
 import { arrangeApp, GLIDE_MS, LIST_MIN } from "./pane-layout.js";
 
-/** Every option `mountApp` takes; any other name is refused (stage 2: one server). Later stages add
- *  theirs here and to the kit's list beside `VIEW_WITHHELD` (`kit.rs`), which holds each out of the
- *  guide and the declarations: no host is offered the mount. */
-export const MOUNT_OPTIONS = Object.freeze(["backend", "version"]);
+/** Every option `mountApp` takes; any other name is refused (stage 2: one server; stage 3, #s595:
+ *  several machines and the assets the app carries). Later stages add theirs here and to the kit's
+ *  list beside `VIEW_WITHHELD` (`kit.rs`), which holds each out of the guide and the declarations: no
+ *  host is offered the mount. */
+export const MOUNT_OPTIONS = Object.freeze(["backend", "machines", "assets", "version"]);
 
 // The session view's handle and the session list's, once each is mounted (below). Module-wide, since
 // native mode's activation reaches them after the mount (`installNativeController`). The view's is
@@ -44,10 +47,24 @@ let appMounted = false;
  *  finds its elements by, the document's keymap, the address and the storage keys); a second call
  *  throws, and a refused call draws nothing, so it may be made again.
  *
- *  Options, each named in `MOUNT_OPTIONS`; any other name is refused:
- *  - `backend` (required): the server the web app reads, a backend handle (`backendHandle()`). The
- *    page's components read it from the start (`useBackend`), the list's index, write mode's pairing
- *    and the view alike.
+ *  Options, each named in `MOUNT_OPTIONS`; any other name is refused. It takes `backend` or
+ *  `machines`, one of the two:
+ *  - `backend`: the server the web app reads, a backend handle (`backendHandle()`). The page's
+ *    components read it from the start (`useBackend`), the list's index, write mode's pairing and the
+ *    view alike.
+ *  - `machines` (the native app's, #s595, design/app-mount.md, "One list over every machine"): the
+ *    machines it reads, `[{ machine, label, handle }]` as `mergedBackend` takes them, never empty. The
+ *    list reads all of them at once (`mergedBackend`), each row and project head naming its machine;
+ *    the view is mounted on the first machine's handle until a row opens, and mounted again on a
+ *    row's own machine when the reader opens a row of another, so every call it makes goes to the
+ *    machine the session runs on. A remount loses what the view's unmount does (the draft, the
+ *    pane's tabs, the search). The ids the list and the view pass each other are mapped (the address
+ *    and the list hold `<machine>/<id>`, the view the machine's own); write mode follows the open
+ *    session's machine (off, with no session open); ⌘K's rows name their machine. It takes `assets`.
+ *  - `assets`: where mdrev's bundle and the Mermaid runtime load from when the app carries them
+ *    itself, `{ mdrev, mdrevVersion, mermaid }`, passed to the view as it is (the view's doc comment
+ *    says each); `machines` requires it, since no one machine's bundle may serve every machine. The
+ *    mount names the runtime in the page's head where the page names none.
  *  - `version`: the release the brand names (`v<version>`), "dev" without one. */
 export function mountApp(element, options = {}) {
 if (appMounted) throw new Error("mountApp draws the web app once per page, and this page holds it already");
@@ -55,17 +72,43 @@ if (appMounted) throw new Error("mountApp draws the web app once per page, and t
 const said = value => { try { return JSON.stringify(value) ?? `a ${typeof value}`; } catch { return `a ${typeof value}`; } };
 if (options === null || typeof options !== "object" || Array.isArray(options)) throw new Error(`mountApp takes its options as an object, not ${said(options)}`);
 for (const name of Object.keys(options)) if (!MOUNT_OPTIONS.includes(name)) throw new Error(`mountApp takes no option named ${name}; its options are ${MOUNT_OPTIONS.join(", ")}`);
-if (options.backend == null) throw new Error("mountApp needs its backend: the server the web app reads, as a backend handle (backendHandle())");
-if (typeof options.backend.fetch !== "function") throw new Error(`mountApp takes its backend as a backend handle (backendHandle()), not ${said(options.backend)}`);
+if (options.backend != null && options.machines != null) throw new Error("mountApp reads one server (its backend) or several machines (its machines), not both");
+if (options.backend == null && options.machines == null) throw new Error("mountApp needs its backend: the server the web app reads, as a backend handle (backendHandle()), or the machines it reads");
+if (options.backend != null && typeof options.backend.fetch !== "function") throw new Error(`mountApp takes its backend as a backend handle (backendHandle()), not ${said(options.backend)}`);
+if (options.machines != null && !(Array.isArray(options.machines) && options.machines.length)) throw new Error(`mountApp takes its machines as a list of { machine, label, handle }, never empty, not ${said(options.machines)}`);
+if (options.machines != null && options.assets == null) throw new Error("mountApp takes its machines with its assets: where mdrev's bundle and the Mermaid runtime load from, which no one machine may serve for every machine");
+checkAssets(options.assets ?? undefined, "mountApp");
 if (options.version != null && typeof options.version !== "string") throw new Error(`mountApp takes its version as a string, the release its brand names, not ${said(options.version)}`);
 if (!element) throw new Error("mountApp draws into an element the page gives it, and none was given");
 if (!element.isConnected) throw new Error("mountApp draws into an element on the page, and this one is not on it");
 if (page.byId("app")) throw new Error("mountApp draws the web app's #app, and this page holds one already");
 if ([...element.childNodes].some(node => !(node.nodeType === 3 && !node.data.trim()))) throw new Error("mountApp draws into an empty element; this one holds the host's nodes");
+const merged = options.machines ? mergedBackend(options.machines) : null;
 appMounted = true;
-useBackend(options.backend);
+useBackend(options.backend || options.machines[0].handle);
 element.classList.add("app-mount");
 element.innerHTML = APP_SHELL_MARKUP;
+// The view's diagrams load the runtime the page's head names; the app carries its own (`assets`), and
+// its page need not name one (#s595).
+if (options.assets && !page.$('meta[name="mermaid-runtime"]')) {
+  const meta = document.createElement("meta");
+  meta.name = "mermaid-runtime";
+  meta.content = options.assets.mermaid;
+  page.$("head").append(meta);
+}
+// Over several machines (#s595), the machine the view is mounted on now; "" for the one server.
+let viewMachine = merged ? options.machines[0].machine : "";
+/** A machine's handle; the one server's for "". Taken as the app mounts, as the merged source takes
+ *  its own: a host that changes its list afterwards changes neither. */
+const handles = new Map((options.machines || []).map(entry => [entry.machine, entry.handle]));
+const handleOf = machine => (merged ? handles.get(machine) : options.backend);
+/** Where a list id is read: its machine and the machine's own id (`<machine>/<id>` over several
+ *  machines, the id itself for the one server); null for an id no machine of the list holds. */
+const place = id => {
+  if (!merged) return { machine: "", id };
+  const where = merged.locate(id);
+  return where && { machine: where.machine, id: where.id };
+};
 // Whether the reader wants the outline, as the view says it (`onOutline`).
 let viewOutlineWanted = true;
 /** Remember the app's choices, and the view's with them (#s429 stage 7): the one `persist` wrote both
@@ -112,6 +155,8 @@ function toast(message) {
 // the view (native mode's projects) is read as it draws, once the view is mounted; it starts reading
 // the index at the end, as it did.
 listHandle = mountSessionList(page.byId("sessionList"), {
+  // Over several machines the list reads all of them at once (#s541's merged source, #s595).
+  ...(merged ? { backend: merged } : {}),
   // The page's theme as it stands; the stored one, put on the root below, reaches the list through the
   // root's observer, as every later change does.
   theme: page.html().dataset.theme === "dark" ? "dark" : "light",
@@ -177,19 +222,42 @@ function selectSession(id, push) {
   // On a phone choosing a session closes the drawer AT ONCE (#313) — the one already open too —
   // and the top bars take the new session before a byte of it has arrived.
   mobileShell?.setDrawer(false);
-  if (id === indexState.selected && viewHandle.session() === id) return;
+  const where = place(id);
+  // An id no machine of the list holds (a bare id, a machine gone from the list) is still the
+  // selection, as a single server's unreadable id is: the index's next answer does not ask for it
+  // again (and shut a phone's drawer each time), and a row chosen after it opens.
+  if (!where) { listHandle.select(id); viewHandle.close("Cannot read this session", "No machine of this list holds it."); paintWrite(); return; }
+  if (id === indexState.selected && where.machine === viewMachine && viewHandle.session() === where.id) return;
   listHandle.select(id);
   showSession(id, push);
 }
-/** The app's half of a selection: the view, then the address. */
+/** The app's half of a selection: the view, then the address. Over several machines (#s595) a row of
+ *  another machine than the view's mounts the view again on that machine first, and the view takes
+ *  the machine's own id, where the list and the address keep the list's. */
 function showSession(id, push) {
+  const where = place(id);
+  if (where.machine !== viewMachine) remountOn(where.machine);
   // The view takes the selection before the address does: its loading veil, the pane's tabs, its
   // top bar and its compose box (a parent's Back is written from the top bar, `parentShown`).
-  viewHandle.select(id);
+  viewHandle.select(where.id);
   const url = new URL(location.href); url.searchParams.set("session", id); url.searchParams.delete("ui"); if (push) url.hash = ""; history[push ? "pushState" : "replaceState"]({}, "", url);
-  viewHandle.open(id);
+  viewHandle.open(where.id);
+  paintWrite();
 }
-function sessionGone() { indexState.selected = ""; viewHandle.close("Session is gone", "It may have been deleted or moved. The list keeps scanning."); }
+/** Mount the view again on `machine` (#s595): a confirm still open is cancelled and the wide phone's
+ *  column gives back the pane's list it borrowed first, then the view goes as its unmount takes it (the draft, the tabs, the search, a send
+ *  still out), and comes back on that machine's handle, which every call it makes then goes to. */
+function remountOn(machine) {
+  // A grant's confirm still open names the old machine's pane: it is cancelled, as a newer ask would,
+  // and a passcode typed for that machine is not offered to the next.
+  confirming?.(null);
+  const passcode = page.$(".passcode-input"); if (passcode) passcode.value = "";
+  mobileShell?.showSessions();
+  viewHandle.unmount();
+  viewMachine = machine;
+  mountView();
+}
+function sessionGone() { indexState.selected = ""; viewHandle.close("Session is gone", "It may have been deleted or moved. The list keeps scanning."); paintWrite(); }
 /** The browser's Back to the parent the view's top bar offers (#82, the classic view's
  *  `synthesizeBack`): a deep-linked child gets a history entry for its parent, once. */
 let synthesizedFor = "";
@@ -229,6 +297,14 @@ function globalRows(raw) {
     return why;
   };
   const ts = row => Number(row.activityTs) || 0;
+  // Over several machines a project and its sessions name their machine as the list does (#s561's
+  // short label, #s595); an agent's row spans machines and names none.
+  const machines = merged ? merged.machines() : [];
+  const labels = machines.map(entry => entry.label);
+  const on = session => {
+    const label = machines.find(entry => entry.machine === session?.machine)?.label;
+    return label ? ` · ${machineShortLabel(label, labels)}` : "";
+  };
   const rows = [];
   for (const agent of listHandle.grouped()) {
     const agentSessions = agent.projects.flatMap(project => project.sessions);
@@ -247,9 +323,9 @@ function globalRows(raw) {
       // A project row lands on its OWN most recent session (owner, 2026-09-26): the project is the
       // address, its newest session is where the reader means to be.
       const top = newest(project.sessions);
-      if (top) rows.push({ kind: "project", label: project.name, meta: agent.name, sid: top.id, ts: ts(top), why: concealed(top, project) });
+      if (top) rows.push({ kind: "project", label: project.name, meta: `${agent.name}${on(top)}`, sid: top.id, ts: ts(top), why: concealed(top, project) });
       for (const session of project.sessions) {
-        rows.push({ kind: "session", label: session.name || session.id, meta: `${agent.name} · ${project.name}`, sid: session.id, ts: ts(session), why: concealed(session, project) });
+        rows.push({ kind: "session", label: session.name || session.id, meta: `${agent.name} · ${project.name}${on(session)}`, sid: session.id, ts: ts(session), why: concealed(session, project) });
       }
     }
   }
@@ -590,6 +666,9 @@ var mobileShell;
 
   mobileShell = {
     setDrawer,
+    /** The column shows its sessions, and the pane's list it borrowed goes back to the view (#s595: before
+     *  the view is mounted again on another machine). */
+    showSessions: () => showColumnTab("sessions"),
     /** What the handle does: the drawer opens or shuts, or a wide phone's column shows or hides. */
     toggle: () => handle.onclick(),
     /** A pane's count on the column switch's tab, as the dock's badge reads it. */
@@ -605,21 +684,32 @@ var mobileShell;
 // view hears whether writing is on and asks for the confirm through its `write` option, and is told
 // when the switch moves (`writeChanged`). Native mode wraps the switch's handler (native-entry.js,
 // native-mode.js), so it is bound before either loads.
+/** Whether the session open now may be written to: its server is paired. Over several machines
+ *  (#s595) that is the open session's machine, and with no session open, no machine: the switch is
+ *  off and says to open one. */
+function writePaired() {
+  if (!merged) return controlState.paired;
+  return place(indexState.selected)?.machine === viewMachine && !!handleOf(viewMachine).paired;
+}
+/** Whether writing is on for the session open now. */
+const writeOn = () => controlState.write && (!merged || writePaired());
 function paintWrite() {
-  page.byId("writeSwitch").setAttribute("aria-checked", String(controlState.write));
-  page.byId("writeBtn").classList.toggle("on", controlState.write);
-  page.byId("sidebarMiniWrite").classList.toggle("on", controlState.write);
-  page.byId("writeInfo").hidden = controlState.paired;
+  page.byId("writeSwitch").setAttribute("aria-checked", String(writeOn()));
+  page.byId("writeBtn").classList.toggle("on", writeOn());
+  page.byId("sidebarMiniWrite").classList.toggle("on", writeOn());
+  page.byId("writeInfo").hidden = writePaired();
 }
 function showPairHelp() {
   const help = page.byId("writeHelp");
-  help.innerHTML = controlState.paired
+  help.innerHTML = writePaired()
     ? "<b>Monitor is paired</b><p>With write mode on, a writable session shows a compose box. A live terminal still needs its own grant.</p>"
-    : "<b>Write mode needs a paired monitor</b><p>Stop the monitor and run this in a terminal:</p><code>agent-monitor --pair</code>";
+    : merged && !place(indexState.selected)
+      ? "<b>Open a session to write to it</b><p>Write mode follows the machine the open session runs on.</p>"
+      : "<b>Write mode needs a paired monitor</b><p>Stop the monitor and run this in a terminal:</p><code>agent-monitor --pair</code>";
   help.hidden = false; help.classList.add("show");
 }
 page.byId("writeSwitch").onclick = () => {
-  if (!controlState.paired) { showPairHelp(); return; }
+  if (!writePaired()) { showPairHelp(); return; }
   controlState.write = !controlState.write;
   paintWrite();
   viewHandle.writeChanged();
@@ -653,26 +743,33 @@ paintWrite();
 // The list is laid out before the view mounts, so the view's first decision (and the outline's default
 // for a reader with none remembered) reads the box it will have beside the list.
 arrangeList();
+mountView();
+/** Mount the session view in its element, with what the app passes it: on the one server, or over
+ *  several machines (#s595) on the machine it is mounted on now, with the list's rows and the ids it
+ *  passes back mapped between the list's and the machine's own (`forView`). */
+function mountView() {
+const rows = merged ? merged.forView(listHandle, viewMachine) : null;
 viewHandle = mountSessionView(viewRoot.element(), {
   theme: page.html().dataset.theme === "dark" ? "dark" : "light",
-  backend: options.backend,
+  backend: handleOf(viewMachine),
+  assets: options.assets ?? undefined,
   grid: app,
   keyboard: "page",
-  write: { on: () => controlState.write, confirm: confirmWrite },
+  write: { on: writeOn, confirm: confirmWrite },
   // A tab of its own (#s433): the server's own pages, one page at three addresses that say what it
   // shows (`/detached?session=…` for the transcript's ↗; `/markdown?…` and `/image?…` for the pane's,
   // as before it). The native app turns every ↗ off with `detach` once the mount takes `show`
   // (design/app-mount.md); until then it has the transcript's ↗ beside the pane's, as a browser does.
   detachTo: ({ href }) => href,
-  selectedId: () => listHandle.selected(),
-  sessionRow: id => listHandle.row(id),
-  sessionWorkers: id => listHandle.workers(id),
-  selectSession,
+  selectedId: rows ? rows.selectedId : () => listHandle.selected(),
+  sessionRow: rows ? rows.sessionRow : id => listHandle.row(id),
+  sessionWorkers: rows ? rows.sessionWorkers : id => listHandle.workers(id),
+  selectSession: rows ? (id, push) => selectSession(rows.listId(id), push) : selectSession,
   renderList: () => listHandle.redraw(),
   refreshIndex: () => listHandle.refresh(),
   pauseIndex: () => listHandle.stop(),
   resumeIndex: () => listHandle.start(),
-  parentShown,
+  parentShown: rows ? id => parentShown(rows.listId(id)) : parentShown,
   openList: () => app.classList.remove("mobile-detail"),
   openSidebar: () => toggleSidebar(true),
   // The pane opening or shutting can change the list (the owner's order): the app arranges it at once,
@@ -694,14 +791,14 @@ viewHandle = mountSessionView(viewRoot.element(), {
   // narrows for the outline but never folds for it), and none on the rail or in the drawer.
   room: () => (typeof listArranged?.list === "number" ? listArranged.list - LIST_MIN : 0),
 });
+}
 // The rail's write button reaches the write switch itself (#54): the demo clicks the write
 // BUTTON, whose handler ignores a click that lands on a button — a programmatic click does.
 // Shared Controls already binds this rail action to native session creation.
 if (!viewHandle.controls.nativeActive) page.byId("sidebarMiniWrite").onclick = () => page.byId("writeSwitch").click();
 // The keymap (parity #11): the classic view's keys, resolved by keymap.js — the view's actions from
 // its handle, the list's and the sidebar's here.
-const keyActions = {
-  ...viewHandle.keys,
+const appKeys = {
   // With no session open there is no session search: `/` opens ⌘K's jump-to, and ⌘F or Ctrl+F
   // (#s509) is left to the browser's find. The view's answer (`false` while a phone's reply box holds
   // the dock) is the press's.
@@ -710,14 +807,21 @@ const keyActions = {
     if (event?.metaKey || event?.ctrlKey) return false;
     openGlobalSearch();
   },
-  ...listHandle.keys,
   // The key toggles what is shown (#s431 stage 3): the list folds to its rail, the rail opens where the
   // list fits beside the view, and the drawer opens and shuts; a rail the width holds stays as it is.
   "sidebar-toggle": () => (listArranged?.list === "drawer" ? mobileShell?.toggle() : toggleSidebar(listArranged?.list === "rail")),
 };
+/** A key's action, looked up as the key comes (#s595: the view a key reaches is the one mounted now,
+ *  never the first one's keys copied at the mount): the sidebar's toggle, then the list's keys, then
+ *  the app's search, then the view's. */
+function keyAction(action) {
+  if (action === "sidebar-toggle") return appKeys[action];
+  if (Object.hasOwn(listHandle.keys, action)) return listHandle.keys[action];
+  return action === "search" ? appKeys.search : viewHandle.keys[action];
+}
 // A key with no action here (a control a host switched off) is left to the page, as the view's own
 // binding leaves it; every action the keymap names has one in the app, so nothing changes for it.
-bindKeymap(document, target => (target?.closest?.(".tree-row") ? "list" : "view"), (action, event) => (keyActions[action] ? keyActions[action](event) : false));
+bindKeymap(document, target => (target?.closest?.(".tree-row") ? "list" : "view"), (action, event) => { const run = keyAction(action); return run ? run(event) : false; });
 addEventListener("keydown", event => { if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") { event.preventDefault(); openGlobalSearch(); } else if (event.key === "Escape") page.byId("searchLayer").classList.remove("production-open"); });
 
 arrangeList();

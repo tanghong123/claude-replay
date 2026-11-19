@@ -1,6 +1,7 @@
 # The web app as one mount, for the native app
 
-> **DRAFT 5** (#s551, 2026-11-17). Stage 2 (the mount for one server) is built; the rest is not.
+> **DRAFT 5** (#s551, 2026-11-17). Stage 2 (the mount for one server) is built, and stage 3 (machines in
+> the mount, #s595); the rest is not.
 > Reviewed on #s551. It carries Hong's rulings of the
 > same day: #s553 (a Machines row), #s554 (shared review in the app) and #s555 (Review on an iPad).
 >
@@ -121,8 +122,9 @@ The mount takes either `backend`, one handle (the monitor's page), or `machines`
   machine's own id (`forView`), and every id it gives back is mapped to the list's merged one
   (`<machine>/<id>`, `forView`'s `listId`, or `splitMachineId` the other way). That covers
   `selectSession` (with `push`), `parentShown`, `session()` against the list's selection, and
-  `selectedId`. The address holds the merged id; the view's own storage keys stay on the machine's
-  id (`am-view:<id>`), as `design/monitor-hub.md` D3 already has them.
+  `selectedId`. The address holds the merged id. The view's remembered place is kept per machine
+  (#s597): its key is the handle's base and the machine's id (`am-view:<base>|<id>`), and the page's
+  own server, base "", keeps `am-view:<id>`.
 - **The keymap** looks up each of the view's keys on the view mounted now, at the moment of the key,
   never a copy taken at the first mount. The wide phone's column gives back the pane list it
   borrowed from the view, and shows the Sessions tab, before the view is unmounted.
@@ -182,7 +184,10 @@ kit's files under `/kit/` today.
   routes through one base (`mdrevUrl`, in `mdrev-pane.js`), and the Mermaid runtime through `url`
   from the page's `mermaid-runtime` meta (`session-view.js`), so the app wraps each handle to send
   those few paths to its bundle. `assets` is an option of the view, withheld from hosts
-  (`VIEW_WITHHELD`), which the mount passes on: the view loads mdrev's bundle and the Mermaid
+  (`VIEW_WITHHELD`), which the mount passes on (#s595 gave it its shape: `{ mdrev, mdrevVersion,
+  mermaid }`, the base the bundle is under as `/mdrev/<mdrevVersion>/mdrev.js` and `mdrev.css`, the
+  release that bundle is, and the runtime's address; the mount writes the runtime's meta into a page
+  that names none): the view loads mdrev's bundle and the Mermaid
   runtime from it, and every route, mdrev's included, still goes through the row's handle, whose
   `mdrev` base names the routes alone. The wrapped `url` and `mdrevUrl` members go. A machine whose
   monitor pins a newer mdrev than the bundled one reads with the older guest, the direction #s352

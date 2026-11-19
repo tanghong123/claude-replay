@@ -52,6 +52,9 @@ export class AttachmentViewer {
 
   async download(item) {
     const name = escapeName(item.name);
+    // The server of the view the reader tapped in, kept past the share sheet's wait (#s595: the view
+    // may be mounted on another machine's handle by the time the fetch goes).
+    const server = backend();
     // The second tap on a file whose sheet the first could not open: share it now, in this tap.
     if (this.ready && this.ready.key === itemKey(item) && Date.now() - this.ready.at < READY_MS && shareHere()) {
       const { file } = this.ready;
@@ -65,9 +68,9 @@ export class AttachmentViewer {
       else if (item.text != null && !(item.path && item.fsig)) response = new Response(new Blob([item.text], { type: "text/plain;charset=utf-8" }));
       else {
         const filePath = `/file?path=${encodeURIComponent(item.path || "")}&sig=${encodeURIComponent(item.fsig || "")}`;
-        fileUrl = backend().url(filePath);
+        fileUrl = server.url(filePath);
         controller = this.controller = new AbortController();
-        response = await backend().fetch(filePath, { cache: "no-store", signal: controller.signal });
+        response = await server.fetch(filePath, { cache: "no-store", signal: controller.signal });
       }
       if (this.ended) { controller?.abort(); return; }
       if (!response.ok) throw Object.assign(new Error(`HTTP ${response.status}`), { status: response.status });

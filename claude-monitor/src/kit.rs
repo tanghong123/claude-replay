@@ -415,10 +415,12 @@ mod tests {
     /// is the app's. `keyboard` is the app's too: its one choice besides the default, `"page"`,
     /// hands every key to the host's own keymap, where #s436 offered keys answered only while the
     /// reader works in the part, which is the default. Offering one is a contract change for the
-    /// owner to rule on first.
-    const VIEW_WITHHELD: [&str; 7] = [
+    /// owner to rule on first. `assets` is the native app's too (#s595, design/app-mount.md): where
+    /// mdrev's bundle and the Mermaid runtime load from when the app carries them itself.
+    const VIEW_WITHHELD: [&str; 8] = [
         "keyboard",
         "frame",
+        "assets",
         "parentShown",
         "openList",
         "openSidebar",
@@ -438,7 +440,7 @@ mod tests {
     /// every option it takes, its own list (`MOUNT_OPTIONS` in app-mount.js) and this one kept in
     /// step. A name the view or the list also takes (`backend`) is declared for them; the rest are
     /// the mount's alone and declared for neither. Each later stage adds its options to both lists.
-    const APP_WITHHELD: [&str; 2] = ["backend", "version"];
+    const APP_WITHHELD: [&str; 4] = ["backend", "machines", "assets", "version"];
 
     /// The declarations follow each component's own lists: every option it takes but the ones the
     /// kit withholds, each optional control, and the view's required options as its doc comment
