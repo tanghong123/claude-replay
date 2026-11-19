@@ -1389,14 +1389,20 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    in the sidebar row too. */
 .session-heading>.crumb{min-width:0;flex-shrink:8;overflow:hidden;text-overflow:ellipsis}
 .session-heading>.status-chip{min-width:0;flex-shrink:4}
+/* #s581: but where the title and the crumb do not both fit, the crumb goes whole, with its divider,
+   rather than both being cut (Hong: the title read "ab-metr…" beside "Claude Code · a…"), and the
+   title takes its room; its menu then names the agent and the project at its head. `crumb-off` is
+   session-view.js's `fitHeading`, from what the bar draws. */
+.session-heading.crumb-off>:is(.crumb,.crumb+.header-divider){display:none}
+.session-copy-about{display:none;padding:6px 8px 8px;margin-bottom:2px;border-bottom:1px solid var(--line);color:var(--sub);font-size:11.5px;line-height:1.4;overflow-wrap:anywhere}
+.session-heading.crumb-off .session-copy-about{display:block}
 /* #s520: and off the phone the session's name keeps at least its first word (`--title-word`, its
    width in the title's font with the ellipsis a longer title draws, measured by session-view.js; at
    most 160px). The heading holds that and what else it draws at its least (the crumb's two gaps and
-   dividers, the chip's padding: 60px; 21px where the glyphs' bar leaves only the chip's dot), and
-   the search box gives way to it, down to 150px at rest, before the bar runs out of room. */
+   dividers, the chip's padding: 60px), and the search box gives way to it, down to 150px at rest,
+   before the bar runs out of room. The glyphs' bar draws no title (#s582, below). */
 #sessionView:not(.pl-phone) .workspace>.topbar>.session-heading>#sessionTitle{min-width:calc(min(var(--title-word,0px),160px) + 10px)}
 #sessionView:not(.pl-phone) .workspace>.topbar>.session-heading{min-width:calc(min(var(--title-word,0px),160px) + 65px)}
-#sessionView.pl-outline-bar .workspace>.topbar>.session-heading{min-width:calc(min(var(--title-word,0px),160px) + 30px)}
 #sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster{flex-shrink:1;min-width:150px}
 #sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster>.header-searchbox{max-width:100%}
 /* While the search is in use (typed in, held, or holding a query) the title gives way first: the
@@ -1568,40 +1574,39 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 #sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-jumps{display:none}
 #sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 6px 6px}
 #sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-body .navigator-list{overflow:visible}
-/* #s520: the bar the glyphs join is the session's column, 480–547px (the order puts them there only
-   while they have no column of their own), and it carries nine controls beside the title. Laid out
-   at their widest (the search box 180 or 286px, chosen by the window's bands) they squeezed the
-   title to a letter and pushed Info and the pane's control past the window or under the open pane.
-   There the bar gives way in this order, by the arrangement alone: the crumb and its dividers go
-   (the list and Info say both); the status chip is its dot (its colour is the state, its words its
-   title, the list's and Info's; a chip with no state, a sub-agent's, goes); the gaps tighten;
-   fold-all moves into Aa's menu; and the search box rests as its glyph. A click, a focus or the
-   search key opens it, for typing, in the room the title and the outline's glyphs give up while it
-   is in use (`search-held`, session-view.js: from a mouse's press or a focus inside the search
-   until a press outside it, a Tab out or Escape, since Safari gives a pressed button no focus), and
-   it folds back then (a held query tints the glyph). So every control keeps its place inside the
-   column, and the title its first word. */
+/* #s582 (Hong, 2026-11-18, in place of #s520's design for this bar): the bar the glyphs join is the
+   session's column, 480–547px (the order puts them there only while they have no column of their
+   own), and it reads, left to right, the outline's three glyphs, the search box, Aa, Info and the
+   pane's control, nothing else. The session's name leaves it for the head of Info's card, the agent,
+   the project and the state with it (`placeOutlineGlyphs`, session-view.js); fold-all moves into
+   Aa's menu; the outline's expand control stays in its column. The search box is a box with the
+   bar's room. While it is in use (`search-held`, session-view.js: from a mouse's press or a focus
+   inside the search until a press outside it, a Tab out or Escape, since Safari gives a pressed
+   button no focus) the glyphs give it their room too, so a query keeps a field beside its count,
+   steps and filter in a 480px column under the drawer's handle; they come back as it rests. */
 #sessionView.pl-outline-bar .workspace>.topbar{column-gap:4px;padding-right:10px}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster{min-width:0}
+#sessionView.pl-outline-bar .workspace>.topbar>.top-spacer{display:none}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster{flex:1 1 auto;min-width:0}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster>.header-searchbox{width:100%;max-width:none}
+#sessionView.pl-outline-bar .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held))>.phone-pane{display:none}
 /* The fold-all control is the one the bar can spare: it moves into Aa's menu there (the phone has
-   neither), so a 480px column under the drawer's handle still holds the title's first word. A host
-   that switched Aa off keeps it in the bar, with Aa's room. */
+   neither). A host that switched Aa off keeps it in the bar, with Aa's room. */
 #sessionView .reading-options .reading-fold-all{display:none}
 #sessionView.pl-outline-bar .reading-options .reading-fold-all{display:grid}
 #sessionView.pl-outline-bar .workspace>.topbar:has(>.reading-cluster)>#sessionFoldAll{display:none}
-#sessionView.pl-outline-bar .workspace>.topbar>.session-heading{column-gap:6px}
-#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>:is(.header-divider,.crumb){display:none}
-#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>.status-chip{flex:none;gap:0;padding:0 4px;border-color:transparent;background:transparent;font-size:0}
-#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>.status-chip .state-dot{margin:0!important}
-#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>.status-chip:not(:has(.state-dot)){display:none}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox{width:34px;height:34px;padding:0;gap:0;justify-content:center;border-color:transparent;background:transparent;box-shadow:none;cursor:pointer}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox>:is(.find-count,.find-nav,.search-clear,.header-filter,.find-whole){display:none}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox>.search-field{flex:0 0 0;width:0;overflow:hidden}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox:hover{background:var(--hover)}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox.has-query{background:var(--selected);color:var(--blue)}
-#sessionView.pl-outline-bar .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held))>:is(.session-heading,.top-spacer,.phone-pane,#navigatorRailExpand){display:none}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:is(:focus-within,.search-held){flex:1 1 auto;min-width:0}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:is(:focus-within,.search-held)>.header-searchbox{width:100%;max-width:none}
+/* A sub-agent's way back to its parent stays in the bar, as its glyph, after the app's own first
+   controls and before the outline's. */
+#sessionView.pl-outline-bar .workspace>.topbar>:is(#mobileBack,#sidebarReopen){order:-2}
+#sessionView.pl-outline-bar .workspace>.topbar>#sessionParent.is-live{order:-1;width:34px;padding:0;justify-content:center}
+#sessionView.pl-outline-bar .workspace>.topbar>#sessionParent.is-live .session-parent-label{display:none}
+/* Info's card heads with the session there: its name whole, then the agent and the project, then
+   its state, the name still opening its menu, which hangs inside the card. */
+#sessionView .info-popover>.session-heading{display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;width:auto;max-width:none;min-width:0;height:auto;margin:0 0 6px;padding:2px 4px 8px 7px;border-bottom:1px solid var(--line)}
+#sessionView .info-popover>.session-heading>#sessionTitle{flex:1 1 100%;min-width:0;max-width:none;white-space:normal;overflow-wrap:anywhere;font-size:13px;line-height:1.35;color:var(--ink)}
+#sessionView .info-popover>.session-heading>.header-divider{display:none}
+#sessionView .info-popover>.session-heading>.crumb{display:block;flex:0 1 auto;min-width:0;white-space:normal;overflow-wrap:anywhere;font-size:11px}
+#sessionView .info-popover>.session-heading>.status-chip{flex:none;max-width:none}
+#sessionView .info-popover>.session-heading>.session-copy-menu{left:0;right:0;width:auto;top:calc(100% + 2px)}
 @media(max-width:760px) and (hover:hover){.drawer-handle:hover{background:var(--hover)}}
 /* The list's rows are touch targets on a touch screen, wherever the list is drawn (#s431 stage 2,
    design/pane-layout.md): a finger needs 44px in an iPad's sidebar as in a phone's drawer, and a

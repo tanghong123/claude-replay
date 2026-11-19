@@ -1939,9 +1939,11 @@
 :where(#sessionView) .header-searchbox .find-count{flex:none}
 :where(#sessionView) .session-heading>.crumb{min-width:0;flex-shrink:8;overflow:hidden;text-overflow:ellipsis}
 :where(#sessionView) .session-heading>.status-chip{min-width:0;flex-shrink:4}
+:where(#sessionView) .session-heading.crumb-off>:is(.crumb,.crumb+.header-divider){display:none}
+:where(#sessionView) .session-copy-about{display:none;padding:6px 8px 8px;margin-bottom:2px;border-bottom:1px solid var(--line);color:var(--sub);font-size:11.5px;line-height:1.4;overflow-wrap:anywhere}
+:where(#sessionView) .session-heading.crumb-off .session-copy-about{display:block}
 #sessionView:not(.pl-phone) .workspace>.topbar>.session-heading>#sessionTitle{min-width:calc(min(var(--title-word,0px),160px) + 10px)}
 #sessionView:not(.pl-phone) .workspace>.topbar>.session-heading{min-width:calc(min(var(--title-word,0px),160px) + 65px)}
-#sessionView.pl-outline-bar .workspace>.topbar>.session-heading{min-width:calc(min(var(--title-word,0px),160px) + 30px)}
 #sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster{flex-shrink:1;min-width:150px}
 #sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster>.header-searchbox{max-width:100%}
 #sessionView:not(.pl-phone) .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held))>.session-heading,#sessionView:not(.pl-phone) .workspace>.topbar:has(>.header-search-cluster>.header-searchbox.has-query)>.session-heading{flex-shrink:2}
@@ -2021,23 +2023,22 @@
 #sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 6px 6px}
 #sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-body .navigator-list{overflow:visible}
 #sessionView.pl-outline-bar .workspace>.topbar{column-gap:4px;padding-right:10px}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster{min-width:0}
+#sessionView.pl-outline-bar .workspace>.topbar>.top-spacer{display:none}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster{flex:1 1 auto;min-width:0}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster>.header-searchbox{width:100%;max-width:none}
+#sessionView.pl-outline-bar .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held))>.phone-pane{display:none}
 #sessionView .reading-options .reading-fold-all{display:none}
 #sessionView.pl-outline-bar .reading-options .reading-fold-all{display:grid}
 #sessionView.pl-outline-bar .workspace>.topbar:has(>.reading-cluster)>#sessionFoldAll{display:none}
-#sessionView.pl-outline-bar .workspace>.topbar>.session-heading{column-gap:6px}
-#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>:is(.header-divider,.crumb){display:none}
-#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>.status-chip{flex:none;gap:0;padding:0 4px;border-color:transparent;background:transparent;font-size:0}
-#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>.status-chip .state-dot{margin:0!important}
-#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>.status-chip:not(:has(.state-dot)){display:none}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox{width:34px;height:34px;padding:0;gap:0;justify-content:center;border-color:transparent;background:transparent;box-shadow:none;cursor:pointer}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox>:is(.find-count,.find-nav,.search-clear,.header-filter,.find-whole){display:none}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox>.search-field{flex:0 0 0;width:0;overflow:hidden}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox:hover{background:var(--hover)}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox.has-query{background:var(--selected);color:var(--blue)}
-#sessionView.pl-outline-bar .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held))>:is(.session-heading,.top-spacer,.phone-pane,#navigatorRailExpand){display:none}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:is(:focus-within,.search-held){flex:1 1 auto;min-width:0}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:is(:focus-within,.search-held)>.header-searchbox{width:100%;max-width:none}
+#sessionView.pl-outline-bar .workspace>.topbar>:is(#mobileBack,#sidebarReopen){order:-2}
+#sessionView.pl-outline-bar .workspace>.topbar>#sessionParent.is-live{order:-1;width:34px;padding:0;justify-content:center}
+#sessionView.pl-outline-bar .workspace>.topbar>#sessionParent.is-live .session-parent-label{display:none}
+#sessionView .info-popover>.session-heading{display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;width:auto;max-width:none;min-width:0;height:auto;margin:0 0 6px;padding:2px 4px 8px 7px;border-bottom:1px solid var(--line)}
+#sessionView .info-popover>.session-heading>#sessionTitle{flex:1 1 100%;min-width:0;max-width:none;white-space:normal;overflow-wrap:anywhere;font-size:13px;line-height:1.35;color:var(--ink)}
+#sessionView .info-popover>.session-heading>.header-divider{display:none}
+#sessionView .info-popover>.session-heading>.crumb{display:block;flex:0 1 auto;min-width:0;white-space:normal;overflow-wrap:anywhere;font-size:11px}
+#sessionView .info-popover>.session-heading>.status-chip{flex:none;max-width:none}
+#sessionView .info-popover>.session-heading>.session-copy-menu{left:0;right:0;width:auto;top:calc(100% + 2px)}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) #mobileBack,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) #sidebarReopen{display:none!important}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500)>.workspace{isolation:isolate}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .workspace{grid-template-rows:auto minmax(0,1fr)}

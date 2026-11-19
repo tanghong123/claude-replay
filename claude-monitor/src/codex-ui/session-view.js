@@ -497,7 +497,7 @@ sessionCopyMenu.className = "session-copy-menu";
 sessionCopyMenu.id = "sessionCopyMenu";
 sessionCopyMenu.setAttribute("role", "menu");
 sessionCopyMenu.setAttribute("aria-label", "Copy session details");
-sessionCopyMenu.innerHTML = `<div class="session-copy-caption">Copy session details</div><button type="button" role="menuitem" data-copy-session="id">${svg("copy")}<span><strong>Session ID</strong><small data-session-copy-value="id">—</small></span></button><button type="button" role="menuitem" data-copy-session="path">${svg("copy")}<span><strong>Transcript path</strong><small data-session-copy-value="path">Loading…</small></span></button>`;
+sessionCopyMenu.innerHTML = `<div class="session-copy-about" id="sessionCopyAbout"></div><div class="session-copy-caption">Copy session details</div><button type="button" role="menuitem" data-copy-session="id">${svg("copy")}<span><strong>Session ID</strong><small data-session-copy-value="id">—</small></span></button><button type="button" role="menuitem" data-copy-session="path">${svg("copy")}<span><strong>Transcript path</strong><small data-session-copy-value="path">Loading…</small></span></button>`;
 sessionTitle.insertAdjacentElement("afterend", sessionCopyMenu);
 sessionTitle.tabIndex = 0;
 sessionTitle.setAttribute("role", "button");
@@ -512,6 +512,10 @@ if (infoRailButton) infoRailButton.title = "Info";
 let sessionCopyCloseTimer = 0;
 function setSessionCopyMenu(open) {
   clearTimeout(sessionCopyCloseTimer);
+  // #s581: the crumb's words at the menu's head, which show while the bar has no room for the crumb
+  // (`crumb-off`); read as it opens, so every header (a row's, a sub-agent's, a worker's) is the one
+  // drawn.
+  if (open) byId("sessionCopyAbout").textContent = byId("sessionCrumb")?.textContent || "";
   sessionCopyMenu.classList.toggle("open", open);
   sessionTitle.setAttribute("aria-expanded", String(open));
 }
@@ -526,7 +530,10 @@ function scheduleSessionCopyClose() {
 // nothing gives the title focus, and the lift closed the menu for good. A tap elsewhere, a copy or
 // Escape closes it; a mouse still closes it by leaving.
 const leftByHover = event => event.pointerType === "mouse";
-sessionTitle.addEventListener("pointerenter", () => setSessionCopyMenu(true));
+// At the head of Info's card (the glyphs' bar, #s582) the name opens its menu on a press or a focus
+// only: a mouse on its way into the card crosses the name, and a hover there laid the menu over what
+// the reader came to read.
+sessionTitle.addEventListener("pointerenter", () => { if (!sessionTitle.closest(".info-popover")) setSessionCopyMenu(true); });
 sessionTitle.addEventListener("pointerleave", event => { if (leftByHover(event)) scheduleSessionCopyClose(); });
 sessionTitle.addEventListener("focus", () => setSessionCopyMenu(true));
 sessionTitle.addEventListener("blur", scheduleSessionCopyClose);
@@ -884,6 +891,7 @@ function renderParent(meta) {
 function renderHeader() {
   paintHeader();
   markTitleWord();
+  fitHeadingSoon();
   sayTitle(sessionTitle.textContent);
 }
 // #s520: off the phone the title keeps at least its first word, whatever else the top bar holds:
@@ -898,6 +906,9 @@ function markTitleWord() {
   const heading = sessionTitle.parentElement, text = sessionTitle.textContent.trim();
   titleRuler ||= document.createElement("canvas").getContext("2d");
   if (!heading || !titleRuler) return;
+  // In Info's card (the glyphs' bar, #s582) the title is not the bar's, and its font is the card's:
+  // measured again once it is back.
+  if (!heading.parentElement?.classList.contains("topbar")) { titleWordKey = ""; return; }
   // From the longhands: Chrome answers "" for the `font` shorthand when a longhand has no place in
   // it.
   const style = getComputedStyle(sessionTitle);
@@ -911,6 +922,35 @@ function markTitleWord() {
   // A new name gives the box held beside it a different room (`fitDeskSearch`); during module
   // evaluation the search is not built yet and this does nothing.
   fitSearchField();
+}
+// #s581 (Hong: "give room to agent name, and show agent type and repo name in the drop down menu"):
+// where the title and the crumb (the agent and the project) do not both fit, the crumb gives way
+// whole, with its divider, and the title takes its room; the title's menu then names the agent and
+// the project at its head (`.session-copy-about`), so nothing is lost. Decided by what the bar draws,
+// never by a window width, so a host's pane gets it too: with the crumb drawn, is the title cut short
+// of what it would show (its text, up to its max-width), or the crumb cut? The class comes off and
+// goes back on in one task, so no frame shows the crumb drawn only to be measured, and the answer
+// never reads the room hiding the crumb made. The glyphs' bar and the phone reader keep rules of
+// their own for the crumb. `var`: a header can be drawn during module evaluation.
+var headingFrame = 0;
+function fitHeading() {
+  const heading = sessionTitle.parentElement, crumb = byId("sessionCrumb");
+  if (!heading?.classList.contains("session-heading") || !crumb) return;
+  heading.classList.remove("crumb-off");
+  if (sessionView.classList.contains("pl-phone") || sessionView.classList.contains("pl-outline-bar") || !heading.closest(".topbar")) return;
+  const cut = node => node.scrollWidth > node.clientWidth + 1;
+  const cap = parseFloat(getComputedStyle(sessionTitle).maxWidth);
+  const squeezed = cut(sessionTitle) && !(sessionTitle.getBoundingClientRect().width >= cap - 1);
+  heading.classList.toggle("crumb-off", squeezed || cut(crumb));
+}
+/** At the next frame: the bar, the search box beside the heading and the header's text each change
+ *  what fits, and the answer changes the box's room in turn, so it is read once they have settled. */
+function fitHeadingSoon() {
+  if (!headingFrame) headingFrame = requestAnimationFrame(() => { headingFrame = 0; fitHeading(); });
+}
+{
+  const headingRoom = new ResizeObserver(fitHeadingSoon);
+  for (const node of [viewRoot.$(".workspace>.topbar"), viewRoot.$(".header-search-cluster")]) if (node) headingRoom.observe(node);
 }
 function paintHeader() {
   if (sessionNewTab) sessionNewTab.hidden = !selectedId();
@@ -2682,8 +2722,18 @@ const TITLE_GIVES_TO = 80;
  *  and short on Linux's wider fonts, since the count names the scope too ("2 hits in uo(R)"). Only
  *  the floor's rule reads `--search-floor` (production.css, #s520), so it means nothing on a phone or
  *  in the bar the outline's glyphs join, and it is worked out again from the floor that rule gives
- *  without it, whenever the field, the bar or the title changes. */
+ *  without it, whenever the field, the bar or the title changes.
+ *
+ *  It measures with the crumb shown, as the bar was before #s581 took the crumb off a squeezed title,
+ *  then decides the crumb for the floor it set (`fitHeading`), so the floor is the same whichever of
+ *  the two ran last: measured with a crumb the last floor had taken off, the next fit gave the box
+ *  more, and a fit made at once again gave it less. */
 function fitDeskSearch(input) {
+  byId("sessionCrumb")?.parentElement?.classList.remove("crumb-off");
+  fitDeskSearchFloor(input);
+  fitHeading();
+}
+function fitDeskSearchFloor(input) {
   const cluster = viewRoot.$(".header-search-cluster"), searchbox = viewRoot.$(".header-searchbox");
   if (!cluster || !searchbox) return;
   cluster.style.removeProperty("--search-floor");
@@ -4796,17 +4846,23 @@ var phoneDock;
     const panelHome = arrangement && !arrangement.phone ? viewRoot.$(".workspace") : sessionView;
     if (panelHome && menu.parentElement !== panelHome) { closePane(); panelHome.append(menu); }
     const inBar = !!arrangement && !arrangement.phone && arrangement.outline === "bar";
-    if (inBar && panes[0].button.parentElement !== topbar) for (const pane of panes) info.before(pane.button);
+    // #s582 (Hong: "when the session view pane is really tight, I'd like to have the head row to show
+    // from left to right: the three glyphs for the outline panes; search box, Aa, i, and the
+    // right-drawer toggle"): the glyphs lead the bar, where its first controls sit (the app's own,
+    // shown only while its list is folded away).
+    if (inBar && panes[0].button.parentElement !== topbar) byId("sidebarReopen").after(...panes.map(pane => pane.button));
     if (!inBar && panes[0].button.parentElement !== dockPill) dockPill.prepend(...panes.map(pane => pane.button));
-    // What the column held besides the glyphs comes with them: the outline's expand control (pressed
-    // while the reader wants the outline the width holds back, so they can fold it for good), and the
-    // session's Info, from the top bar's own Info control, its card hanging under the bar.
-    const expand = byId("navigatorRailExpand"), card = viewRoot.$("#infoPopover");
-    for (const [node, into, before] of [[expand, topbar, info], [card, viewRoot.$(".workspace"), null]]) {
-      if (!node) continue;
+    // What the column held besides the glyphs comes with them: the session's Info, from the top bar's
+    // own Info control, its card hanging under the bar. The outline's expand control stays in the
+    // column, out of the bar ("get rid of the useless |> sign"). And the session's name leaves the bar
+    // for the head of Info's card ("hide the agent name under i's drop down menu"), with the agent,
+    // the project and the state beside it, its menu still opening from it.
+    const card = viewRoot.$("#infoPopover"), heading = sessionTitle.parentElement;
+    for (const [node, into, first] of [[card, viewRoot.$(".workspace"), false], [heading, card, true]]) {
+      if (!node || !into) continue;
       if (inBar && node.parentElement !== into) {
         if (!columnHomes.has(node)) columnHomes.set(node, { parent: node.parentNode, next: node.nextSibling });
-        if (before) before.before(node); else into.append(node);
+        if (first) into.prepend(node); else into.append(node);
       } else if (!inBar && columnHomes.has(node)) {
         const home = columnHomes.get(node);
         columnHomes.delete(node);
@@ -4814,6 +4870,8 @@ var phoneDock;
       }
     }
     sessionView.classList.toggle("outline-in-bar", inBar);
+    // Back in the bar, the title's least room is measured again in the bar's font.
+    if (!inBar) { markTitleWord(); fitHeadingSoon(); }
     if (arrangement?.outline === "open") closePane();
   };
   openOutlinePanel = key => {
