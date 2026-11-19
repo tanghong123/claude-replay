@@ -4794,7 +4794,8 @@ pub(crate) fn decode_line_known(
             .then(|| a.and_then(|a| a.get("paths")).and_then(|p| p.as_array()))
             .flatten();
             if is_prompt {
-                if let Some(p) = a.and_then(|a| a.get("prompt")).and_then(|p| p.as_str()) {
+                if let Some((p, images)) = a.and_then(|a| a.get("prompt")).map(queued_prompt) {
+                    let p: &str = &p;
                     if !p.trim().is_empty() {
                         let meta =
                             a.and_then(|a| a.get("isMeta")).and_then(Value::as_bool) == Some(true);
@@ -4817,6 +4818,12 @@ pub(crate) fn decode_line_known(
                             msgs.push(Message::AttachmentPrompt {
                                 text: fence_pasted(p).into_owned(),
                             });
+                        }
+                    }
+                    // #s607: the prompt's pasted images, after its words as a prompt's are.
+                    for blk in images {
+                        if let Some(att) = image_attachment(blk) {
+                            msgs.push(Message::Attachment(att));
                         }
                     }
                 }
@@ -6275,7 +6282,8 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                         .and_then(|m| m.as_str())
                         == Some("prompt");
                 if is_prompt {
-                    if let Some(p) = a.and_then(|a| a.get("prompt")).and_then(|p| p.as_str()) {
+                    if let Some((p, images)) = a.and_then(|a| a.get("prompt")).map(queued_prompt) {
+                        let p: &str = &p;
                         if !p.trim().is_empty() {
                             let raw = p;
                             // #52 op-less delivery, attachment form (see above). The pickup
@@ -6307,6 +6315,12 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     Some(m) => push_inbox(m, &mut out, None, &mut inbox_ids),
                                     None => out.push(Block::UserText(p.into_owned())),
                                 },
+                            }
+                        }
+                        // #s607 mirror: the prompt's pasted images.
+                        for blk in images {
+                            if let Some(att) = image_attachment(blk) {
+                                out.push(Block::Attachment(att));
                             }
                         }
                     }
@@ -6705,6 +6719,32 @@ fn load_attachment_from_event(a: &Value) -> Option<LoadedAttachment> {
         "plan_file_reference" => Some(LoadedAttachment::Text(s("planContent")?.to_string())),
         _ => None,
     }
+}
+
+/// A `queued_command`'s prompt: its text and its image blocks. The client writes it as a string,
+/// or, for a prompt carrying pasted images, as the prompt's own content blocks (#s607, measured from
+/// client 2.1.251 to 2.1.327: a text block and the images, or the images alone). Read only as a
+/// string, every mid-turn message with an image in it was dropped: 104 on one machine, in 18 sessions.
+fn queued_prompt(prompt: &Value) -> (std::borrow::Cow<'_, str>, Vec<&Value>) {
+    if let Some(s) = prompt.as_str() {
+        return (std::borrow::Cow::Borrowed(s), Vec::new());
+    }
+    let (mut text, mut images) = (String::new(), Vec::new());
+    for blk in prompt.as_array().into_iter().flatten() {
+        match blk.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(t) = blk.get("text").and_then(Value::as_str) {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(t);
+                }
+            }
+            Some("image") => images.push(blk),
+            _ => {}
+        }
+    }
+    (std::borrow::Cow::Owned(text), images)
 }
 
 /// Build an image [`Attachment`] from an `{type:"image", source:{type:"base64",…}}`
@@ -7772,6 +7812,63 @@ mod tests {
             users,
             vec!["first turn", "mid-turn interjection", "last turn"],
             "{blocks:?}"
+        );
+    }
+
+    /// #s607: a mid-turn message carrying pasted images is recorded as a `queued_command` whose
+    /// prompt is the prompt's own content blocks, a text block and the images (client 2.1.251 to
+    /// 2.1.327), not a string. It is the person's turn, its words and then its images, and its
+    /// queued marker is popped at pickup as a string prompt's is; a prompt of images alone shows its
+    /// images. A string prompt is unchanged. Both parse paths agree.
+    #[test]
+    fn a_mid_turn_message_with_pasted_images_is_the_persons_turn() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-11-19T09:00:00.000Z","message":{"content":"first turn"}}
+{"type":"assistant","timestamp":"2026-11-19T09:00:01.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-19T09:00:01.500Z","content":"[Image #1] [Image #2] - the dialog over a dialog"}
+{"type":"queue-operation","operation":"remove","timestamp":"2026-11-19T09:00:02.000Z","content":"[Image #1] [Image #2] - the dialog over a dialog","reason":"absorbed_mid_turn"}
+{"type":"attachment","timestamp":"2026-11-19T09:00:02.000Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"humanTurn":true,"imagePasteIds":[1,2],"prompt":[{"type":"text","text":"[Image #1] [Image #2] - the dialog over a dialog"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"YmFy"}}]}}
+{"type":"user","timestamp":"2026-11-19T09:00:02.100Z","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]}}
+{"type":"assistant","timestamp":"2026-11-19T09:00:03.000Z","message":{"content":[{"type":"tool_use","id":"b2","name":"Bash","input":{"command":"pwd"}}]}}
+{"type":"attachment","timestamp":"2026-11-19T09:00:04.000Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"humanTurn":true,"imagePasteIds":[3],"prompt":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"YmF6"}}]}}
+{"type":"user","timestamp":"2026-11-19T09:00:04.100Z","message":{"content":[{"type":"tool_result","tool_use_id":"b2","content":"/w"}]}}
+{"type":"attachment","timestamp":"2026-11-19T09:00:05.000Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"prompt":"words alone"}}
+{"type":"assistant","timestamp":"2026-11-19T09:00:06.000Z","message":{"content":[{"type":"text","text":"seen"}]}}
+{"type":"user","timestamp":"2026-11-19T09:00:07.000Z","message":{"content":"last turn"}}
+"##;
+        let streamed = parse(jsonl);
+        let reference = parse_main(
+            jsonl.lines().filter(|l| !l.trim().is_empty()),
+            &mut Vec::new(),
+        );
+        assert_eq!(streamed, reference, "the two parse paths agree");
+        // The person's turns and each image, in the order they were drawn.
+        let seen: Vec<String> = streamed
+            .iter()
+            .filter_map(|b| match b {
+                Block::UserText(t) => Some(format!("user {t}")),
+                Block::Attachment(a) if a.kind == AttachmentKind::Image => Some("image".into()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                "user first turn",
+                "user [Image #1] [Image #2] - the dialog over a dialog",
+                "image",
+                "image",
+                "image",
+                "user words alone",
+                "user last turn",
+            ],
+            "{streamed:#?}"
+        );
+        assert!(
+            !streamed
+                .iter()
+                .any(|b| matches!(b, Block::QueueEvent { .. })),
+            "the queued marker is popped at pickup: {streamed:#?}"
         );
     }
 
