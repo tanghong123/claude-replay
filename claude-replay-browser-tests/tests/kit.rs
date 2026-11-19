@@ -610,7 +610,7 @@ fn the_web_app_over_two_machines_reads_each_session_from_its_own_machine() {
             .iter()
             .filter(|p| p.ends_with(".js")
                 && p.contains("mermaid")
-                && !p.starts_with("/kit/bundle/"))
+                && *p != "/kit/bundle/shared/mermaid.js")
             .collect::<Vec<_>>(),
         vec![&format!("/app-vendor{runtime}")],
         "the runtime the app carries (the kit's own shared module aside), and none from a machine: {names:?}"
@@ -699,12 +699,14 @@ fn the_web_app_over_two_machines_reads_each_session_from_its_own_machine() {
         &format!("(function () {{ var app = document.getElementById('app'), view = document.getElementById('sessionView'); var since = window.__host.asked.slice({asked_before}); return {{ remounted: document.querySelector('#sessionView .transcript').__s595 !== 'b', pulled: since.filter(function (a) {{ return /\\/pull\\?/.test(a); }}), stateOnApp: ['preview-off', 'preview-full'].every(function (c) {{ return app.classList.contains(c) === view.classList.contains(c); }}), pairHint: !document.getElementById('writeInfo').hidden, address: new URLSearchParams(location.search).get('session'), wrap: view.classList.contains('wrap-code') }}; }})()"),
     );
     let pulled: Vec<String> = serde_json::from_value(switched["pulled"].clone()).unwrap();
-    // The old view may still have polled its machine before it went; the new one reads the first.
+    // The old view may still have polled its machine before it went; from the new one's first pull
+    // on, every pull is the first machine's.
+    let first_a = pulled
+        .iter()
+        .position(|a| a.starts_with(&format!("/pull?session={SID_BOTH}")));
     assert!(
-        pulled
-            .iter()
-            .any(|a| a.starts_with(&format!("/pull?session={SID_BOTH}"))),
-        "the first machine's session is pulled from the first machine, by its own id: {switched}"
+        first_a.is_some_and(|at| pulled[at..].iter().all(|a| a.starts_with("/pull?"))),
+        "the first machine's session is pulled from the first machine alone, by its own id: {switched}"
     );
     assert_eq!(
         (&switched["remounted"], &switched["stateOnApp"], &switched["pairHint"], &switched["address"]),
@@ -796,6 +798,34 @@ fn the_web_app_over_two_machines_reads_each_session_from_its_own_machine() {
         transcript_says(text, what);
         backs.push(harness::probe(&tab, at));
     }
+    // An id no machine of the list holds: said once, and kept as the selection through the index's
+    // next answers (it used to be selected again at each, shutting a phone's drawer), the switch
+    // saying to open a session; a row chosen after it opens.
+    harness::eval(&tab, "history.pushState({}, '', '?session=zz%2Fnowhere'); dispatchEvent(new PopStateEvent('popstate')); 'ok'");
+    transcript_says("Cannot read this session", "an id no machine holds, said");
+    let mark = "(function () { var said = [...document.querySelectorAll('#sessionView strong')].find(function (e) { return e.textContent === 'Cannot read this session'; }); if (!said) return 'not said'; said.__s595 = 1; return window.__host.asked.length; })()";
+    let polls_from = harness::probe(&tab, mark)
+        .as_u64()
+        .expect("the refusal is drawn") as usize;
+    // Two of the index's answers (it asks every 5 s) from each machine.
+    harness::until(
+        &tab,
+        &format!("window.__host.asked.slice({polls_from}).filter(function (a) {{ return /\\/api\\/sessions/.test(a); }}).length >= 4"),
+        "two more index answers from each machine",
+        Duration::from_secs(30),
+        now,
+    );
+    harness::eval(&tab, "document.getElementById('writeInfo').click(); 'ok'");
+    let nowhere = harness::probe(&tab, "(function () { var said = [...document.querySelectorAll('#sessionView strong')].find(function (e) { return e.textContent === 'Cannot read this session'; }); return { kept: !!(said && said.__s595), address: new URLSearchParams(location.search).get('session'), selected: [...document.querySelectorAll('#sessionList .tree-row.session.selected')].length, write: document.getElementById('writeSwitch').getAttribute('aria-checked'), help: (document.getElementById('writeHelp').querySelector('b') || {}).textContent }; })()");
+    harness::eval(
+        &tab,
+        &format!(
+            "document.querySelector({:?}).click(); 'ok'",
+            rows(&format!("a/{SID_BOTH}"))
+        ),
+    );
+    transcript_says("past the second dune", "a row chosen after it");
+    let after = harness::probe(&tab, at);
     drop(there);
     drop(monitor);
     let one = |id: String, write: &str| serde_json::json!({ "address": id, "selected": [id], "write": write, "errors": [] });
@@ -807,6 +837,16 @@ fn the_web_app_over_two_machines_reads_each_session_from_its_own_machine() {
             one(format!("b/{SID_BOTH}"), "false"),
         ],
         "Back goes across machines, the list selecting the row it opens and write mode following its machine, and the page said no error"
+    );
+    assert_eq!(
+        nowhere,
+        serde_json::json!({ "kept": true, "address": "zz/nowhere", "selected": 0, "write": "false", "help": "Open a session to write to it" }),
+        "an id no machine holds is said once and stays the selection, no row selected, the switch saying to open a session"
+    );
+    assert_eq!(
+        after,
+        one(format!("a/{SID_BOTH}"), "true"),
+        "and a row chosen after it opens"
     );
 }
 

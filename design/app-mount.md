@@ -122,8 +122,9 @@ The mount takes either `backend`, one handle (the monitor's page), or `machines`
   machine's own id (`forView`), and every id it gives back is mapped to the list's merged one
   (`<machine>/<id>`, `forView`'s `listId`, or `splitMachineId` the other way). That covers
   `selectSession` (with `push`), `parentShown`, `session()` against the list's selection, and
-  `selectedId`. The address holds the merged id; the view's own storage keys stay on the machine's
-  id (`am-view:<id>`), as `design/monitor-hub.md` D3 already has them.
+  `selectedId`. The address holds the merged id. The view's remembered place is kept per machine
+  (#s597): its key is the handle's base and the machine's id (`am-view:<base>|<id>`), and the page's
+  own server, base "", keeps `am-view:<id>`.
 - **The keymap** looks up each of the view's keys on the view mounted now, at the moment of the key,
   never a copy taken at the first mount. The wide phone's column gives back the pane list it
   borrowed from the view, and shows the Sessions tab, before the view is unmounted.

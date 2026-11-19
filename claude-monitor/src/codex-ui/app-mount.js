@@ -246,8 +246,10 @@ function showSession(id, push) {
  *  column gives back the pane's list it borrowed first, then the view goes as its unmount takes it (the draft, the tabs, the search, a send
  *  still out), and comes back on that machine's handle, which every call it makes then goes to. */
 function remountOn(machine) {
-  // A grant's confirm still open names the old machine's pane: it is cancelled, as a newer ask would.
+  // A grant's confirm still open names the old machine's pane: it is cancelled, as a newer ask would,
+  // and a passcode typed for that machine is not offered to the next.
   confirming?.(null);
+  const passcode = page.$(".passcode-input"); if (passcode) passcode.value = "";
   mobileShell?.showSessions();
   viewHandle.unmount();
   viewMachine = machine;
@@ -695,7 +697,7 @@ function showPairHelp() {
   const help = page.byId("writeHelp");
   help.innerHTML = writePaired()
     ? "<b>Monitor is paired</b><p>With write mode on, a writable session shows a compose box. A live terminal still needs its own grant.</p>"
-    : merged && !indexState.selected
+    : merged && !place(indexState.selected)
       ? "<b>Open a session to write to it</b><p>Write mode follows the machine the open session runs on.</p>"
       : "<b>Write mode needs a paired monitor</b><p>Stop the monitor and run this in a terminal:</p><code>agent-monitor --pair</code>";
   help.hidden = false; help.classList.add("show");
