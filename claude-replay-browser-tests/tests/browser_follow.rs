@@ -18679,6 +18679,30 @@ fn phone_tap_outside(tab: &headless_chrome::Tab) {
     phone_tap_at(tab, x, y);
 }
 
+/// #s581: the point a reader taps to dismiss the session's menu, which hangs from the top bar into
+/// the band `phone_outside_point` taps: the transcript 40px under the menu, at the screen's middle.
+/// Since #s581 the menu names the agent and the project at its head on a phone, and at 390px it
+/// reached the middle of the screen, so a tap there landed on the menu and closed nothing (Linux CI
+/// on PR #65). The point is checked: on the page, outside the menu and above the dock.
+fn phone_point_below_session_menu(tab: &headless_chrome::Tab) -> (f64, f64) {
+    let at = harness::eval(
+        tab,
+        "JSON.stringify((function () { var m = document.getElementById('sessionCopyMenu').getBoundingClientRect(); var d = document.getElementById('phoneDock').getBoundingClientRect(); var x = innerWidth / 2, y = m.bottom + 40; var hit = document.elementFromPoint(x, y); return { x: x, y: y, menuBottom: m.bottom, dockTop: d.top, onMenu: !!(hit && hit.closest('#sessionCopyMenu')), onDock: !!(hit && hit.closest('#phoneDock')) }; })())",
+    );
+    let at: serde_json::Value =
+        serde_json::from_str(at.as_str().unwrap_or("{}")).unwrap_or_default();
+    let (x, y) = (at["x"].as_f64(), at["y"].as_f64());
+    assert!(
+        x.is_some()
+            && y.is_some()
+            && at["onMenu"] == false
+            && at["onDock"] == false
+            && y < at["dockTop"].as_f64(),
+        "a point under the session's menu, off the menu and above the dock: {at}"
+    );
+    (x.unwrap_or(0.0), y.unwrap_or(0.0))
+}
+
 /// True when the element `sel` names is where a finger lands: its centre hit-tests to it.
 const PHONE_HITTABLE: &str = "function (el) { if (!el) return false; var r = el.getBoundingClientRect(); if (r.width < 4 || r.height < 4 || r.right <= 0 || r.left >= innerWidth) return false; var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!(hit && (hit === el || el.contains(hit))); }";
 
@@ -18920,7 +18944,8 @@ fn a_phone_header_is_one_row_and_its_tools_float_in_a_pill() {
             Duration::from_secs(5),
             "document.getElementById('sessionCopyMenu').className",
         );
-        phone_tap_outside(&tab);
+        let (ox, oy) = phone_point_below_session_menu(&tab);
+        phone_tap_at(&tab, ox, oy);
         harness::until(
             &tab,
             "!document.getElementById('sessionCopyMenu').classList.contains('open')",
@@ -19888,7 +19913,7 @@ fn a_phone_taps_the_title_and_copies_the_session_id() {
         true,
         "a second tap opens it again"
     );
-    let (ox, oy) = phone_outside_point(&tab);
+    let (ox, oy) = phone_point_below_session_menu(&tab);
     harness::finger_tap(&tab, ox, oy);
     harness::until(
         &tab,
