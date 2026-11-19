@@ -7412,6 +7412,52 @@ fn scenario_a_call_stopped_before_it_ran_says_why(
             .contains("PreToolUse:Bash hook error: [guard] deploys need a person"),
         "the client's reason is the blocked call's output: {reason:?}"
     );
+    // #s620: the record the three calls fold into (the last turn's, so the last such head) says
+    // what ran and what was stopped before it ran, never "Ran 3 shell commands"; and opened, each
+    // stopped call's word is drawn where a reader sees it, a box and not only a node (hd-replay's
+    // walk found the words in the DOM of a record nobody had opened).
+    let summaries = probe(
+        tab,
+        match surface {
+            Surface::Classic => "[...document.querySelectorAll('#stream .fold > .fold-h .summary')].map(s => s.textContent.replace(/\\s+/g, ' ').trim()).filter(t => /shell command|calls? (blocked|declined)/.test(t)).slice(-1)",
+            Surface::AppShell => "[...document.querySelectorAll('.renderer[data-renderer-kind=\"activity\"]')].map(r => ((r.querySelector('.renderer-head .renderer-target') || {}).textContent || '').replace(/\\s+/g, ' ').trim()).filter(t => /shell command|calls? (blocked|declined)/.test(t)).slice(-1)",
+        },
+    );
+    assert_eq!(
+        summaries,
+        serde_json::json!(["✻ Ran 1 shell command, 1 call blocked, 1 call declined"]),
+        "the folded record counts only the call that ran as run"
+    );
+    eval(
+        tab,
+        match surface {
+            Surface::Classic => "(function(){ var f = [...document.querySelectorAll('#stream .fold')].find(f => /call blocked/.test(((f.querySelector(':scope > .fold-h .summary') || {}).textContent) || '')); if (f && f.dataset.open === '0') f.querySelector(':scope > .fold-h').click(); return !!f; })()",
+            Surface::AppShell => "(function(){ var r = [...document.querySelectorAll('.renderer[data-renderer-kind=\"activity\"]')].find(r => /call blocked/.test(((r.querySelector('.renderer-head .renderer-target') || {}).textContent) || '')); var h = r && r.querySelector('.renderer-head'); if (h && h.getAttribute('aria-expanded') === 'false') h.click(); return !!r; })()",
+        },
+    );
+    settle();
+    let drawn = probe(
+        tab,
+        match surface {
+            Surface::Classic => "['echo b-hook', 'echo b-decl'].map(t => { var f = [...document.querySelectorAll('#stream .fold')].find(f => ((f.querySelector(':scope > .fold-h .tool-target, :scope > .fold-h .tool-path') || {}).textContent || '') === t); var c = f && [...f.querySelector(':scope > .fold-h').querySelectorAll('.chip')].pop(); var b = c && c.getBoundingClientRect(); return t + ': ' + (c ? c.textContent + ' ' + Math.round(b.width) + 'x' + Math.round(b.height) : 'none'); })",
+            Surface::AppShell => "['echo b-hook', 'echo b-decl'].map(t => { var r = [...document.querySelectorAll('.renderer[data-renderer-kind]')].find(r => ((r.querySelector('.renderer-target') || {}).textContent || '') === t); var c = r && r.querySelector('.renderer-state'); var b = c && c.getBoundingClientRect(); return t + ': ' + (c ? c.textContent + ' ' + Math.round(b.width) + 'x' + Math.round(b.height) : 'none'); })",
+        },
+    );
+    let drawn_lines = drawn.as_array().cloned().unwrap_or_default();
+    assert_eq!(drawn_lines.len(), 2, "both stopped calls measured: {drawn}");
+    for line in drawn_lines {
+        let line = line.as_str().unwrap_or("").to_string();
+        assert!(
+            line.contains("blocked") || line.contains("declined"),
+            "the stopped call's word, drawn: {drawn}"
+        );
+        let size = line.rsplit(' ').next().unwrap_or("");
+        let (w, h) = size.split_once('x').unwrap_or(("0", "0"));
+        assert!(
+            w.parse::<i64>().unwrap_or(0) > 0 && h.parse::<i64>().unwrap_or(0) > 0,
+            "with the record opened, a stopped call's word has a box: {drawn}"
+        );
+    }
 }
 
 #[test]
