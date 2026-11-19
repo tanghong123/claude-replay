@@ -1195,9 +1195,12 @@ fn notes_add(rel: &Release, d: &Doc, req: &Request, viewer: Option<&Viewer>) -> 
     if !shares(viewer) && record.get("shared").and_then(Value::as_bool) == Some(true) {
         return HttpResponse::forbidden("shared review is not offered here");
     }
-    // The viewer never sends a `blob`: mdrev-cli makes it from the document's text. One a request
-    // sends is dropped (#s558), since `snapshot` reads the blob a note names.
-    let body = without_blob(req.body, record);
+    // Only the fields the viewer builds go on (mdrev 1.1.85's contract, #s611): mdrev-cli spreads
+    // what it is given over the author and status it writes, so a record passed whole could file a
+    // note under another name, already closed, or carrying fields of its own, and the detached tab
+    // pushes notes to a team's store. A `blob` is among what is dropped (#s558): mdrev-cli makes it
+    // from the document's text, and `snapshot` reads the blob a note names.
+    let body = only_note_fields(req.body, record);
     let _one_at_a_time = document_lock(d);
     let mut args = vec!["notes", "add", "--path", &d.rel];
     if viewer.is_some() {
@@ -1210,13 +1213,22 @@ fn notes_add(rel: &Release, d: &Doc, req: &Request, viewer: Option<&Viewer>) -> 
     status("201 Created", out.out)
 }
 
-/// A note's record (`body`, read as `record`) with any `blob` taken out: written again only when it
-/// carried one, else the bytes as they came.
-fn without_blob(body: &[u8], mut record: serde_json::Map<String, Value>) -> Vec<u8> {
-    if record.remove("blob").is_some() {
-        Value::Object(record).to_string().into_bytes()
-    } else {
+/// What mdrev's viewer puts in a new note's record (its contract, `POST annotations`): the note's
+/// words, type and anchor, the revision on screen, `fromRev` for a note on struck text, `shared`,
+/// the Save's name, and `target` and `about` where the viewer sets them.
+const NOTE_FIELDS: &[&str] = &[
+    "body", "type", "anchor", "rev", "fromRev", "shared", "saveId", "target", "about",
+];
+
+/// A note's record (`body`, read as `record`) with every field the viewer does not build taken out:
+/// written again only when it carried one, else the bytes as they came.
+fn only_note_fields(body: &[u8], mut record: serde_json::Map<String, Value>) -> Vec<u8> {
+    let before = record.len();
+    record.retain(|key, _| NOTE_FIELDS.contains(&key.as_str()));
+    if record.len() == before {
         body.to_vec()
+    } else {
+        Value::Object(record).to_string().into_bytes()
     }
 }
 
@@ -3266,6 +3278,36 @@ esac
             .headers
             .iter()
             .any(|h| h == "Content-Security-Policy: sandbox"));
+    }
+
+    /// #s611 (mdrev 1.1.85's contract, its #s1502): a new note reaches mdrev-cli with the fields the
+    /// viewer builds and nothing else, since the CLI spreads what it is given over the author and
+    /// status it writes. A record of the viewer's own fields alone goes on as it came.
+    #[test]
+    fn a_new_note_reaches_mdrev_cli_with_the_viewers_fields_alone() {
+        let f = fx("note-fields");
+        let held = Mutex::new(Held::default());
+        let q = doc_query(&f, "docs/doc.md");
+        let forged = br#"{"body":"x","type":"comment","anchor":{"exact":"One"},"rev":"r1","fromRev":"r0","saveId":"sv-1","target":"t","about":"a","author":"someone@else","status":"resolved","resolvedBy":{"note":"done"},"id":"ann-9","replies":[{"body":"y"}],"createdAt":"2020-01-01"}"#;
+        let added = call(&f, &held, "annotations", &req("POST", &q, forged, true));
+        assert_eq!(added.code, "201 Created");
+        let sent: Value =
+            serde_json::from_slice(&std::fs::read(f.kit.join("stdin.json")).unwrap()).unwrap();
+        assert_eq!(
+            sent,
+            json!({"body":"x","type":"comment","anchor":{"exact":"One"},"rev":"r1","fromRev":"r0","saveId":"sv-1","target":"t","about":"a"}),
+            "the author, the status, the id and the replies a request sends never reach mdrev-cli"
+        );
+        let own = br#"{"body":"tighten","anchor":{"exact":"Two"},"saveId":"sv-2"}"#;
+        assert_eq!(
+            call(&f, &held, "annotations", &req("POST", &q, own, true)).code,
+            "201 Created"
+        );
+        assert_eq!(
+            std::fs::read(f.kit.join("stdin.json")).unwrap(),
+            own.to_vec(),
+            "the viewer's own record goes on byte for byte"
+        );
     }
 
     #[test]

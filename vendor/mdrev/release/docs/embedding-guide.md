@@ -9,7 +9,7 @@ You will serve some static files, add one script to a page, implement six small 
 ## 1. What is in the box
 
 ```text
-mdrev-embed-1.1.84/
+mdrev-embed-1.1.85/
   README.md
   bundle/              the guest — what the reader's browser runs
     mdrev.js             the entry: an ES module exporting mountMdrev   (~510 KB)
@@ -180,14 +180,14 @@ $(brew --prefix mdrev)/bin/mdrev-v2
 
 `brew pin mdrev` holds a version while you qualify the next one; `brew info tanghong123/tap/mdrev` says which is current.
 
-**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.84`, with two tarballs: `mdrev-1.1.84-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.84.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
+**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.85`, with two tarballs: `mdrev-1.1.85-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.85.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
 
 ```bash
-curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.84/mdrev-embed-1.1.84.tar.gz
-tar xzf mdrev-embed-1.1.84.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.84
+curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.85/mdrev-embed-1.1.85.tar.gz
+tar xzf mdrev-embed-1.1.85.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.85
 ```
 
-Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.84/mdrev-cli` — with node on the path. The releases page lists the current version.
+Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.85/mdrev-cli` — with node on the path. The releases page lists the current version.
 
 **From source** — `bash scripts/build-release.sh` in a checkout of the repository emits both tarballs into `dist-release/public/`.
 
@@ -196,8 +196,8 @@ Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.84/mdrev-cli` — 
 Run the sample host against a git checkout that has Markdown in it:
 
 ```bash
-tar xzf mdrev-embed-1.1.84.tar.gz
-cd mdrev-embed-1.1.84
+tar xzf mdrev-embed-1.1.85.tar.gz
+cd mdrev-embed-1.1.85
 ./mdrev-v2 ~/src/your-docs/README.md --last 3   # or --root ~/src/your-docs for the whole checkout
 # mdrev-v2: README.md @ /Users/you/src/your-docs
 #   http://127.0.0.1:4600/?path=README.md&from=…&code=…
@@ -345,6 +345,7 @@ The options, all of them:
 | `client` | answer the contract in-process instead of over HTTP, for a shell that already HAS the documents: an editor plugin, a desktop application, anything embedding the core. It replaces every fetch; `contract` is then unused | fetches |
 | `scrollParent` | the element that scrolls, when the viewer is one section of a page you scroll: an element, or `'page'` for the document itself. Left out, the viewer fills its element and scrolls inside it | own pane |
 | `phone` | the phone's layout (below, **On a phone**): `'auto'` gives it to a finger on a phone-sized screen, `'always'` whatever the device, `'never'` keeps the desktop layout | `'auto'` |
+| `shortcuts` | your own keys, for the viewer's list of keys (`?`): an array of `{mac, other?, what}`. `mac` is the keys as a Mac reader presses them, `['⌘K', '/']`, each string drawn as one key; `other` the same keys off a Mac, `['Ctrl+K', '/']`, and left out it is `mac`; `what` says what they do, `{en: 'search documents', 'zh-Hans': '搜索文档'}`, in English and, where you have it, Chinese, which falls back to English. They are drawn as text in a group of their own after the viewer's rows. List only keys your page answers around the viewer: the viewer cannot check them. A host fact, read at mount and kept through every move. The viewer's own rows follow your leave: none of the notes keys under `annotate: false`, none of the change and range keys under `review: false` (contract.md, "The host's own keys") | no host rows |
 | `onPrint()` | you print your own way. The toolbar keeps its print control either way — putting THIS document on paper is what you embedded the viewer for; this says only who carries it out. Left out, the guest prints the document alone (below) | the guest prints |
 | `credentials` | the `fetch` credentials mode; `'same-origin'` sends your session cookie | `'same-origin'` |
 | `root` | **which collection these documents belong to**, your own opaque string, sent with every request. A host that holds more than one store of anything needs it: a path stops identifying a document as soon as two projects each have a `README.md`. One store, leave it out | none |
