@@ -544,12 +544,11 @@ mod tests {
             "A reader starts with ordinary viewport behavior"
         );
         assert!(!crate::ui::page(env!("CARGO_PKG_VERSION"), true).contains("maximum-scale=1"));
-        // The session view builds its own markup into `#sessionView` (#s429 stage 4), and the session
-        // list into `#sessionList` (#s430 stage 3), so the page carries the app's shell and the places
-        // the two draw in.
+        // The page carries the app's wrapper and its host script, which mounts the web app into it
+        // (#s551 stage 2); the shell it draws holds the places the view and the list draw in (#s429
+        // stage 4, #s430 stage 3), and the page test in `ui.rs` holds that.
         for marker in [
-            "id=\"sessionView\"",
-            "id=\"sessionList\"",
+            "<div id=\"appMount\"></div>",
             "src=\"monitor-ui/app.js\"",
             "src=\"monitor-ui/native-entry.js\"",
             "href=\"monitor-ui/native-entry.css\"",

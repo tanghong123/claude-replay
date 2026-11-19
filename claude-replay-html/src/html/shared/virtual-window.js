@@ -253,6 +253,16 @@ function firstVisible(items, viewportTop, viewportBottom, epsilon, requireHeight
  *  move is taken as displacement and the follower is put back at the end. */
 const UNHEARD_MS = 2000;
 
+/** How long after an instant write the browser may still report an EARLIER one (#s568). iOS WebKit
+ *  scrolls on a thread of its own and, given two writes close together, can hand the main thread the
+ *  first again after the second: the offset and the layout at it, by every read (the getter, a scroll
+ *  event, a frame), and then the second. Measured on the 11-inch iPad Simulator (90 trials
+ *  of two writes 0-50ms apart): the earlier offset read back up to 26ms after the later write, whose
+ *  scroll event came by 55ms; never once that event had come; every trial rested at the later write.
+ *  About twice that is the backstop, since a write the browser never reports (Chrome fires no event
+ *  for some) must hold nothing past it. */
+const ECHO_MS = 120;
+
 /** Rule 7, the #103 hysteresis: what a scroll means. A scroll with the reader's input behind it
  *  DECIDES following — acquiring the pin needs the true end (`acquire`), keeping it only the old
  *  slack (`hold`); a scroll with no input behind it is displacement, and a followed view that
@@ -454,6 +464,11 @@ class VirtualWindow {
     // `{ from, to, last }` — the path the browser's animation takes — until it arrives, when it
     // collapses to the offset; an event off that path is the reader's.
     this.wrote = null;
+    // The instant writes made within `ECHO_MS` of each other, oldest first (`{ top, at }`), and
+    // whether a scroll event has reported the newest (#s568): until one has, an offset at an earlier
+    // one is the browser catching up, not the reader (`echoOf`).
+    this.recentWrites = [];
+    this.latestHeard = false;
     // The viewport trace (#192): every decision the engine makes, with the geometry it saw, in a
     // ring buffer the reader can copy out of a bug report — `copy(window.__viewportTrace)` — and
     // on the console under one prefix. On by the page's URL or storage; `options.trace` overrides.
@@ -547,8 +562,10 @@ class VirtualWindow {
     return this.topPad.getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop() - this.padDebt;
   }
 
+  /** The window the reader needs, read at the latest write while the browser echoes an earlier one
+   *  (#s568): chosen at the echo's offset, a fallback mount missed the reader by the writes' distance. */
   rangeForScroll() {
-    return rangeForScroll(this.prefix, this.count, this.frame.scrollTop() - this.contentTop(), this.frame.clientHeight(), this.overscan);
+    return rangeForScroll(this.prefix, this.count, this.readTop() - this.contentTop(), this.frame.clientHeight(), this.overscan);
   }
 
   rangeAround(index) {
@@ -584,7 +601,13 @@ class VirtualWindow {
    *  item that starts BELOW the viewport is no anchor at all — the reader has left the window
    *  entirely (a dragged thumb does that) and the scroll offset places it. */
   captureDomAnchor() {
-    const viewportTop = this.frame.viewportTop();
+    // While the browser echoes an earlier write (#s568) the layout is the echo's, and the reader is
+    // where the latest write put them: the viewport is moved by the difference (`lag`, 0 otherwise),
+    // so what is visible, what straddles its top and where the anchor sits are all judged at the
+    // write. Judged as the layout stood, the capture named the echo's offset (the next placement
+    // wrote it for real), or an item the reader could not see.
+    const at = this.readTop(), lag = this.frame.scrollTop() - at;
+    const viewportTop = this.frame.viewportTop() - lag;
     const viewportBottom = viewportTop + this.frame.clientHeight();
     const rects = element => {
       const rect = element.getBoundingClientRect();
@@ -605,7 +628,7 @@ class VirtualWindow {
     // Alongside the anchor, the model form of the same position (#191), read from the same sums,
     // now — before any rewrite moves them. It is the fallback if the anchor's identity is gone or
     // names another record by the time it is placed (framework I12; #165).
-    const anchor = { source: "anchor", key: child.element.dataset.unitKey, index: Number(child.element.dataset.unitIndex), top: child.top - viewportTop, block: null, blockTop: 0, at: this.frame.scrollTop(), fallback: this.modelAnchor() };
+    const anchor = { source: "anchor", key: child.element.dataset.unitKey, index: Number(child.element.dataset.unitIndex), top: child.top - viewportTop, block: null, blockTop: 0, at, fallback: this.modelAnchor() };
     const rowIn = element => firstVisible([...element.querySelectorAll("[data-block-index]")].map(rects), viewportTop, Infinity, 1, true);
     // ONE predicate, applied from the item down: refine only while the thing you are holding
     // STRADDLES the viewport edge. Whatever straddles is the only thing whose top the reader
@@ -705,7 +728,7 @@ class VirtualWindow {
     // Against where the offset IS — or, while a smooth write travels, where it is GOING: mid-flight
     // every offset differs from the destination, and comparing against it re-issued the animation
     // on every observer notification of the records the jump had just mounted.
-    const delta = correction(this.inFlight() ? this.wrote.to : this.frame.scrollTop(), want, PLACE_EPSILON);
+    const delta = correction(this.inFlight() ? this.wrote.to : this.readTop(), want, PLACE_EPSILON);
     if (!delta) return true;
     // #372: during a TOUCH glide a write does not stick — iOS carries the glide on from its own
     // offset (#340), the next transaction reads that as the reader somewhere else (I11, I10) and
@@ -742,9 +765,14 @@ class VirtualWindow {
       const from = this.frame.scrollTop();
       this.frame.scrollTo(to, true);
       this.wrote = { from, to, last: from };
+      this.recentWrites = [];
     } else {
       this.frame.scrollTo(want);
       this.wrote = this.frame.scrollTop();
+      const now = performance.now();
+      this.recentWrites = this.recentWrites.filter(write => now - write.at < ECHO_MS);
+      this.recentWrites.push({ top: this.wrote, at: now });
+      this.latestHeard = false;
       // The browser may keep less than asked at either end of the page; I7 is checked only when it
       // kept the write (§4.12).
       this.lastWrite = { want, got: this.wrote };
@@ -757,13 +785,15 @@ class VirtualWindow {
    *  the scroll offset falls in, and how far into it. Read BEFORE a mount changes the sums, so it
    *  describes the layout the reader actually scrolled through. */
   modelAnchor() {
-    const y = this.frame.scrollTop() - this.contentTop();
+    // At the latest write while the browser echoes an earlier one (#s568): `contentTop` is the same
+    // in either layout.
+    const at = this.readTop(), y = at - this.contentTop();
     const index = Math.max(0, Math.min(this.indexAt(y), this.count - 1));
     // The offset is SIGNED: above the first record (the page header, a jump to the very top) it is
     // how far above, and clamping it to zero would pull the reader down onto record 0 — measured
     // as the turn bar lighting up at the top of the page. Past the last record it is the bottom
     // padding. Either way the restore reproduces the offset the reader had.
-    return { source: "model", index, offset: y - (this.prefix[index] || 0), at: this.frame.scrollTop() };
+    return { source: "model", index, offset: y - (this.prefix[index] || 0), at };
   }
 
   /** One entry in the viewport trace (#192): what the engine decided, and the geometry it decided
@@ -818,7 +848,7 @@ class VirtualWindow {
     if (!this.laidOut() || this.wasHidden) return this.position;
     // While a smooth write is travelling the offset is moving because of the engine, not the
     // reader: `P` is the destination and is kept (§4.10).
-    if (!this.position || (this.position.at !== this.frame.scrollTop() && !this.inFlight())) this.position = this.captureDomAnchor() || this.modelAnchor();
+    if (!this.position || (this.position.at !== this.readTop() && !this.inFlight())) this.position = this.captureDomAnchor() || this.modelAnchor();
     return this.position;
   }
 
@@ -841,12 +871,15 @@ class VirtualWindow {
     if (!this.laidOut()) return;
     if (this.following || this.dragging || !this.count) { this.position = null; return; }
     const held = this.position && this.position.commanded ? this.position : null;
-    if (held && this.anchorResolves(held)) { held.at = this.inFlight() ? this.wrote.to : this.frame.scrollTop(); return; }
+    if (held && this.anchorResolves(held)) { held.at = this.inFlight() ? this.wrote.to : this.readTop(); return; }
+    // The browser echoing an earlier write (#s568) shows a layout the reader never moved to: `P` stays
+    // where the transaction placed it, at the write.
+    if (this.position && Math.abs(this.position.at - this.wrote) <= 1 && this.echoOf(this.frame.scrollTop())) { this.position.at = this.wrote; return; }
     const read = this.captureDomAnchor() || this.modelAnchor();
     const exact = placed && placed.source === "anchor" && this.anchorResolves(placed) ? this.offsetOf(placed) : null;
     // How much further down the view is than the placement asked; more than a pixel is a clamp, not
     // a remainder, and the view as read is the reader's.
-    const left = exact == null ? 0 : this.frame.scrollTop() - exact;
+    const left = exact == null ? 0 : this.readTop() - exact;
     if (left && Math.abs(left) <= 1) {
       if (read.source === "anchor") { read.top += left; read.blockTop += left; } else read.offset -= left;
     }
@@ -898,7 +931,7 @@ class VirtualWindow {
     this.lastInputStamp = stamp || performance.now();
     // The reader touched something: whatever the engine last wrote, the next scroll event is theirs,
     // and a landing they asked for is theirs to leave (§4.10).
-    this.wrote = null;
+    this.forgetWrites();
     this.releaseHold();
   }
 
@@ -964,9 +997,39 @@ class VirtualWindow {
    *  it: for where no write of the engine's says where the offset is and no event is coming that
    *  will (a model emptied, a wait for a late event lapsed). */
   knowOffset() {
-    this.wrote = null;
+    this.forgetWrites();
     this.unheard = null;
     this.topSeen = this.frame.scrollTop();
+  }
+
+  /** Forget what the engine wrote: an event that was not its own, the reader's input, a drag, a hide.
+   *  Nothing written before then can be echoed after it (#s568). */
+  forgetWrites() {
+    this.wrote = null;
+    this.recentWrites = [];
+  }
+
+  /** Is `top` the browser still on its way to the engine's latest instant write, by an earlier one
+   *  (#s568, `ECHO_MS`)? Only while that write is what the engine believes, no scroll event has
+   *  reported it, it was made under `ECHO_MS` before `at` (an event's own stamp, or now), and `top` is
+   *  one of the writes before it. The layout is at the echoed offset too (the anchor the export's
+   *  stray update re-read was the one a layout 403px higher shows), so what is read on screen while
+   *  it lasts, and the window chosen from the offset, are moved to the latest write (`readTop`). */
+  echoOf(top, at = performance.now()) {
+    if (typeof this.wrote !== "number" || this.latestHeard || this.dragging) return false;
+    const writes = this.recentWrites;
+    const latest = writes[writes.length - 1];
+    if (!latest || writes.length < 2 || Math.abs(latest.top - this.wrote) > 1) return false;
+    // Both the event's own stamp and now: an event stamped in time but delivered late is no echo either.
+    if (at - latest.at > ECHO_MS || performance.now() - latest.at > ECHO_MS || Math.abs(top - latest.top) <= 1) return false;
+    return writes.slice(0, -1).some(write => Math.abs(top - write.top) <= 1);
+  }
+
+  /** The offset as the reader's position counts it: the engine's latest instant write while the
+   *  browser echoes an earlier one (#s568), else the offset as it is. */
+  readTop() {
+    const top = this.frame.scrollTop();
+    return this.echoOf(top) ? this.wrote : top;
   }
 
   /** Is a scroll event at `top` the engine's own? An instant write is one offset; a smooth one is
@@ -977,10 +1040,14 @@ class VirtualWindow {
   ownScroll(top) {
     const wrote = this.wrote;
     if (wrote == null) return false;
-    if (typeof wrote === "number") return Math.abs(top - wrote) <= 1;
+    if (typeof wrote === "number") {
+      if (Math.abs(top - wrote) > 1) return false;
+      this.latestHeard = true;
+      return true;
+    }
     const forward = wrote.to >= wrote.from;
     const onPath = forward ? top >= wrote.last - 1 && top <= wrote.to + 1 : top <= wrote.last + 1 && top >= wrote.to - 1;
-    if (!onPath) { this.wrote = null; return false; }
+    if (!onPath) { this.forgetWrites(); return false; }
     wrote.last = top;
     if (Math.abs(top - wrote.to) <= 1) {
       this.wrote = wrote.to;
@@ -1075,7 +1142,7 @@ class VirtualWindow {
     this.dragging = true;
     this.dragStarted = Math.round(performance.now());
     this.position = null;
-    this.wrote = null;
+    this.forgetWrites();
     this.unheard = null;
     this.lastUserInput = performance.now();
   }
@@ -1413,10 +1480,12 @@ class VirtualWindow {
     const slot = !p || p.index == null ? null
       : p.top != null ? p.top - marginTop([...this.mount.children].find(child => Number(child.dataset.unitIndex) === p.index))
       : p.offset != null ? -p.offset : null;
+    // At the latest write while the browser echoes an earlier one, as `captureDomAnchor` reads (#s568).
+    const at = this.readTop();
     const top = this.laidOut() || slot == null
-      ? next.getBoundingClientRect().top - this.frame.viewportTop()
+      ? next.getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop() - at
       : slot + (this.prefix[from + 1] || 0) - (this.prefix[p.index] || 0) + marginTop(next);
-    return { source: "anchor", key: next.dataset.unitKey, index: from + 1 + shift, top, block: null, blockTop: 0, at: this.frame.scrollTop(), fallback: null };
+    return { source: "anchor", key: next.dataset.unitKey, index: from + 1 + shift, top, block: null, blockTop: 0, at, fallback: null };
   }
 
   /** The focus, when it is inside a mounted unit: that unit's key, the child positions from the
@@ -1561,7 +1630,8 @@ class VirtualWindow {
   /** Does the mounted window cover what the viewport shows? The offset's first and last records,
    *  against `[lo, hi)`; the end of the page counts as covered when the last record is mounted. */
   viewportMounted() {
-    const y = this.frame.scrollTop() - this.contentTop();
+    // Where the reader is: the latest write while the browser echoes an earlier one (#s568).
+    const y = this.readTop() - this.contentTop();
     const first = this.indexAt(Math.max(0, y));
     const last = Math.min(this.indexAt(y + this.frame.clientHeight()), this.count - 1);
     return first >= this.lo && last < this.hi;
@@ -1608,14 +1678,14 @@ class VirtualWindow {
     // happens before `following0` — which is I13's reading of what the engine believed when the
     // transaction began. I13 ("follow is dropped only by the reader") is exactly what this upholds:
     // the drop is theirs, and the engine is only hearing about it late.
-    const startTop = this.frame.scrollTop();
+    const startTop = this.readTop();
     // Hidden, the transaction changes the model alone; the first with the box back reads no move of
     // the reader's in the offset the browser gave it (`laidOut`).
     const shown = this.laidOut(), returning = shown && this.wasHidden;
     if (!shown) this.wasHidden = true;
     // A smooth write the hide stopped never arrives, nor the event of a move the hide took: both are
     // over, and `P` is placed outright.
-    if (returning) { this.wrote = null; this.unheard = null; }
+    if (returning) { this.forgetWrites(); this.unheard = null; }
     if (shown && !returning) this.confirmFollow(startTop);
     // Shown again, the window is mounted for `P` at the viewport the box came back with, whatever the
     // transaction: one mounted while hidden (records arriving) was sized for no viewport at all.
@@ -1808,7 +1878,7 @@ class VirtualWindow {
     if (this.following !== following0) v("I13", { from: following0, to: this.following });
     if (this.dragging || !count) return;
     const p = this.position;
-    if (p && p.at != null && !this.inFlight() && p.at !== this.frame.scrollTop()) v("I1", { at: p.at, top: Math.round(this.frame.scrollTop()) });
+    if (p && p.at != null && !this.inFlight() && p.at !== this.readTop()) v("I1", { at: p.at, top: Math.round(this.frame.scrollTop()) });
     if (p) {
       const index = p.source === "tail" ? count - 1 : p.index;
       if (index != null && (index < this.lo || index >= this.hi)) v("I11", { source: p.source, index, lo: this.lo, hi: this.hi });
@@ -1818,7 +1888,9 @@ class VirtualWindow {
       const item = [...this.mount.children].find(child => child.dataset.unitKey === p0.key);
       if (item) {
         const row = p0.block != null ? item.querySelector(`[data-block-index="${p0.block}"]`) : null;
-        const top = (row || item).getBoundingClientRect().top - this.frame.viewportTop();
+        // In the layout at the write, while the browser echoes an earlier one (#s568): read as the
+        // echo shows it, every transaction in the echo reported its distance as a displacement.
+        const top = (row || item).getBoundingClientRect().top - this.frame.viewportTop() + this.frame.scrollTop() - this.readTop();
         const want = (row ? p0.blockTop : p0.top) - drift;
         if (Math.abs(top - want) > 1.5) v("I7", { anchor: p0.key, block: row ? p0.block : null, top: Math.round(top), want: Math.round(want), drift: Math.round(drift) });
       }
@@ -2083,6 +2155,13 @@ class VirtualWindow {
     // One read, for the classification, kept as the engine's belief of the offset for the history
     // (`topBelief`): the reader's own scroll is the one move the engine does not make.
     const top = this.frame.scrollTop();
+    // The browser reporting an earlier write of the engine's after a later one (#s568): not the
+    // reader's, and nothing to classify or re-read. The later write's own event follows; taken as
+    // the reader's, this one released a jump's hold and re-read `P` a turn early on an iPad.
+    if (this.echoOf(top, event && event.timeStamp ? event.timeStamp : performance.now())) {
+      this.trace("scroll:echo", { top: Math.round(top), to: Math.round(this.wrote) });
+      return;
+    }
     this.topSeen = top;
     // The event a transaction's unheard move waited for (`confirmFollow`): whatever wrote since,
     // what it says is classified below, and what waited for it may run.
@@ -2098,7 +2177,7 @@ class VirtualWindow {
       this.afterScroll();
       return;
     }
-    this.wrote = null;
+    this.forgetWrites();
     // Theirs: a landing they asked for is theirs to leave (§4.10).
     this.releaseHold();
     const at = event && event.timeStamp ? event.timeStamp : performance.now();
@@ -2170,7 +2249,7 @@ class VirtualWindow {
           this.scheduleRemember();
           return;
         }
-        const top = this.inFlight() ? this.wrote.to : this.frame.scrollTop();
+        const top = this.inFlight() ? this.wrote.to : this.readTop();
         const gap = this.frame.scrollHeight() - this.frame.clientHeight() - top;
         // A turn step (`pin: "acquire"`, #s487, the owner's #s502) keeps the pin only where a jump
         // to the end would take it, at the true end: a step back from the end can land within the
@@ -2395,15 +2474,21 @@ function elementFrame(scroller) {
     // page's own). Any other key there (the page's `+`, `\` folding the list), one after a press
     // elsewhere (the browser scrolls that box, or nothing), and one a host's keymap took are no move
     // of the reader's in this box (the review of 500ae62b).
+    //
+    // The box ITSELF with the focus (a page may make it focusable, as the app shell does on a
+    // mouse's press, #s488) is the body's case, not a control's: the browser scrolls it with a
+    // scroll key nothing took, and any other key there is the page's, so it is heard by the body's
+    // rule, without the press, which the focus stands in for.
     onKey: (fn, options) => {
-      scroller.addEventListener("keydown", fn, options);
+      scroller.addEventListener("keydown", event => { if (event.target !== scroller) fn(event); }, options);
       const doc = scroller.ownerDocument, win = doc?.defaultView;
       if (!win) return;
       let pressedInside = false;
       win.addEventListener("pointerdown", event => { pressedInside = !!event.target?.nodeType && scroller.contains(event.target); }, { passive: true, capture: true });
       win.addEventListener("keydown", event => {
         const target = event.target;
-        if (pressedInside && !event.defaultPrevented && (target === doc.body || target === doc.documentElement) && NATIVE_SCROLL_KEYS.has(event.key)) fn(event);
+        if (event.defaultPrevented || !NATIVE_SCROLL_KEYS.has(event.key)) return;
+        if (target === scroller || (pressedInside && (target === doc.body || target === doc.documentElement))) fn(event);
       }, { passive: true });
     },
     // A pointer that lands on the scroller ITSELF is on its scrollbar OR in a GUTTER: content

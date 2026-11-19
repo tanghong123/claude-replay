@@ -8439,9 +8439,11 @@ fn late_move_leaves_the_end(port: u16, case: &str, past_the_window: bool) {
 /// browser made (the clamp of `a_follower_the_browser_moves_with_no_input_keeps_following`) before
 /// its event. The tail waits for the event, and the event puts the follower back at the end; read as
 /// the reader's, the transaction let go of the end at once. The clicks are the mouse's own. A key is
-/// sent where the browser sends it, to the body, and for the Page Up the transcript is moved as the
-/// browser moves it (a key Chrome's DevTools protocol sends here repeats until the page stops it,
-/// #270).
+/// sent where the browser sends it, to what has the focus, and for the Page Up the transcript is moved
+/// as the browser moves it (a key Chrome's DevTools protocol sends here repeats until the page stops
+/// it, #270). Since #s488 a mouse's click on the text focuses the transcript itself, so the scenes run
+/// there first, where the same rules hold for a key on the box as on the body; then with the focus put
+/// back on the body, where a touch's tap leaves it, and again after a press in the list.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
@@ -8478,7 +8480,7 @@ fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
     // dispatched again as themselves.
     harness::eval(
         &tab,
-        "(function(){ var s = document.querySelector('.transcript'); window.__clampWith = function (keys) { var h = window.__viewportHistory.states; window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); var start = h.length; keys.forEach(function (k) { document.body.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); }); return { top: Math.round(top), clamped: Math.round(clamped), ran: h.length - start, following: h[h.length - 1].following }; }; window.__release = function () { window.removeEventListener('scroll', window.__hold, true); window.__heldEvents.forEach(function (e) { s.dispatchEvent(e); }); if (!window.__heldEvents.length) s.dispatchEvent(new Event('scroll')); return 'ok'; }; return 'ok'; })()",
+        "(function(){ var s = document.querySelector('.transcript'); window.__clampWith = function (keys) { var h = window.__viewportHistory.states; window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); var start = h.length; var to = document.activeElement || document.body; keys.forEach(function (k) { to.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); }); return { top: Math.round(top), clamped: Math.round(clamped), ran: h.length - start, following: h[h.length - 1].following }; }; window.__release = function () { window.removeEventListener('scroll', window.__hold, true); window.__heldEvents.forEach(function (e) { s.dispatchEvent(e); }); if (!window.__heldEvents.length) s.dispatchEvent(new Event('scroll')); return 'ok'; }; return 'ok'; })()",
     );
     let clamp_with = |keys: &str| {
         let sized = harness::probe(&tab, &format!("window.__clampWith({keys})"));
@@ -8534,14 +8536,33 @@ fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
         "(function(){ document.removeEventListener('keydown', window.__take); return 'ok'; })()",
     );
     // The Page Up, and the move the browser makes for it.
-    harness::eval(
-        &tab,
-        "(function(){ var s = document.querySelector('.transcript'); document.body.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', code: 'PageUp', bubbles: true, cancelable: true })); s.scrollTop = s.scrollTop - Math.round(s.clientHeight * 0.85); return 'ok'; })()",
-    );
+    let page_up = "(function(){ var s = document.querySelector('.transcript'); (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', code: 'PageUp', bubbles: true, cancelable: true })); s.scrollTop = s.scrollTop - Math.round(s.clientHeight * 0.85); return 'ok'; })()";
+    harness::eval(&tab, page_up);
     rest();
     let pressed = harness::probe(&tab, read);
     rest();
     let rested = harness::probe(&tab, read);
+    // Back at the end, the focus put back on the body (where a touch's tap on the text leaves it), the
+    // same three scenes there.
+    harness::jump_to_end(&tab, surface);
+    rest();
+    harness::eval(
+        &tab,
+        "(function(){ if (document.activeElement) document.activeElement.blur(); return 'ok'; })()",
+    );
+    let on_body = harness::probe(&tab, read);
+    let (body_sized, body_sized_healed) = clamp_with("['Shift', '+']");
+    harness::eval(&tab, "(function(){ window.__take = function (e) { if (e.key === 'ArrowUp') e.preventDefault(); }; document.addEventListener('keydown', window.__take); return 'ok'; })()");
+    let (body_taken, body_taken_healed) = clamp_with("['ArrowUp', '-']");
+    harness::eval(
+        &tab,
+        "(function(){ document.removeEventListener('keydown', window.__take); return 'ok'; })()",
+    );
+    harness::eval(&tab, page_up);
+    rest();
+    let body_pressed = harness::probe(&tab, read);
+    rest();
+    let body_rested = harness::probe(&tab, read);
     // Back at the end, a click on the session list's empty space, then a scroll key, which the browser
     // sends to the list, and the size a step up.
     harness::jump_to_end(&tab, surface);
@@ -8574,8 +8595,8 @@ fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
             && v["following"] == serde_json::json!(true)
     };
     assert!(
-        at_end(&clicked) && clicked["focus"] == serde_json::json!("body"),
-        "the reader clicked the prompt's text and follows the session at its end, the focus on the body: {clicked}"
+        at_end(&clicked) && clicked["focus"] == serde_json::json!("section#transcript"),
+        "the reader clicked the prompt's text and follows the session at its end, the focus on the transcript (#s488): {clicked}"
     );
     assert!(
         kept(&sized) && at_end(&sized_healed),
@@ -8593,6 +8614,24 @@ fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
     assert!(
         rested["following"] == serde_json::json!(false) && rested["top"] == pressed["top"],
         "and stay there: pressed {pressed}, rested {rested}"
+    );
+    assert!(
+        at_end(&on_body) && on_body["focus"] == serde_json::json!("body"),
+        "back at the end, the focus on the body: {on_body}"
+    );
+    assert!(
+        kept(&body_sized) && at_end(&body_sized_healed) && kept(&body_taken) && at_end(&body_taken_healed),
+        "on the body too, a key the browser does not scroll with and a scroll key a handler took are no move of the reader's: {body_sized}, then {body_sized_healed}; {body_taken}, then {body_taken_healed}"
+    );
+    assert!(
+        body_pressed["following"] == serde_json::json!(false)
+            && body_pressed["gap"].as_i64().unwrap_or(0) > 400,
+        "and a Page Up on the body after a press in the transcript is the reader's: {body_pressed}"
+    );
+    assert!(
+        body_rested["following"] == serde_json::json!(false)
+            && body_rested["top"] == body_pressed["top"],
+        "and stay there: pressed {body_pressed}, rested {body_rested}"
     );
     assert!(
         at_end(&back) && at_end(&listed) && listed["focus"] == serde_json::json!("body"),
@@ -13406,6 +13445,494 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
         serde_json::json!([true, false, true]),
         "then each press that changed it, and nothing for a fold the width forced"
     );
+}
+
+/// #s520: with a mouse, where the outline's glyphs join the session's top bar (a session column of
+/// 480–547px: a 554–621px window beside the rail, a 490–553px one under the drawer's handle, a
+/// 1035–1102px one with the right pane open beside the session, a host's pane of the same), the bar
+/// holds its title, the search box, Aa, Turns, Tasks, Agents, the outline's control, Info and the
+/// pane's control. It used to lay them out at their widest: the search box kept 180 or 286px, so
+/// the title was squeezed to one letter and Info and the pane's control went past the window or
+/// under the open pane's tabs. Every control the bar shows lies inside the session's column, never
+/// under the pane, and a pointer at its centre reaches it; the title shows at least its first word;
+/// and the search box, folded to its glyph there, opens to its width on a click and folds back. A
+/// finger's press on it opens nothing as it lands; the tap's click opens it, with its field focused
+/// (#s547).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
+    let _serial = serial();
+    let base = base("topbar-band");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000005a0".to_string();
+    let mut jsonl = harness::long_session(6, harness::Shape::default());
+    jsonl.push_str("{\"type\":\"custom-title\",\"customTitle\":\"Harbour tide table notes\"}\n");
+    stores.claude_session(&sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3140, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    // What the bar shows, read where a reader would: each shown control's box against the session's
+    // column (`.workspace`) and the open pane, and what a pointer at its centre reaches; the
+    // title's room against its first word (a Range over the word, and the ellipsis a longer title
+    // draws).
+    let probe = "(function(){ var v = document.getElementById('sessionView'); var ws = v.querySelector('.workspace'), bar = ws.querySelector(':scope>.topbar'); var pv = v.classList.contains('preview-off') ? null : v.querySelector('.preview'); var W = ws.getBoundingClientRect(), P = pv ? pv.getBoundingClientRect() : null; var r4 = function (b) { return [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)]; }; var name = function (e) { return !e ? 'nothing' : e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + String(e.getAttribute('class') || '').split(' ')[0]; }; var bad = []; var shown = [].filter.call(bar.querySelectorAll('button, .header-searchbox'), function (e) { var b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && getComputedStyle(e).visibility !== 'hidden'; }); ['phoneInfo', 'previewBtn'].forEach(function (id) { if (shown.indexOf(document.getElementById(id)) < 0) bad.push('#' + id + ' is not shown'); }); shown.forEach(function (e) { var b = e.getBoundingClientRect(), hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2), why = []; if (b.left < W.left - 0.5 || b.right > W.right + 0.5) why.push('outside the session column ' + r4(W)); if (P && b.right > P.left + 0.5) why.push('under the pane from ' + Math.round(P.left)); if (!hit || !(hit === e || e.contains(hit))) why.push('its centre reaches ' + name(hit)); if (why.length) bad.push(name(e) + ' ' + r4(e.getBoundingClientRect()) + ': ' + why.join(', ')); }); var t = document.getElementById('sessionTitle'), text = t.textContent.trim(), word = text.split(/\\s+/)[0], node = t.firstChild, at = t.textContent.indexOf(word); var range = document.createRange(); range.setStart(node, at); range.setEnd(node, at + word.length); var cs = getComputedStyle(t), room = t.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); var ctx = document.createElement('canvas').getContext('2d'); ctx.font = cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily; var need = range.getBoundingClientRect().width + (text.length > word.length ? ctx.measureText('\\u2026').width : 0); var tb = t.getBoundingClientRect(); if (room + 0.5 < need) bad.push('the title has ' + Math.round(room) + 'px of the ' + Math.ceil(need) + 'px its first word \"' + word + '\" needs'); if (tb.left < W.left - 0.5 || tb.right > W.right + 0.5) bad.push('the title ' + r4(tb) + ' is outside the session column'); var box = bar.querySelector('.header-searchbox'); return { width: innerWidth, classes: v.className, workspace: r4(W), pane: P ? r4(P) : null, title: text, search: Math.round(box.getBoundingClientRect().width), focused: document.activeElement ? document.activeElement.id : '', bar: shown.map(function (e) { return name(e) + ' ' + r4(e.getBoundingClientRect()); }), bad: bad }; })()";
+    let settled = |width: u32, open: bool| {
+        format!("innerWidth === {width} && {VIEW_CAUGHT_UP} && document.getElementById('sessionView').classList.contains('preview-off') === {} && document.getElementById('sessionView').getAnimations({{ subtree: true }}).filter(function (a) {{ return a instanceof CSSTransition; }}).length === 0 && document.getElementById('sessionTitle').textContent === 'Harbour tide table notes'", !open)
+    };
+    let at = |tab: &headless_chrome::Tab,
+              width: u32,
+              open: bool,
+              what: &str|
+     -> serde_json::Value {
+        if width < 500 {
+            harness::mouse_window(tab, width, 900);
+        } else {
+            harness::clear_metrics(tab);
+            harness::resize(tab, width as f64, 900.0);
+        }
+        let toggle = format!("(function(){{ var v = document.getElementById('sessionView'); if (v.classList.contains('preview-off') === {open}) document.getElementById('previewBtn').click(); return true; }})()");
+        harness::eval(tab, &toggle);
+        harness::until(
+            tab,
+            &settled(width, open),
+            &format!("{what} at {width}px, the pane {}", if open { "open" } else { "shut" }),
+            Duration::from_secs(15),
+            "({ w: innerWidth, cls: document.getElementById('sessionView').className, title: document.getElementById('sessionTitle').textContent })",
+        );
+        harness::until_preview_parked(tab);
+        harness::probe(tab, probe)
+    };
+    let fits = |seen: &serde_json::Value, what: &str| {
+        assert!(
+            seen["classes"]
+                .as_str()
+                .is_some_and(|c| c.split(' ').any(|x| x == "pl-outline-bar")),
+            "{what}: the outline's glyphs are in the top bar here: {seen}"
+        );
+        assert_eq!(
+            seen["bad"],
+            serde_json::json!([]),
+            "{what}: the top bar keeps its title and every control inside the session's column: {seen}"
+        );
+    };
+
+    // The app shell.
+    let url = monitor.url(&format!("?ui=app&session={sid}"));
+    harness::resize(&tab, 1100.0, 900.0);
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window .turn.user')",
+        "the app shell to mount the fixture",
+        Duration::from_secs(30),
+        "document.body.innerText.slice(0, 200)",
+    );
+    // 540px: the drawer's handle at the bar's left, the session 520px.
+    let narrow = at(&tab, 540, false, "the app");
+    fits(&narrow, "the app at 540px");
+    // A click on the folded search box opens it to its width, for typing, and still inside the
+    // column.
+    harness::click_when_settled(
+        &tab,
+        ".workspace>.topbar .header-searchbox",
+        "the search box",
+    );
+    harness::until(
+        &tab,
+        "document.activeElement && document.activeElement.id === 'transcriptSearchInput' && document.querySelector('.workspace>.topbar .header-searchbox').getBoundingClientRect().width >= 200 && document.getElementById('sessionView').getAnimations({ subtree: true }).filter(function (a) { return a instanceof CSSTransition; }).length === 0",
+        "the search box to open for typing",
+        Duration::from_secs(5),
+        "({ focused: document.activeElement && document.activeElement.id, width: document.querySelector('.workspace>.topbar .header-searchbox').getBoundingClientRect().width })",
+    );
+    let typing = harness::probe(&tab, probe);
+    let typed_bad: Vec<_> = typing["bad"]
+        .as_array()
+        .map(|b| {
+            b.iter()
+                .filter(|x| !x.as_str().unwrap_or("").starts_with("the title"))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        typed_bad.is_empty(),
+        "the open search box and the controls beside it stay inside the column: {typing}"
+    );
+    // A press outside the search folds it back to its glyph.
+    let box_width = "document.querySelector('.workspace>.topbar .header-searchbox').getBoundingClientRect().width";
+    let press_outside = || {
+        let at = harness::probe(
+            &tab,
+            "(function(){ var r = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(); return { x: Math.round(r.left + 5), y: Math.round(r.top + r.height * 0.6) }; })()",
+        );
+        tab.click_point(headless_chrome::browser::tab::point::Point {
+            x: at["x"].as_f64().unwrap_or(0.0),
+            y: at["y"].as_f64().unwrap_or(0.0),
+        })
+        .expect("a press on the transcript");
+    };
+    let folded = format!("{box_width} < 60 && document.getElementById('sessionTitle').getBoundingClientRect().width > 0 && document.getElementById('navigatorRailExpand').getBoundingClientRect().width > 0 && !document.getElementById('navigatorOptions').classList.contains('open')");
+    press_outside();
+    harness::until(
+        &tab,
+        &folded,
+        "the search box to fold back to its glyph at a press outside",
+        Duration::from_secs(5),
+        box_width,
+    );
+    // The search key opens it too.
+    harness::key(&tab, "/", false);
+    harness::until(
+        &tab,
+        &format!("document.activeElement && document.activeElement.id === 'transcriptSearchInput' && {box_width} >= 200"),
+        "the search key to open the search box",
+        Duration::from_secs(5),
+        box_width,
+    );
+    press_outside();
+    harness::until(
+        &tab,
+        &folded,
+        "the search box to fold back",
+        Duration::from_secs(5),
+        box_width,
+    );
+    // A finger's press on the glyph changes nothing as it lands (#s547's iPad walk): WebKit spends
+    // a tap whose press shows content as a hover and sends no click, so a box held open at the
+    // press left its field without the focus, and nothing could be typed. The press is the page's
+    // own pointerdown as a finger gives it; the tap's click then opens the box with the field
+    // focused.
+    let finger = harness::probe(
+        &tab,
+        "(function(){ var box = document.querySelector('.workspace>.topbar .header-searchbox'); var r = box.getBoundingClientRect(); var at = { pointerType: 'touch', isPrimary: true, bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }; box.dispatchEvent(new PointerEvent('pointerdown', at)); var held = document.querySelector('.header-search-cluster').classList.contains('search-held'); box.dispatchEvent(new PointerEvent('pointerup', at)); box.click(); return { held: held }; })()",
+    );
+    assert_eq!(
+        finger["held"], false,
+        "a finger's press on the folded search box opens nothing as it lands: {finger}"
+    );
+    harness::until(
+        &tab,
+        &format!("document.activeElement && document.activeElement.id === 'transcriptSearchInput' && {box_width} >= 200"),
+        "a finger's tap to open the search box with its field focused",
+        Duration::from_secs(5),
+        box_width,
+    );
+    press_outside();
+    harness::until(
+        &tab,
+        &folded,
+        "the search box to fold back after the finger's tap",
+        Duration::from_secs(5),
+        box_width,
+    );
+    // As Safari and Firefox on a Mac press a button: no focus for it, so the field loses its focus
+    // at the press. The open box's step and filter still take their click, and a press outside then
+    // shuts the filter and folds the box, the heading and the outline's control back in the bar.
+    harness::eval(
+        &tab,
+        "window.__noButtonFocus = function (e) { if (!e.target.closest || !e.target.closest('button')) return; e.preventDefault(); var a = document.activeElement; if (a && a !== document.body && a.blur) a.blur(); }; document.addEventListener('mousedown', window.__noButtonFocus, true); 1",
+    );
+    harness::click_when_settled(
+        &tab,
+        ".workspace>.topbar .header-searchbox",
+        "the search box",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ var i = document.getElementById('transcriptSearchInput'); i.value = 'lorem'; i.dispatchEvent(new Event('input', { bubbles: true })); if (/⏎/.test(document.getElementById('transcriptSearchCount').textContent)) i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return 1; })()",
+    );
+    let count = "document.getElementById('transcriptSearchCount').textContent";
+    harness::until(
+        &tab,
+        &format!("/\\d/.test({count}) && !/⏎/.test({count}) && document.getElementById('findNext').getBoundingClientRect().width > 0"),
+        "the query's matches counted, with the steps shown",
+        Duration::from_secs(10),
+        count,
+    );
+    // The count says how many, not which, so the step is read off the current hit's mark: its
+    // record and its place among that record's marks.
+    let hit = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'); if (!m) return 'none'; var r = m.closest('[data-block-index]'); return (r ? r.dataset.blockIndex : '?') + ':' + (r ? Array.prototype.indexOf.call(r.querySelectorAll('mark.search-mark'), m) : -1); })()";
+    let before = harness::eval(&tab, hit);
+    harness::click_when_settled(&tab, "#findNext", "the next match");
+    harness::until(
+        &tab,
+        &format!("{hit} !== 'none' && {hit} !== {before}"),
+        "a press on ↓ with no focus for the button to step to the next match",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ hit: {hit}, before: {before}, count: {count}, width: {box_width}, held: document.querySelector('.header-search-cluster').className, next: document.getElementById('findNext').getBoundingClientRect().width, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName) }})"),
+    );
+    // Escape leaves the search with the focus nowhere, as it is after that press.
+    let escape = "(function(){ (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); return 1; })()";
+    harness::eval(&tab, escape);
+    harness::until(
+        &tab,
+        &folded,
+        "Escape after a press on ↓ with no focus for the button to fold the box",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ width: {box_width}, held: document.querySelector('.header-search-cluster').className, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName) }})"),
+    );
+    let reopened = format!("{box_width} >= 200 && document.getElementById('findNext').getBoundingClientRect().width > 0");
+    harness::click_when_settled(
+        &tab,
+        ".workspace>.topbar .header-searchbox",
+        "the search box",
+    );
+    harness::until(
+        &tab,
+        &reopened,
+        "the search box to open again with its query",
+        Duration::from_secs(5),
+        box_width,
+    );
+    harness::click_when_settled(&tab, "#filterTranscriptBtn", "the search filter");
+    harness::until(
+        &tab,
+        "document.getElementById('navigatorOptions').classList.contains('open')",
+        "a press on the filter with no focus for the button to open its menu",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ width: {box_width}, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName) }})"),
+    );
+    press_outside();
+    harness::until(
+        &tab,
+        &folded,
+        "a press outside to shut the filter and fold the box, the heading and the outline's control back",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ width: {box_width}, menu: document.getElementById('navigatorOptions').className, title: document.getElementById('sessionTitle').getBoundingClientRect().width }})"),
+    );
+    harness::eval(
+        &tab,
+        "document.removeEventListener('mousedown', window.__noButtonFocus, true); 1",
+    );
+    // As Chrome presses a button, which takes the focus: a Tab out of the open filter's rows shuts
+    // the filter and folds the box, and Escape with the focus on ↓ folds it too.
+    harness::click_when_settled(
+        &tab,
+        ".workspace>.topbar .header-searchbox",
+        "the search box",
+    );
+    harness::until(
+        &tab,
+        &reopened,
+        "the search box to open again with its query",
+        Duration::from_secs(5),
+        box_width,
+    );
+    harness::click_when_settled(&tab, "#filterTranscriptBtn", "the search filter");
+    harness::until(
+        &tab,
+        "document.getElementById('navigatorOptions').classList.contains('open') && document.activeElement === document.getElementById('filterTranscriptBtn')",
+        "a press on the filter to open its menu, the focus on the filter",
+        Duration::from_secs(5),
+        "JSON.stringify({ menu: document.getElementById('navigatorOptions').className, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName) })",
+    );
+    // Tab's own focus moves, made by script: a CDP Tab the page does not prevent never comes back
+    // up.
+    harness::eval(
+        &tab,
+        "(function(){ var rows = document.querySelectorAll('#navigatorOptions button, #navigatorOptions input'); rows[rows.length - 1].focus(); document.getElementById('previewBtn').focus(); return document.activeElement.id; })()",
+    );
+    harness::until(
+        &tab,
+        &folded,
+        "a Tab out of the open filter to shut it and fold the box",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ width: {box_width}, menu: document.getElementById('navigatorOptions').className, held: document.querySelector('.header-search-cluster').className, focused: document.activeElement && document.activeElement.id }})"),
+    );
+    harness::click_when_settled(
+        &tab,
+        ".workspace>.topbar .header-searchbox",
+        "the search box",
+    );
+    harness::until(
+        &tab,
+        &reopened,
+        "the search box to open again with its query",
+        Duration::from_secs(5),
+        box_width,
+    );
+    harness::click_when_settled(&tab, "#findNext", "the next match");
+    harness::until(
+        &tab,
+        "document.activeElement === document.getElementById('findNext')",
+        "a press on ↓ to give it the focus",
+        Duration::from_secs(5),
+        "document.activeElement && (document.activeElement.id || document.activeElement.tagName)",
+    );
+    harness::eval(&tab, escape);
+    harness::until(
+        &tab,
+        &folded,
+        "Escape with the focus on ↓ to fold the box",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ width: {box_width}, held: document.querySelector('.header-search-cluster').className, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName) }})"),
+    );
+    // A press inside a frame (the pane's page is one) sends this page no press; the focus going
+    // into the frame leaves the search all the same.
+    harness::click_when_settled(
+        &tab,
+        ".workspace>.topbar .header-searchbox",
+        "the search box",
+    );
+    harness::until(
+        &tab,
+        &reopened,
+        "the search box to open again with its query",
+        Duration::from_secs(5),
+        box_width,
+    );
+    harness::eval(
+        &tab,
+        "(function(){ var f = document.createElement('iframe'); f.id = 's520Frame'; f.srcdoc = '<p style=\"margin:0;height:200px\">a page</p>'; f.style.cssText = 'position:fixed;left:20px;bottom:20px;width:200px;height:120px;z-index:99;border:0;background:#fff'; document.body.appendChild(f); return 1; })()",
+    );
+    harness::until(
+        &tab,
+        "(function(){ var f = document.getElementById('s520Frame'); return !!f && !!f.contentDocument && f.contentDocument.readyState === 'complete' && !!f.contentDocument.querySelector('p'); })()",
+        "the frame to load",
+        Duration::from_secs(5),
+        "String(!!document.getElementById('s520Frame'))",
+    );
+    let inside = harness::probe(
+        &tab,
+        "(function(){ var r = document.getElementById('s520Frame').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()",
+    );
+    tab.click_point(headless_chrome::browser::tab::point::Point {
+        x: inside["x"].as_f64().unwrap_or(0.0),
+        y: inside["y"].as_f64().unwrap_or(0.0),
+    })
+    .expect("a press inside the frame");
+    harness::until(
+        &tab,
+        &folded,
+        "a press inside a frame to fold the box",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ width: {box_width}, held: document.querySelector('.header-search-cluster').className, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName), hasFocus: document.hasFocus() }})"),
+    );
+    harness::eval(&tab, "document.getElementById('s520Frame').remove(); 1");
+    // The bar's fold-all control is the one it spares there: it is in Aa's menu, and still folds.
+    harness::click_when_settled(&tab, "#readingBtn", "Aa");
+    harness::until(
+        &tab,
+        "(function(){ var b = document.querySelector('#readingOptions [data-fold-all]'); if (!b) return false; var r = b.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return r.width > 0 && !!hit && b.contains(hit) && getComputedStyle(document.getElementById('sessionFoldAll')).display === 'none'; })()",
+        "fold-all in Aa's menu, and not in the bar",
+        Duration::from_secs(5),
+        "({ row: !!document.querySelector('#readingOptions [data-fold-all]'), bar: getComputedStyle(document.getElementById('sessionFoldAll')).display })",
+    );
+    let closed = "document.querySelectorAll('[data-process-surface].closed').length";
+    let processes = harness::eval(
+        &tab,
+        "document.querySelectorAll('[data-process-surface]').length",
+    );
+    assert!(
+        processes.as_i64().unwrap_or(0) > 0,
+        "the fixture draws an agent process to fold: {processes}"
+    );
+    let closed_before = harness::eval(&tab, closed);
+    harness::click_when_settled(
+        &tab,
+        "#readingOptions [data-fold-all]",
+        "fold-all in Aa's menu",
+    );
+    harness::until(
+        &tab,
+        &format!("{closed} !== {closed_before}"),
+        "fold-all in Aa's menu to fold or open every agent process",
+        Duration::from_secs(5),
+        closed,
+    );
+    harness::eval(&tab, "document.getElementById('readingBtn').click(); 1");
+    // 500px: the narrowest under the handle, the session at M.
+    fits(&at(&tab, 500, false, "the app"), "the app at 500px");
+    // 600px: beside the rail, the session 526px.
+    fits(&at(&tab, 600, false, "the app"), "the app at 600px");
+    // 1100px, the pane open beside the session: the session 512px, its bar beside the pane's tabs.
+    fits(
+        &at(&tab, 1100, true, "the app"),
+        "the app at 1100px, the pane open",
+    );
+    // There the view is wider than the session (the pane beside it), so the bar takes the search
+    // box rules of the next band up; a press on ↓ with no focus for the button still steps there.
+    harness::eval(
+        &tab,
+        "document.addEventListener('mousedown', window.__noButtonFocus, true); 1",
+    );
+    harness::click_when_settled(
+        &tab,
+        ".workspace>.topbar .header-searchbox",
+        "the search box",
+    );
+    harness::until(
+        &tab,
+        &reopened,
+        "the search box to open with its query beside the pane",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ width: {box_width}, view: document.getElementById('sessionView').getBoundingClientRect().width, classes: document.getElementById('sessionView').className }})"),
+    );
+    let before = harness::eval(&tab, hit);
+    harness::click_when_settled(&tab, "#findNext", "the next match");
+    harness::until(
+        &tab,
+        &format!("{hit} !== 'none' && {hit} !== {before}"),
+        "a press on ↓ with no focus for the button, beside the pane, to step to the next match",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ hit: {hit}, before: {before}, width: {box_width}, next: document.getElementById('findNext').getBoundingClientRect().width, view: document.getElementById('sessionView').getBoundingClientRect().width, classes: document.getElementById('sessionView').className }})"),
+    );
+    press_outside();
+    harness::until(
+        &tab,
+        &folded,
+        "a press outside to fold the box beside the pane",
+        Duration::from_secs(5),
+        box_width,
+    );
+    harness::eval(
+        &tab,
+        "document.removeEventListener('mousedown', window.__noButtonFocus, true); 1",
+    );
+    // 1040px, the pane open: the session at M.
+    fits(
+        &at(&tab, 1040, true, "the app"),
+        "the app at 1040px, the pane open",
+    );
+
+    // A host's pane, the view the whole page, in a browser of its own: headless_chrome's browser
+    // loop stops after 30 s without a target event, which the app (it sets no title) never gives,
+    // and the next one, the host page's navigation, then closes the whole connection
+    // (`harness::fresh_tab`).
+    drop(tab);
+    drop(_browser);
+    let (_browser, tab) = harness::fresh_tab(&monitor);
+    harness::resize(&tab, 1000.0, 900.0);
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window .turn.user')",
+        "the session in the host's view",
+        Duration::from_secs(20),
+        "document.body.innerText.slice(0, 200)",
+    );
+    fits(
+        &at(&tab, 1000, true, "the host"),
+        "a host's 1000px pane, the pane open",
+    );
+    fits(&at(&tab, 490, false, "the host"), "a host's 490px pane");
+    // A host that switched Aa off keeps fold-all in the bar, in Aa's room (a browser of its own too).
+    drop(tab);
+    drop(_browser);
+    let (_browser, tab) = harness::fresh_tab(&monitor);
+    harness::resize(&tab, 1000.0, 900.0);
+    harness::open_host_page(&tab, &monitor, &format!("session={sid}&hide=reading"));
+    let no_aa = at(&tab, 1000, true, "the host without Aa");
+    fits(&no_aa, "a host's 1000px pane without Aa");
+    assert!(
+        no_aa["bar"].as_array().is_some_and(|b| b
+            .iter()
+            .any(|x| x.as_str().unwrap_or("").starts_with("#sessionFoldAll "))),
+        "without Aa, fold-all stays in the bar: {no_aa}"
+    );
+    harness::clear_metrics(&tab);
+    drop(monitor);
 }
 
 /// #s431 stage 3 (design/pane-layout.md, "The owner's order"): the app lays out its list from the
@@ -27282,4 +27809,528 @@ fn a_session_the_box_cannot_write_to_keeps_its_button_greyed_and_says_why() {
             && !help["fab"].as_str().unwrap_or_default().contains("show"),
         "a click turns nothing on and says the page does not write: {help}"
     );
+}
+
+/// #s488: a click on a paragraph of a growing session gives the page's keys a scroller no redraw
+/// can take away. With nothing focused, WebKit scrolls by a key the scroller that holds the node
+/// the mouse last PRESSED; the growth redraws the units its rewritten records stand in (a turn
+/// committing rewrites the whole open turn, from its first record), so that node is often gone by
+/// the next key, and Page Up, an arrow or Space then scrolled nothing in Safari about half the
+/// time. Chrome falls back to the page's own scroller and scrolls either way, so this case cannot
+/// see the missed key; it reads what the key depends on instead: after a real click on a
+/// paragraph, and after the growth that followed, the focus is the transcript scroller, connected,
+/// with no focus ring. A key typed into the compose box or the search field still lands there, and
+/// a real Page Up after a click moves the transcript.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_click_in_a_growing_transcript_leaves_its_keys_a_scroller_no_redraw_takes() {
+    let _serial = serial();
+    let base = harness::base("click-keys-growth");
+    let stores = harness::Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000048c8";
+    let path = stores.claude_session(sid, &harness::long_session(30, harness::Shape::default()));
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3292, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1366.0, 1024.0);
+    m.pair(&tab);
+    harness::track_idle(&tab);
+    m.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#transcript .virtual-window .turn.assistant p').length >= 2 && document.getElementById('transcript').scrollTop > 0",
+        "the session drawn at its tail",
+        Duration::from_secs(30),
+        "JSON.stringify({ ps: document.querySelectorAll('#transcript .virtual-window p').length, top: (document.getElementById('transcript') || {}).scrollTop })",
+    );
+    // The last paragraph of an assistant's reply that the mouse can reach, `foot` px clear of the
+    // transcript's foot (the compose box covers it while open), its centre's point; the paragraph is
+    // kept on the page as `__clicked`. At the tail it is the last reply, which the next turn's commit
+    // draws again.
+    let paragraph = |foot: u32| {
+        format!("(function(){{ var s = document.getElementById('transcript'), v = s.getBoundingClientRect(); var ps = [].slice.call(s.querySelectorAll('.virtual-window .turn.assistant p')); for (var i = ps.length - 1; i >= 0; i--) {{ var r = ps[i].getBoundingClientRect(); if (r.height < 4 || r.top < v.top + 60 || r.bottom > v.bottom - {foot}) continue; var x = r.left + Math.min(40, r.width / 2), y = r.top + r.height / 2, hit = document.elementFromPoint(x, y); if (hit && ps[i].contains(hit)) {{ window.__clicked = ps[i]; return JSON.stringify([x, y]); }} }} return '[]'; }})()")
+    };
+    let click_paragraph_clear_of = |what: &str, foot: u32| {
+        let at = harness::eval(&tab, &paragraph(foot));
+        let at: Vec<f64> = serde_json::from_str(at.as_str().unwrap_or("[]")).unwrap_or_default();
+        assert_eq!(at.len(), 2, "a paragraph to click {what}");
+        tab.click_point(headless_chrome::browser::tab::point::Point { x: at[0], y: at[1] })
+            .expect("a click on a paragraph");
+    };
+    let click_paragraph = |what: &str| click_paragraph_clear_of(what, 160);
+    let focus = "(function(){ var a = document.activeElement, s = document.getElementById('transcript'), cs = getComputedStyle(a); return JSON.stringify({ on: a === s ? 'the transcript' : (a.id || a.tagName.toLowerCase()), connected: a.isConnected, ring: !!document.querySelector(':focus-visible'), outline: cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0, clicked: !!(window.__clicked && window.__clicked.isConnected) }); })()";
+    let read = |what: &str| -> serde_json::Value {
+        let text = harness::eval(&tab, focus);
+        let v: serde_json::Value = serde_json::from_str(text.as_str().unwrap_or("{}")).unwrap();
+        eprintln!("#s488 {what}: {v}");
+        v
+    };
+    let keys_go_to_the_transcript = |v: &serde_json::Value, what: &str| {
+        assert_eq!(
+            (v["on"].as_str(), v["connected"].as_bool()),
+            (Some("the transcript"), Some(true)),
+            "{what}: the keys' target is the transcript scroller, connected ({v})"
+        );
+        assert_eq!(
+            (v["ring"].as_bool(), v["outline"].as_bool()),
+            (Some(false), Some(false)),
+            "{what}: a mouse click draws no focus ring ({v})"
+        );
+    };
+    // A key typed into a field is the field's, as before (`contains`: a key Chrome's DevTools
+    // protocol sends may repeat, #270). First, while the session is still one the box may write to: a
+    // session growing now is busy, and the box is offered only for one it may resume.
+    let field = |id: &str| -> (String, String) {
+        let v = harness::eval(&tab, &format!("JSON.stringify([document.activeElement.id, document.getElementById({id:?}).value])"));
+        let v: Vec<String> = serde_json::from_str(v.as_str().unwrap_or("[]")).unwrap_or_default();
+        (
+            v.first().cloned().unwrap_or_default(),
+            v.get(1).cloned().unwrap_or_default(),
+        )
+    };
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composeFab').classList.contains('show')",
+        "write mode to offer the compose button",
+        Duration::from_secs(10),
+        "document.getElementById('composeFab').className",
+    );
+    harness::eval(&tab, "document.getElementById('composeFab').click(); 'ok'");
+    harness::click_when_settled(&tab, "#composeInput", "the compose box");
+    tab.type_str("typed into the box").unwrap();
+    let (on, draft) = field("composeInput");
+    assert!(
+        on == "composeInput" && draft.contains("typed into the box"),
+        "the compose box keeps its keys: the focus on {on:?}, the draft {draft:?}"
+    );
+    click_paragraph("with the compose box open");
+    keys_go_to_the_transcript(
+        &read("a click from the compose box"),
+        "a click from the compose box",
+    );
+    let (_, kept) = field("composeInput");
+    assert_eq!(
+        kept, draft,
+        "the draft stays as the reader clicks back into the transcript"
+    );
+    harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
+    tab.type_str("late").unwrap();
+    let (on, query) = field("transcriptSearchInput");
+    assert!(
+        on == "transcriptSearchInput" && query.contains("late"),
+        "the search field keeps its keys: the focus on {on:?}, the query {query:?}"
+    );
+    // The box closed again, so it covers none of the replies the rounds click.
+    harness::eval(
+        &tab,
+        "document.getElementById('closeComposer').click(); 'ok'",
+    );
+    // A turn every two seconds, as the report's session grew.
+    let script = (0..6)
+        .flat_map(|i| {
+            [
+                harness::user_at(
+                    &format!("question {}: a late question", 900 + i),
+                    &harness::now_minus(60),
+                ),
+                harness::assistant_at(
+                    &format!(
+                        "answer {}: a late answer, a paragraph a reader could click",
+                        900 + i
+                    ),
+                    &harness::now_minus(55),
+                ),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let growth = harness::LiveGrowth::start(path.clone(), script, Duration::from_millis(1000));
+    // Four clicks, each followed by the growth that redraws what was clicked: every read is kept and
+    // printed before anything is asserted, so a red run says what each round saw.
+    let mut rounds = Vec::new();
+    for round in 0..4 {
+        click_paragraph_clear_of(&format!("in round {round}"), 8);
+        let pressed = read(&format!("round {round}, after the click"));
+        // Up to one turn's time for the clicked paragraph to be redrawn.
+        let deadline = Instant::now() + Duration::from_millis(2500);
+        while Instant::now() < deadline
+            && harness::eval(&tab, "!!(window.__clicked && window.__clicked.isConnected)")
+                == serde_json::json!(true)
+        {
+            harness::pause("the growth", Duration::from_millis(100));
+        }
+        let after = read(&format!("round {round}, after the growth"));
+        rounds.push((round, pressed, after));
+    }
+    growth.finish(Duration::from_secs(20));
+    let replaced = rounds
+        .iter()
+        .filter(|(_, _, after)| after["clicked"] == serde_json::json!(false))
+        .count();
+    eprintln!("#s488 the growth replaced the clicked paragraph in {replaced} of 4 rounds");
+    assert!(
+        replaced >= 1,
+        "the growth redrew a clicked paragraph at least once, which is what took WebKit's scroller: {rounds:?}"
+    );
+    for (round, pressed, after) in &rounds {
+        keys_go_to_the_transcript(pressed, &format!("round {round}, after the click"));
+        keys_go_to_the_transcript(after, &format!("round {round}, after the growth"));
+    }
+    // A real Page Up after a click moves the transcript (last: Chrome's CDP key a page does not
+    // prevent is never released, so nothing is typed after it).
+    click_paragraph("before Page Up");
+    keys_go_to_the_transcript(&read("before Page Up"), "before Page Up");
+    let top = "Math.round(document.getElementById('transcript').scrollTop)";
+    let before = harness::eval(&tab, top).as_i64().unwrap_or(0);
+    tab.press_key("PageUp").unwrap();
+    harness::until(
+        &tab,
+        &format!("{top} < {before} - 100"),
+        "Page Up to move the transcript",
+        Duration::from_secs(5),
+        top,
+    );
+    // Where the key took the reader, once the browser's scroll has ended, and a moment later.
+    let mut landed = harness::eval(&tab, top).as_i64().unwrap_or(0);
+    for _ in 0..20 {
+        harness::pause("the key's scroll", Duration::from_millis(200));
+        let now = harness::eval(&tab, top).as_i64().unwrap_or(0);
+        if now == landed {
+            break;
+        }
+        landed = now;
+    }
+    harness::pause("the reader to stay", Duration::from_millis(1500));
+    let rested = harness::eval(&tab, top).as_i64().unwrap_or(0);
+    assert!(
+        // A few pixels for an estimate the engine applies at rest, which holds what the reader sees
+        // while it moves the offset; away from the end all the same.
+        landed < before - 100 && rested < before - 100 && (rested - landed).abs() <= 4,
+        "and the reader stays where Page Up took them: from {before} to {landed}, then {rested}"
+    );
+    // After a key Chrome counts the mouse's focus as the keyboard's (`:focus-visible` matches,
+    // measured): still no outline is drawn, which `production.css` sees to.
+    let after = read("after Page Up");
+    assert_eq!(
+        (after["on"].as_str(), after["outline"].as_bool()),
+        (Some("the transcript"), Some(false)),
+        "after Page Up the focus stays on the transcript and no outline is drawn ({after})"
+    );
+}
+
+/// #s488's other half: a finger's or a pen's tap on the transcript's text does not focus it. On a
+/// phone or a tablet a tap there must not take the focus from a field (and put the keyboard down) for
+/// a key nobody presses. Three taps, each from nothing focused and from the search field: Chrome's own
+/// finger tap; a finger's tap whose compatibility mouse press comes late and as a plain mouse press,
+/// as Linux's harness supplies it (#366), which is that tap's and not a mouse's (1 s late, as a
+/// loaded runner may send it: the harness waits up to half a second); and a pen's press.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_tap_on_the_transcript_does_not_focus_it() {
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchMouseEvent, DispatchMouseEventPointer_TypeOption as Pointer,
+        DispatchMouseEventTypeOption as Mouse, MouseButton,
+    };
+    let _serial = serial();
+    let (_m, _b, tab, _path) = phone_world_at(3293, "phone-tap-no-focus", 390, 844, "");
+    let at = phone_point(
+        &tab,
+        "(function(){ var s = document.getElementById('transcript'), v = s.getBoundingClientRect(); var ps = [].slice.call(s.querySelectorAll('.virtual-window .turn.assistant p')); for (var i = ps.length - 1; i >= 0; i--) { var r = ps[i].getBoundingClientRect(); if (r.height < 4 || r.top < v.top + 80 || r.bottom > v.bottom - 160) continue; var x = r.left + Math.min(30, r.width / 2), y = r.top + r.height / 2, hit = document.elementFromPoint(x, y); if (hit && ps[i].contains(hit)) return [x, y]; } return []; })()",
+    );
+    let focus = "(function(){ var a = document.activeElement; return a === document.getElementById('transcript') ? 'the transcript' : a ? a.localName + (a.id ? '#' + a.id : '') : 'none'; })()";
+    let pen = || {
+        for kind in [Mouse::MousePressed, Mouse::MouseReleased] {
+            tab.call_method(DispatchMouseEvent {
+                Type: kind,
+                x: at.0,
+                y: at.1,
+                modifiers: None,
+                timestamp: None,
+                button: Some(MouseButton::Left),
+                buttons: None,
+                click_count: Some(1),
+                force: Some(0.5),
+                tangential_pressure: None,
+                tilt_x: None,
+                tilt_y: None,
+                twist: None,
+                delta_x: None,
+                delta_y: None,
+                pointer_Type: Some(Pointer::Pen),
+            })
+            .expect("a pen's press");
+        }
+    };
+    let mut seen = Vec::new();
+    for (what, tap) in [
+        ("a finger's tap", 0),
+        ("a finger's tap with a late mouse press", 1),
+        ("a pen's tap", 2),
+    ] {
+        for from_field in [false, true] {
+            harness::eval(
+                &tab,
+                if from_field {
+                    "(function(){ document.getElementById('transcriptSearchInput').focus(); return 'ok'; })()"
+                } else {
+                    "(function(){ if (document.activeElement) document.activeElement.blur(); return 'ok'; })()"
+                },
+            );
+            match tap {
+                0 => harness::finger_tap(&tab, at.0, at.1),
+                // Twice the harness's own half second, and well inside the page's 2 s window, so a
+                // loaded runner's round trips cannot carry the press past it.
+                1 => harness::finger_tap_late_click(&tab, at.0, at.1, Duration::from_millis(1000)),
+                _ => pen(),
+            }
+            harness::pause("the tap's click", Duration::from_millis(800));
+            let on = harness::eval(&tab, focus);
+            seen.push(format!(
+                "{what}{}: {on}",
+                if from_field {
+                    " from the search field"
+                } else {
+                    ""
+                }
+            ));
+        }
+        // Past the window in which a mouse press still counts as the tap's.
+        harness::pause("the tap's window", Duration::from_millis(2200));
+    }
+    eprintln!("#s488 taps: {seen:?}");
+    assert!(
+        seen.iter()
+            .all(|line| !line.ends_with("\"the transcript\"")),
+        "a tap leaves the transcript unfocused: {seen:?}"
+    );
+}
+
+/// #s488, from its review: a mouse's click inside a box of the transcript's that scrolls on its own
+/// leaves the keys to that box. A wide code block and a wide table scroll sideways inside the
+/// transcript; with nothing focused the browser starts an arrow key from the pressed node, so
+/// ArrowRight scrolled the block. When a click anywhere in the transcript focused the transcript,
+/// the key started from the transcript and scrolled nothing. Each block is clicked in a tab of its
+/// own, since a key Chrome's DevTools protocol sends and the page does not prevent is never released
+/// (#270): the block's own offset must move. The code block is clicked a second time after a click on
+/// the reply's text, which focused the transcript: the block's click takes the focus from it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_click_in_a_wide_block_of_the_transcript_leaves_its_arrows_to_the_block() {
+    let _serial = serial();
+    let base = harness::base("click-wide-block");
+    let stores = harness::Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000048c9";
+    let words = (0..60)
+        .map(|i| format!("word{i}"))
+        .collect::<Vec<_>>()
+        .join("_");
+    // A prose cell wraps anywhere (`overflow-wrap: anywhere`), so what makes a table wider than its
+    // column is its count of columns: forty of them, each at least its padding wide.
+    let cells = |w: &str| {
+        (0..40)
+            .map(|i| format!(" {w}{i:02}x "))
+            .collect::<Vec<_>>()
+            .join("|")
+    };
+    let mut t = harness::long_session(6, harness::Shape::default());
+    t += &harness::user_at(
+        "question 6: show me the wide things",
+        &harness::now_minus(90),
+    );
+    t += &harness::assistant_at(
+        &format!(
+            "Here is a wide line of code:\\n\\n```text\\nlet {words} = 1;\\n```\\n\\nAnd a wide table:\\n\\n|{}|\\n|{}|\\n|{}|\\n\\nThat is all.",
+            cells("head"),
+            (0..40).map(|_| "---").collect::<Vec<_>>().join("|"),
+            cells("value")
+        ),
+        &harness::now_minus(60),
+    );
+    stores.claude_session(sid, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3294, &base, Some(&stores), true);
+    // The point of some text inside the last wide block of `kind` in sight, the block kept as
+    // `__block`: a code block (a `pre` or `[data-code]`) or a table's scroller.
+    let point = |kind: &str| {
+        format!("(function(){{ var s = document.getElementById('transcript'), v = s.getBoundingClientRect(); var all = [].slice.call(s.querySelectorAll('.virtual-window *')).filter(function (e) {{ var st = getComputedStyle(e); return /(auto|scroll)/.test(st.overflowX) && e.scrollWidth > e.clientWidth + 1 && ({kind:?} === 'table' ? e.classList.contains('markdown-table-scroll') : (e.matches('pre, [data-code]') && !e.closest('.markdown-table-scroll'))); }}); for (var i = all.length - 1; i >= 0; i--) {{ var b = all[i], walker = document.createTreeWalker(b, NodeFilter.SHOW_TEXT); for (var n = walker.nextNode(); n; n = walker.nextNode()) {{ if (n.textContent.trim().length < 6) continue; var range = document.createRange(); range.setStart(n, 1); range.setEnd(n, 4); var r = range.getBoundingClientRect(); var x = r.left + r.width / 2, y = r.top + r.height / 2; if (y < v.top + 60 || y > v.bottom - 60 || x < v.left || x > v.right) continue; var hit = document.elementFromPoint(x, y); if (hit && b.contains(hit)) {{ window.__block = b; return [x, y]; }} }} }} return []; }})()")
+    };
+    // A paragraph of the reply's own text, outside any block, and its centre's point.
+    let text_point = "(function(){ var s = document.getElementById('transcript'), v = s.getBoundingClientRect(); var ps = [].slice.call(s.querySelectorAll('.virtual-window .turn.assistant p')).filter(function (p) { return !p.closest('pre, [data-code], .markdown-table-scroll'); }); for (var i = ps.length - 1; i >= 0; i--) { var r = ps[i].getBoundingClientRect(); if (r.height < 4 || r.top < v.top + 60 || r.bottom > v.bottom - 60) continue; var x = r.left + Math.min(30, r.width / 2), y = r.top + r.height / 2, hit = document.elementFromPoint(x, y); if (hit && ps[i].contains(hit)) return [x, y]; } return []; })()";
+    let focus_js = "(function(){ var a = document.activeElement; return a === document.getElementById('transcript') ? 'the transcript' : a ? a.localName + (a.id ? '#' + a.id : '') : 'none'; })()";
+    let mut seen = Vec::new();
+    for (kind, text_first) in [("code", false), ("table", false), ("code", true)] {
+        // An arrow's scroll without the browser's animation: a headless tab draws its frames lazily
+        // (#204), and an animated scroll that waits on frames moved the block in one round of two or
+        // three, with the key, its target and the pressed node the same in both.
+        let (_browser, tab) = harness::chrome_with_tab(&["--disable-smooth-scrolling"]);
+        harness::resize(&tab, 1366.0, 1024.0);
+        m.pair(&tab);
+        m.open(&tab, &format!("?ui=app&session={sid}"));
+        harness::until(
+            &tab,
+            "!!document.querySelector('#transcript .markdown-table-scroll') && document.getElementById('transcript').scrollTop > 0",
+            "the session drawn at its tail with its wide table",
+            Duration::from_secs(30),
+            "document.querySelectorAll('#transcript .virtual-window .turn').length",
+        );
+        harness::pause("the tail to settle", Duration::from_millis(800));
+        let mut first = String::new();
+        if text_first {
+            let at = phone_point(&tab, text_point);
+            tab.click_point(headless_chrome::browser::tab::point::Point { x: at.0, y: at.1 })
+                .expect("a click on the reply's text");
+            harness::pause("the click", Duration::from_millis(300));
+            first = format!(
+                " after a click on text that focused {}",
+                harness::eval(&tab, focus_js)
+            );
+        }
+        let at = phone_point(&tab, &point(kind));
+        // The node the mouse pressed, which the browser starts a key from with nothing focused.
+        harness::eval(&tab, "(function(){ window.addEventListener('pointerdown', function (e) { window.__pressed = e.target; window.__pressedText = e.target && e.target.nodeType === 1 ? e.target.localName + '.' + e.target.className : String(e.target); }, { capture: true }); return 'ok'; })()");
+        tab.click_point(headless_chrome::browser::tab::point::Point { x: at.0, y: at.1 })
+            .expect("a click in the wide block");
+        harness::pause("the click", Duration::from_millis(300));
+        let focus = harness::eval(&tab, focus_js);
+        // What the key met, for a red run to say why: its target, whether a handler took it, and
+        // what else it may have scrolled.
+        harness::eval(&tab, "(function(){ var s = document.getElementById('transcript'), l = document.getElementById('sessionList'); window.__boxes = { t: [s.scrollLeft, s.scrollTop], l: l ? [l.scrollLeft, l.scrollTop] : null }; window.__keyMet = []; window.addEventListener('keydown', function (e) { var t = e.target; window.__keyMet.push({ target: t === s ? 'the transcript' : t && t.localName + (t.id ? '#' + t.id : ''), prevented: e.defaultPrevented }); }); return 'ok'; })()");
+        tab.press_key("ArrowRight").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let mut moved = false;
+        while Instant::now() < deadline {
+            if harness::eval(&tab, "window.__block.scrollLeft > 0") == serde_json::json!(true) {
+                moved = true;
+                break;
+            }
+            harness::pause("the arrow", Duration::from_millis(100));
+        }
+        let met = harness::eval(&tab, "(function(){ var s = document.getElementById('transcript'), l = document.getElementById('sessionList'); return JSON.stringify({ pressed: window.__pressedText, pressedThere: !!(window.__pressed && window.__pressed.isConnected), key: (window.__keyMet || []).slice(0, 2), block: !!(window.__block && window.__block.isConnected), transcript: [s.scrollLeft, s.scrollTop], list: l ? [l.scrollLeft, l.scrollTop] : null, before: window.__boxes, focus: document.activeElement === s ? 'the transcript' : document.activeElement && document.activeElement.localName }); })()");
+        eprintln!("#s488 wide {kind}{first}: {met}");
+        seen.push(format!(
+            "{kind}{first}: focus {focus}, ArrowRight moved the block {moved}"
+        ));
+    }
+    eprintln!("#s488 wide blocks: {seen:?}");
+    assert!(
+        seen.iter().all(|line| line.ends_with("moved the block true")
+            && !line.contains("focus \"the transcript\"")
+            && (!line.contains("after a click on text")
+                || line.contains("focused \"the transcript\""))),
+        "an arrow after a click in a wide block scrolls that block, the transcript unfocused, after a click on text too: {seen:?}"
+    );
+}
+
+/// #s488, from its delta review: a press on the transcript's own scrollbar does not focus it. A
+/// browser moves the focus on a scrollbar press to a box it may focus, and once a mouse's click had
+/// made the transcript one, a reader who typed a draft, dragged the scrollbar to look back and typed
+/// on sent the keys to the transcript (Space scrolled). From the compose box and from the search
+/// field, a mouse press and release on the scrollbar's band does not focus the transcript (Chrome
+/// blurs the field, measured, as for a press on anything it cannot focus); and a transcript that has
+/// the focus keeps it, since a box that stops being focusable is blurred.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_press_on_the_transcript_s_scrollbar_does_not_focus_it() {
+    use headless_chrome::protocol::cdp::Input::{
+        DispatchMouseEvent, DispatchMouseEventPointer_TypeOption as Pointer,
+        DispatchMouseEventTypeOption as Mouse, MouseButton,
+    };
+    let _serial = serial();
+    let base = harness::base("scrollbar-keeps-focus");
+    let stores = harness::Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000048ca";
+    stores.claude_session(sid, &harness::long_session(30, harness::Shape::default()));
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3295, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1366.0, 1024.0);
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#transcript .virtual-window .turn.assistant p').length >= 2 && document.getElementById('transcript').scrollTop > 0",
+        "the session drawn at its tail",
+        Duration::from_secs(30),
+        "document.querySelectorAll('#transcript .virtual-window p').length",
+    );
+    // A paragraph to click first, so a mouse's click has made the transcript focusable.
+    let text = "(function(){ var s = document.getElementById('transcript'), v = s.getBoundingClientRect(); var ps = [].slice.call(s.querySelectorAll('.virtual-window .turn.assistant p')); for (var i = ps.length - 1; i >= 0; i--) { var r = ps[i].getBoundingClientRect(); if (r.height < 4 || r.top < v.top + 60 || r.bottom > v.bottom - 200) continue; var x = r.left + Math.min(40, r.width / 2), y = r.top + r.height / 2, hit = document.elementFromPoint(x, y); if (hit && ps[i].contains(hit)) return [x, y]; } return []; })()";
+    // A point on the transcript's scrollbar band, which lands on the transcript itself.
+    let bar = "(function(){ var s = document.getElementById('transcript'), r = s.getBoundingClientRect(); var x = r.right - 4, y = r.top + r.height / 3; return document.elementFromPoint(x, y) === s && s.scrollHeight > s.clientHeight ? [x, y] : []; })()";
+    let focus = "(function(){ var a = document.activeElement; return a === document.getElementById('transcript') ? 'the transcript' : a ? a.localName + (a.id ? '#' + a.id : '') : 'none'; })()";
+    let press_bar = || {
+        let at = phone_point(&tab, bar);
+        for kind in [Mouse::MousePressed, Mouse::MouseReleased] {
+            tab.call_method(DispatchMouseEvent {
+                Type: kind,
+                x: at.0,
+                y: at.1,
+                modifiers: None,
+                timestamp: None,
+                button: Some(MouseButton::Left),
+                buttons: None,
+                click_count: Some(1),
+                force: None,
+                tangential_pressure: None,
+                tilt_x: None,
+                tilt_y: None,
+                twist: None,
+                delta_x: None,
+                delta_y: None,
+                pointer_Type: Some(Pointer::Mouse),
+            })
+            .expect("a press on the scrollbar");
+        }
+        harness::pause("the press", Duration::from_millis(300));
+    };
+    let click_text = || {
+        let at = phone_point(&tab, text);
+        tab.click_point(headless_chrome::browser::tab::point::Point { x: at.0, y: at.1 })
+            .expect("a click on a paragraph");
+        harness::pause("the click", Duration::from_millis(300));
+        harness::eval(&tab, focus)
+    };
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composeFab').classList.contains('show')",
+        "write mode to offer the compose button",
+        Duration::from_secs(10),
+        "document.getElementById('composeFab').className",
+    );
+    harness::eval(&tab, "document.getElementById('composeFab').click(); 'ok'");
+    let mut seen = Vec::new();
+    for (field, what) in [
+        ("#composeInput", "the compose box"),
+        ("#transcriptSearchInput", "the search field"),
+    ] {
+        let clicked = click_text();
+        harness::click_when_settled(&tab, field, what);
+        tab.type_str("draft").unwrap();
+        let before = harness::eval(&tab, focus);
+        press_bar();
+        let after = harness::eval(&tab, focus);
+        seen.push(format!("{what}: a click on text focused {clicked}; typing in it {before}, after the scrollbar press {after}"));
+    }
+    // And with the transcript itself focused, a press on its scrollbar keeps the focus there: a box
+    // that stops being focusable is blurred.
+    let clicked = click_text();
+    press_bar();
+    let after = harness::eval(&tab, focus);
+    seen.push(format!(
+        "the transcript: a click on text focused {clicked}; after the scrollbar press {after}"
+    ));
+    eprintln!("#s488 scrollbar: {seen:?}");
+    assert!(
+        seen.last().is_some_and(|line| line
+            .ends_with("focused \"the transcript\"; after the scrollbar press \"the transcript\"")),
+        "a press on the scrollbar of a focused transcript keeps its focus: {seen:?}"
+    );
+    for (line, id) in seen
+        .iter()
+        .zip(["textarea#composeInput", "input#transcriptSearchInput"])
+    {
+        assert!(
+            line.contains(&format!("typing in it \"{id}\", after the scrollbar press"))
+                && !line.ends_with("after the scrollbar press \"the transcript\""),
+            "a press on the transcript's scrollbar does not focus it: {seen:?}"
+        );
+    }
 }

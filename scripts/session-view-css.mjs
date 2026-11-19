@@ -247,7 +247,7 @@ export function declarations(body) {
 }
 
 // ── whose a rule is ──────────────────────────────────────────────────────────────────────────────
-// What `app-shell.html` and `app.js` (with `session-list.js`) name is the app's, and every other
+// What `app-shell.html` and `app-mount.js` (with `session-list.js`) name is the app's, and every other
 // class or id is the view's: its cards, rows, code lines and tables are drawn by components.js and
 // session-view.js, never written in the shell. The lists below are the app's names that a selector
 // uses, sorted by what they are; the contract checks they still cover what the app names.
@@ -255,12 +255,14 @@ export function declarations(body) {
 /** The app's own chrome, which the view never draws: the session list and its tree, the rail and its
  *  flyout, the arrangement strip and the section menu, the session filter, the brand, the drawer and
  *  a wide phone's column, the session search layer (⌘K), the confirm layer (and the passcode field
- *  the app draws in it since stage 7) and the toast. `.primary` is the confirm layer's button: the
+ *  the app draws in it since stage 7), the toast, and the wrapper the web app is mounted in (#s551).
+ *  `.primary` is the confirm layer's button: the
  *  view's own primary buttons are `.sv-primary`, a name the collaboration app does not style
  *  (#s438), so the view never draws `.primary`. The session list's names are in the two lists
  *  after this one (#s430 stage 3). */
 export const APP_CHROME = Object.freeze([
   "#sidebarCollapse",
+  ".app-mount",
   ".attention-count", ".attention-filter", ".attention-mini",
   ".brand",
   ".column-pane", ".column-switch", ".column-switch-count",
@@ -693,7 +695,7 @@ export function arrangedGate(sel, alternatives, body = "") {
 }
 
 /** #s431 stage 3 (design/pane-layout.md, "The owner's order"). The app lays out its list by the order
- *  (`arrangeApp`, set on `#app` by app.js), so the app's rules under the phone's window query read
+ *  (`arrangeApp`, set on `#app` by app-mount.js), so the app's rules under the phone's window query read
  *  what the order decided instead of the window:
  *
  *  - **The drawer.** A rule for the list's parts, its handle and scrim, or the app's grid stands where

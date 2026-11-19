@@ -190,7 +190,8 @@ capability the pane mounted, plus the range the reader is on, which mdrev report
 `onNavigate`. So the tab opens where the reader was.
 
 - **The page is static.** `ui::markdown_page` names the pinned version and loads
-  `markdown-page.js`, which reads its own address, so nothing a URL carries is ever written into
+  `markdown-page.js` (since #s433 the detached page, `ui::detached_page` and `detached-page.js`,
+  serves `/markdown`), which reads its own address, so nothing a URL carries is ever written into
   HTML. A test sends a hostile query and finds none of it in the page. Every request the page makes
   goes to the same `api/mdrev/` routes, under the same guards. A file's facts come from `open`, with
   the stamp the address carries, and a forged stamp gets a refusal, never the text. The tab is a new

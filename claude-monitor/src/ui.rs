@@ -6,11 +6,10 @@
 use claude_replay_html::HttpResponse;
 
 const PAGE_HEAD: &str = include_str!("codex-ui/page-head.html");
-/// The demo's shell with an empty `#sessionView` where the session view's markup was: the view builds
-/// itself there from `session-view-markup.js` (#s429 stage 4). Likewise an empty `#sessionList` where
-/// the tree was, which the session list fills from `session-list-markup.js` (#s430 stage 3). All are
-/// generated from the demo.
-const APP_SHELL: &str = include_str!("codex-ui/app-shell.html");
+/// The empty wrapper the web app is mounted into (#s551, design/app-mount.md, stage 2): `app.js` calls
+/// `mountApp` on it as the page loads, which draws the app's shell there (`app-shell-markup.js`, the
+/// demo's shell with an empty `#sessionView` and an empty `#sessionList`, generated from the demo).
+const APP_MOUNT: &str = "<div id=\"appMount\"></div>\n";
 const PAGE_TAIL: &str = include_str!("codex-ui/page-tail.html");
 
 /// Whether the page that is served may write to this machine's sessions, and if not, the first
@@ -43,9 +42,10 @@ impl WriteGate {
 
 /// The app shell for ONE request. The classic view it was once switched with is retired (#s98),
 /// so there is no preference to read: `?ui=` and a `ui.json` left behind are both ignored.
-/// `paired` is the monitor's pairing; `write` is whether THIS request's page may write.
+/// `paired` is the monitor's pairing; `write` is whether THIS request's page may write (#s577).
 pub fn app_page(version: &str, paired: bool, write: WriteGate) -> String {
-    page_with(version, paired, write)
+    let head = fill(PAGE_HEAD, version, paired).replace("{{WRITE}}", write.as_str());
+    format!("{head}{APP_MOUNT}{PAGE_TAIL}")
 }
 
 /// The app shell of a page whose writes follow its monitor's pairing alone.
@@ -55,15 +55,16 @@ pub fn page(version: &str, paired: bool) -> String {
     } else {
         WriteGate::MonitorUnpaired
     };
-    page_with(version, paired, write)
+    app_page(version, paired, write)
 }
 
-fn page_with(version: &str, paired: bool, write: WriteGate) -> String {
-    let head = PAGE_HEAD
+/// A page's facts for the page to read (its body's `data-*` and the mermaid meta): the same for the
+/// app shell and the detached tab.
+fn fill(template: &str, version: &str, paired: bool) -> String {
+    template
         .replace("{{VERSION}}", version)
         .replace("{{MERMAID}}", claude_replay_html::mermaid_runtime_path())
         .replace("{{PAIRED}}", if paired { "true" } else { "false" })
-        .replace("{{WRITE}}", write.as_str())
         // The backend contract this server answers (#s421), for the page to read; step 4 of
         // design/embedding.md reads it from each backend's handle instead.
         .replace("{{CONTRACT}}", &crate::routes::CONTRACT_VERSION.to_string())
@@ -73,28 +74,18 @@ fn page_with(version: &str, paired: bool, write: WriteGate) -> String {
         .replace(
             "{{MDREV}}",
             claude_replay_html::mdrev_version().unwrap_or(""),
-        );
-    format!("{head}{APP_SHELL}{PAGE_TAIL}")
+        )
 }
 
-/// The page a Markdown document opens in when the preview pane sends it to a tab of its own (#271):
-/// mdrev's viewer as the whole page. STATIC but for the pinned version — `markdown-page.js` reads
-/// the document it names from its own address, so nothing a URL carries is ever written into HTML,
-/// and every request it makes goes to the same `api/mdrev/` routes, under the same guards, as the
-/// pane's.
-pub fn markdown_page() -> String {
-    include_str!("codex-ui/markdown-page.html").replace(
-        "{{MDREV}}",
-        claude_replay_html::mdrev_version().unwrap_or(""),
-    )
-}
-
-/// The page an image opens in when the preview pane sends it to a tab of its own (#s11): the image
-/// as the whole window, fit and zoomable. STATIC — `image-page.js` reads the image it names from its
-/// own address — and it reads only what the pane was offered: a file through `/file` with the
-/// stamp the page minted, or an embedded image handed over through sessionStorage.
-pub fn image_page() -> &'static str {
-    include_str!("codex-ui/image-page.html")
+/// The page a tab of its own opens at (#s433, the kit's `mountDetached`): a session's transcript, a
+/// Markdown document (#271) or an image (#s11), as the whole window. `/detached`, `/markdown` and
+/// `/image` all serve it, so every address the older tabs were opened with still lands. STATIC but
+/// for the page's facts — `detached-page.js` reads what to show from its own address, so nothing a
+/// URL carries is ever written into HTML, and every request it makes goes to the same routes, under
+/// the same guards, as the app's. Kept small: a page older than its monitor reads the mdrev version
+/// off `/markdown` (#s352).
+pub fn detached_page(version: &str, paired: bool) -> String {
+    fill(include_str!("codex-ui/detached-page.html"), version, paired)
 }
 
 /// The monitor's tab icon (#203): the green list mark, served here so the app shell — extracted
@@ -176,9 +167,23 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
             "text/css; charset=utf-8",
             include_bytes!("codex-ui/session-view.css").as_slice(),
         ),
+        "monitor-ui/detached.css" => (
+            "text/css; charset=utf-8",
+            include_bytes!("codex-ui/detached.css").as_slice(),
+        ),
         "monitor-ui/app.js" => (
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/app.js").as_slice(),
+        ),
+        // The web app as one mount (#s551, design/app-mount.md): `mountApp` and the app's shell it
+        // draws, which `app.js` mounts on the monitor's page and the kit carries for the native app.
+        "monitor-ui/app-mount.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/app-mount.js").as_slice(),
+        ),
+        "monitor-ui/app-shell-markup.js" => (
+            "text/javascript; charset=utf-8",
+            include_bytes!("codex-ui/app-shell-markup.js").as_slice(),
         ),
         "monitor-ui/icons.js" => (
             "text/javascript; charset=utf-8",
@@ -284,13 +289,14 @@ pub fn asset(name: &str) -> Option<HttpResponse> {
             "text/javascript; charset=utf-8",
             include_bytes!("codex-ui/mdrev-pane.js").as_slice(),
         ),
-        "monitor-ui/markdown-page.js" => (
+        // A tab of its own (#s433): the kit's entry and the monitor's page that runs it.
+        "monitor-ui/detached.js" => (
             "text/javascript; charset=utf-8",
-            include_bytes!("codex-ui/markdown-page.js").as_slice(),
+            include_bytes!("codex-ui/detached.js").as_slice(),
         ),
-        "monitor-ui/image-page.js" => (
+        "monitor-ui/detached-page.js" => (
             "text/javascript; charset=utf-8",
-            include_bytes!("codex-ui/image-page.js").as_slice(),
+            include_bytes!("codex-ui/detached-page.js").as_slice(),
         ),
         "monitor-ui/preview.js" => (
             "text/javascript; charset=utf-8",
@@ -414,8 +420,7 @@ mod tests {
         for (name, html) in [
             ("the app shell", page("test", false)),
             ("the paired app shell", page("test", true)),
-            ("the Markdown tab", markdown_page()),
-            ("the image tab", image_page().to_string()),
+            ("the detached tab", detached_page("test", false)),
         ] {
             for root in [r#"href="/"#, r#"src="/"#] {
                 assert!(!html.contains(root), "{name} writes {root}…");
@@ -427,8 +432,8 @@ mod tests {
     /// in through `view-root.js`, the session view's root or the app's page, never through
     /// `document` itself. In a shadow root a `document` lookup finds nothing the view drew, a
     /// popover on `document.body` takes none of its styles, and `document.activeElement` names the
-    /// host's element. Read from the directory, so a new module is held to it too. The tabs' own
-    /// pages (`/markdown`, `/image`) are pages, not the view.
+    /// host's element. Read from the directory, so a new module is held to it too. The detached
+    /// tab's page script (`detached-page.js`) is a page, not the view; the kit's `detached.js` is held.
     #[test]
     fn the_shell_reaches_the_page_only_through_its_root() {
         const PAGE_READS: &[&str] = &[
@@ -446,10 +451,7 @@ mod tests {
             let path = entry.unwrap().path();
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
             if !name.ends_with(".js")
-                || matches!(
-                    name.as_str(),
-                    "view-root.js" | "image-page.js" | "markdown-page.js"
-                )
+                || matches!(name.as_str(), "view-root.js" | "detached-page.js")
             {
                 continue;
             }
@@ -580,9 +582,11 @@ mod tests {
     /// new one fails, named with its line, until it hangs on `#sessionView` or is listed here.
     #[test]
     fn the_view_s_styles_hang_on_its_own_element() {
-        // The app's own chrome, which the app draws around the view (app-shell.html, app.js): a
-        // rule naming one of these is the app's, whatever it hangs on.
+        // The app's own chrome, which the app draws around the view (app-shell.html, app-mount.js):
+        // a rule naming one of these is the app's, whatever it hangs on. `.app-mount` is the wrapper
+        // the web app is mounted in (#s551), which draws no box.
         const APP_CHROME: &[&str] = &[
+            ".app-mount",
             ".sidebar",
             ".side-head",
             ".head-actions",
@@ -1123,14 +1127,25 @@ mod tests {
     #[test]
     fn page_is_the_reference_shell_without_mock_runtime() {
         let page = page("test", false);
-        assert!(page.contains(APP_SHELL));
-        // The view's markup is not in the page: the view builds itself from its own (stage 4).
-        assert!(page.contains(r#"<div class="session-view preview-off" id="sessionView"></div>"#));
-        assert!(!page.contains(r#"<main class="workspace">"#));
+        // The page carries the wrapper alone, and `mountApp` draws the app's shell in it (#s551).
+        assert!(page.contains(APP_MOUNT));
+        assert!(!page.contains(r#"id="app""#));
+        let shell = include_str!("codex-ui/app-shell.html");
+        let module = include_str!("codex-ui/app-shell-markup.js");
+        assert!(
+            module.contains(&format!(
+                "export const APP_SHELL_MARKUP = {};",
+                serde_json::to_string(shell).unwrap()
+            )),
+            "the shell's module holds the shell, exactly"
+        );
+        // The view's markup is not in the shell: the view builds itself from its own (stage 4).
+        assert!(shell.contains(r#"<div class="session-view preview-off" id="sessionView"></div>"#));
+        assert!(!shell.contains(r#"<main class="workspace">"#));
         // Nor the list's: it builds itself in an empty `#sessionList` (#s430 stage 3).
-        assert!(page.contains(r#"<div class="session-list" id="sessionList"></div>"#));
-        assert!(!page.contains(r#"id="tree""#));
-        assert!(!page.contains(r#"id="collapseBtn""#));
+        assert!(shell.contains(r#"<div class="session-list" id="sessionList"></div>"#));
+        assert!(!shell.contains(r#"id="tree""#));
+        assert!(!shell.contains(r#"id="collapseBtn""#));
         assert!(page.contains(r#"src="monitor-ui/app.js""#));
         assert!(!page.contains("sample-transcript-data.js"));
         assert!(!page.contains("REAL_TRANSCRIPT"));
@@ -1146,6 +1161,11 @@ mod tests {
     fn every_module_the_shell_imports_is_served() {
         let sources: &[(&str, &str)] = &[
             ("app.js", include_str!("codex-ui/app.js")),
+            ("app-mount.js", include_str!("codex-ui/app-mount.js")),
+            (
+                "app-shell-markup.js",
+                include_str!("codex-ui/app-shell-markup.js"),
+            ),
             ("native-mode.js", include_str!("codex-ui/native-mode.js")),
             ("native-menu.js", include_str!("codex-ui/native-menu.js")),
             (
@@ -1167,11 +1187,11 @@ mod tests {
             ("preview.js", include_str!("codex-ui/preview.js")),
             ("jump-query.js", include_str!("codex-ui/jump-query.js")),
             ("mdrev-pane.js", include_str!("codex-ui/mdrev-pane.js")),
+            ("detached.js", include_str!("codex-ui/detached.js")),
             (
-                "markdown-page.js",
-                include_str!("codex-ui/markdown-page.js"),
+                "detached-page.js",
+                include_str!("codex-ui/detached-page.js"),
             ),
-            ("image-page.js", include_str!("codex-ui/image-page.js")),
             ("record-store.js", include_str!("codex-ui/record-store.js")),
             ("sandbox.js", include_str!("codex-ui/sandbox.js")),
             (
@@ -1474,7 +1494,7 @@ mod tests {
                 >= 100,
             "session-view.css reads a phone as the layout module's classes"
         );
-        // #s431 stage 3: the app lays its list out by the owner's order (`arrangeList`, app.js), and its
+        // #s431 stage 3: the app lays its list out by the owner's order (`arrangeList`, app-mount.js), and its
         // sheet reads the drawer as the order's class, so the app's phone and wide-window queries went
         // to the derivation (`appGate`, scripts/session-view-css.mjs). What asks a query still says what
         // a phone is, and a wide window's rule written in production.css is still held to the rule above.

@@ -1,0 +1,14 @@
+/* The kit's detached tab (#s433, detached.js): every rule hangs on #detachedView, the element the host
+   gives a place and a size. The transcript's own rules are session-view.css's, on #sessionView. */
+#detachedView{--bg:#fff;--ink:#20201f;--sub:#6f706d;box-sizing:border-box;overflow:hidden;background:var(--bg);color:var(--ink);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color-scheme:light}
+#detachedView[data-theme="dark"]{--bg:#191918;--ink:#efefec;--sub:#a5a59f;color-scheme:dark}
+#detachedView[data-kind="image"]{--bg:#f4f4f2}
+#detachedView[data-kind="image"][data-theme="dark"]{--bg:#141413}
+#detachedView>#sessionView{width:100%;height:100%}
+#detachedView>.detached-doc{height:100%}
+#detachedView>.detached-stage{height:100%;overflow:hidden;position:relative;touch-action:none}
+#detachedView>.detached-stage[data-pannable="yes"]{cursor:grab}
+#detachedView>.detached-stage[data-pannable="yes"].dragging{cursor:grabbing}
+#detachedView>.detached-stage>img{position:absolute;left:50%;top:50%;transform-origin:center center;will-change:transform;max-width:none;max-height:none;margin:0}
+#detachedView>.detached-unavailable{max-width:36rem;margin:4rem auto;padding:0 1.5rem;color:var(--sub)}
+#detachedView>.detached-unavailable strong{display:block;color:var(--ink);font-size:16px;margin-bottom:6px}
