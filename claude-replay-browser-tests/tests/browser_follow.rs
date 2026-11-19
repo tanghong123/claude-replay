@@ -14173,27 +14173,43 @@ fn the_tight_session_top_bar_reads_glyphs_search_aa_info_and_pane() {
 /// at rest; the field read "ridg" of "ridge" and the status chip "● D"): in a session column this
 /// narrow the bar has too little for every part's words, and what gives way is a deliberate short
 /// form, never a cut word. The query held in the search box shows whole, and the status chip shows its
-/// words whole or only its dot (its words are its title, and Info names the state). Every control stays
-/// inside the column, and the name keeps its first word. Measured at 601px and 650px, bare and with a
-/// query held at rest.
+/// words whole or only its dot (its tooltip and Info say the state). Every control stays inside the
+/// column, and the name keeps its first word. Measured at 601px and 650px, bare and with a query held
+/// at rest, for a long name and for a name of a single word, which is never cut. A first word near the
+/// name's 160px cap leaves a 601px column no room for a held query beside it: the name keeps its first
+/// word first (#s520).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_narrow_session_column_keeps_a_held_query_whole_and_the_chip_whole_or_its_dot() {
     let _serial = serial();
     let base = base("narrow-bar");
     let stores = Stores::new(&base);
-    let sid = "cccccccc-0000-4000-8000-0000000005a2".to_string();
-    let title = "Harbour tide table notes for the spring survey of every station";
-    let mut jsonl = harness::long_session(6, harness::Shape::default());
-    jsonl.push_str(&format!(
-        "{{\"type\":\"custom-title\",\"customTitle\":\"{title}\"}}\n"
-    ));
-    stores.claude_session(&sid, &jsonl);
+    // A long name, always cut at these widths, and a name of one word, never cut (its least is the
+    // word itself), whose crumb is taken off only where the crumb itself is cut.
+    let sessions = [
+        (
+            "a long name",
+            "cccccccc-0000-4000-8000-0000000005a2",
+            "Harbour tide table notes for the spring survey of every station",
+        ),
+        (
+            "a one-word name",
+            "cccccccc-0000-4000-8000-0000000005a3",
+            "hd-replay",
+        ),
+    ];
+    for (_, sid, title) in sessions {
+        let mut jsonl = harness::long_session(6, harness::Shape::default());
+        jsonl.push_str(&format!(
+            "{{\"type\":\"custom-title\",\"customTitle\":\"{title}\"}}\n"
+        ));
+        stores.claude_session(sid, &jsonl);
+    }
     let monitor = Monitor::spawn(Kind::V1, 3161, &base, Some(&stores), true);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     let column = "document.querySelector('#sessionView .workspace>.topbar').parentElement.getBoundingClientRect().width";
-    let probe = "(function(){ var bar = document.querySelector('#sessionView .workspace>.topbar'), col = bar.parentElement.getBoundingClientRect(); var t = document.getElementById('sessionTitle'), h = t.parentElement, chip = document.getElementById('statusChip'), i = document.getElementById('transcriptSearchInput'), cluster = document.querySelector('.workspace>.topbar>.header-search-cluster'); var drawn = function (e) { return !!e && e.getClientRects().length > 0 && e.getBoundingClientRect().width > 0; }; var cs = getComputedStyle(i), ctx = document.createElement('canvas').getContext('2d'); ctx.font = cs.font; var text = i.value ? ctx.measureText(i.value).width : 0; var inner = i.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); var cr = chip.getBoundingClientRect(), dot = chip.querySelector('.state-dot'), dr = dot ? dot.getBoundingClientRect() : null; var parts = [].slice.call(bar.children).filter(drawn).map(function (e) { var r = e.getBoundingClientRect(); return (e.id ? '#' + e.id : '.' + String(e.className).split(' ')[0]) + ' ' + Math.round(r.left) + '..' + Math.round(r.right); }); var out = [].slice.call(bar.querySelectorAll('button, input, .status-chip, #sessionTitle')).filter(function (e) { var r = e.getBoundingClientRect(); return drawn(e) && (r.left < col.left - 1 || r.right > col.right + 1); }).map(function (e) { return e.id || String(e.className); }); return { col: Math.round(col.width), layout: document.getElementById('sessionView').className, heading: h.className, cluster: cluster.className, query: i.value, text: Math.ceil(text), inner: Math.floor(inner), fieldScroll: i.scrollWidth, fieldClient: i.clientWidth, chipText: chip.textContent.trim(), chipShown: drawn(chip), chipWhole: drawn(chip) && chip.scrollWidth <= chip.clientWidth + 1, chipW: Math.round(cr.width), chipScroll: chip.scrollWidth, dotShown: !!dr && dr.width >= 4 && dr.left >= cr.left - 0.5 && dr.right <= cr.right + 0.5, box: [].slice.call(document.querySelectorAll('.workspace>.topbar>.header-search-cluster *')).filter(function (e) { return drawn(e) && e.children.length === 0 || e.id === 'transcriptSearchCount'; }).map(function (e) { var r = e.getBoundingClientRect(); return (e.id || String(e.className).split(' ')[0] || e.tagName) + ' ' + Math.round(r.left) + '..' + Math.round(r.right) + (e.id === 'transcriptSearchCount' ? ' ' + JSON.stringify(e.textContent) : ''); }), head: [].slice.call(h.children).filter(drawn).map(function (e) { var r = e.getBoundingClientRect(); return (e.id || String(e.className).split(' ')[0]) + ' ' + Math.round(r.left) + '..' + Math.round(r.right); }).concat(['min ' + getComputedStyle(h).minWidth, 'flex ' + getComputedStyle(h).flex]), title: Math.round(t.getBoundingClientRect().width), titleWord: parseFloat(bar.style.getPropertyValue('--title-word')) || 0, parts: parts, out: out }; })()";
+    let probe = "(function(){ var bar = document.querySelector('#sessionView .workspace>.topbar'), col = bar.parentElement.getBoundingClientRect(); var t = document.getElementById('sessionTitle'), h = t.parentElement, chip = document.getElementById('statusChip'), i = document.getElementById('transcriptSearchInput'), cluster = document.querySelector('.workspace>.topbar>.header-search-cluster'); var drawn = function (e) { return !!e && e.getClientRects().length > 0 && e.getBoundingClientRect().width > 0; }; var cs = getComputedStyle(i), ctx = document.createElement('canvas').getContext('2d'); ctx.font = cs.font; var text = i.value ? ctx.measureText(i.value).width : 0; var inner = i.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); var cr = chip.getBoundingClientRect(), dot = chip.querySelector('.state-dot'), dr = dot ? dot.getBoundingClientRect() : null; var parts = [].slice.call(bar.children).filter(drawn).map(function (e) { var r = e.getBoundingClientRect(); return (e.id ? '#' + e.id : '.' + String(e.className).split(' ')[0]) + ' ' + Math.round(r.left) + '..' + Math.round(r.right); }); var out = [].slice.call(bar.querySelectorAll('button, input, .status-chip, #sessionTitle')).filter(function (e) { var r = e.getBoundingClientRect(); return drawn(e) && (r.left < col.left - 1 || r.right > col.right + 1); }).map(function (e) { return e.id || String(e.className); }); return { col: Math.round(col.width), view: Math.round(document.getElementById('sessionView').getBoundingClientRect().width), layout: document.getElementById('sessionView').className, heading: h.className, cluster: cluster.className, query: i.value, text: Math.ceil(text), inner: Math.floor(inner), fieldScroll: i.scrollWidth, fieldClient: i.clientWidth, chipText: chip.textContent.trim(), chipShown: drawn(chip), chipWhole: drawn(chip) && chip.scrollWidth <= chip.clientWidth + 1, chipW: Math.round(cr.width), chipScroll: chip.scrollWidth, dotShown: !!dr && dr.width >= 4 && dr.left >= cr.left - 0.5 && dr.right <= cr.right + 0.5, dotW: dr ? Math.round(dr.width * 10) / 10 : 0, chipWf: Math.round(cr.width * 10) / 10, chipFont: getComputedStyle(chip).fontSize, box: [].slice.call(document.querySelectorAll('.workspace>.topbar>.header-search-cluster *')).filter(function (e) { return drawn(e) && e.children.length === 0 || e.id === 'transcriptSearchCount'; }).map(function (e) { var r = e.getBoundingClientRect(); return (e.id || String(e.className).split(' ')[0] || e.tagName) + ' ' + Math.round(r.left) + '..' + Math.round(r.right) + (e.id === 'transcriptSearchCount' ? ' ' + JSON.stringify(e.textContent) : ''); }), head: [].slice.call(h.children).filter(drawn).map(function (e) { var r = e.getBoundingClientRect(); return (e.id || String(e.className).split(' ')[0]) + ' ' + Math.round(r.left) + '..' + Math.round(r.right); }).concat(['min ' + getComputedStyle(h).minWidth, 'flex ' + getComputedStyle(h).flex]), title: Math.round(t.getBoundingClientRect().width), titleWord: parseFloat(bar.style.getPropertyValue('--title-word')) || 0, parts: parts, out: out }; })()";
     // The window narrowed until the session's column is `want` wide (the list and the outline take what
     // the layout gives them at each width), then the bar's fits settled.
     let at = |want: f64, what: &str| -> serde_json::Value {
@@ -14238,6 +14254,14 @@ fn a_narrow_session_column_keeps_a_held_query_whole_and_the_chip_whole_or_its_do
             seen["chipWhole"] == true || (short && seen["dotShown"] == true),
             "{what}: the status chip shows its words whole, or only its dot, never a cut word: {seen}"
         );
+        if short {
+            assert!(
+                seen["chipWf"].as_f64().unwrap_or(f64::MAX)
+                    <= seen["dotW"].as_f64().unwrap_or(0.0) + 1.0
+                    && seen["chipFont"] == "0px",
+                "{what}: the chip in its short form is its dot alone, its words taking no room: {seen}"
+            );
+        }
         if !seen["query"].as_str().unwrap_or("").is_empty() {
             assert!(
                 seen["text"].as_f64().unwrap_or(f64::MAX)
@@ -14258,59 +14282,62 @@ fn a_narrow_session_column_keeps_a_held_query_whole_and_the_chip_whole_or_its_do
             "{what}: the name keeps its first word: {seen}"
         );
     };
-    let url = monitor.url(&format!("?ui=app&session={sid}"));
-    harness::resize(&tab, 1440.0, 900.0);
-    tab.navigate_to(&url).unwrap();
-    tab.wait_until_navigated().unwrap();
-    harness::until(
-        &tab,
-        &format!("!!document.querySelector('.virtual-window .turn.user') && document.getElementById('sessionTitle').textContent === {title:?}"),
-        "the app shell to mount the fixture",
-        Duration::from_secs(30),
-        "document.body.innerText.slice(0, 200)",
-    );
-    let seen = at(650.0, "650px bare");
-    eprintln!("#s598 650px bare: {seen}");
-    check(&seen, 650.0, "650px bare");
-    let seen = at(601.0, "601px bare");
-    eprintln!("#s598 601px bare: {seen}");
-    check(&seen, 601.0, "601px bare");
-    // A five-letter query, counted, then left: a press on the transcript lets the box rest with it held.
-    harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
-    harness::eval(
-        &tab,
-        "(function(){ var i = document.getElementById('transcriptSearchInput'); i.value = 'lorem'; i.dispatchEvent(new Event('input', { bubbles: true })); if (/⏎/.test(document.getElementById('transcriptSearchCount').textContent)) i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return 1; })()",
-    );
-    let count = "document.getElementById('transcriptSearchCount').textContent";
-    harness::until(
-        &tab,
-        &format!("/\\d/.test({count}) && !/⏎/.test({count})"),
-        "the query's matches counted",
-        Duration::from_secs(10),
-        count,
-    );
-    let away = harness::probe(
-        &tab,
-        "(function(){ var r = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height * 0.6) }; })()",
-    );
-    tab.click_point(headless_chrome::browser::tab::point::Point {
-        x: away["x"].as_f64().unwrap_or(0.0),
-        y: away["y"].as_f64().unwrap_or(0.0),
-    })
-    .expect("a press on the transcript");
-    harness::until(
-        &tab,
-        "(function(){ var c = document.querySelector('.workspace>.topbar>.header-search-cluster'); return !c.matches(':focus-within') && !c.classList.contains('search-held') && document.getElementById('transcriptSearchInput').value === 'lorem'; })()",
-        "the search box to rest with the query held",
-        Duration::from_secs(5),
-        "document.querySelector('.workspace>.topbar>.header-search-cluster').className",
-    );
-    let seen = at(601.0, "601px with a query held");
-    eprintln!("#s598 601px held: {seen}");
-    check(&seen, 601.0, "601px with a query held");
-    let seen = at(650.0, "650px with a query held");
-    eprintln!("#s598 650px held: {seen}");
-    check(&seen, 650.0, "650px with a query held");
+    for (name, sid, title) in sessions {
+        let url = monitor.url(&format!("?ui=app&session={sid}"));
+        harness::resize(&tab, 1440.0, 900.0);
+        tab.navigate_to(&url).unwrap();
+        tab.wait_until_navigated().unwrap();
+        harness::until(
+            &tab,
+            &format!("!!document.querySelector('.virtual-window .turn.user') && document.getElementById('sessionTitle').textContent === {title:?}"),
+            "the app shell to mount the fixture",
+            Duration::from_secs(30),
+            "document.body.innerText.slice(0, 200)",
+        );
+        for want in [650.0, 601.0] {
+            let what = format!("{name}, {want}px bare");
+            let seen = at(want, &what);
+            eprintln!("#s598 {what}: {seen}");
+            check(&seen, want, &what);
+        }
+        // A five-letter query, counted, then left: a press on the transcript lets the box rest
+        // with it held.
+        harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
+        harness::eval(
+            &tab,
+            "(function(){ var i = document.getElementById('transcriptSearchInput'); i.value = 'lorem'; i.dispatchEvent(new Event('input', { bubbles: true })); if (/⏎/.test(document.getElementById('transcriptSearchCount').textContent)) i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return 1; })()",
+        );
+        let count = "document.getElementById('transcriptSearchCount').textContent";
+        harness::until(
+            &tab,
+            &format!("/\\d/.test({count}) && !/⏎/.test({count})"),
+            "the query's matches counted",
+            Duration::from_secs(10),
+            count,
+        );
+        let away = harness::probe(
+            &tab,
+            "(function(){ var r = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height * 0.6) }; })()",
+        );
+        tab.click_point(headless_chrome::browser::tab::point::Point {
+            x: away["x"].as_f64().unwrap_or(0.0),
+            y: away["y"].as_f64().unwrap_or(0.0),
+        })
+        .expect("a press on the transcript");
+        harness::until(
+            &tab,
+            "(function(){ var c = document.querySelector('.workspace>.topbar>.header-search-cluster'); return !c.matches(':focus-within') && !c.classList.contains('search-held') && document.getElementById('transcriptSearchInput').value === 'lorem'; })()",
+            "the search box to rest with the query held",
+            Duration::from_secs(5),
+            "document.querySelector('.workspace>.topbar>.header-search-cluster').className",
+        );
+        for want in [601.0, 650.0] {
+            let what = format!("{name}, {want}px with a query held");
+            let seen = at(want, &what);
+            eprintln!("#s598 {what}: {seen}");
+            check(&seen, want, &what);
+        }
+    }
     harness::clear_metrics(&tab);
     drop(monitor);
 }
