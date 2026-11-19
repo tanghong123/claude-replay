@@ -1679,6 +1679,33 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
             && covers["headingHit"] == true,
         "the sheet covers the window, its document is what a click hits, and its close is a 44px target on top: {covers}"
     );
+    // The keys are the sheet's while it is open (the #s596 review): `/` would open the session's
+    // find under it and take the focus, and `\` fold the list, where the reader cannot see either.
+    // Pressed as the reader would, right after Review, with nothing clicked inside the sheet.
+    harness::quiet_keys(&tab);
+    eval(&tab, "window.__keys = []; document.addEventListener('keydown', e => window.__keys.push(e.key), true); 'ok'");
+    let page_state = || {
+        eval(
+            &tab,
+            "JSON.stringify({ find: (document.activeElement || {}).id === 'transcriptSearchInput', list: document.getElementById('app').className, keys: window.__keys, sheet: !!document.querySelector('.review-sheet') })",
+        )
+        .as_str()
+        .unwrap_or("")
+        .to_string()
+    };
+    let before = page_state();
+    tab.press_key("/").unwrap();
+    tab.press_key("\\").unwrap();
+    std::thread::sleep(Duration::from_millis(400));
+    let after: serde_json::Value = serde_json::from_str(&page_state()).unwrap();
+    let before: serde_json::Value = serde_json::from_str(&before).unwrap();
+    assert!(
+        after["keys"] == serde_json::json!(["/", "\\"])
+            && after["find"] == false
+            && after["list"] == before["list"]
+            && after["sheet"] == true,
+        "the keys reached the page and moved nothing under the sheet: {before} then {after}"
+    );
     harness::click_when_settled(
         &tab,
         ".review-sheet [data-review-close]",
@@ -1690,6 +1717,17 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
         "the sheet gone and the pane as it was",
         Duration::from_secs(10),
         PANE,
+    );
+    // The control: with the sheet gone the same key is the app's again, so the step above is not
+    // vacuous.
+    tab.find_element(".transcript").unwrap().click().unwrap();
+    tab.press_key("/").unwrap();
+    until(
+        &tab,
+        "(document.activeElement || {}).id === 'transcriptSearchInput'",
+        "the same key with the sheet gone to open the session's find",
+        Duration::from_secs(5),
+        "JSON.stringify(window.__keys) + ' active=' + ((document.activeElement || {}).id || (document.activeElement || {}).tagName)",
     );
     let host = eval(&tab, "JSON.stringify(window.__host)");
     let host: serde_json::Value = serde_json::from_str(host.as_str().unwrap_or("{}")).unwrap();

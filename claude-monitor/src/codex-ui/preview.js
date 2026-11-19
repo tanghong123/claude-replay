@@ -424,6 +424,13 @@ export class Preview {
     sheet.className = "review-sheet";
     sheet.setAttribute("role", "dialog");
     sheet.setAttribute("aria-label", `Review ${item.name || "document"}`);
+    // The keys are the sheet's while it is open (#s596 review): it covers the window, so a key the
+    // page's keymap answered would act on the transcript and the list hidden under it (`/` opening
+    // the find there and taking the focus). Marked as a guest (shared/keymap.js), and its close
+    // takes the focus as it opens, which engages it before any key is pressed; nothing outside the
+    // sheet can be pressed or focused while it covers the window, and once it is gone the keymap
+    // answers again. mdrev's own keys act once the reader clicks into the document, as in the pane.
+    sheet.dataset.guestKeys = "";
     sheet.innerHTML = `<div class="review-sheet-head"><button type="button" class="review-sheet-close" data-review-close aria-label="Close the review">${svg("x")}</button><strong>${escapeText(item.name || "document")}</strong></div><div class="review-sheet-body mdrev-pane"></div>`;
     (viewRoot.element() || viewRoot.layer()).append(sheet);
     const state = { sheet, handle: null, close: null };
@@ -439,6 +446,7 @@ export class Preview {
     state.close = close;
     addEventListener("keydown", onKey, true);
     sheet.querySelector("[data-review-close]").onclick = close;
+    sheet.querySelector("[data-review-close]").focus({ preventScroll: true });
     mountMarkdown(sheet.querySelector(".review-sheet-body"), item, { review: true }).then(handle => {
       if (this.reviewSheet !== state) { handle?.unmount(); return; }
       if (!handle) throw new Error("no mdrev");
