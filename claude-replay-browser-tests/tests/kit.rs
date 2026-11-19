@@ -32,10 +32,11 @@ const HOST: &str = r#"<!doctype html>
 <div class="host-sessions"><div id="sessionList"></div></div>
 <div class="host-pane" id="pane"><div id="sessionView"></div></div>
 <script type="module">
-const host = window.__host = { mounted: false, error: null, opened: [], titles: [], errors: [], tabs: [] };
+const host = window.__host = { mounted: false, error: null, opened: [], titles: [], errors: [], loops: [], tabs: [] };
 // A tab the view opens is recorded, never opened: the case loads each address itself (#s433).
 window.open = url => { host.tabs.push(String(url)); return null; };
-addEventListener("error", event => host.errors.push(String(event.message)));
+// A ResizeObserver loop notice is the browser putting a size report off to the next frame, not a throw: it is kept apart, with the step the case names, and fails nothing (#s596).
+addEventListener("error", event => /^ResizeObserver loop/.test(String(event.message)) ? host.loops.push({ step: window.__step || null, t: Math.round(performance.now()) }) : host.errors.push(String(event.message)));
 addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
 try {
   const kit = await import("/kit/bundle/index.js");
@@ -88,8 +89,9 @@ const TAB: &str = r#"<!doctype html>
 <body>
 <div id="detachedView"></div>
 <script type="module">
-const tab = window.__tab = { mounted: false, error: null, errors: [] };
-addEventListener("error", event => tab.errors.push(String(event.message)));
+const tab = window.__tab = { mounted: false, error: null, errors: [], loops: [] };
+// A ResizeObserver loop notice is the browser putting a size report off to the next frame, not a throw: it is kept apart, with the step the case names, and fails nothing (#s596).
+addEventListener("error", event => /^ResizeObserver loop/.test(String(event.message)) ? tab.loops.push({ step: window.__step || null, t: Math.round(performance.now()) }) : tab.errors.push(String(event.message)));
 addEventListener("unhandledrejection", event => tab.errors.push(String(event.reason && event.reason.message || event.reason)));
 try {
   const { backendHandle, mountDetached } = await import("/kit/bundle/index.js");
@@ -249,8 +251,9 @@ const APP_HOST: &str = r#"<!doctype html>
 <body>
 <div id="appRoot"></div>
 <script type="module">
-const host = window.__host = { mounted: false, error: null, refused: [], again: null, asks: [], errors: [] };
-addEventListener("error", event => host.errors.push(String(event.message)));
+const host = window.__host = { mounted: false, error: null, refused: [], again: null, asks: [], errors: [], loops: [] };
+// A ResizeObserver loop notice is the browser putting a size report off to the next frame, not a throw: it is kept apart, with the step the case names, and fails nothing (#s596).
+addEventListener("error", event => /^ResizeObserver loop/.test(String(event.message)) ? host.loops.push({ step: window.__step || null, t: Math.round(performance.now()) }) : host.errors.push(String(event.message)));
 addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
 const refusal = run => { try { run(); return null; } catch (error) { return String(error && error.message || error); } };
 try {
@@ -410,8 +413,9 @@ const APP_MACHINES_HOST: &str = r#"<!doctype html>
 <body>
 <div id="appRoot"></div>
 <script type="module">
-const host = window.__host = { mounted: false, error: null, errors: [], asked: [] };
-addEventListener("error", event => host.errors.push(String(event.message)));
+const host = window.__host = { mounted: false, error: null, errors: [], loops: [], asked: [] };
+// A ResizeObserver loop notice is the browser putting a size report off to the next frame, not a throw: it is kept apart, with the step the case names, and fails nothing (#s596).
+addEventListener("error", event => /^ResizeObserver loop/.test(String(event.message)) ? host.loops.push({ step: window.__step || null, t: Math.round(performance.now()) }) : host.errors.push(String(event.message)));
 addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
 const pageFetch = window.fetch.bind(window);
 window.fetch = (input, init) => { host.asked.push(new URL(String(input && input.url || input), location.href).href.slice(location.origin.length)); return pageFetch(input, init); };
@@ -864,8 +868,9 @@ const HOST_APART: &str = r#"<!doctype html>
 <div class="host-sessions"><div id="sessionList"></div></div>
 <div class="host-pane" id="pane"><div id="sessionView"></div></div>
 <script type="module">
-const host = window.__host = { mounted: false, error: null, errors: [] };
-addEventListener("error", event => host.errors.push(String(event.message)));
+const host = window.__host = { mounted: false, error: null, errors: [], loops: [] };
+// A ResizeObserver loop notice is the browser putting a size report off to the next frame, not a throw: it is kept apart, with the step the case names, and fails nothing (#s596).
+addEventListener("error", event => /^ResizeObserver loop/.test(String(event.message)) ? host.loops.push({ step: window.__step || null, t: Math.round(performance.now()) }) : host.errors.push(String(event.message)));
 addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
 try {
   const { backendHandle, mountSessionList, mountSessionView } = await import("/kit/bundle/index.js");
@@ -1045,8 +1050,9 @@ const HOST_MERGED: &str = r#"<!doctype html>
 <div class="host-sessions"><div id="sessionList"></div></div>
 <div class="host-pane" id="pane"><div id="sessionView"></div></div>
 <script type="module">
-const host = window.__host = { mounted: false, error: null, errors: [], opened: [], views: [], asked: [] };
-addEventListener("error", event => host.errors.push(String(event.message)));
+const host = window.__host = { mounted: false, error: null, errors: [], loops: [], opened: [], views: [], asked: [] };
+// A ResizeObserver loop notice is the browser putting a size report off to the next frame, not a throw: it is kept apart, with the step the case names, and fails nothing (#s596).
+addEventListener("error", event => /^ResizeObserver loop/.test(String(event.message)) ? host.loops.push({ step: window.__step || null, t: Math.round(performance.now()) }) : host.errors.push(String(event.message)));
 addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
 const pageFetch = window.fetch.bind(window);
 window.fetch = (input, init) => { host.asked.push(new URL(String(input && input.url || input), location.href).href.slice(location.origin.length)); return pageFetch(input, init); };
@@ -2343,9 +2349,10 @@ const NATIVE_HOST: &str = r#"<!doctype html>
 
 /// The host's script, a file under `/kit/` as the app's is: the mount with the native app's own
 /// options (#s596), its Machines row counting its calls.
-const NATIVE_SCRIPT: &str = r#"const host = window.__host = { mounted: false, error: null, errors: [], violations: [], machines: 0 };
+const NATIVE_SCRIPT: &str = r#"const host = window.__host = { mounted: false, error: null, errors: [], loops: [], violations: [], machines: 0 };
 addEventListener("securitypolicyviolation", event => host.violations.push(`${event.effectiveDirective} ${event.blockedURI}`));
-addEventListener("error", event => host.errors.push(String(event.message)));
+// A ResizeObserver loop notice is the browser putting a size report off to the next frame, not a throw: it is kept apart, with the step the case names, and fails nothing (#s596).
+addEventListener("error", event => /^ResizeObserver loop/.test(String(event.message)) ? host.loops.push({ step: window.__step || null, t: Math.round(performance.now()) }) : host.errors.push(String(event.message)));
 addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
 try {
   const native = await import("/kit/bundle/native-app.js");

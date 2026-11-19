@@ -28,12 +28,13 @@
 <header class="host-bar"><button type="button" id="hostButton">The host's own button</button><span id="hostLabel">A host</span></header>
 <div class="host-pane" id="hostPane"><div class="host-view"></div></div>
 <script type="module" nonce="host">
-const host = window.__host = { mounted: false, error: null, events: [], keys: [], framed: [], messages: [], errors: [], requests: [] };
+const host = window.__host = { mounted: false, error: null, events: [], keys: [], framed: [], messages: [], errors: [], loops: [], requests: [] };
 // What a frame inside the view says to its parent: how a case sees an agent page's script run.
 addEventListener("message", event => host.messages.push(String(event.data)));
 // What the page throws, and every request it makes, with when: how a case sees that an unmounted view
 // stopped (stage 7).
-addEventListener("error", event => host.errors.push(String(event.message)));
+// A ResizeObserver loop notice is the browser putting a size report off to the next frame, not a throw: it is kept apart, with the step the case names, and fails nothing (#s596).
+addEventListener("error", event => /^ResizeObserver loop/.test(String(event.message)) ? host.loops.push({ step: window.__step || null, t: Math.round(performance.now()) }) : host.errors.push(String(event.message)));
 const fetched = window.fetch;
 window.fetch = (input, init) => { host.requests.push({ url: String(input && input.url || input), at: performance.now() }); return fetched(input, init); };
 // The host's own keyboard, bound BEFORE the view mounts, as a host's page would be: what reaches it,

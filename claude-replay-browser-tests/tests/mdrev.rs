@@ -1554,9 +1554,10 @@ const NATIVE_REVIEW_HOST: &str = r#"<!doctype html>
 </html>
 "#;
 
-const NATIVE_REVIEW_SCRIPT: &str = r#"const host = window.__host = { mounted: false, error: null, errors: [], violations: [] };
+const NATIVE_REVIEW_SCRIPT: &str = r#"const host = window.__host = { mounted: false, error: null, errors: [], loops: [], violations: [] };
 addEventListener("securitypolicyviolation", event => host.violations.push(`${event.effectiveDirective} ${event.blockedURI}`));
-addEventListener("error", event => host.errors.push(String(event.message)));
+// A ResizeObserver loop notice is the browser putting a size report off to the next frame, not a throw: it is kept apart, with the step the case names, and fails nothing (#s596).
+addEventListener("error", event => /^ResizeObserver loop/.test(String(event.message)) ? host.loops.push({ step: window.__step || null, t: Math.round(performance.now()) }) : host.errors.push(String(event.message)));
 addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
 try {
   const native = await import("/kit/bundle/native-app.js");
@@ -1641,6 +1642,7 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
         true,
         "a desktop's width, with a mouse"
     );
+    eval(&tab, "window.__step = 'the guide in the pane'; 'ok'");
     open_guide(&tab, &repo);
     until(
         &tab,
@@ -1649,6 +1651,7 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
         Duration::from_secs(30),
         "(function(){ var b = document.querySelector('.preview-review'); return (b ? 'review ' + (b.hidden ? 'hidden' : 'shown ' + b.offsetWidth) : 'no review control') + ' | ' + JSON.stringify(window.__host) + ' | ' + ((document.getElementById('previewBody') || {}).className || 'no pane'); })()",
     );
+    eval(&tab, "window.__step = 'the sheet opening'; 'ok'");
     harness::click_when_settled(&tab, ".preview-review", "the pane's Review control");
     until(
         &tab,
@@ -1744,6 +1747,7 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
         Duration::from_secs(5),
         "(document.activeElement || {}).className || (document.activeElement || {}).tagName",
     );
+    eval(&tab, "window.__step = 'Escape from inside mdrev'; 'ok'");
     tab.press_key("Escape").unwrap();
     until(
         &tab,
@@ -1752,6 +1756,7 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
         Duration::from_secs(10),
         "(document.activeElement || {}).className + ' | ' + document.getElementById('previewBody').className",
     );
+    eval(&tab, "window.__step = 'the app keys after the close'; 'ok'");
     // The control: with the sheet gone the same keys are the app's again, pressed with nothing
     // clicked (the focus where the close left it), so the steps above are not vacuous.
     tab.press_key("/").unwrap();
@@ -1771,6 +1776,10 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
         "JSON.stringify(window.__keys)",
     );
     let host = eval(&tab, "JSON.stringify(window.__host)");
+    eprintln!(
+        "ResizeObserver loop notices, by step (none fails the case): {}",
+        eval(&tab, "JSON.stringify(window.__host.loops)")
+    );
     let host: serde_json::Value = serde_json::from_str(host.as_str().unwrap_or("{}")).unwrap();
     assert!(
         host["mounted"] == true
