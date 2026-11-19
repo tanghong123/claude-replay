@@ -156,7 +156,9 @@ fn render_flavor(fold: &FoldPolicy) -> u64 {
     // (`→ skua-HD · …`).
     // v30: #s456 — a SendMessage that brought a resumed sub-agent's report back draws the report
     // as an `md` part under the receipt's first sentence.
-    const RECORD_SCHEMA: u16 = 30;
+    // v31: #s620 — a folded run's head summary counts a call stopped before it ran apart ("1 call
+    // blocked", "1 call declined") instead of as a call that ran.
+    const RECORD_SCHEMA: u16 = 31;
     let mut h = std::collections::hash_map::DefaultHasher::new();
     RECORD_SCHEMA.hash(&mut h);
     fold.folded_kinds().hash(&mut h);
