@@ -1146,7 +1146,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 /* #s358: a phone has no Outline menu, so its Agents list opens on a row for the same filter: the
    row's whole width is the target, as a reading row's is, in the accent colour and larger than the
    agents' own titles, so it reads as a control. Only a phone ever draws it, so it needs no query of
-   its own. Its Tasks list has the same row for Top-level only (#s606). */
+   its own. Its Tasks list has the same row for Top-level only (#s606). A sheet draws neither row and
+   carries the control in its head instead (#s616, below); a wide phone's column keeps the row. */
 .agents-filter-row, .tasks-filter-row {
   display: block; width: 100%; min-height: 44px; padding: 0 12px; border-radius: 9px;
   background: transparent; color: var(--primary);
@@ -1720,6 +1721,13 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   .phone-pane-head{display:flex;align-items:center;justify-content:space-between;flex:none;padding:0 2px 0 16px;border-bottom:1px solid var(--line)}
   .phone-pane-head strong{font-size:14px;color:var(--ink)}
   .phone-pane-close{width:44px;height:44px;border-radius:10px;background:transparent;color:var(--sub);font-size:17px;cursor:pointer}
+  /* #s616: the list's filter is the sheet head's (session-view.js `renderFilter`), beside the title and
+     before ✕, so a short list held sideways keeps all its height for the list; the list's own row is
+     not drawn in the sheet (a wide phone's column, which has no such head, still shows it). */
+  .phone-pane-head strong{flex:none}
+  .phone-pane-filter:not([hidden]){flex:0 1 auto;min-width:0;height:44px;margin-left:auto;padding:0 10px;border-radius:10px;background:transparent;color:var(--primary);font:inherit;font-size:14px;font-weight:570;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+  .phone-pane-filter:active,.phone-pane-filter:focus-visible{background:var(--hover);outline:0}
+  .phone-pane-menu .phone-pane-body .tasks-filter-row,.phone-pane-menu .phone-pane-body .agents-filter-row{display:none}
   .phone-pane-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 6px 6px}
   .phone-pane-body .outline-turn-row,.phone-pane-body .work-task-head,.phone-pane-body .outline-agent{min-height:44px}
   .phone-pane-body .outline-turn-row .outline-label{font-size:14px}

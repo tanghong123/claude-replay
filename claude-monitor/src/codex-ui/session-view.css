@@ -2083,6 +2083,10 @@
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-head{display:flex;align-items:center;justify-content:space-between;flex:none;padding:0 2px 0 16px;border-bottom:1px solid var(--line)}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-head strong{font-size:14px;color:var(--ink)}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-close{width:44px;height:44px;border-radius:10px;background:transparent;color:var(--sub);font-size:17px;cursor:pointer}
+:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-head strong{flex:none}
+:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-filter:not([hidden]){flex:0 1 auto;min-width:0;height:44px;margin-left:auto;padding:0 10px;border-radius:10px;background:transparent;color:var(--primary);font:inherit;font-size:14px;font-weight:570;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-filter:active,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-filter:focus-visible{background:var(--hover);outline:0}
+:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-menu .phone-pane-body .tasks-filter-row,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-menu .phone-pane-body .agents-filter-row{display:none}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 6px 6px}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-body .outline-turn-row,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-body .work-task-head,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-body .outline-agent{min-height:44px}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-body .outline-turn-row .outline-label{font-size:14px}

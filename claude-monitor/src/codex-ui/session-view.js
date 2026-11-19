@@ -4846,7 +4846,7 @@ var phoneDock;
   menu.id = "phonePaneMenu";
   menu.hidden = true;
   menu.setAttribute("role", "dialog");
-  menu.innerHTML = '<div class="phone-pane-head"><strong></strong><button type="button" class="phone-pane-close" aria-label="Close">✕</button></div><div class="phone-pane-jumps" role="toolbar" aria-label="Jump to a state" hidden></div><div class="phone-pane-body"></div>';
+  menu.innerHTML = '<div class="phone-pane-head"><strong></strong><button type="button" class="phone-pane-filter" hidden></button><button type="button" class="phone-pane-close" aria-label="Close">✕</button></div><div class="phone-pane-jumps" role="toolbar" aria-label="Jump to a state" hidden></div><div class="phone-pane-body"></div>';
   // #s55: the session dims behind an open sheet; a tap there closes it (the outside tap below).
   const paneScrim = document.createElement("div");
   paneScrim.className = "pane-scrim";
@@ -4854,11 +4854,27 @@ var phoneDock;
   sessionView.append(paneScrim, menu);
   const menuBody = menu.querySelector(".phone-pane-body");
   const jumps = menu.querySelector(".phone-pane-jumps");
+  const headFilter = menu.querySelector(".phone-pane-filter");
   let openPane = null, home = null;
   // #319: the Tasks drop-down lists every state (a phone cannot reach the outline's state filter),
   // so its head jumps between them — each named and counted as the state's own head in the list,
   // which stays pinned at the top while its rows scroll under it (production.css).
+  // #s616: the list's filter (#s606's Hide follow-ups, #s358's Hide finished agents, and the Show N
+  // that undoes each) is drawn in the sheet's HEAD, beside its title, where it costs the list nothing.
+  // Held sideways the list is about 97px, and the opening scroll to what is still moving took the row
+  // at the list's top out of reach; pinned there, the row and a state's head left no task readable.
+  // The list keeps its row (not drawn in the sheet, production.css; a wide phone's column shows it),
+  // and the head's control carries the row's data, so a press goes through `navigatorClick` as the
+  // row's did, and the redraw it makes calls this again (`tasksChanged`).
+  const renderFilter = () => {
+    const row = openPane ? menuBody.querySelector(".tasks-filter-row, .agents-filter-row") : null;
+    for (const name of headFilter.getAttributeNames()) if (name.startsWith("data-") || name === "aria-label") headFilter.removeAttribute(name);
+    headFilter.hidden = !row;
+    headFilter.textContent = row ? row.textContent : "";
+    if (row) for (const name of row.getAttributeNames()) if (name.startsWith("data-") || name === "aria-label") headFilter.setAttribute(name, row.getAttribute(name));
+  };
   const renderJumps = () => {
+    renderFilter();
     const heads = openPane?.key === "tasks" ? [...menuBody.querySelectorAll(".work-group[data-task-group]")] : [];
     jumps.hidden = !heads.length;
     jumps.innerHTML = heads.map(head => {
