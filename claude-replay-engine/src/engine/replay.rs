@@ -786,6 +786,15 @@ impl<'a> Replayer<'a> {
                                 content: c.trim().to_string(),
                                 marker_idx,
                             });
+                        } else {
+                            // An enqueue with no content holds its place (#s608): Claude Code
+                            // writes one for an image-only message, then a content-less pop for
+                            // it. Without its slot that pop took the prompt queued behind it (69
+                            // pops on one machine), whose marker then went early.
+                            self.queue.push(QueueItem {
+                                content: String::new(),
+                                marker_idx: None,
+                            });
                         }
                     }
                     QueueOpKind::Remove | QueueOpKind::Dequeue => {

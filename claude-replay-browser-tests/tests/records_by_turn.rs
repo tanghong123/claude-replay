@@ -33,7 +33,7 @@ fn open(
     extra: &str,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     std::path::PathBuf,
 ) {
@@ -51,7 +51,7 @@ fn open_with_tasks(
     tasks: &[(&str, &str, &str)],
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     std::path::PathBuf,
 ) {

@@ -15546,7 +15546,7 @@ fn shell_with_a_session(
     port: u16,
 ) -> (
     Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     shell_with_a_session_in(name, port, |_| {})
@@ -15559,7 +15559,7 @@ fn shell_with_a_session_in(
     prepare: impl FnOnce(&headless_chrome::Tab),
 ) -> (
     Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     let base = base(name);
@@ -17329,7 +17329,7 @@ fn emptied_panes_world(
     running: bool,
 ) -> (
     Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     &'static str,
 ) {
@@ -17727,7 +17727,7 @@ fn top_level_world(
     phone: Option<(u32, u32)>,
 ) -> (
     Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     [&'static str; 3],
 ) {
@@ -19142,7 +19142,7 @@ fn phone_world(
     h: u32,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     let (m, b, tab, _) = phone_world_at(port, case, w, h, "");
@@ -19159,7 +19159,7 @@ fn phone_world_at(
     extra: &str,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     std::path::PathBuf,
 ) {
@@ -19196,12 +19196,7 @@ fn phone_world_at(
 
 /// A desktop browser (1280×900, no phone emulation) on `m`, open on the phone's session in the app
 /// shell — the width a phone-only rule must leave as it was.
-fn desktop_tab(
-    m: &harness::Monitor,
-) -> (
-    headless_chrome::Browser,
-    std::sync::Arc<headless_chrome::Tab>,
-) {
+fn desktop_tab(m: &harness::Monitor) -> (harness::Chrome, std::sync::Arc<headless_chrome::Tab>) {
     let (browser, tab) = harness::chrome_tab();
     harness::resize(&tab, 1280.0, 900.0);
     m.pair(&tab);
@@ -19221,10 +19216,7 @@ fn phone_tab(
     m: &harness::Monitor,
     w: u32,
     h: u32,
-) -> (
-    headless_chrome::Browser,
-    std::sync::Arc<headless_chrome::Tab>,
-) {
+) -> (harness::Chrome, std::sync::Arc<headless_chrome::Tab>) {
     let (browser, tab) = harness::chrome_tab();
     harness::phone(&tab, w, h);
     m.pair(&tab);
@@ -19906,7 +19898,7 @@ fn pinched_image_in_the_pane(
     case: &str,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     &'static str,
     (f64, f64),
@@ -20616,7 +20608,7 @@ fn phone_tasks_world(
     case: &str,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     let base = harness::base(case);
@@ -21061,7 +21053,7 @@ fn tail_first_world(
     case: &str,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     let base = harness::base(case);
@@ -21970,7 +21962,7 @@ fn phone_files_world(
     artifact: bool,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     Vec<String>,
 ) {
@@ -22024,10 +22016,7 @@ fn remote_phone_tab(
     m: &harness::Monitor,
     w: u32,
     h: u32,
-) -> (
-    headless_chrome::Browser,
-    std::sync::Arc<headless_chrome::Tab>,
-) {
+) -> (harness::Chrome, std::sync::Arc<headless_chrome::Tab>) {
     let (browser, tab) = harness::remote_phone(w, h);
     m.open_remote(&tab, &format!("?ui=app&session={PHONE_SID}"));
     harness::until(
@@ -22448,7 +22437,7 @@ fn tail_first_phone(
     index: bool,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     let base = harness::base(case);
@@ -23981,7 +23970,7 @@ fn landscape_world(
     phone: bool,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     String,
 ) {
@@ -24156,7 +24145,7 @@ fn drawer_world(
     insets: Option<(u32, u32, u32, u32)>,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     let base = harness::base(case);
@@ -27302,7 +27291,7 @@ fn workers_world(
     phone: Option<(u32, u32)>,
 ) -> (
     Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     [&'static str; 3],
 ) {
