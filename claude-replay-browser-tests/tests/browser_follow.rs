@@ -27683,6 +27683,22 @@ fn a_paired_browser_opened_from_another_app_s_link_can_write() {
         serde_json::json!("reload"),
         "the page it landed on is the one reload that brought the cookie"
     );
+    // Whose reload it was: on Linux the page's own (the gate let the cookieless load read), on
+    // macOS the gate's refusal page (#341).
+    let stamps = harness::eval(
+        &tab,
+        "JSON.stringify([!!sessionStorage.getItem('am-write-retry'), !!sessionStorage.getItem('cmauth-retry')])",
+    );
+    let want = if cfg!(target_os = "linux") {
+        "[true,false]"
+    } else {
+        "[false,true]"
+    };
+    assert_eq!(
+        stamps.as_str(),
+        Some(want),
+        "the reload was the page's on Linux and the refusal page's on macOS"
+    );
     harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
     harness::until(
         &tab,
@@ -27690,6 +27706,95 @@ fn a_paired_browser_opened_from_another_app_s_link_can_write() {
         "write mode to turn on and offer the compose button",
         Duration::from_secs(10),
         WRITE_FACTS,
+    );
+}
+
+/// #s577 review: the page reloads once to bring a withheld cookie, and only once, however long the
+/// reload takes. Over a slow link (an `ssh -L` tunnel) the module graph can take longer than the ten
+/// seconds the retry is bounded by; judged by when the module ran, the reload's own stamp read as old
+/// and the page reloaded again. Here the reload's `app.js` is held 11 s: a browser that holds no token
+/// (Linux, where the gate lets it read) loads the page twice in all, then says why it cannot write.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_slow_reload_for_the_pairing_cookie_happens_once() {
+    if !cfg!(target_os = "linux") {
+        // macOS refuses a cookieless browser the page, so this page never draws "browser" there.
+        return;
+    }
+    let _serial = serial();
+    let base = harness::base("write-slow-retry");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        WRITE_SID,
+        &harness::long_session(3, harness::Shape::default()),
+    );
+    let m = harness::Monitor::spawn_with(
+        harness::Kind::V1,
+        3164,
+        &base,
+        Some(&stores),
+        true,
+        &[("AGENT_MONITOR_TOKEN_ONLY", "0")],
+    );
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1280.0, 900.0);
+    {
+        use headless_chrome::protocol::cdp::Page;
+        tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+            source: "if (location.protocol === 'http:') sessionStorage.setItem('loads', String((+sessionStorage.getItem('loads') || 0) + 1));".to_string(),
+            world_name: None,
+            include_command_line_api: None,
+            run_immediately: None,
+        })
+        .expect("the load counter is installed");
+    }
+    {
+        use headless_chrome::browser::tab::RequestPausedDecision;
+        use headless_chrome::protocol::cdp::Fetch::{RequestPattern, RequestStage};
+        tab.enable_fetch(
+            Some(&[RequestPattern {
+                url_pattern: Some("*/monitor-ui/app.js*".into()),
+                resource_Type: None,
+                request_stage: Some(RequestStage::Request),
+            }]),
+            None,
+        )
+        .expect("the Fetch domain is enabled");
+        let served = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        tab.enable_request_interception(std::sync::Arc::new(
+            move |_transport,
+                  _session,
+                  _event: headless_chrome::protocol::cdp::Fetch::events::RequestPausedEvent| {
+                // The reload's app.js, held past the ten seconds the retry is bounded by.
+                if served.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                    std::thread::sleep(Duration::from_secs(11));
+                }
+                RequestPausedDecision::Continue(None)
+            },
+        ))
+        .expect("the interceptor is installed");
+    }
+    tab.navigate_to(&m.url(&format!("?ui=app&session={WRITE_SID}")))
+        .unwrap();
+    harness::until(
+        &tab,
+        "sessionStorage.getItem('loads') === '2' && document.body && document.body.dataset.write === 'browser' && !document.body.hidden && !!document.getElementById('writeReason') && !document.getElementById('writeReason').hidden",
+        "the page to reload once, slowly, and then say why it cannot write",
+        Duration::from_secs(45),
+        "sessionStorage.getItem('loads') + ' | ' + (document.body ? document.body.dataset.write + ' hidden=' + document.body.hidden : '')",
+    );
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(
+        harness::eval(&tab, "sessionStorage.getItem('loads')"),
+        serde_json::json!("2"),
+        "no second reload"
+    );
+    let reason = write_facts(&tab);
+    assert!(
+        reason["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("This browser is not paired")),
+        "{reason}"
     );
 }
 

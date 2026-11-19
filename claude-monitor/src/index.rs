@@ -368,6 +368,8 @@ impl SendRefusal {
             Self::PaneShared => "pane-shared",
             Self::PaneNotForeground => "not-foreground",
             Self::PaneOtherTerminal => "other-terminal",
+            // Never a live row's: the pane send's decision does not return it, so no `sendBlock`
+            // says it; the page reads a continued conversation off the row's `continuedIn`.
             Self::ContinuedElsewhere => "continued",
             Self::PaneParked => "parked",
         })

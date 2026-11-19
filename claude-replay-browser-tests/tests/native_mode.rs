@@ -392,7 +392,7 @@ fn run_sized(mobile: bool, unix: bool, width: u32, height: u32) {
         );
         wait(
             &tab,
-            "!document.getElementById('dockCompose').classList.contains('blocked') && document.getElementById('dockCompose').getAttribute('aria-disabled') !== 'true'",
+            "!document.getElementById('dockCompose').hidden && !document.getElementById('dockCompose').classList.contains('blocked') && document.getElementById('dockCompose').getAttribute('aria-disabled') !== 'true'",
         );
         eval(
             &tab,
