@@ -1696,8 +1696,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   /* #s602: where the view is 700px wide or less the session's menu is pinned below the bar (upright,
      and a wide phone's view beside its list column held sideways); it hangs from the bar's measured
      bottom (`--phone-top`), as Info does. Pinned 51px down it met the bar only while nothing moved the
-     bar's row down: a top inset does (the Home Screen app's status bar upright, and in hd-replay's walk
-     held sideways in Safari the row sat 14px lower), and the menu cut through the title and its turn
+     bar's row down: a top inset does (the Home Screen app's status bar upright, and in a walk held
+     sideways in Safari the row sat 14px lower), and the menu cut through the title and its turn
      subtitle. Upright in Safari the bar still ends 51px down. */
   #sessionView.pl-max-w-700 .session-copy-menu{top:var(--phone-top,51px)}
   #sessionView .workspace>.topbar>.phone-info{order:2}

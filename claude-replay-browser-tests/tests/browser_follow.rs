@@ -24113,7 +24113,7 @@ fn a_phone_held_sideways_hangs_the_session_menu_below_the_title_row() {
     let sideways_row_down = (14, 62, 20, 62);
     // Each leg: the window, its safe-area insets, what it stands for, and whether the view is 700px
     // wide or less, where the menu is the pinned one this case is about (852x393 has no list column,
-    // so its view is the whole window and its menu hangs from the heading).
+    // so its view is wider than 700px and its menu hangs from the heading).
     let cases = [
         (
             956,
