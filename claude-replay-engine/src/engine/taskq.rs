@@ -462,12 +462,20 @@ pub fn taskq_ops(call_id: &str, text: &str) -> Vec<TaskOp> {
                     id: Some(queue_id(task)),
                 });
                 nth_create += 1;
+                // After the resolve, so the marks land on the row the draft became.
+                if let Some(op) = lineage(&rec, task) {
+                    out.push(op);
+                }
             }
             // Every other state-moving op says where it moved to, so one arm reads them all.
             "claim" | "done" | "cancel" | "release" | "update" => {
                 let status = to("status");
+                let marks = lineage(&rec, task);
                 if status.is_none() {
-                    continue; // e.g. a description-only edit — nothing the panel renders
+                    // e.g. a description-only edit — nothing the panel renders, unless it
+                    // moved the task's marks (an `update --follows-up`, #s606)
+                    out.extend(marks);
+                    continue;
                 }
                 // The subject comes from the record's TOP-LEVEL field, which every record
                 // carries, not from `changes.subject.to`, which appears only when the subject
@@ -489,11 +497,47 @@ pub fn taskq_ops(call_id: &str, text: &str) -> Vec<TaskOp> {
                     add_blocks: Vec::new(),
                     add_blocked_by: Vec::new(),
                 });
+                out.extend(marks);
             }
             _ => {}
         }
     }
     out
+}
+
+/// The task's two marks as a record states them (#s606), or `None` when it says nothing of
+/// them. A `create` flattens a task's metadata into its changes (`"top_level": {"to": true}`,
+/// `"follows_up": {"to": "s431"}`); any later op that touched the metadata carries all of it
+/// before and after (`"metadata": {"from": {…}, "to": {…}}`), so its `to` is the whole of what
+/// the task now holds, and a mark absent from it is a mark the task no longer has. Measured over
+/// one session's 400-odd such records: every create carried one mark or the other as a change
+/// key, and every update, claim and the rest carried them inside `metadata`.
+fn lineage(rec: &Value, task: &str) -> Option<TaskOp> {
+    let flag = |v: Option<&Value>| {
+        v.is_some_and(|x| x.as_bool() == Some(true) || x.as_str() == Some("true"))
+    };
+    let text = |v: Option<&Value>| v.and_then(Value::as_str).unwrap_or_default().to_string();
+    let changes = rec.get("changes")?;
+    let (top_level, follows_up) = if let Some(meta) = changes.pointer("/metadata/to") {
+        (flag(meta.get("top_level")), text(meta.get("follows_up")))
+    } else if changes.get("top_level").is_some() || changes.get("follows_up").is_some() {
+        (
+            flag(changes.pointer("/top_level/to")),
+            text(changes.pointer("/follows_up/to")),
+        )
+    } else {
+        return None;
+    };
+    Some(TaskOp::Lineage {
+        task_id: queue_id(task),
+        top_level,
+        // A repo task's id gains the `q` its rows wear, so the mark names a row the page has.
+        follows_up: if follows_up.is_empty() {
+            follows_up
+        } else {
+            queue_id(&follows_up)
+        },
+    })
 }
 
 /// The `taskq` QUEUE on disk, for the repository `anchor` sits in — `tasks/*.json` at the git
@@ -543,8 +587,12 @@ pub fn queue_tasks(anchor: &Path) -> Option<TaskList> {
             else {
                 continue;
             };
-            // These files ARE the repo tier, so they key the same way the records do.
+            // These files ARE the repo tier, so they key the same way the records do, and so
+            // does the task a repo task follows up.
             t.id = queue_id(&t.id);
+            if !t.follows_up.is_empty() {
+                t.follows_up = queue_id(&t.follows_up);
+            }
             match items.iter_mut().find(|x| x.id == t.id) {
                 Some(slot) => *slot = t,
                 None => items.push(t),
@@ -1207,5 +1255,130 @@ mod tests {
             Some("Daemon: one server, many documents"),
             "a stub built from this op is not blank"
         );
+    }
+
+    /// **A task's marks: top level, or the task it follows up** (#s606, Hong: "there is no
+    /// filter for top level tasks"). A create flattens them into its changes; a later update or
+    /// claim states the whole metadata after it, so a mark it drops is a mark the task lost; a
+    /// repo task's follow-up names the `q` row; and the queue's own file carries them under
+    /// `metadata` (where its `deferred` is too, read from there now).
+    #[test]
+    fn a_tasks_marks_say_whether_it_is_top_level_or_follows_another_up() {
+        let mut fold = crate::engine::tasks::TaskFold::default();
+        let records = [
+            // A top-level create, its command half lost: the record alone stands it up.
+            "##taskq/v1 {\"rid\":\"r1\",\"op\":\"create\",\"task\":\"s10\",\"subject\":\"Asked for\",\
+             \"changes\":{\"status\":{\"from\":null,\"to\":\"pending\"},\"top_level\":{\"from\":null,\"to\":true}}}",
+            // A follow-up of it, and one of a repo task.
+            "##taskq/v1 {\"rid\":\"r2\",\"op\":\"create\",\"task\":\"s11\",\"subject\":\"Found on the way\",\
+             \"changes\":{\"status\":{\"from\":null,\"to\":\"pending\"},\"follows_up\":{\"from\":null,\"to\":\"s10\"}}}",
+            "##taskq/v1 {\"rid\":\"r3\",\"op\":\"create\",\"task\":\"7\",\"subject\":\"A local one\",\
+             \"changes\":{\"status\":{\"from\":null,\"to\":\"pending\"},\"follows_up\":{\"from\":null,\"to\":\"6\"}}}",
+            // From before the marks: neither.
+            "##taskq/v1 {\"rid\":\"r4\",\"op\":\"create\",\"task\":\"s12\",\"subject\":\"Old\",\
+             \"changes\":{\"status\":{\"from\":null,\"to\":\"pending\"}}}",
+        ];
+        for (n, r) in records.iter().enumerate() {
+            for op in taskq_ops(&format!("b{n}"), r) {
+                fold.apply(&op);
+            }
+        }
+        let marks = |fold: &crate::engine::tasks::TaskFold| -> Vec<(String, bool, String)> {
+            fold.snapshot()
+                .items
+                .iter()
+                .map(|t| (t.id.clone(), t.top_level, t.follows_up.clone()))
+                .collect()
+        };
+        let row = |id: &str, top: bool, of: &str| (id.to_string(), top, of.to_string());
+        assert_eq!(
+            marks(&fold),
+            [
+                row("q7", false, "q6"),
+                row("s10", true, ""),
+                row("s11", false, "s10"),
+                row("s12", false, ""),
+            ],
+            "each create's mark, a repo task's follow-up named as its row"
+        );
+        // An update that only moves the metadata (no status): s12 becomes a follow-up; a claim
+        // whose metadata no longer holds s11's mark takes it off; a log changes nothing.
+        for (n, r) in [
+            "##taskq/v1 {\"rid\":\"r5\",\"op\":\"update\",\"task\":\"s12\",\"subject\":\"Old\",\
+             \"changes\":{\"metadata\":{\"from\":null,\"to\":{\"follows_up\":\"s10\"}}}}",
+            "##taskq/v1 {\"rid\":\"r6\",\"op\":\"claim\",\"task\":\"s11\",\"subject\":\"Found on the way\",\
+             \"changes\":{\"status\":{\"from\":\"pending\",\"to\":\"in_progress\"},\
+             \"metadata\":{\"from\":{\"follows_up\":\"s10\"},\"to\":{\"top_level\":true}}}}",
+            "##taskq/v1 {\"rid\":\"r7\",\"op\":\"log\",\"task\":\"s10\",\"subject\":\"Asked for\",\
+             \"changes\":{\"log\":{\"to\":\"a note\"}}}",
+        ]
+        .iter()
+        .enumerate()
+        {
+            for op in taskq_ops(&format!("c{n}"), r) {
+                fold.apply(&op);
+            }
+        }
+        assert_eq!(
+            marks(&fold),
+            [
+                row("q7", false, "q6"),
+                row("s10", true, ""),
+                row("s11", true, ""),
+                row("s12", false, "s10"),
+            ],
+            "a later record's whole metadata replaces the marks"
+        );
+        // A mark for a task this transcript never saw stands nothing up.
+        for op in taskq_ops(
+            "d1",
+            "##taskq/v1 {\"rid\":\"r8\",\"op\":\"update\",\"task\":\"s99\",\"subject\":\"Elsewhere\",\
+             \"changes\":{\"metadata\":{\"from\":null,\"to\":{\"top_level\":true}}}}",
+        ) {
+            fold.apply(&op);
+        }
+        assert_eq!(fold.snapshot().items.len(), 4, "a mark alone names no row");
+        // A create whose command half resolves keeps the record's mark.
+        let mut fold = crate::engine::tasks::TaskFold::default();
+        for op in taskq_create_ops(
+            "e1",
+            "taskq create --subject 'With a brief' --description 'the brief'",
+        ) {
+            fold.apply(&op);
+        }
+        for op in taskq_ops(
+            "e1",
+            "##taskq/v1 {\"rid\":\"r9\",\"op\":\"create\",\"task\":\"s20\",\"subject\":\"With a brief\",\
+             \"changes\":{\"status\":{\"from\":null,\"to\":\"pending\"},\"follows_up\":{\"from\":null,\"to\":\"s10\"}}}",
+        ) {
+            fold.apply(&op);
+        }
+        let t = fold.snapshot().items[0].clone();
+        assert_eq!(
+            (t.description.as_str(), t.follows_up.as_str()),
+            ("the brief", "s10"),
+            "the draft's brief and the record's mark, on one row"
+        );
+        // The queue's file: `metadata`, a flag as a boolean.
+        let file = serde_json::json!({
+            "id": "8", "subject": "On disk", "status": "pending",
+            "metadata": {"follows_up": "s10", "deferred": true, "deferred_reason": "waiting"}
+        });
+        let t = crate::engine::tasks::task_from_json(&file).unwrap();
+        assert_eq!(
+            (
+                t.top_level,
+                t.follows_up.as_str(),
+                t.deferred,
+                t.deferred_reason.as_str()
+            ),
+            (false, "s10", true, "waiting"),
+            "a queue file's metadata, read where taskq writes it"
+        );
+        let t = crate::engine::tasks::task_from_json(&serde_json::json!({
+            "id": "9", "subject": "Asked", "metadata": {"top_level": true}
+        }))
+        .unwrap();
+        assert!(t.top_level && t.follows_up.is_empty());
     }
 }
