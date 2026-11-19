@@ -28,14 +28,17 @@ const ROUTES: &[&str] = &[
     "mermaid",
 ];
 
-/// A line that hands its server path to the handle: the page's (`backend()`), or the session
-/// list's own, which is the page's unless the host gave the list one (#s540).
+/// A line that hands its server path to the handle: the page's (`backend()`), the session list's
+/// own, which is the page's unless the host gave the list one (#s540), or the one an mdrev mount
+/// took from `backend()` as it began and keeps for its later steps (`handle`, #s595: over several
+/// machines the view may be mounted on another machine's by then).
 const THROUGH_THE_HANDLE: &[&str] = &[
     "backend().fetch(",
     "listBackend().fetch(",
     "backend().url(",
     "backend().mdrevUrl(",
     "backend().mdrevFetch(",
+    "handle.mdrevFetch(",
 ];
 
 /// (module, text on the line): server paths that are names, not requests.
