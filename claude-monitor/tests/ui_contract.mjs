@@ -4835,7 +4835,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(mermaid, /script\.src = runtimeUrl\(path\);/, "that place goes through the resolver");
   assert.match(mermaid, /let runtimeUrl = path => path;/, "the offline page loads the head's path as written");
   const viewSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-view.js", import.meta.url), "utf8");
-  assert.match(viewSrc, /^useMermaidRuntime\(path => backend\(\)\.url\(path\)\);$/m, "the app shell's resolver is its handle");
+  assert.match(viewSrc, /^useMermaidRuntime\(path => assets\(\)\?\.mermaid \|\| backend\(\)\.url\(path\)\);$/m, "the app shell's resolver is its handle, unless its host carries the runtime (#s595)");
   console.log("#s423 Mermaid runtime cases passed");
 }
 
