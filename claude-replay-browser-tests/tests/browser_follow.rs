@@ -18461,6 +18461,116 @@ fn a_phone_pairs_by_a_one_time_code() {
     drop(m);
 }
 
+/// #s618: a browser on this machine pairs from the page. Refused, it follows the refusal page's
+/// pairing link to `/pair`, asks for a code, and (the harness turns the dialog off, so no case
+/// raises one) is told to run `agent-monitor --pair-code`. The case reads the code where the
+/// monitor keeps it, as that command would; typed in, it pairs this browser. The code is in no
+/// reply the page saw and in no line of the monitor's stderr, and it works once.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_browser_on_this_machine_pairs_from_the_page() {
+    let _serial = serial();
+    let base = harness::base("pair-from-the-page");
+    let stores = harness::Stores::new(&base);
+    let m = Monitor::spawn(Kind::V1, 2741, &base, Some(&stores), true);
+    let port = m.port;
+    let (_browser, tab) = harness::chrome_tab();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/"))
+        .unwrap();
+    harness::until(
+        &tab,
+        "!document.documentElement.hidden && !!document.querySelector('a[href=\"/pair\"]')",
+        "the refusal page to offer pairing",
+        Duration::from_secs(20),
+        "document.body.innerText",
+    );
+    tab.find_element("a[href=\"/pair\"]")
+        .unwrap()
+        .click()
+        .unwrap();
+    harness::until(
+        &tab,
+        "location.pathname === '/pair' && !!document.getElementById('ask') && /Pair this browser/.test(document.body.innerText)",
+        "the pairing page for a browser on this machine",
+        Duration::from_secs(10),
+        "location.href + ' | ' + document.body.innerText.slice(0, 300)",
+    );
+    // Record every reply the page reads, to show the code is in none of them.
+    eval(
+        &tab,
+        r#"(() => { window.__replies = []; const f = window.fetch;
+            window.fetch = (...a) => f(...a).then(r => { r.clone().text().then(t => window.__replies.push(t)); return r; });
+            return 1; })()"#,
+        false,
+    );
+    tab.find_element("#ask").unwrap().click().unwrap();
+    harness::until(
+        &tab,
+        "/agent-monitor --pair-code/.test(document.getElementById('msg').textContent)",
+        "the page to say where the code is",
+        Duration::from_secs(10),
+        "document.getElementById('msg').textContent",
+    );
+    let codes = std::fs::read_to_string(m.state.join("page-codes"))
+        .expect("the ask left a page code waiting");
+    let code = codes
+        .lines()
+        .find_map(|l| l.strip_prefix("code "))
+        .and_then(|l| l.split(' ').next())
+        .expect("a code line")
+        .to_string();
+    assert_eq!(code.len(), 8, "{codes}");
+    let shown = format!("{}-{}", &code[..4], &code[4..]);
+    let replies = eval(&tab, "JSON.stringify(window.__replies)", false);
+    let replies = replies.as_str().unwrap_or_default().to_string();
+    assert!(
+        replies.contains("terminal") && !replies.contains(&code) && !replies.contains(&shown),
+        "the reply says where, never the code: {replies}"
+    );
+    tab.find_element("#code")
+        .unwrap()
+        .type_into(&shown.to_lowercase())
+        .unwrap();
+    tab.find_element("#go").unwrap().click().unwrap();
+    harness::until(
+        &tab,
+        "location.pathname === '/' && !!document.querySelector('#tree, .rail, .session-row, [data-session]')",
+        "the code to pair this browser and the monitor to load",
+        Duration::from_secs(20),
+        "location.href + ' | ' + document.body.innerText.slice(0, 200)",
+    );
+    // The same code in another fresh browser is refused.
+    let (_other, tab2) = harness::chrome_tab();
+    tab2.navigate_to(&format!("http://127.0.0.1:{port}/pair"))
+        .unwrap();
+    harness::until(
+        &tab2,
+        "!!document.getElementById('code')",
+        "the pairing page in a second browser",
+        Duration::from_secs(10),
+        "document.body.innerText.slice(0, 200)",
+    );
+    tab2.find_element("#code")
+        .unwrap()
+        .type_into(&shown)
+        .unwrap();
+    tab2.find_element("#go").unwrap().click().unwrap();
+    harness::until(
+        &tab2,
+        "/wrong, used or expired/.test(document.getElementById('msg').textContent)",
+        "a used code to be refused",
+        Duration::from_secs(10),
+        "document.getElementById('msg').textContent",
+    );
+    let stderr =
+        std::fs::read_to_string(base.join(format!("monitor-{}.stderr", m.key))).unwrap_or_default();
+    assert!(
+        !stderr.contains(&code) && !stderr.contains(&shown),
+        "the code is in no line of the monitor's stderr"
+    );
+    drop(m);
+}
+
 /// An unpaired browser gets two distinct, readable touch targets in either system theme.
 /// Exercise the actual refusal route and follow its pairing link, not a copied HTML fixture.
 #[test]

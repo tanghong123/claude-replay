@@ -1551,6 +1551,9 @@ pub fn configure_monitor_environment(
         // Every owner wait of Codex native mode that refuses or runs long says so on stderr,
         // which `Monitor::spawn` keeps in the case's root (#s410, #s227).
         .env("AGENT_MONITOR_TRACE_OWNER", "1")
+        // No case raises a real dialog on the Mac that runs the suite (#s618): a page code waits
+        // for `--pair-code`, and a case reads it from the monitor's own state dir.
+        .env("AGENT_MONITOR_PAIR_DIALOG", "0")
         .env_remove("CODEX_NATIVE_SERVER_URL")
         // A name listed here is a relay to the monitor (#s422), and an unpaired monitor on macOS
         // then admits no browser at all: none may leak in from the shell that runs the suite.
