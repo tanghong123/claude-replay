@@ -221,7 +221,10 @@ function selectSession(id, push) {
   // and the top bars take the new session before a byte of it has arrived.
   mobileShell?.setDrawer(false);
   const where = place(id);
-  if (!where) { viewHandle.close("Cannot read this session", "No machine of this list holds it."); return; }
+  // An id no machine of the list holds (a bare id, a machine gone from the list) is still the
+  // selection, as a single server's unreadable id is: the index's next answer does not ask for it
+  // again (and shut a phone's drawer each time), and a row chosen after it opens.
+  if (!where) { listHandle.select(id); viewHandle.close("Cannot read this session", "No machine of this list holds it."); paintWrite(); return; }
   if (id === indexState.selected && where.machine === viewMachine && viewHandle.session() === where.id) return;
   listHandle.select(id);
   showSession(id, push);
@@ -239,16 +242,18 @@ function showSession(id, push) {
   viewHandle.open(where.id);
   paintWrite();
 }
-/** Mount the view again on `machine` (#s595): the wide phone's column gives back the pane's list it
- *  borrowed first, then the view goes as its unmount takes it (the draft, the tabs, the search, a send
+/** Mount the view again on `machine` (#s595): a confirm still open is cancelled and the wide phone's
+ *  column gives back the pane's list it borrowed first, then the view goes as its unmount takes it (the draft, the tabs, the search, a send
  *  still out), and comes back on that machine's handle, which every call it makes then goes to. */
 function remountOn(machine) {
+  // A grant's confirm still open names the old machine's pane: it is cancelled, as a newer ask would.
+  confirming?.(null);
   mobileShell?.showSessions();
   viewHandle.unmount();
   viewMachine = machine;
   mountView();
 }
-function sessionGone() { indexState.selected = ""; viewHandle.close("Session is gone", "It may have been deleted or moved. The list keeps scanning."); }
+function sessionGone() { indexState.selected = ""; viewHandle.close("Session is gone", "It may have been deleted or moved. The list keeps scanning."); paintWrite(); }
 /** The browser's Back to the parent the view's top bar offers (#82, the classic view's
  *  `synthesizeBack`): a deep-linked child gets a history entry for its parent, once. */
 let synthesizedFor = "";
@@ -290,9 +295,10 @@ function globalRows(raw) {
   const ts = row => Number(row.activityTs) || 0;
   // Over several machines a project and its sessions name their machine as the list does (#s561's
   // short label, #s595); an agent's row spans machines and names none.
-  const labels = merged ? merged.machines().map(entry => entry.label) : [];
+  const machines = merged ? merged.machines() : [];
+  const labels = machines.map(entry => entry.label);
   const on = session => {
-    const label = merged && merged.machines().find(entry => entry.machine === session?.machine)?.label;
+    const label = machines.find(entry => entry.machine === session?.machine)?.label;
     return label ? ` · ${machineShortLabel(label, labels)}` : "";
   };
   const rows = [];
@@ -675,7 +681,7 @@ var mobileShell;
  *  off and says to open one. */
 function writePaired() {
   if (!merged) return controlState.paired;
-  return !!indexState.selected && !!handleOf(viewMachine).paired;
+  return place(indexState.selected)?.machine === viewMachine && !!handleOf(viewMachine).paired;
 }
 /** Whether writing is on for the session open now. */
 const writeOn = () => controlState.write && (!merged || writePaired());

@@ -4989,7 +4989,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     assert.ok(appSource.includes(`page.byId("${id}")`), `the app binds or paints its own #${id}`);
     assert.ok(!doc[0].includes(`\`${id}\``), `the doc comment no longer names #${id} as what a host's page must carry`);
   }
-  assert.match(call[1], /^  write: \{ on: \(\) => controlState\.write, confirm: confirmWrite \},$/m, "the app passes its write mode and its confirm layer");
+  assert.match(call[1], /^  write: \{ on: writeOn, confirm: confirmWrite \},$/m, "the app passes its write mode and its confirm layer");
+  assert.match(appSource, /^const writeOn = \(\) => controlState\.write && \(!merged \|\| writePaired\(\)\);$/m, "its write mode, over several machines while the open session's machine is paired (#s595)");
+  assert.match(appSource, /^  return place\(indexState\.selected\)\?\.machine === viewMachine && !!handleOf\(viewMachine\)\.paired;$/m, "which is the machine the view reads, holding the selection");
   assert.match(viewSource, /const controlActions = \{ write: options\.write, selectedId, selectedRow, /, "the compose box gets the host's write and the app's selection through the view");
   assert.match(storeSource, /writeOn\(\) \{ return !!this\.actions\.write\?\.on\(\); \}/, "with no write option, writing is never on");
   assert.match(storeSource, /answer = this\.actions\.write\?\.confirm\(\{ title: GRANT_TITLE, text, passcode \}\);/, "and the grant is the host's confirm");
@@ -5066,8 +5068,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual([...read].sort(), [...OPTIONS].sort(), "the list reads exactly the options the design gives it");
   assert.deepEqual([...documented].sort(), [...OPTIONS].sort(), "and its doc comment documents each");
   // Stage 4: the app keeps every optional control, as it does the view's, so it passes no `show`;
-  // and it reads one server for both parts, the page's (#s540), so it passes no `backend` either.
+  // and with one server it reads that server for both parts, the page's (#s540), so it passes no
+  // `backend` either; over several machines (#s595) it gives the list the merged source, alone.
   assert.deepEqual([...passed].sort(), OPTIONS.filter(name => name !== "show" && name !== "backend").sort(), "and the app passes every one but show and backend");
+  assert.match(call[1], /^  \.\.\.\(merged \? \{ backend: merged \} : \{\}\),$/m, "and over several machines, the merged source as the list's backend");
   // The handle, and what the app calls of it.
   const at = listSource.lastIndexOf("\nreturn fenced({\n");
   assert.ok(at > 0, "the list returns its handle as an object literal at the end of mountSessionList, fenced (stage 4)");
@@ -5200,7 +5204,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listSource, /^    if \(event\.detail > 0 && session\.contains\(page\.active\(\)\)\) page\.active\(\)\.blur\(\);\n    chooseSession\(session\.dataset\.session, true\); return;$/m, "while a row clicked with the mouse gives the page back its keys");
   assert.match(listSource, /const forks = event\.target\.closest\("\[data-family-toggle\]"\); if \(forks\) \{ event\.stopPropagation\(\); if \(event\.detail > 0 && tree\.contains\(page\.active\(\)\)\) page\.active\(\)\.blur\(\);/, "and so does a fork chip clicked with the mouse, which may redraw nothing (#s460)");
   assert.match(appSource, /^  keyboard: "page",$/m, "the app keeps the page's keyboard");
-  assert.match(appSource, /^  \.\.\.listHandle\.keys,$/m, "and its keymap calls the list's keys");
+  assert.match(appSource, /^  if \(Object\.hasOwn\(listHandle\.keys, action\)\) return listHandle\.keys\[action\];$/m, "and its keymap calls the list's keys");
   // Drawn small: the app's call, the flyouts' gate.
   assert.match(listSource, /^  compact: on => \{ compactOn = !!on; if \(!compactOn && !railFlyout\.hidden\) closeRailFlyout\(false\); \},$/m, "the host says when the list is drawn small, and a flyout open closes when it is no longer");
   assert.match(listSource, /clearTimeout\(railOpenTimer\); clearTimeout\(railCloseTimer\);\n  if \(!compactOn\) return;/, "the rail's flyouts open only then");

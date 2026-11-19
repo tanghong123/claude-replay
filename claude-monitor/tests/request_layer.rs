@@ -29,16 +29,13 @@ const ROUTES: &[&str] = &[
 ];
 
 /// A line that hands its server path to the handle: the page's (`backend()`), or the session
-/// list's own, which is the page's unless the host gave the list one (#s540). mdrev-pane.js's
-/// `bundleUrl` hands a path of mdrev's bundle to the handle, or to the host's own copy of the
-/// bundle where the host carries one (`assets`, #s595), which is no request to the server.
+/// list's own, which is the page's unless the host gave the list one (#s540).
 const THROUGH_THE_HANDLE: &[&str] = &[
     "backend().fetch(",
     "listBackend().fetch(",
     "backend().url(",
     "backend().mdrevUrl(",
     "backend().mdrevFetch(",
-    "bundleUrl(",
 ];
 
 /// (module, text on the line): server paths that are names, not requests.
@@ -57,6 +54,11 @@ const NAMED: &[(&str, &str, &str)] = &[
         "codex-ui/mdrev-pane.js",
         "const REVIEW_CONTRACT = \"/api/mdrev-review\"",
         "the detached tab's route prefix, joined through backend().mdrevUrl",
+    ),
+    (
+        "codex-ui/mdrev-pane.js",
+        "bundleUrl(",
+        "a path of mdrev's bundle, which bundleUrl hands to backend().mdrevUrl, or to the host's own copy of the bundle where it carries one (assets, #s595)",
     ),
     (
         "codex-ui/merged-source.js",

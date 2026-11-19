@@ -608,10 +608,12 @@ fn the_web_app_over_two_machines_reads_each_session_from_its_own_machine() {
     assert_eq!(
         names
             .iter()
-            .filter(|p| p.ends_with(".js") && p.contains("mermaid"))
+            .filter(|p| p.ends_with(".js")
+                && p.contains("mermaid")
+                && !p.starts_with("/kit/bundle/"))
             .collect::<Vec<_>>(),
         vec![&format!("/app-vendor{runtime}")],
-        "the runtime the app carries, and none from a machine: {names:?}"
+        "the runtime the app carries (the kit's own shared module aside), and none from a machine: {names:?}"
     );
     let state = harness::probe(
         &tab,
@@ -621,6 +623,15 @@ fn the_web_app_over_two_machines_reads_each_session_from_its_own_machine() {
         state,
         serde_json::json!({ "meta": format!("/app-vendor{runtime}"), "writeOn": "false", "pairHint": true, "address": format!("b/{SID_BOTH}") }),
         "the mount named the runtime in the head, write mode follows the unpaired machine, and the address holds the list's id"
+    );
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    assert_eq!(
+        harness::probe(
+            &tab,
+            "document.getElementById('writeSwitch').getAttribute('aria-checked')"
+        ),
+        serde_json::json!("false"),
+        "write mode does not turn on for an unpaired machine"
     );
 
     // The document the second machine's session carries, in mdrev with the app's bundle.
@@ -685,20 +696,28 @@ fn the_web_app_over_two_machines_reads_each_session_from_its_own_machine() {
     );
     let switched = harness::probe(
         &tab,
-        &format!("(function () {{ var app = document.getElementById('app'), view = document.getElementById('sessionView'); var since = window.__host.asked.slice({asked_before}); return {{ remounted: document.querySelector('#sessionView .transcript').__s595 !== 'b', pulled: since.filter(function (a) {{ return /\\/pull\\?/.test(a); }}), stateOnApp: ['preview-off', 'preview-full'].every(function (c) {{ return app.classList.contains(c) === view.classList.contains(c); }}), writeOn: document.getElementById('writeSwitch').getAttribute('aria-checked'), pairHint: !document.getElementById('writeInfo').hidden, address: new URLSearchParams(location.search).get('session'), wrap: view.classList.contains('wrap-code') }}; }})()"),
+        &format!("(function () {{ var app = document.getElementById('app'), view = document.getElementById('sessionView'); var since = window.__host.asked.slice({asked_before}); return {{ remounted: document.querySelector('#sessionView .transcript').__s595 !== 'b', pulled: since.filter(function (a) {{ return /\\/pull\\?/.test(a); }}), stateOnApp: ['preview-off', 'preview-full'].every(function (c) {{ return app.classList.contains(c) === view.classList.contains(c); }}), pairHint: !document.getElementById('writeInfo').hidden, address: new URLSearchParams(location.search).get('session'), wrap: view.classList.contains('wrap-code') }}; }})()"),
     );
     let pulled: Vec<String> = serde_json::from_value(switched["pulled"].clone()).unwrap();
+    // The old view may still have polled its machine before it went; the new one reads the first.
     assert!(
-        !pulled.is_empty()
-            && pulled
-                .iter()
-                .all(|a| a.starts_with(&format!("/pull?session={SID_BOTH}"))),
-        "the first machine's session is pulled from the first machine alone: {switched}"
+        pulled
+            .iter()
+            .any(|a| a.starts_with(&format!("/pull?session={SID_BOTH}"))),
+        "the first machine's session is pulled from the first machine, by its own id: {switched}"
     );
     assert_eq!(
-        (&switched["remounted"], &switched["stateOnApp"], &switched["writeOn"], &switched["pairHint"], &switched["address"]),
-        (&serde_json::json!(true), &serde_json::json!(true), &serde_json::json!("false"), &serde_json::json!(false), &serde_json::json!(format!("a/{SID_BOTH}"))),
-        "a new view on the first machine, the pane's state on #app the new view's, write mode the paired machine's, and the list's id in the address: {switched}"
+        (&switched["remounted"], &switched["stateOnApp"], &switched["pairHint"], &switched["address"]),
+        (&serde_json::json!(true), &serde_json::json!(true), &serde_json::json!(false), &serde_json::json!(format!("a/{SID_BOTH}"))),
+        "a new view on the first machine, the pane's state on #app the new view's, no pairing hint on the paired machine, and the list's id in the address: {switched}"
+    );
+    // Write mode turns on for the paired machine.
+    let write = "document.getElementById('writeSwitch').getAttribute('aria-checked')";
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    assert_eq!(
+        harness::probe(&tab, write),
+        serde_json::json!("true"),
+        "write mode turns on for the paired machine"
     );
     // A view key reaches the view mounted now.
     let wrap_before = switched["wrap"].clone();
@@ -710,7 +729,7 @@ fn the_web_app_over_two_machines_reads_each_session_from_its_own_machine() {
     assert_ne!(wrap_after, wrap_before, "w toggles the new view's wrapping");
     harness::key(&tab, "w", false);
 
-    // Another row of the same machine: no remount.
+    // Another row of the same machine: no remount, and write mode stays on.
     harness::eval(
         &tab,
         "document.querySelector('#sessionView .transcript').__s595 = 'a'; 'ok'",
@@ -727,54 +746,67 @@ fn the_web_app_over_two_machines_reads_each_session_from_its_own_machine() {
         "a second session on the same machine",
     );
     assert_eq!(
-        harness::probe(
-            &tab,
-            "document.querySelector('#sessionView .transcript').__s595 || null"
+        (
+            harness::probe(
+                &tab,
+                "document.querySelector('#sessionView .transcript').__s595 || null"
+            ),
+            harness::probe(&tab, write)
         ),
-        serde_json::json!("a"),
-        "a row of the machine the view is on opens in the same view"
+        (serde_json::json!("a"), serde_json::json!("true")),
+        "a row of the machine the view is on opens in the same view, write mode still on"
     );
 
-    // ⌘K names each row's machine.
+    // ⌘K names each row's machine, and its row of the other machine opens there.
     harness::eval(&tab, "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true, cancelable: true })); 'ok'");
     harness::until(&tab, "document.getElementById('searchLayer').classList.contains('production-open') && document.querySelectorAll('#searchResults .search-result').length > 0", "⌘K's rows", Duration::from_secs(10), now);
     let jump = harness::probe(&tab, "[...document.querySelectorAll('#searchResults .search-result')].filter(function (b) { return b.querySelector('.result-kind').textContent === 'session'; }).map(function (b) { return b.querySelector('b').textContent + ' | ' + b.querySelector('small').textContent; }).sort()");
     let jump: Vec<String> = serde_json::from_value(jump).unwrap();
     assert_eq!(jump.len(), 3, "⌘K lists the three sessions: {jump:?}");
     assert_eq!(
-        jump.iter().filter(|r| r.ends_with(" · tern-mini")).count()
-            + jump.iter().filter(|r| r.ends_with(" · skua-book")).count(),
-        3,
+        (
+            jump.iter().filter(|r| r.ends_with(" · tern-mini")).count(),
+            jump.iter().filter(|r| r.ends_with(" · skua-book")).count()
+        ),
+        (2, 1),
         "each names its machine by the list's short name: {jump:?}"
     );
-    assert_eq!(
-        jump.iter().filter(|r| r.ends_with(" · skua-book")).count(),
-        1,
-        "{jump:?}"
-    );
-    harness::key(&tab, "Escape", false);
-
-    // The browser's Back, across machines.
-    harness::eval(&tab, "history.back(); 'ok'");
-    transcript_says(
-        "past the second dune",
-        "Back to the first machine's session of the shared id",
-    );
-    harness::eval(&tab, "history.back(); 'ok'");
+    let chosen = harness::probe(&tab, "(function () { var row = [...document.querySelectorAll('#searchResults .search-result')].find(function (b) { return b.querySelector('.result-kind').textContent === 'session' && / · skua-book$/.test(b.querySelector('small').textContent); }); if (!row) return 'no row'; row.click(); return 'chosen'; })()");
+    assert_eq!(chosen, serde_json::json!("chosen"));
     transcript_says(
         "forty-one, by the cairn",
-        "Back to the second machine's session",
+        "⌘K's row of the second machine, opened there",
     );
-    let back = harness::probe(&tab, "(function () { return { address: new URLSearchParams(location.search).get('session'), selected: (document.querySelector('#sessionList .tree-row.session.selected, #sessionList .tree-row.session[aria-current=\"true\"]') || {}).dataset, errors: window.__host.errors }; })()");
+    let chose = harness::probe(&tab, &format!("(function () {{ return {{ address: new URLSearchParams(location.search).get('session'), write: {write}, pairHint: !document.getElementById('writeInfo').hidden }}; }})()"));
+    assert_eq!(
+        chose,
+        serde_json::json!({ "address": format!("b/{SID_BOTH}"), "write": "false", "pairHint": true }),
+        "⌘K's row opens on its machine, where write mode is off: the machine is not paired"
+    );
+
+    // The browser's Back, across machines and on one, the list's selection following.
+    let at = "(function () { var selected = [...document.querySelectorAll('#sessionList .tree-row.session.selected')].map(function (r) { return r.dataset.session; }); return { address: new URLSearchParams(location.search).get('session'), selected: selected, write: document.getElementById('writeSwitch').getAttribute('aria-checked'), errors: window.__host.errors }; })()";
+    let mut backs = Vec::new();
+    for (text, what) in [
+        ("thirty, by the last count", "Back to the first machine"),
+        ("past the second dune", "Back on the first machine"),
+        ("forty-one, by the cairn", "Back to the second machine"),
+    ] {
+        harness::eval(&tab, "history.back(); 'ok'");
+        transcript_says(text, what);
+        backs.push(harness::probe(&tab, at));
+    }
     drop(there);
     drop(monitor);
+    let one = |id: String, write: &str| serde_json::json!({ "address": id, "selected": [id], "write": write, "errors": [] });
     assert_eq!(
-        (&back["address"], &back["errors"]),
-        (
-            &serde_json::json!(format!("b/{SID_BOTH}")),
-            &serde_json::json!([])
-        ),
-        "Back goes across machines, and the page said no error: {back}"
+        backs,
+        vec![
+            one(format!("a/{SID_A_TOO}"), "true"),
+            one(format!("a/{SID_BOTH}"), "true"),
+            one(format!("b/{SID_BOTH}"), "false"),
+        ],
+        "Back goes across machines, the list selecting the row it opens and write mode following its machine, and the page said no error"
     );
 }
 

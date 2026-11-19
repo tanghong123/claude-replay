@@ -137,14 +137,15 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    needed: the native app keeps every address it gave for the life of the page, unless it decides
  *    otherwise itself. An answer that is not an address, or a refusal,
  *    shows the pane's own error (and is asked again the next time the tab is shown).
- *  - `assets` (the native app's, which the kit's guide does not list, #s595, design/app-mount.md,
- *    "Kept for the native app"): where mdrev's bundle and the Mermaid runtime load from when the host
- *    carries them itself, rather than from the server: `{ mdrev, mdrevVersion, mermaid }`, mdrev's
- *    base (its bundle at `<mdrev>/mdrev/<mdrevVersion>/mdrev.js` and `mdrev.css`), the release that
- *    bundle is, and the Mermaid runtime's address. With it the view reads every document with that
- *    release, never asks a server which one it serves (#s352's fallback is off), and loads the runtime
- *    from `mermaid` whatever the page's head names; every route, mdrev's included, still goes through
- *    `backend`. The page then need not name a runtime in its head (the mount writes it there).
+ *  - `assets`: the native app's, which the kit's guide does not list (#s595, design/app-mount.md,
+ *    "Kept for the native app"): where mdrev's bundle and the Mermaid runtime load from when the
+ *    host carries them itself, rather than from the server: `{ mdrev, mdrevVersion, mermaid }`,
+ *    mdrev's base (its bundle at `<mdrev>/mdrev/<mdrevVersion>/mdrev.js` and `mdrev.css`), the release
+ *    that bundle is, and the Mermaid runtime's address. With it the view reads every document with
+ *    that release, never asks a server which one it serves (#s352's fallback is off), and loads the
+ *    runtime from `mermaid` rather than the address the page's head names; the head must still name
+ *    one, as it says the page draws diagrams (`mountApp` writes it there when it has none). Every
+ *    route, mdrev's included, still goes through `backend`.
  *  - `selectedId()`, `sessionRow(id)`, `sessionWorkers(id)`: what the app's session index says —
  *    the session it has selected, a session's row, and the headless workers a session started.
  *  - `selectSession(id, push)`: ask the app to select a session (the parent control, a descent).
