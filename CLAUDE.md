@@ -395,6 +395,18 @@ refresh in the background, so asking again after the reply could name the other,
 `deny_mutation` marks its check in a thread-local the gate reads after the route, since the route
 runs on its connection's thread and `Request` (built by other crates too) gains no field; the line
 is said once the reply is written. A refused read that is not a page load stays quiet.
+**A browser on this machine pairs from the page** (#s618, `design/pair-from-the-page.md`, Hong's
+choice A on #s605, stage 1 of 2: a PAIRED monitor). `/pair` loaded as the machine's own (a loopback
+peer, its own `Host`, its own `Origin` or none, no relay's headers, the header section whole:
+`local_asker` in `serve.rs`) offers "Show a code"; `POST /api/pair/ask` mints a page code and the
+host's `CodeDisplay` shows it ON THIS MACHINE only (`pair_dialog.rs`: osascript's `display dialog`,
+its script on STDIN, so the code is in no process's arguments), or where none can show it waits for
+`agent-monitor --pair-code`, which prints only to a terminal. The reply says where, never the code;
+nothing logs it. Page codes live in `<state>/page-codes`, apart from the phone's, with their own
+misses and a file lock beside it (`--pair-code` is a second process): one at a time, an ask every
+10 s, an hour's rest after three go unused, cleared at start. The gate is unchanged without
+`with_page_pairing`. No test raises a real dialog: the harness sets `AGENT_MONITOR_PAIR_DIALOG=0`
+and the cases read the code from the monitor's state dir; the dialog's own tests run a stand-in.
 **The page saves to a Home Screen as itself** (#320): the tab icon's green mark, square and opaque
 (`claude-monitor/src/icons/`, rendered from `app-icon.svg` by `scripts/render-app-icon.sh`), named by
 the app shell's head with a manifest and the label "Agent Monitor"; iOS also asks the root
