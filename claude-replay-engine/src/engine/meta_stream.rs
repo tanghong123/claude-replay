@@ -404,11 +404,16 @@ pub const COMPACT_AFTER: usize = 256;
 /// message with pasted images) folds to the person's turn and its images, where a v84 stream holds
 /// nothing for it at all.
 ///
+/// v86: #s608 — a Claude `enqueue` with no content (an image-only message) holds its place in the
+/// queue, so the content-less pop after it no longer takes the prompt queued behind it and
+/// suppresses that prompt's marker early; and an image block whose bytes are missing is no
+/// attachment. A v85 stream holds the earlier pops.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 85;
+pub const FOLD_VERSION: u16 = 86;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
