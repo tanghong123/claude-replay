@@ -2598,19 +2598,30 @@ pub fn chrome_with(extra: &[&str]) -> Chrome {
     panic!("chrome launches: {LAUNCHES} launches failed (last: {last})")
 }
 
-/// The flags every Chrome a case launches carries, so none reaches for this Mac's keychain (Aries
-/// for Hong, 2026-10-28): the suite's Chrome for Testing, with a profile of its own, asked macOS for
-/// a keychain to keep its data in, and macOS put "找不到钥匙串" (no keychain found) on Hong's screen,
-/// offering a Reset to Default that would replace his login keychain. `--use-mock-keychain` keeps
-/// Chrome's secrets in memory on macOS; `--password-store=basic` is the same on Linux.
-pub const NO_KEYCHAIN: [&str; 2] = ["--use-mock-keychain", "--password-store=basic"];
+/// The flags every Chrome a case launches carries.
+///
+/// So none reaches for this Mac's keychain (Aries for Hong, 2026-10-28): the suite's Chrome for
+/// Testing, with a profile of its own, asked macOS for a keychain to keep its data in, and macOS put
+/// "找不到钥匙串" (no keychain found) on Hong's screen, offering a Reset to Default that would
+/// replace his login keychain. `--use-mock-keychain` keeps Chrome's secrets in memory on macOS;
+/// `--password-store=basic` is the same on Linux.
+///
+/// And so none downloads components (#s621, hd-steward, 2026-11-20): every case's Chrome fetched
+/// component-updater downloads (a CRLSet) it never needs, into
+/// `com.google.chrome.for.testing.chromium_chrome_url_fetcher_.*` and `…Unpacker_BeginUnzipping.*`
+/// folders in the temp folder, which a browser ended mid-download left behind (about 500 of them).
+pub const CASE_FLAGS: [&str; 3] = [
+    "--use-mock-keychain",
+    "--password-store=basic",
+    "--disable-component-update",
+];
 
-/// `extra`, then [`NO_KEYCHAIN`]: the arguments of a Chrome a case launches itself.
+/// `extra`, then [`CASE_FLAGS`]: the arguments of a Chrome a case launches itself.
 pub fn chrome_args<'a>(extra: &[&'a str]) -> Vec<&'a std::ffi::OsStr> {
     extra
         .iter()
         .copied()
-        .chain(NO_KEYCHAIN.iter().copied())
+        .chain(CASE_FLAGS.iter().copied())
         .map(std::ffi::OsStr::new)
         .collect()
 }
@@ -2642,7 +2653,7 @@ pub fn launch_within(
             std::ffi::OsStr::new("--disable-renderer-backgrounding"),
         ];
         args.extend(extra.iter().map(std::ffi::OsStr::new));
-        args.extend(NO_KEYCHAIN.iter().map(std::ffi::OsStr::new));
+        args.extend(CASE_FLAGS.iter().map(std::ffi::OsStr::new));
         let launched = headless_chrome::Browser::new(
             headless_chrome::LaunchOptions::default_builder()
                 .path(path)
