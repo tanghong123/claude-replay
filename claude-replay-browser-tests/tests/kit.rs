@@ -1833,10 +1833,18 @@ fn a_list_over_two_machines_puts_its_projects_in_the_order_of_their_last_activit
     let session = |stores: &Stores, sid: &str, dir: &str, ask: &str, ago: u64| {
         let jsonl = harness::user_at(ask, &harness::rfc3339_secs_ago(ago + 5))
             + &harness::assistant_at("done", &harness::rfc3339_secs_ago(ago));
-        stores.claude_session(
+        let path = stores.claude_session(
             sid,
             &jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"/w/{dir}\"")),
         );
+        // The file's time agrees with its last record, whichever the server reads first.
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .and_then(|file| {
+                file.set_modified(std::time::SystemTime::now() - Duration::from_secs(ago))
+            })
+            .expect("date the transcript");
     };
     let stores = Stores::new(&base);
     session(
