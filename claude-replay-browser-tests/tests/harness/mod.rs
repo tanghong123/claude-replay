@@ -1029,6 +1029,26 @@ pub fn taskq_state(call_id: &str, task: &str, op: &str, from: &str, to: &str, s:
     tool_open_at(call_id, &ts) + &tool_result_text(call_id, &text, &ts)
 }
 
+/// A `taskq` CREATE record riding a Bash result (#s606), the way taskq prints one: its subject,
+/// status `pending`, and taskq's mark flattened into the changes as a create carries it, `mark`
+/// being `top_level`, `follows_up:<id>` or empty for a task filed before taskq had the marks. The
+/// command half is not a taskq invocation, so the record alone stands the task up, titled.
+pub fn taskq_create(call_id: &str, task: &str, subject: &str, mark: &str, s: u32) -> String {
+    let ts = stamp(s);
+    let mark = match mark.split_once(':') {
+        _ if mark == "top_level" => r#",\"top_level\":{\"from\":null,\"to\":true}"#.to_string(),
+        Some(("follows_up", of)) => {
+            format!(r#",\"follows_up\":{{\"from\":null,\"to\":\"{of}\"}}"#)
+        }
+        _ => String::new(),
+    };
+    let record = format!(
+        r#"##taskq/v1 {{\"rid\":\"rc-{task}\",\"ts\":\"{ts}\",\"repo\":\"claude-replay\",\"op\":\"create\",\"kind\":\"content\",\"task\":\"{task}\",\"subject\":\"{subject}\",\"by\":\"claude-code/hong@aries-black\",\"changes\":{{\"status\":{{\"from\":null,\"to\":\"pending\"}}{mark}}}}}"#
+    );
+    let text = format!(r#"Task #{task} created successfully: {subject}\n{record}"#);
+    tool_open_at(call_id, &ts) + &tool_result_text(call_id, &text, &ts)
+}
+
 /// An ISO timestamp `secs_ago` seconds before now — for records that must read as live.
 pub fn now_minus(secs_ago: u64) -> String {
     let t = std::time::SystemTime::now() - Duration::from_secs(secs_ago);

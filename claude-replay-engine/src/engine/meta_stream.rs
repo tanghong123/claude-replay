@@ -404,11 +404,19 @@ pub const COMPACT_AFTER: usize = 256;
 /// message with pasted images) folds to the person's turn and its images, where a v84 stream holds
 /// nothing for it at all.
 ///
+/// v86: #s606 — a task carries taskq's two marks (`top_level`, `follows_up`), set by a new
+/// task op, `Lineage`, which a v85 stream never recorded.
+///
+/// v87: #s600 — a Claude call a hook, a permission rule or auto mode stopped before it ran
+/// (`toolDenialKind` "permission-rule" or an `automode-*` kind) reads Blocked, a new tool status,
+/// its output the client's reason without the "Error: " an edit's join took, where a v86 stream
+/// holds it Failed.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 85;
+pub const FOLD_VERSION: u16 = 87;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

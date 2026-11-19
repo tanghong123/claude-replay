@@ -1931,14 +1931,25 @@ function renderNavigator() {
   // per ROW rather than out of `tasks`, because each row carries its index into that array and
   // `data-task-open` hands the index straight back to the popover.
   const titled = row => !!(row.task.subject || row.task.title);
-  const taskShown = afterFilter
-    .map(group => ({ ...group, rows: group.rows.filter(titled) }))
+  // #s606, Hong: "there is no filter for top level tasks". Top-level only hides a task that follows
+  // another up (taskq's `follows_up`), so what stays is what a person asked for, and what no mark
+  // places (a task filed before taskq had them). On a phone as on a desktop: the phone's way to it is
+  // a row at the top of the list (`phoneTasksFilter`), as its Agents list has.
+  const topLevelOnly = uiState.taskTopLevel;
+  const asked = row => !topLevelOnly || !row.task.follows_up;
+  const titledRows = afterFilter.map(group => ({ ...group, rows: group.rows.filter(titled) }));
+  const taskShown = titledRows
+    .map(group => ({ ...group, rows: group.rows.filter(asked) }))
     .filter(group => group.rows.length);
-  // The two hidings are counted apart, because only one of them is the reader's to undo: the
+  // The hidings are counted apart, because only the filters' are the reader's to undo: each
   // filter's count is what its control reports, and an untitled task is gone whatever they choose.
-  const liveRows = afterFilter.reduce((n, group) => n + group.rows.length, 0);
+  const count = groups => groups.reduce((n, group) => n + group.rows.length, 0);
+  const liveRows = count(afterFilter);
   const hiddenTasks = tasks.length - liveRows;
-  const untitledTasks = liveRows - taskShown.reduce((n, group) => n + group.rows.length, 0);
+  const untitledTasks = liveRows - count(titledRows);
+  const followUps = count(titledRows) - count(taskShown);
+  // Whether any task carries a mark at all: the menu offers the choice only where it can do something.
+  recordState.tasksMarked = tasks.some(task => task.top_level || task.follows_up);
   // An empty pane must never look like missing data: say that the filter is what emptied it, and
   // how much it is holding, because the reader cannot see what is not there.
   const untitledNote = untitledTasks ? ` · ${untitledTasks} with no recorded title` : "";
@@ -1946,12 +1957,18 @@ function renderNavigator() {
   // there way to show those agents?" The way was the Outline menu's row, which the reader could not
   // find from the pane they were looking at. So the line the filter empties carries the control
   // that undoes it, and says where the setting lives so they can put it back.
+  // Both filters emptying the pane: each has its control, the second named for what it brings back.
+  const followNote = followUps ? ` · ${followUps} ${followUps === 1 ? "follow-up" : "follow-ups"} hidden` : "";
   const noTasks = liveTasksOnly && hiddenTasks
-    ? `<div class="activity-empty"><span>Nothing live — ${hiddenTasks} finished ${hiddenTasks === 1 ? "task" : "tasks"} hidden${escapeText(untitledNote)}</span>${showFilteredControl("tasks", hiddenTasks)}</div>`
-    : untitledTasks
-      ? `<div class="activity-empty">No session tasks${escapeText(untitledNote)}</div>`
-      : '<div class="activity-empty">No session tasks</div>';
-  byId("navigatorWork").innerHTML = taskShown.map(group => `<div class="work-group" data-task-group="${group.key}"><span>${group.label}</span><span class="work-group-count">${group.rows.length}</span></div>${group.rows.map(taskRow).join("")}`).join("") || noTasks;
+    ? `<div class="activity-empty"><span>${followUps ? "Nothing live and top-level" : "Nothing live"} — ${hiddenTasks} finished ${hiddenTasks === 1 ? "task" : "tasks"} hidden${escapeText(followNote + untitledNote)}</span>${showFilteredControl("tasks", hiddenTasks)}${followUps ? showFilteredControl("followups", followUps, "Show follow-ups") : ""}</div>`
+    : followUps
+      ? `<div class="activity-empty"><span>Nothing top-level — ${followUps} ${followUps === 1 ? "follow-up" : "follow-ups"} hidden${escapeText(untitledNote)}</span>${showFilteredControl("followups", followUps)}</div>`
+      : untitledTasks
+        ? `<div class="activity-empty">No session tasks${escapeText(untitledNote)}</div>`
+        : '<div class="activity-empty">No session tasks</div>';
+  const followAll = titledRows.reduce((n, group) => n + group.rows.filter(row => row.task.follows_up).length, 0);
+  const taskRows = taskShown.map(group => `<div class="work-group" data-task-group="${group.key}"><span>${group.label}</span><span class="work-group-count">${group.rows.length}</span></div>${group.rows.map(taskRow).join("")}`).join("");
+  byId("navigatorWork").innerHTML = taskRows ? phoneTasksFilter(topLevelOnly, followUps, followAll) + taskRows : noTasks;
   mobileShell?.tasksChanged(); // the phone drop-down's jumps name the groups just drawn (#319)
   const agents = directAgents(), workers = sessionWorkers();
   const activeAgents = agents.filter(agent => agent.running).length + workers.filter(workerRunning).length;
@@ -1977,7 +1994,7 @@ function renderNavigator() {
   // What the filter is holding back, for the menu row that controls it to say so (#215). The head
   // reads "25 active · 253/308 done" either way, so without this the reader has no way to tell a
   // pane that is filtered from a pane that is simply short.
-  recordState.hiddenByFilter = { tasks: liveTasksOnly ? hiddenTasks : 0, agents: liveAgentsOnly ? hiddenAgents : 0 };
+  recordState.hiddenByFilter = { tasks: liveTasksOnly ? hiddenTasks : 0, agents: liveAgentsOnly ? hiddenAgents : 0, followups: followUps };
   // How many tasks each state holds, for the menu's rows to show what a box is worth (#218).
   recordState.taskGroupCounts = Object.fromEntries(taskGroups(tasks).map(g => [g.key, g.rows.length]));
   // The rows the pane ACTUALLY rendered, in order, for anything that wants to aim at one (#225).
@@ -1995,14 +2012,30 @@ function renderNavigator() {
  *  menu's row does, so the menu and the pane cannot disagree. The hint names that row so the reader
  *  can put the filter back — on a desktop only: a phone has no Outline menu (its way back is
  *  `phoneAgentsFilter`), and its Tasks pane shows every state already (#319). */
-function showFilteredControl(pane, hidden) {
-  const what = pane === "agents" ? `${hidden} finished ${hidden === 1 ? "agent" : "agents"}` : `${hidden} finished ${hidden === 1 ? "task" : "tasks"}`;
-  const hint = layout.phone()
+function showFilteredControl(pane, hidden, label = "Show them") {
+  const what = pane === "agents"
+    ? `${hidden} finished ${hidden === 1 ? "agent" : "agents"}`
+    : pane === "followups"
+      ? `${hidden} ${hidden === 1 ? "follow-up" : "follow-ups"}`
+      : `${hidden} finished ${hidden === 1 ? "task" : "tasks"}`;
+  // One hint to a line: beside the task states' control, the follow-ups' goes without its own.
+  const hint = layout.phone() || label !== "Show them"
     ? ""
     : pane === "agents"
       ? "Active only, in the Outline menu, hides them again"
-      : "The Outline menu's task states hide them again";
-  return `<button class="activity-empty-show" type="button" data-show-filtered="${pane}" aria-label="Show the ${escapeText(what)}">Show them</button>${hint ? `<small class="activity-empty-hint">${escapeText(hint)}</small>` : ""}`;
+      : pane === "followups"
+        ? "Top-level only, in the Outline menu, hides them again"
+        : "The Outline menu's task states hide them again";
+  return `<button class="activity-empty-show" type="button" data-show-filtered="${pane}" aria-label="Show the ${escapeText(what)}">${escapeText(label)}</button>${hint ? `<small class="activity-empty-hint">${escapeText(hint)}</small>` : ""}`;
+}
+/** A phone's way to Top-level only (#s606), as `phoneAgentsFilter` is to Active only: a row at the
+ *  top of the Tasks list, on the same remembered choice, for whichever end applies. Only where some
+ *  task follows another up, since otherwise the choice changes nothing. */
+function phoneTasksFilter(topLevelOnly, hidden, followUps) {
+  if (!layout.phone()) return "";
+  const what = n => `${n} ${n === 1 ? "follow-up" : "follow-ups"}`;
+  if (topLevelOnly) return hidden ? `<button class="tasks-filter-row" type="button" data-show-filtered="followups">Show ${what(hidden)}</button>` : "";
+  return followUps ? `<button class="tasks-filter-row" type="button" data-hide-follow-ups aria-label="Hide the ${what(followUps)}">Hide follow-ups</button>` : "";
 }
 /** A phone's way to the Agents filter (#s358, Hong's choice on #s357): it has no Outline menu, so
  *  the list carries a row for whichever end applies, on the same remembered filter. Hide finished
@@ -2135,11 +2168,22 @@ const navigatorClick = event => {
   const task = event.target.closest("[data-task-record]"); if (task) { closeTaskPopover(); jumpOrFetch(Number(task.dataset.taskRecord), "task"); return; }
   const agent = event.target.closest("[data-agent-record]"); if (agent) { jumpOrFetch(Number(agent.dataset.agentRecord), "agent"); return; }
   // #s356: an emptied pane's "Show them" clears the filter the Outline menu's row holds — Agents'
-  // Active only, or every task state shown — and the menu, if open, redraws to say so.
+  // Active only, every task state shown, or Top-level only (#s606) — and the menu, if open, redraws
+  // to say so.
   const showFiltered = event.target.closest("[data-show-filtered]");
   if (showFiltered) {
-    if (showFiltered.dataset.showFiltered === "agents") uiState.liveOnly.delete("agents");
+    const pane = showFiltered.dataset.showFiltered;
+    if (pane === "agents") uiState.liveOnly.delete("agents");
+    else if (pane === "followups") uiState.taskTopLevel = false;
     else for (const g of TASK_GROUP_ROWS) uiState.taskGroupsShown.add(g.key);
+    persist();
+    renderNavigator();
+    renderPanesMenu();
+    return;
+  }
+  // #s606: a phone's Hide follow-ups (`phoneTasksFilter`).
+  if (event.target.closest("[data-hide-follow-ups]")) {
+    uiState.taskTopLevel = true;
     persist();
     renderNavigator();
     renderPanesMenu();
@@ -3749,11 +3793,20 @@ function renderPanesMenu() {
     // the reader can see what each box is worth before unchecking it.
     if (key === "tasks") {
       const counts = recordState.taskGroupCounts || {};
-      return row + TASK_GROUP_ROWS.map(g => {
+      const states = TASK_GROUP_ROWS.map(g => {
         const shown = uiState.taskGroupsShown.has(g.key);
         const n = counts[g.key] || 0;
         return `<button class="pane-option pane-suboption ${shown ? "on" : ""}" type="button" role="menuitemcheckbox" aria-checked="${shown}" data-task-group="${escapeText(g.key)}" title="${shown ? `Showing the ${g.label.toLowerCase()} tasks` : `Show the ${g.label.toLowerCase()} tasks`}"><span class="pane-check" aria-hidden="true"></span><span>${escapeText(g.label)}</span>${n ? `<small>${n}</small>` : ""}</button>`;
       }).join("");
+      // #s606: below the states, offered where some task carries taskq's marks (or the choice is
+      // already on, so it can be taken off), with what it holds back beside it as Active only does.
+      const top = uiState.taskTopLevel;
+      if (!recordState.tasksMarked && !top) return row + states;
+      const hidden = (recordState.hiddenByFilter || {}).followups || 0;
+      const title = top
+        ? `Showing only the tasks a person asked for${hidden ? ` — ${hidden} ${hidden === 1 ? "follow-up" : "follow-ups"} hidden` : ""}`
+        : "Show only the tasks a person asked for, hiding the ones that follow another up";
+      return `${row}${states}<button class="pane-option pane-suboption ${top ? "on" : ""}" type="button" role="menuitemcheckbox" aria-checked="${top}" data-top-level-only title="${escapeText(title)}"><span class="pane-check" aria-hidden="true"></span><span>Top-level only</span>${top && hidden ? `<small>${hidden} hidden</small>` : ""}</button>`;
     }
     if (!LIVE_ONLY_PANES[key]) return row;
     const live = uiState.liveOnly.has(key);
@@ -3783,6 +3836,14 @@ panesMenu.onclick = event => {
   // A task state, first: the Tasks pane's rows are one per state (#218). Never all three off — an
   // empty set is a pane that looks broken, and the way back would be a control the reader cannot
   // see the effect of; unchecking the last one puts every state back, as the session filter does.
+  // #s606: Top-level only, beside the states.
+  if (event.target.closest("[data-top-level-only]")) {
+    uiState.taskTopLevel = !uiState.taskTopLevel;
+    persist();
+    renderNavigator();
+    renderPanesMenu();
+    return;
+  }
   const group = event.target.closest("[data-task-group]");
   if (group) {
     const key = group.dataset.taskGroup;
@@ -4812,7 +4873,8 @@ var phoneDock;
     const head = menuBody.querySelector(`.work-group[data-task-group="${CSS.escape(key)}"]`);
     if (!head) return;
     const first = head.nextElementSibling;
-    if (!head.previousElementSibling || !first) { menuBody.scrollTop = 0; return; }
+    const above = head.previousElementSibling;
+    if (!above || above.matches(".tasks-filter-row") || !first) { menuBody.scrollTop = 0; return; }
     menuBody.scrollTop += first.getBoundingClientRect().top - menuBody.getBoundingClientRect().top - head.offsetHeight;
   };
   const closePane = () => {

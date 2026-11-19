@@ -1847,10 +1847,10 @@
 #sessionView .activity-empty .activity-empty-show:hover{border-color:color-mix(in srgb,var(--primary) 26%,var(--line))}
 }
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .activity-empty .activity-empty-show{min-height:44px;min-width:44px;padding:0 20px;font-size:15px}
-:where(#sessionView) .agents-filter-row{display: block; width: 100%; min-height: 44px; padding: 0 12px; border-radius: 9px;
+:where(#sessionView) .agents-filter-row,:where(#sessionView) .tasks-filter-row{display: block; width: 100%; min-height: 44px; padding: 0 12px; border-radius: 9px;
   background: transparent; color: var(--primary);
   font: inherit; font-size: 14px; font-weight: 570; text-align: left; cursor: pointer;}
-:where(#sessionView) .agents-filter-row:focus-visible{outline: 2px solid color-mix(in srgb, var(--primary) 48%, transparent); outline-offset: -2px;}
+:where(#sessionView) .agents-filter-row:focus-visible,:where(#sessionView) .tasks-filter-row:focus-visible{outline: 2px solid color-mix(in srgb, var(--primary) 48%, transparent); outline-offset: -2px;}
 :where(#sessionView) .reading-cluster>.reading-options{position: absolute;
   right: 0;
   top: 45px;

@@ -17716,6 +17716,372 @@ fn a_wide_phone_column_shows_and_hides_finished_agents_with_one_running() {
     drop(m);
 }
 
+/// #s606: a world of three sessions whose tasks carry taskq's marks, or none. The first holds a
+/// top-level task, three follow-ups of it (one running, one completed) and one filed before taskq
+/// had the marks; the second only follow-ups; the third native tasks with no marks at all. Served
+/// on `port`, the first open with its Tasks drawer open (on a desktop). Returns the monitor, the
+/// browser, the tab and the three ids.
+fn top_level_world(
+    port: u16,
+    case: &str,
+    phone: Option<(u32, u32)>,
+) -> (
+    Monitor,
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+    [&'static str; 3],
+) {
+    let sids = [
+        "eeeeeeee-0000-4000-8000-000000006061",
+        "eeeeeeee-0000-4000-8000-000000006062",
+        "eeeeeeee-0000-4000-8000-000000006063",
+    ];
+    let base = base(case);
+    let stores = Stores::new(&base);
+    let mut first = harness::long_session(6, harness::Shape::default());
+    first += &harness::taskq_create("call_t10", "s10", "Ship the filter", "top_level", 10);
+    first += &harness::taskq_create(
+        "call_t11",
+        "s11",
+        "Fix what the filter found",
+        "follows_up:s10",
+        11,
+    );
+    first += &harness::taskq_create(
+        "call_t12",
+        "s12",
+        "Write the filter's case",
+        "follows_up:s10",
+        12,
+    );
+    first += &harness::taskq_state("call_c12", "s12", "claim", "pending", "in_progress", 13);
+    first += &harness::taskq_create("call_t13", "s13", "A task from before the marks", "", 14);
+    first += &harness::taskq_create(
+        "call_t14",
+        "s14",
+        "Tidy what the case left",
+        "follows_up:s10",
+        15,
+    );
+    first += &harness::taskq_state("call_d14", "s14", "done", "pending", "completed", 16);
+    first += &harness::long_session(3, harness::Shape::default());
+    stores.claude_session(sids[0], &first);
+    let mut second = harness::long_session(4, harness::Shape::default());
+    second += &harness::taskq_create(
+        "call_t20",
+        "s20",
+        "A follow-up filed here",
+        "follows_up:s10",
+        10,
+    );
+    second += &harness::taskq_create("call_t21", "s21", "Another follow-up", "follows_up:s10", 11);
+    stores.claude_session(sids[1], &second);
+    stores.claude_session(
+        sids[2],
+        &harness::long_session(4, harness::Shape::default()),
+    );
+    stores.claude_tasks(sids[2], &[("1", "a native task", "pending")]);
+    let m = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let (browser, tab) = harness::chrome_tab();
+    match phone {
+        Some((w, h)) => harness::phone(&tab, w, h),
+        None => harness::resize(&tab, 1400.0, 1300.0),
+    }
+    m.pair(&tab);
+    open_top_level_session(&tab, &m, sids[0], phone.is_none());
+    (m, browser, tab, sids)
+}
+
+/// Open `sid` in the app shell and, on a desktop, its Tasks drawer.
+fn open_top_level_session(tab: &headless_chrome::Tab, m: &Monitor, sid: &str, desktop: bool) {
+    m.open(tab, &format!("?ui=app&session={sid}"));
+    harness::until(tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
+    if desktop {
+        harness::eval(tab, "(function(){ var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); return 'ok'; })()");
+        harness::until_drawers_settle(tab);
+    }
+}
+
+/// The Tasks pane as it reads: its groups with their task titles, its empty line and its controls.
+const TOP_LEVEL_PANE: &str = "(function(){ var w = document.getElementById('navigatorWork'); var groups = [...w.querySelectorAll('.work-group')].map(function (g) { var rows = []; for (var n = g.nextElementSibling; n && n.classList.contains('work-task'); n = n.nextElementSibling) rows.push(n.querySelector('strong').textContent.trim()); return g.dataset.taskGroup + ': ' + rows.join(' | '); }); var empty = w.querySelector('.activity-empty'); var filter = w.querySelector('.tasks-filter-row'); return { groups: groups, empty: empty ? empty.querySelector('span') ? empty.querySelector('span').textContent : empty.textContent : '', shows: [...w.querySelectorAll('[data-show-filtered]')].map(function (b) { return b.dataset.showFiltered + ':' + b.textContent; }), hint: [...w.querySelectorAll('.activity-empty-hint')].map(function (h) { return h.textContent; }), filterRow: filter ? filter.textContent : '', filterFirst: !!filter && w.firstElementChild === filter, stored: localStorage.getItem('am-prod-task-top-level') }; })()";
+
+/// The panes menu's Top-level only row, opened by hovering its trigger as a reader does: whether it
+/// is there, where (right after the task states), checked or not, what it holds back, and whether
+/// its centre is what a pointer meets.
+fn top_level_menu_row(tab: &headless_chrome::Tab) -> serde_json::Value {
+    harness::eval(
+        tab,
+        "document.getElementById('navigatorPanesTrigger').dispatchEvent(new PointerEvent('pointerenter', { bubbles: true })); 'ok'",
+    );
+    // The menu fades in: a hit test during its opening meets what lies under it.
+    harness::until(
+        tab,
+        "(function(){ var m = document.getElementById('navigatorPanesMenu'); if (!m) return false; var c = getComputedStyle(m); return c.visibility === 'visible' && c.opacity === '1'; })()",
+        "the outline's drop-down to finish opening",
+        Duration::from_secs(5),
+        "(function(){ var m = document.getElementById('navigatorPanesMenu'); var c = getComputedStyle(m); return JSON.stringify({ open: m.classList.contains('open'), visibility: c.visibility, opacity: c.opacity }); })()",
+    );
+    harness::probe(
+        tab,
+        "(function(){ var m = document.getElementById('navigatorPanesMenu'); var r = m.querySelector('[data-top-level-only]'); var out = { open: m.classList.contains('open'), there: !!r }; if (r) { var b = r.getBoundingClientRect(); var hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); out.checked = r.getAttribute('aria-checked'); out.label = r.querySelector('span:nth-of-type(2)').textContent; out.hidden = (r.querySelector('small') || {}).textContent || ''; out.afterStates = !!(r.previousElementSibling && r.previousElementSibling.dataset.taskGroup === 'completed'); out.hit = !!(hit && (hit === r || r.contains(hit))); out.hitTag = hit ? hit.tagName + '.' + String(hit.className || '').split(' ')[0] : null; out.box = [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)]; } return out; })()",
+    )
+}
+
+fn close_panes_menu(tab: &headless_chrome::Tab) {
+    harness::eval(
+        tab,
+        "(function(){ var t = document.getElementById('navigatorPanesTrigger'); t.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true })); document.getElementById('navigatorPanesMenu').dispatchEvent(new PointerEvent('pointerleave', { bubbles: true })); return 'ok'; })()",
+    );
+    std::thread::sleep(Duration::from_millis(300));
+}
+
+/// The details card of the task titled `title`, as its chips read.
+fn top_level_card_chips(tab: &headless_chrome::Tab, title: &str) -> String {
+    harness::eval(
+        tab,
+        &format!("(function(){{ var row = [...document.querySelectorAll('#navigatorWork .work-task')].find(function (r) {{ return r.querySelector('strong').textContent.trim() === {title:?}; }}); row.querySelector('[data-task-open]').click(); return 'ok'; }})()"),
+    );
+    harness::until(
+        tab,
+        "!document.getElementById('taskPopover').hidden",
+        "the task's details card",
+        Duration::from_secs(5),
+        "document.getElementById('taskPopover').hidden",
+    );
+    let chips = harness::eval(
+        tab,
+        "[...document.querySelectorAll('#taskPopover [class*=\"chip\"]')].map(function (c) { return c.textContent.trim(); }).filter(Boolean).join(' · ')",
+    );
+    harness::eval(
+        tab,
+        "document.querySelector('#taskPopover .task-popover-close').click(); 'ok'",
+    );
+    harness::until(
+        tab,
+        "document.getElementById('taskPopover').hidden",
+        "the details card closed",
+        Duration::from_secs(5),
+        "document.getElementById('taskPopover').hidden",
+    );
+    chips.as_str().unwrap_or_default().to_string()
+}
+
+/// #s606, Hong: "there is no filter for top level tasks for agent-monitor". taskq marks a task a
+/// person asked for `top_level` and one filed on the way `follows_up` another, and its records carry
+/// both. The Tasks pane's row in the Outline menu, Top-level only, under the task states, hides the
+/// follow-ups (a task with neither mark stays), says how many it holds back, is remembered, and is
+/// offered only where some task carries a mark. A pane it empties says so with the way back, and a
+/// task's details card names its mark. Red before #s606: no such row, and no mark reached the page.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_tasks_pane_narrows_to_top_level_tasks_from_the_outline_menu() {
+    let _serial = serial();
+    let (m, _b, tab, sids) = top_level_world(3162, "top-level-desktop", None);
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 4",
+        "the four live tasks",
+        Duration::from_secs(20),
+        "document.getElementById('navigatorWork').innerText.slice(0, 300)",
+    );
+    let pane = harness::probe(&tab, TOP_LEVEL_PANE);
+    assert_eq!(
+        pane["groups"],
+        serde_json::json!([
+            "in_progress: Write the filter's case",
+            "pending: Ship the filter | Fix what the filter found | A task from before the marks"
+        ]),
+        "every live task, the filter off by default: {pane}"
+    );
+    // Each card names its mark; the one from before the marks names none.
+    assert!(top_level_card_chips(&tab, "Ship the filter").contains("top level"));
+    assert!(top_level_card_chips(&tab, "Fix what the filter found").contains("follows up #s10"));
+    let old = top_level_card_chips(&tab, "A task from before the marks");
+    assert!(
+        !old.contains("top level") && !old.contains("follows up"),
+        "no mark on record, none named: {old}"
+    );
+
+    let row = top_level_menu_row(&tab);
+    assert_eq!(
+        (
+            row["open"].clone(),
+            row["there"].clone(),
+            row["checked"].clone(),
+            row["label"].clone()
+        ),
+        (
+            serde_json::json!(true),
+            serde_json::json!(true),
+            serde_json::json!("false"),
+            serde_json::json!("Top-level only")
+        ),
+        "the menu offers Top-level only, unchecked: {row}"
+    );
+    assert_eq!(
+        row["afterStates"], true,
+        "right after the task states: {row}"
+    );
+    assert_eq!(
+        row["hit"], true,
+        "its centre is what a pointer meets: {row}"
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('#navigatorPanesMenu [data-top-level-only]').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 2",
+        "the follow-ups hidden",
+        Duration::from_secs(5),
+        "document.getElementById('navigatorWork').innerText.slice(0, 300)",
+    );
+    let pane = harness::probe(&tab, TOP_LEVEL_PANE);
+    assert_eq!(
+        pane["groups"],
+        serde_json::json!(["pending: Ship the filter | A task from before the marks"]),
+        "what a person asked for, and the task no mark places: {pane}"
+    );
+    assert_eq!(pane["stored"], "true", "the choice is remembered: {pane}");
+    let row = top_level_menu_row(&tab);
+    assert_eq!(
+        (row["checked"].clone(), row["hidden"].clone()),
+        (serde_json::json!("true"), serde_json::json!("2 hidden")),
+        "checked, saying what it holds back (the completed follow-up is the states' to hide): {row}"
+    );
+    close_panes_menu(&tab);
+
+    // Remembered across a reload.
+    open_top_level_session(&tab, &m, sids[0], true);
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 2",
+        "the follow-ups still hidden after a reload",
+        Duration::from_secs(20),
+        "document.getElementById('navigatorWork').innerText.slice(0, 300)",
+    );
+
+    // A session of follow-ups alone: the pane says what emptied it and offers the way back.
+    open_top_level_session(&tab, &m, sids[1], true);
+    harness::until(
+        &tab,
+        "/Nothing top-level/.test(document.getElementById('navigatorWork').textContent)",
+        "the emptied pane's line",
+        Duration::from_secs(20),
+        "document.getElementById('navigatorWork').innerText.slice(0, 300)",
+    );
+    let pane = harness::probe(&tab, TOP_LEVEL_PANE);
+    assert_eq!(
+        (
+            pane["empty"].clone(),
+            pane["shows"].clone(),
+            pane["hint"].clone()
+        ),
+        (
+            serde_json::json!("Nothing top-level — 2 follow-ups hidden"),
+            serde_json::json!(["followups:Show them"]),
+            serde_json::json!(["Top-level only, in the Outline menu, hides them again"])
+        ),
+        "the line, its control and where the setting lives: {pane}"
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('#navigatorWork [data-show-filtered=\"followups\"]').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 2",
+        "the follow-ups shown again",
+        Duration::from_secs(5),
+        "document.getElementById('navigatorWork').innerText.slice(0, 300)",
+    );
+    let pane = harness::probe(&tab, TOP_LEVEL_PANE);
+    assert_eq!(
+        pane["stored"], "false",
+        "Show them took the choice off: {pane}"
+    );
+    let row = top_level_menu_row(&tab);
+    assert_eq!(row["checked"], "false", "and the menu says so: {row}");
+    close_panes_menu(&tab);
+
+    // A session no mark reaches: the menu does not offer a choice that would change nothing.
+    open_top_level_session(&tab, &m, sids[2], true);
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 1",
+        "the native task",
+        Duration::from_secs(20),
+        "document.getElementById('navigatorWork').innerText.slice(0, 300)",
+    );
+    let row = top_level_menu_row(&tab);
+    assert_eq!(
+        (row["open"].clone(), row["there"].clone()),
+        (serde_json::json!(true), serde_json::json!(false)),
+        "no Top-level only where no task carries a mark: {row}"
+    );
+    close_panes_menu(&tab);
+    drop(m);
+}
+
+/// #s606: a phone has no Outline menu, so its Tasks sheet carries Top-level only as a row at the top
+/// of the list, as its Agents sheet carries Active only (#s358): Hide follow-ups, then Show N
+/// follow-ups, on the same remembered choice. The phone shows every task state (#319), so the
+/// completed follow-up is counted too.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_hides_follow_ups_from_its_tasks_sheet() {
+    let _serial = serial();
+    let (m, _b, tab, _sids) = top_level_world(3163, "top-level-phone", Some((440, 956)));
+    phone_tap(&tab, "#phonePane-tasks");
+    let sheet = "!document.getElementById('phonePaneMenu').hidden";
+    let rows = "document.querySelectorAll('#phonePaneMenu .work-task').length";
+    harness::until(
+        &tab,
+        &format!("{sheet} && {rows} === 5 && !!document.querySelector('#phonePaneMenu [data-hide-follow-ups]')"),
+        "the Tasks sheet, every task under a row that hides the follow-ups",
+        Duration::from_secs(20),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 300)",
+    );
+    let pane = harness::probe(&tab, TOP_LEVEL_PANE);
+    assert_eq!(
+        (pane["filterRow"].clone(), pane["filterFirst"].clone()),
+        (
+            serde_json::json!("Hide follow-ups"),
+            serde_json::json!(true)
+        ),
+        "the row is the list's first, above every state: {pane}"
+    );
+    finger_on_filter(&tab, "#phonePaneMenu [data-hide-follow-ups]");
+    harness::until(
+        &tab,
+        &format!("{sheet} && {rows} === 2 && /Show 3 follow-ups/.test((document.querySelector('#phonePaneMenu .tasks-filter-row') || {{}}).textContent || '')"),
+        "what a person asked for, under a row offering the three follow-ups",
+        Duration::from_secs(10),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 300)",
+    );
+    let pane = harness::probe(&tab, TOP_LEVEL_PANE);
+    assert_eq!(
+        pane["groups"],
+        serde_json::json!(["pending: Ship the filter | A task from before the marks"]),
+        "{pane}"
+    );
+    assert_eq!(
+        pane["stored"], "true",
+        "the same remembered choice the menu row reads: {pane}"
+    );
+    finger_on_filter(&tab, "#phonePaneMenu .tasks-filter-row");
+    harness::until(
+        &tab,
+        &format!("{sheet} && {rows} === 5 && !!document.querySelector('#phonePaneMenu [data-hide-follow-ups]')"),
+        "every task again, the sheet still open",
+        Duration::from_secs(10),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 300)",
+    );
+    assert_eq!(harness::probe(&tab, TOP_LEVEL_PANE)["stored"], "false");
+    drop(m);
+}
+
 /// #203: the app shell's tab has the monitor's icon. The extracted shell declares no
 /// `<link rel="icon">` (the demo is hand-written and stays byte-identical), so when the app
 /// shell became the default the browser's automatic `/favicon.ico` request 404'd and the tab

@@ -106,6 +106,11 @@ pub fn not_applied(
             Some(r) => format!("Error: {r}"),
             None => "Error: not applied".to_string(),
         })),
+        // #s600: a hook or a rule stopped it, so its reason is no error of the call's: the
+        // client's own words, which name the hook or the rule, drawn as they are.
+        ToolStatus::Blocked => Some(NotApplied::Failed(
+            reason.map_or_else(|| "Blocked: not applied".to_string(), str::to_string),
+        )),
         ToolStatus::Completed | ToolStatus::Unknown => None,
     }
 }
@@ -287,6 +292,7 @@ pub fn tool_execution_summary(execution: &ToolExecution) -> String {
                 ToolStatus::Completed => "",
                 ToolStatus::Failed => "failed",
                 ToolStatus::Declined => "declined",
+                ToolStatus::Blocked => "blocked",
                 ToolStatus::Cancelled => "cancelled",
                 ToolStatus::Unknown => "finished",
             }
@@ -309,7 +315,9 @@ pub fn tool_execution_summary(execution: &ToolExecution) -> String {
 /// completed, all exit 0; 70 failed, all non-zero), so no Codex head changes.
 pub fn tool_execution_failed(execution: &ToolExecution) -> bool {
     match execution.status {
-        Some(ToolStatus::Failed | ToolStatus::Declined | ToolStatus::Cancelled) => true,
+        Some(
+            ToolStatus::Failed | ToolStatus::Declined | ToolStatus::Blocked | ToolStatus::Cancelled,
+        ) => true,
         Some(ToolStatus::Completed) => false,
         _ => execution.exit_code.is_some_and(|code| code != 0),
     }
@@ -373,7 +381,7 @@ pub fn change_counts(b: &Block) -> Option<(usize, usize)> {
     if execution.as_ref().and_then(|e| e.status).is_some_and(|s| {
         matches!(
             s,
-            ToolStatus::Failed | ToolStatus::Declined | ToolStatus::Cancelled
+            ToolStatus::Failed | ToolStatus::Declined | ToolStatus::Blocked | ToolStatus::Cancelled
         )
     }) {
         return None;
@@ -650,6 +658,39 @@ mod tests {
             ),
             None
         );
+        // #s600: a hook or a rule stopped it, so its reason is drawn as the client wrote it,
+        // never as the call's error.
+        let blocked = ran(ToolStatus::Blocked);
+        assert_eq!(
+            not_applied(
+                "Edit",
+                "x.rs",
+                false,
+                Some(&blocked),
+                Some("PreToolUse:Edit hook error: [guard] generated file")
+            ),
+            Some(NotApplied::Failed(
+                "PreToolUse:Edit hook error: [guard] generated file".into()
+            ))
+        );
+        assert_eq!(
+            not_applied("Write", "x.md", false, Some(&blocked), None),
+            Some(NotApplied::Failed("Blocked: not applied".into()))
+        );
+    }
+
+    /// #s600: a call a hook or a rule stopped reads "blocked", with failure presentation, as a
+    /// declined one does.
+    #[test]
+    fn a_blocked_call_says_blocked_and_reads_as_a_failure() {
+        let blocked = ToolExecution {
+            status: Some(ToolStatus::Blocked),
+            exit_code: None,
+            duration: None,
+            outside_sandbox: false,
+        };
+        assert_eq!(tool_execution_summary(&blocked), "blocked");
+        assert!(tool_execution_failed(&blocked));
     }
 
     #[test]

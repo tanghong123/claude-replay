@@ -1146,13 +1146,13 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 /* #s358: a phone has no Outline menu, so its Agents list opens on a row for the same filter: the
    row's whole width is the target, as a reading row's is, in the accent colour and larger than the
    agents' own titles, so it reads as a control. Only a phone ever draws it, so it needs no query of
-   its own. */
-.agents-filter-row {
+   its own. Its Tasks list has the same row for Top-level only (#s606). */
+.agents-filter-row, .tasks-filter-row {
   display: block; width: 100%; min-height: 44px; padding: 0 12px; border-radius: 9px;
   background: transparent; color: var(--primary);
   font: inherit; font-size: 14px; font-weight: 570; text-align: left; cursor: pointer;
 }
-.agents-filter-row:focus-visible { outline: 2px solid color-mix(in srgb, var(--primary) 48%, transparent); outline-offset: -2px; }
+.agents-filter-row:focus-visible, .tasks-filter-row:focus-visible { outline: 2px solid color-mix(in srgb, var(--primary) 48%, transparent); outline-offset: -2px; }
 /* The positioning is spelled out rather than inherited: the demo's own rule is
    `.header-search-cluster>.navigator-options`, a CHILD selector this popover cannot match from
    its own cluster. Without these it laid out as a static flex item — measured at top -40px,
