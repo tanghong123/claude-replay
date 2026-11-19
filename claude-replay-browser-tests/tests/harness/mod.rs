@@ -2225,7 +2225,7 @@ pub fn browser_path() -> Option<std::path::PathBuf> {
 /// runner: `com.google.Chrome.XXXXXX`), but it makes it in `TMPDIR`, the workspace's scratch, whose
 /// age rule (`scripts/sweep-scratch.sh`) clears it after a day. Each end
 /// is a [`profile`] row saying whether the folder went (`CR_PROFILE`, which is how a run is checked
-/// for them), and a folder still there is also a stderr line naming it.
+/// for them), and one left outside `TMPDIR` is also a stderr line naming it.
 pub struct Chrome {
     browser: Option<headless_chrome::Browser>,
     /// The folder the profile's `SingletonSocket` link named once the browser was up.
