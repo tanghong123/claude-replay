@@ -5261,9 +5261,10 @@ fn refused(txt: &str, tur: &Value) -> bool {
 /// stopped WHILE running carries the same opening sentence, a correction after it, and no flag.
 /// Only a record holding one result says it of that one (`results`, the record's count).
 ///
-/// `Some(words)` when refused: the person's own reason, from the record's `userFeedback`, else
-/// from the text after the client's "the user said:" (its two wordings); `None` inside when they
-/// gave none, so the client's sentence to the model is not shown.
+/// `Some(words)` when refused: the person's own reason, from the record's `userFeedback` (when not
+/// empty), else from the text after the client's "the user said:" (its two wordings); `None` inside
+/// when they gave none, so the client's sentence to the model is not shown. An edit or a write card
+/// draws only its "rejected" note today, so there the reason is kept on the block but not shown.
 fn declined_before_run(v: &Value, txt: &str, results: usize) -> Option<Option<String>> {
     let flag = |key: &str| v.get(key).and_then(Value::as_bool) == Some(true);
     let refused = results == 1
@@ -5288,9 +5289,9 @@ fn declined_before_run(v: &Value, txt: &str, results: usize) -> Option<Option<St
     Some(
         v.get("userFeedback")
             .and_then(Value::as_str)
-            .or_else(said)
             .map(str::trim)
             .filter(|w| !w.is_empty())
+            .or_else(|| said().map(str::trim).filter(|w| !w.is_empty()))
             .map(str::to_string),
     )
 }
@@ -11922,13 +11923,46 @@ mod tests {
             // An older client's refused edit: no flag, Declined by its text.
             call("e1", "Edit"),
             result("e1", REFUSAL, rejected.clone(), serde_json::json!({})),
+            // A hook's refusal (permission-rule, source hook): Failed until #s600 reads it.
+            call("h1", "Bash"),
+            result("h1", "PreToolUse:Bash hook error: [guard] blocked: deploys need a ticket",
+                serde_json::json!("Error: PreToolUse:Bash hook error: [guard] blocked: deploys need a ticket"),
+                serde_json::json!({"toolDenialKind": "permission-rule",
+                    "permissionDecision": {"decision": "reject", "source": "hook", "reasonType": "hook"}})),
+            // The flag on a refusal that is not the person's (a rule's): not declined here.
+            call("k1", "Bash"),
+            result("k1", "Permission to use Bash has been denied by a rule.",
+                serde_json::json!("Error: Permission to use Bash has been denied by a rule."),
+                serde_json::json!({"toolDenialKind": "permission-rule", "toolDenialBeforeRun": true})),
+            // The client's other exclusion: refused by the host.
+            call("x1", "Bash"),
+            result("x1", REFUSAL, rejected.clone(),
+                serde_json::json!({"toolDenialKind": "user-rejected", "toolDenialBeforeRun": true, "toolDenialFromHost": true})),
+            // An empty userFeedback beside a reason in the text: the text's reason.
+            call("b7", "Bash"),
+            result("b7", &format!("{DENIED} The user said: wait for the freeze to lift"),
+                rejected.clone(),
+                serde_json::json!({"toolDenialKind": "user-rejected", "userFeedback": "",
+                    "permissionDecision": {"decision": "reject", "source": "user_reject"}})),
+            // Two results in one record: the record-level keys name neither, both stay Failed.
+            serde_json::json!({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "make one"}},
+                {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "make two"}}]}})
+            .to_string(),
+            serde_json::json!({"type": "user", "toolDenialKind": "user-rejected", "toolDenialBeforeRun": true,
+                "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "t1", "is_error": true, "content": REFUSAL},
+                {"type": "tool_result", "tool_use_id": "t2", "is_error": true, "content": REFUSAL}]}})
+            .to_string(),
         ]
         .join("\n");
         let streamed = parse(&jsonl);
         let reference = parse_main(jsonl.lines(), &mut Vec::new());
         assert_eq!(streamed, reference, "the two parse paths agree");
-        // The calls in the order written: b1 to b6, then e1.
-        const IDS: [&str; 7] = ["b1", "b2", "b3", "b4", "b5", "b6", "e1"];
+        // The calls in the order written.
+        const IDS: [&str; 13] = [
+            "b1", "b2", "b3", "b4", "b5", "b6", "e1", "h1", "k1", "x1", "b7", "t1", "t2",
+        ];
         // Consecutive calls sit under one thinking block: read inside it too.
         let calls: Vec<Block> = streamed
             .into_iter()
@@ -11969,7 +12003,15 @@ mod tests {
             (Some(Some(ToolStatus::Declined)), Some("not on main")),
             "a reason only in the text is still the person's: {seen:?}"
         );
-        for id in ["b4", "b5", "b6"] {
+        assert_eq!(
+            (status("b7"), output("b7").as_deref()),
+            (
+                Some(Some(ToolStatus::Declined)),
+                Some("wait for the freeze to lift")
+            ),
+            "an empty userFeedback leaves the reason in the text: {seen:?}"
+        );
+        for id in ["b4", "b5", "b6", "h1", "k1", "x1", "t1", "t2"] {
             assert_eq!(
                 status(id),
                 Some(Some(ToolStatus::Failed)),

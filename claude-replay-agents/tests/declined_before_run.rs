@@ -1,6 +1,6 @@
 //! #s594: a call the client refused before it ran reads Declined, keeping the person's reason, and
-//! that has to hold across a durable resume as well as a cold fold: a resume can begin between a
-//! call and its result, where the fold marks a call it restored from the cache.
+//! that has to hold across a durable resume as well as a cold fold: a resume after the refusal's
+//! turn committed restores the Declined block from the cache's bytes rather than folding it again.
 use claude_replay_agents::ClaudeAdapter;
 use claude_replay_engine::{
     adapter::TranscriptAdapter,
