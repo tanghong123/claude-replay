@@ -948,7 +948,10 @@ function fitHeading() {
   const cut = node => node.scrollWidth > node.clientWidth + 1;
   const cap = parseFloat(getComputedStyle(sessionTitle).maxWidth);
   const squeezed = cut(sessionTitle) && !(sessionTitle.getBoundingClientRect().width >= cap - 1);
-  const off = squeezed || cut(crumb);
+  // A crumb not drawn is off too, so the heading's least is then the lower one with no crumb in it,
+  // which the search box's floor counts on (#s598's review). Off a phone no width rule hides it today
+  // (its bands read the view's width and 300px more), so this holds for a crumb hidden any other way.
+  const off = squeezed || cut(crumb) || !crumb.getClientRects().length;
   // The heading keeps the width it had with the crumb (`--heading-room`), so the crumb's room goes to
   // the name: the bar shares what it lacks out by each part's width, and a heading narrowed by the
   // crumb's going gave its room to the search box, the name narrower than beside the crumb.
@@ -2779,14 +2782,16 @@ function fitDeskSearchFloor(input) {
   [searchbox.style.maxWidth, searchbox.style.flexShrink] = held;
   // What the heading can give: all it draws down to what the title keeps and the least the heading
   // draws beside it, the crumb gone and the chip its dot (`--heading-rest`), which is what the bar
-  // shows once the box has the room (#s598; `fitHeading` takes the crumb off a squeezed title and
-  // makes a cut chip its dot). Counted from the title's width beside a shown crumb, it left a held
-  // "lorem" 14px of its 37 at a 601px session column; and never past that least: a floor counted
-  // on more pushed the bar's last controls out of the session's column (train2's measure, a long
-  // first word at 1100px).
+  // shows once the box has the room (#s598; `fitHeading` takes the crumb off a squeezed title or one
+  // not drawn, and makes a cut chip its dot); a chip with no dot (a sub-agent's, "None selected") is
+  // counted whole, since it has no short form. Counted from the heading's least beside a shown crumb
+  // (the name's first word and 65px), it left a held "lorem" 14px of its 37 at a 601px session
+  // column; and never past the least it has: a floor counted on more pushed the bar's last controls
+  // out of the session's column (train2's measure, a long first word at 1100px).
   const title = byId("sessionTitle"), heading = title?.parentElement;
   const keep = title ? Math.max(parseFloat(getComputedStyle(title).minWidth) || 0, Math.min(TITLE_GIVES_TO, title.scrollWidth)) : 0;
-  const rest = heading ? parseFloat(getComputedStyle(heading).getPropertyValue("--heading-rest")) || 0 : 0;
+  const chip = byId("statusChip"), whole = chip?.getClientRects().length && !chip.querySelector(".state-dot") ? chip.scrollWidth : 0;
+  const rest = (heading ? parseFloat(getComputedStyle(heading).getPropertyValue("--heading-rest")) || 0 : 0) + whole;
   const give = title && heading ? Math.max(0, heading.getBoundingClientRect().width - keep - rest) : 0;
   const floor = Math.floor(Math.min(box + short + 2, box + give, widest));
   if (floor > box) cluster.style.setProperty("--search-floor", `${floor}px`);
@@ -4933,7 +4938,7 @@ var phoneDock;
     // card is shut.
     if (wasInCard !== columnHomes.has(heading)) {
       setSessionCopyMenu(false);
-      heading.classList.remove("crumb-off");
+      heading.classList.remove("crumb-off", "chip-dot");
       if (headingHeld) (columnHomes.has(heading) ? info : sessionTitle).focus({ preventScroll: true });
     }
     // Back in the bar from the card, the title's least room is measured again in the bar's font; only

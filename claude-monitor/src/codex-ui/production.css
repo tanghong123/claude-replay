@@ -1400,7 +1400,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .session-copy-menu.names-crumb .session-copy-about{display:block}
 /* #s598: the status chip gives way before the name as the crumb does, whole: where the bar would cut
    its words (squeezed beside the name, or past its own max-width), it shows only its dot, whose colour
-   is the state; its words are its title, and Info names the state (`chip-dot`, set by `fitHeading`
+   is the state; its tooltip and Info say the state (`chip-dot`, set by `fitHeading`
    from what the bar draws), no wider than the dot itself, as the bar's chip has no pill to pad: at
    1000px the squeezed words left the dot 8px, and the name its whole 290px. At a 601px session column
    it read "● D" and then nothing at all. */
