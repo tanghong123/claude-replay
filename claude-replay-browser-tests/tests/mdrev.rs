@@ -1532,6 +1532,175 @@ fn a_phone_reviews_in_a_full_screen_sheet_and_closes_back_to_where_it_was() {
     );
 }
 
+/// The native app's page for #s596's review case: under the app's content security policy
+/// (agent-monitor-app `KitPage.policy`, its `app://monitor/kit/` this origin's `/kit/`), so every
+/// script is the kit's or the host's file under `/kit/`, mdrev's bundle and the Mermaid runtime the
+/// app's own copies there (here relayed from the monitor's, as the app carries them in its bundle).
+const NATIVE_REVIEW_HOST: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src {{KIT}}; style-src {{KIT}} 'unsafe-inline'; font-src {{KIT}} data:; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' data: blob:; object-src 'none'; form-action 'none'; base-uri 'none'">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>The native app's review sheet</title>
+<link rel="stylesheet" href="/kit/bundle/app-shell.css">
+<link rel="stylesheet" href="/kit/bundle/session-list.css">
+<link rel="stylesheet" href="/kit/bundle/session-view.css">
+<script type="module" src="/kit/native-review.js"></script>
+</head>
+<body>
+<div id="appRoot"></div>
+</body>
+</html>
+"#;
+
+const NATIVE_REVIEW_SCRIPT: &str = r#"const host = window.__host = { mounted: false, error: null, errors: [], violations: [] };
+addEventListener("securitypolicyviolation", event => host.violations.push(`${event.effectiveDirective} ${event.blockedURI}`));
+addEventListener("error", event => host.errors.push(String(event.message)));
+addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
+try {
+  const native = await import("/kit/bundle/native-app.js");
+  const { backendHandle } = await import("/kit/bundle/index.js");
+  native.mountApp(document.getElementById("appRoot"), {
+    backend: backendHandle({ paired: true }),
+    assets: { mdrev: "/kit/vendor/", mdrevVersion: "{{MDREV}}", mermaid: "/kit/vendor{{MERMAID}}" },
+    version: "9.9.9-kit",
+    show: { detach: false },
+    reviewSheet: true,
+  });
+  host.mounted = true;
+} catch (error) {
+  host.error = String(error && error.stack || error);
+}
+"#;
+
+/// #s596 (Hong on #s555: "The phone's Review sheet on an iPad too (native app only)") — the web app
+/// from the kit with `reviewSheet: true`, under the app's own policy, at a desktop's width. The
+/// pane's Markdown offers Review there (the web app on a desktop offers its detached tab instead and
+/// no Review: `the_detached_tab_offers_shared_review_and_the_pane_does_not`); pressing it opens the
+/// sheet over the whole window, its guest mounted on the review prefix and answered paired, and its
+/// close returns to the pane as it was. Nothing the page loads breaks the policy. Red with the
+/// view's `reviewSheet` gate taken out of preview.js.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
+fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
+    let _serial = serial();
+    let (base, stores, repo, state) = shared_review_world("mdrev-native-sheet");
+    let m = Monitor::spawn_with(
+        Kind::V1,
+        3343,
+        &base,
+        Some(&stores),
+        true,
+        &[("MDREV_STATE_DIR", &state.display().to_string())],
+    );
+    let (_browser, tab) = chrome_tab();
+    m.pair(&tab);
+    let mut answers = harness::kit_bundle();
+    answers.push(harness::Answer {
+        pattern: "*/kit-native-review*".into(),
+        path: "/kit-native-review".into(),
+        content_type: "text/html; charset=utf-8".into(),
+        body: NATIVE_REVIEW_HOST.replace("{{KIT}}", &m.url("kit/")),
+    });
+    answers.push(harness::Answer {
+        pattern: "*/kit/native-review.js*".into(),
+        path: "/kit/native-review.js".into(),
+        content_type: "text/javascript; charset=utf-8".into(),
+        body: NATIVE_REVIEW_SCRIPT
+            .replace("{{MDREV}}", claude_monitor::kit::MDREV)
+            .replace("{{MERMAID}}", claude_replay_html::mermaid_runtime_path()),
+    });
+    harness::answer_and_relay_in_browser(
+        &tab,
+        answers,
+        vec![harness::Relay {
+            prefix: "/kit/vendor".into(),
+            port: m.port,
+            token: m.token(),
+        }],
+    );
+    m.open(&tab, &format!("kit-native-review?session={SID}"));
+    until(
+        &tab,
+        "!!(window.__host && (window.__host.mounted || window.__host.error)) && !!document.querySelector('[data-reference-path]')",
+        "the app from the kit, the session's stamped path drawn",
+        Duration::from_secs(30),
+        "JSON.stringify({ host: window.__host || null, transcript: (document.querySelector('#sessionView .transcript') || {}).innerText })",
+    );
+    // An English reader, as `open_shell` makes one, before mdrev's module first loads.
+    eval(
+        &tab,
+        "Object.defineProperty(Navigator.prototype, 'languages', { configurable: true, get: () => ['en-US'] }); 'ok'",
+    );
+    assert_eq!(
+        eval(
+            &tab,
+            "innerWidth >= 1180 && !matchMedia('(pointer: coarse)').matches"
+        ),
+        true,
+        "a desktop's width, with a mouse"
+    );
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1') && (function(){ var b = document.querySelector('.preview-review'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+        "the guide in the pane, with its Review control at a desktop's width",
+        Duration::from_secs(30),
+        "(function(){ var b = document.querySelector('.preview-review'); return (b ? 'review ' + (b.hidden ? 'hidden' : 'shown ' + b.offsetWidth) : 'no review control') + ' | ' + JSON.stringify(window.__host) + ' | ' + ((document.getElementById('previewBody') || {}).className || 'no pane'); })()",
+    );
+    harness::click_when_settled(&tab, ".preview-review", "the pane's Review control");
+    until(
+        &tab,
+        "!!document.querySelector('.review-sheet .mdrev-host h1') && (document.querySelector('.review-sheet .mdrev-pane') || {dataset: {}}).dataset.contract === '/api/mdrev-review'",
+        "the review sheet, mounted on the review prefix",
+        Duration::from_secs(30),
+        "(function(){ var s = document.querySelector('.review-sheet'); return s ? s.innerText.slice(0, 200) + ' | ' + JSON.stringify((s.querySelector('.mdrev-pane') || {dataset: {}}).dataset) : 'no sheet'; })()",
+    );
+    let paired_as = eval(
+        &tab,
+        "(async function(){ var d = document.querySelector('.review-sheet .mdrev-pane').dataset; var q = 'root=' + encodeURIComponent(d.root) + '&path=' + encodeURIComponent(d.path) + '&cap=' + encodeURIComponent(d.cap); var r = await fetch(d.contract + '/review?' + q); var j = await r.json(); return r.status + ' ' + (j.paired && j.paired.email) + (j.error ? ' — ' + j.error : ''); })()",
+    );
+    assert_eq!(
+        paired_as.as_str().unwrap_or(""),
+        "200 t@example.invalid",
+        "the sheet's prefix answers with the store's state, paired as the case paired"
+    );
+    let covers = eval(
+        &tab,
+        "(function(){ var s = document.querySelector('.review-sheet'); var r = s.getBoundingClientRect(); var c = s.querySelector('[data-review-close]'); var cr = c.getBoundingClientRect(); var hit = document.elementFromPoint(cr.left + cr.width / 2, cr.top + cr.height / 2); var h = s.querySelector('.mdrev-host h1').getBoundingClientRect(); var on = document.elementFromPoint(h.left + Math.min(20, h.width / 2), h.top + h.height / 2); return JSON.stringify({ box: [r.left, r.top, r.width, r.height].map(Math.round), inner: [innerWidth, innerHeight], close: [cr.width, cr.height].map(Math.round), closeOnTop: c.contains(hit), headingHit: !!on && s.querySelector('.mdrev-host h1').contains(on) }); })()",
+    );
+    let covers: serde_json::Value = serde_json::from_str(covers.as_str().unwrap_or("{}")).unwrap();
+    assert!(
+        covers["box"] == serde_json::json!([0, 0, covers["inner"][0], covers["inner"][1]])
+            && covers["close"][0].as_i64().unwrap_or(0) >= 44
+            && covers["close"][1].as_i64().unwrap_or(0) >= 44
+            && covers["closeOnTop"] == true
+            && covers["headingHit"] == true,
+        "the sheet covers the window, its document is what a click hits, and its close is a 44px target on top: {covers}"
+    );
+    harness::click_when_settled(
+        &tab,
+        ".review-sheet [data-review-close]",
+        "the sheet's close",
+    );
+    until(
+        &tab,
+        "!document.querySelector('.review-sheet') && !!document.querySelector('#previewBody .mdrev-host h1')",
+        "the sheet gone and the pane as it was",
+        Duration::from_secs(10),
+        PANE,
+    );
+    let host = eval(&tab, "JSON.stringify(window.__host)");
+    let host: serde_json::Value = serde_json::from_str(host.as_str().unwrap_or("{}")).unwrap();
+    assert!(
+        host["mounted"] == true
+            && host["errors"] == serde_json::json!([])
+            && host["violations"] == serde_json::json!([]),
+        "mounted, with no error and nothing the policy refused: {host}"
+    );
+}
+
 // ── #s13: every text file through mdrev, as source code when it is not Markdown ──────────────
 
 /// A 1×1 transparent PNG.
