@@ -186,8 +186,8 @@ export class Preview {
       while (this.sessionTabs.size > SESSION_CACHE_LIMIT || cacheBytes() > SESSION_CACHE_BYTES) this.sessionTabs.delete(this.sessionTabs.keys().next().value);
     }
     this.roster = []; this.rosterKey = "";
-    // The review sheet is the old session's document: it closes with it (#s431 stage 2, where a wide
-    // phone's column beside the sheet can choose another session).
+    // The review sheet is the old session's document: it closes with it (#s431 stage 2), whatever
+    // switched the session under it.
     this.reviewSheet?.close?.();
     this.teardownMarkdown();
     this.sessionId = sessionId || "";
@@ -431,7 +431,8 @@ export class Preview {
     // inside: one that leaves it (Tab past either end, a control under the sheet focused) is put
     // back where it was, after the move's own work has run (mdrev's copy focuses a textarea of its
     // own on the body for a moment). ⌘K, the jump-to, has a listener of its own outside the keymap:
-    // the sheet takes it, and leaves every other key to mdrev, which binds its own on the window.
+    // the sheet keeps it from the page (its default left alone, Ctrl+K in a field included), and
+    // leaves every other key to mdrev, which binds its own on the window.
     // On close the focus goes back to the Review control, and the keymap answers again.
     sheet.dataset.guestKeys = "";
     sheet.innerHTML = `<div class="review-sheet-head"><button type="button" class="review-sheet-close" data-review-close aria-label="Close the review">${svg("x")}</button><strong>${escapeText(item.name || "document")}</strong></div><div class="review-sheet-body mdrev-pane"></div>`;
@@ -444,20 +445,26 @@ export class Preview {
       this.reviewSheet = null;
       removeEventListener("keydown", onKey, true);
       removeEventListener("focusin", onFocus, true);
-      state.handle?.unmount();
+      // Read before mdrev goes: its unmount takes the focused control with it, leaving the body.
       const inside = sheet.contains(viewRoot.active());
+      state.handle?.unmount();
       sheet.remove();
       if (inside && this.reviewBtn.isConnected && !this.reviewBtn.hidden) this.reviewBtn.focus({ preventScroll: true });
     };
     const onKey = event => {
       if (event.key === "Escape") { event.preventDefault(); close(); }
-      else if ((event.metaKey || event.ctrlKey) && event.key?.toLowerCase() === "k") { event.preventDefault(); event.stopPropagation(); }
+      else if ((event.metaKey || event.ctrlKey) && event.key?.toLowerCase() === "k") event.stopPropagation();
     };
     const onFocus = event => {
       if (sheet.contains(event.target)) return;
       const from = event.relatedTarget;
       const back = from && from.isConnected && sheet.contains(from) ? from : closeBtn;
-      queueMicrotask(() => { if (this.reviewSheet === state && !sheet.contains(viewRoot.active())) back.focus({ preventScroll: true }); });
+      queueMicrotask(() => {
+        if (this.reviewSheet !== state || sheet.contains(viewRoot.active())) return;
+        back.focus({ preventScroll: true });
+        // A control that cannot take the focus now (hidden since) leaves it outside: the close takes it.
+        if (!sheet.contains(viewRoot.active())) closeBtn.focus({ preventScroll: true });
+      });
     };
     state.close = close;
     addEventListener("keydown", onKey, true);

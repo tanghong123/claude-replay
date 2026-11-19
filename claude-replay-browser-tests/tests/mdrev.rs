@@ -1733,15 +1733,22 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
             && after["sheet"] == true,
         "with the focus put back, the keys moved nothing under the sheet: {after}"
     );
-    harness::click_when_settled(
+    // Closed by Escape with the focus inside mdrev's document (its heading made focusable, so the
+    // unmount takes the focused element with it, as it takes a note field or one of mdrev's own
+    // buttons), the focus still goes back to Review.
+    eval(&tab, "(function(){ var h = document.querySelector('.review-sheet .mdrev-host h1'); h.tabIndex = -1; h.focus(); return 'ok'; })()");
+    until(
         &tab,
-        ".review-sheet [data-review-close]",
-        "the sheet's close",
+        "!!(document.activeElement && document.activeElement.closest('.review-sheet .mdrev-host'))",
+        "the focus inside mdrev's document",
+        Duration::from_secs(5),
+        "(document.activeElement || {}).className || (document.activeElement || {}).tagName",
     );
+    tab.press_key("Escape").unwrap();
     until(
         &tab,
         "!document.querySelector('.review-sheet') && !!document.querySelector('#previewBody .mdrev-host h1') && (document.activeElement || {}).classList?.contains('preview-review')",
-        "the sheet gone, the pane as it was, and the focus back on Review",
+        "the sheet gone by Escape, the pane as it was, and the focus back on Review",
         Duration::from_secs(10),
         "(document.activeElement || {}).className + ' | ' + document.getElementById('previewBody').className",
     );
