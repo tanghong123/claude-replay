@@ -2200,6 +2200,25 @@ mod tests {
             all.contains("let a = 2;"),
             "the refused diff is shown:\n{all}"
         );
+        // #s600: a hook or a rule stopped it: the client's reason, unprefixed, and no diff.
+        let blocked = texts(&render_one(
+            &edit(
+                ToolStatus::Blocked,
+                Some("PreToolUse:Edit hook error: [guard] generated file"),
+            ),
+            80,
+            Hl::Styled,
+        ));
+        let all = blocked.join("\n");
+        assert!(
+            all.contains("⎿ \u{a0}PreToolUse:Edit hook error: [guard] generated file"),
+            "the client's reason:\n{all}"
+        );
+        assert!(!all.contains("Error:"), "no error of the call's:\n{all}");
+        assert!(
+            !all.contains("let a = 2;"),
+            "no diff of a change that never happened:\n{all}"
+        );
     }
 
     /// Edit shows an `⏺ Update(...)` header + `⎿ Added/removed` summary + -/+ rows.
@@ -2491,6 +2510,36 @@ mod tests {
             styled(ToolStatus::Failed),
             ("exit 1".to_string(), theme::diff_del())
         );
+    }
+
+    /// #s600: a call a hook or a permission rule stopped before it ran says "blocked" on its head,
+    /// styled as a failure, as a declined one is.
+    #[test]
+    fn a_blocked_call_says_blocked_on_its_head() {
+        use crate::model::{ToolExecution, ToolStatus};
+        let styled = |status| {
+            let execution = ToolExecution {
+                status: Some(status),
+                exit_code: None,
+                duration: None,
+                outside_sandbox: false,
+            };
+            let line = with_execution(
+                tool_header("Bash", "make deploy", None),
+                Some(&execution),
+                None,
+            );
+            let last = line.spans.last().expect("a summary span").clone();
+            (last.content.to_string(), last.style)
+        };
+        let (blocked, style) = styled(ToolStatus::Blocked);
+        assert!(blocked.contains("blocked"), "{blocked:?}");
+        assert_eq!(
+            style,
+            styled(ToolStatus::Declined).1,
+            "styled as a declined call is"
+        );
+        assert_ne!(style, theme::dim(), "never dim like a success");
     }
 
     /// Expanded: a Bash block shows the command header + output capped at 15 lines

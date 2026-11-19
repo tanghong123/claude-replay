@@ -5927,6 +5927,19 @@ mod tests {
                 ("diff".to_string(), String::new()),
             ]
         );
+        // #s600: a hook or a rule stopped it: its word, and the client's reason as it wrote it.
+        let (chips, body) = parts(with(
+            ToolStatus::Blocked,
+            Some("PreToolUse:Edit hook error: [guard] generated file"),
+        ));
+        assert_eq!(chips, ["blocked"]);
+        assert_eq!(
+            body,
+            [(
+                "pre".to_string(),
+                "PreToolUse:Edit hook error: [guard] generated file".to_string()
+            )]
+        );
     }
 
     #[test]

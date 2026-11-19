@@ -470,6 +470,17 @@ mod tests {
             v.get("sent").is_none(),
             "only a message sent carries `sent`"
         );
+        // #s600: the word for a call a hook or a permission rule stopped before it ran.
+        let mut blocked = b.clone();
+        if let Block::ToolUse {
+            execution: Some(e), ..
+        } = &mut blocked
+        {
+            e.status = Some(ToolStatus::Blocked);
+        }
+        let mut o = Map::new();
+        block_fields(&blocked, &mut o);
+        assert_eq!(Value::Object(o)["status"], "blocked");
     }
 
     /// #s83: a SendMessage carries the words it sent as `sent`, beside its receipt as `output`.
