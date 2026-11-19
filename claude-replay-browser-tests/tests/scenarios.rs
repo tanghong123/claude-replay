@@ -7265,11 +7265,12 @@ fn app_shell_tool_heads_carry_state_exit_and_duration() {
     scenario_tool_heads_carry_state_exit_and_duration(&page.tab, Surface::AppShell, &fx);
 }
 
-// ── scenario: a call a hook or a permission rule stopped reads blocked (#s600) ─────────────
+// ── scenario: a call stopped before it ran says why: blocked or declined (#s600, #s594) ──────
 
 /// A Claude session whose last turn holds a call a PreToolUse hook stopped before it ran, as
 /// Claude Code records it (`toolDenialKind: permission-rule` on the record carrying its lone
-/// result), and a call that ran and failed, for contrast.
+/// result), one the person refused before it ran (#s594: `user-rejected` with
+/// `toolDenialBeforeRun`), and a call that ran and failed, for contrast.
 fn fixture_blocked(name: &str) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
@@ -7278,6 +7279,11 @@ fn fixture_blocked(name: &str) -> Fixture {
     t += &tool_open_at("b-hook", &harness::at("59:02"));
     t += &format!(
         "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"b-hook\",\"is_error\":true,\"content\":\"PreToolUse:Bash hook error: [guard] deploys need a person\"}}]}},\"toolDenialKind\":\"permission-rule\",\"timestamp\":\"{}\"}}\n",
+        harness::at("59:03")
+    );
+    t += &tool_open_at("b-decl", &harness::at("59:03"));
+    t += &format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"b-decl\",\"is_error\":true,\"content\":\"The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.\"}}]}},\"toolDenialKind\":\"user-rejected\",\"toolDenialBeforeRun\":true,\"timestamp\":\"{}\"}}\n",
         harness::at("59:03")
     );
     t += &tool_open_at("b-fail", &harness::at("59:04"));
@@ -7293,8 +7299,9 @@ fn fixture_blocked(name: &str) -> Fixture {
 
 /// #s600 (Hong's ruling on #s599, "New word: blocked, reason kept"): a call a hook or a rule
 /// stopped before it ran says `blocked` where a failed call says it failed, with failure
-/// presentation, and its body is the client's reason as it wrote it.
-fn scenario_a_call_a_hook_stopped_reads_blocked(
+/// presentation, and its body is the client's reason as it wrote it. #s594: one the person refused
+/// before it ran says `declined`, with failure presentation too.
+fn scenario_a_call_stopped_before_it_ran_says_why(
     tab: &headless_chrome::Tab,
     surface: Surface,
     _fx: &Fixture,
@@ -7325,6 +7332,7 @@ fn scenario_a_call_a_hook_stopped_reads_blocked(
             .unwrap_or_else(|| panic!("no {target} head among {heads:?}"))
     };
     let blocked = find("echo b-hook");
+    let declined = find("echo b-decl");
     let failed = find("echo b-fail");
     match surface {
         Surface::Classic => {
@@ -7340,17 +7348,35 @@ fn scenario_a_call_a_hook_stopped_reads_blocked(
                 "a call a hook stopped says blocked, as a failure: {blocked:?}"
             );
             assert_eq!(
+                last(&declined),
+                serde_json::json!({ "c": "fail", "x": "declined" }),
+                "a call the person refused before it ran says declined: {declined:?}"
+            );
+            assert_eq!(
                 last(&failed),
                 serde_json::json!({ "c": "fail", "x": "failed" }),
                 "a call that ran and failed still says failed: {failed:?}"
             );
         }
         Surface::AppShell => {
-            // The pill carries every chip, the word already among them, so it is not said twice.
+            // The pill carries every chip (a line count first), the word already among them, so
+            // it is not said twice.
+            let pill = blocked["pill"].as_str().unwrap_or("");
             assert_eq!(
-                (blocked["state"].as_str(), blocked["pill"].as_str()),
-                (Some("failed"), Some("1 lines · blocked")),
-                "a call a hook stopped says blocked, as a failure: {blocked:?}"
+                blocked["state"].as_str(),
+                Some("failed"),
+                "a call a hook stopped is a failure: {blocked:?}"
+            );
+            assert!(
+                pill.ends_with("blocked") && !pill.contains("failed"),
+                "…that says blocked, once: {blocked:?}"
+            );
+            let said = declined["pill"].as_str().unwrap_or("");
+            assert!(
+                declined["state"] == "failed"
+                    && said.ends_with("declined")
+                    && !said.contains("failed"),
+                "a call the person refused before it ran says declined: {declined:?}"
             );
             assert_eq!(
                 failed["state"].as_str(),
@@ -7390,20 +7416,20 @@ fn scenario_a_call_a_hook_stopped_reads_blocked(
 
 #[test]
 #[ignore = "needs a local Chrome"]
-fn classic_page_a_call_a_hook_stopped_reads_blocked() {
+fn classic_page_a_call_stopped_before_it_ran_says_why() {
     let _serial = serial();
     let fx = fixture_blocked("scenario-blocked-classic");
     let page = open(Surface::Classic, &fx, 0);
-    scenario_a_call_a_hook_stopped_reads_blocked(&page.tab, Surface::Classic, &fx);
+    scenario_a_call_stopped_before_it_ran_says_why(&page.tab, Surface::Classic, &fx);
 }
 
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
-fn app_shell_a_call_a_hook_stopped_reads_blocked() {
+fn app_shell_a_call_stopped_before_it_ran_says_why() {
     let _serial = serial();
     let fx = fixture_blocked("scenario-blocked-app");
     let page = open(Surface::AppShell, &fx, 3164);
-    scenario_a_call_a_hook_stopped_reads_blocked(&page.tab, Surface::AppShell, &fx);
+    scenario_a_call_stopped_before_it_ran_says_why(&page.tab, Surface::AppShell, &fx);
 }
 
 /// A spawn's `launched` chip is a launch EVENT, not liveness (#117): a closed session's
