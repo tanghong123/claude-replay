@@ -11,8 +11,11 @@
 #      process that made it is gone, however young: one per case per run, a suite several times
 #      a day, and the age rule below kept 43 GB of them on 2026-09-13. A running suite's roots
 #      are never in range — their pids are alive — so this is safe beside a live run.
-#   2. AGE, for every other scratch name (`cr-*`, `sc-*`, `qw-*`, `chrome-search-profile*`):
-#      older than a day, since a name without a pid says nothing about who still needs it.
+#   2. AGE, for every other scratch name (`cr-*`, `sc-*`, `qw-*`, `chrome-search-profile*`, and
+#      the singleton folder Chrome on Linux makes in TMPDIR and keeps when it exits, #s614:
+#      `com.google.Chrome.*`, `com.google.chrome.for.testing.*`, `org.chromium.Chromium.*`, with
+#      or without a leading dot): older than a day, since a name without a pid says nothing about
+#      who still needs it.
 #
 # Prints one line per rule in sweep.sh's "dropped N (X GB)" style. `--dry-run` deletes nothing.
 set -euo pipefail
@@ -36,7 +39,7 @@ done
 printf "    harness roots of dead test processes: %s %d (%.1f GB)\n" "$(verb)" "$n" "$(awk -v k="$freed" 'BEGIN{printf "%.3f", k/1024/1024}')"
 
 # 2. Age.
-scratch=(-name 'cr-*' -o -name 'chrome-search-profile*' -o -name 'sc-*' -o -name 'qw-*')
+scratch=(-name 'cr-*' -o -name 'chrome-search-profile*' -o -name 'sc-*' -o -name 'qw-*' -o -name 'com.google.Chrome.*' -o -name '.com.google.Chrome.*' -o -name 'com.google.chrome.for.testing.*' -o -name '.com.google.chrome.for.testing.*' -o -name 'org.chromium.Chromium.*' -o -name '.org.chromium.Chromium.*')
 old=$(find "$TARGET" -maxdepth 1 -mindepth 1 \( "${scratch[@]}" \) -mtime +1 | wc -l | tr -d ' ')
 [[ -n "$DRY" ]] || find "$TARGET" -maxdepth 1 -mindepth 1 \( "${scratch[@]}" \) -mtime +1 -exec rm -rf {} + 2>/dev/null || true
 echo "    other scratch older than a day: $(verb) $old"

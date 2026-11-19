@@ -513,7 +513,9 @@ back as facts (`shared/tool-head.js`), so a host writing records uses exactly th
 - `exit <n>` and a duration (`42ms`, `2.50s`, `1m 5s`) are the call's exit and time;
 - `<n> lines` is a count;
 - a chip whose `c` is `fail` marks the call failed, and so do the words `failed`, `killed`,
-  `declined` and `cancelled`; an `exit <n>` alone is a fact, not a failure;
+  `declined`, `blocked` (a hook, a permission rule or auto mode stopped it before it ran) and
+  `cancelled`;
+  an `exit <n>` alone is a fact, not a failure;
 - `completed`, `done`, `finished`, `stopped` and `launched` mean it ended;
 - pieces in one chip are joined with ` · `.
 

@@ -60,7 +60,7 @@ pub use crate::engine::replay::{
 // #s500: the one rule for which retry note withdraws a reply, shared by both parse paths.
 pub use crate::engine::replay::{withdrawable, withdrawn_run};
 // #s594: what a call refused before it ran shows, shared by both parse paths.
-pub use crate::engine::replay::decline;
+pub use crate::engine::replay::{decline, mark_blocked};
 // #s383: a transcript's bytes whatever form its store keeps them in — Codex compresses a
 // rollout untouched for seven days to `.jsonl.zst` — so a family lists, names and reads one
 // as the JSONL it stands for.

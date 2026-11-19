@@ -238,6 +238,40 @@ pub fn decline(block: &mut Block, words: Option<&str>) -> bool {
     true
 }
 
+/// #s600: mark a call a hook, a permission rule or auto mode stopped before it ran
+/// ([`Message::ToolBlocked`]): Blocked in place of the Failed its error made it, its output
+/// `reason` when there is one (the client's text, which names what stopped it and why; an edit's
+/// result joined as the client's `Error: …` string, or as nothing when that text matched a
+/// refusal's words), else as the result left it. A question (`asked`) is left to its own reading
+/// (#281). Whether it changed the block. Shared with the full parse.
+#[doc(hidden)]
+pub fn mark_blocked(block: &mut Block, reason: Option<&str>) -> bool {
+    let Block::ToolUse {
+        execution,
+        asked,
+        output,
+        ..
+    } = block
+    else {
+        return false;
+    };
+    if asked.is_some() {
+        return false;
+    }
+    execution
+        .get_or_insert(crate::model::ToolExecution {
+            status: None,
+            exit_code: None,
+            duration: None,
+            outside_sandbox: false,
+        })
+        .status = Some(crate::model::ToolStatus::Blocked);
+    if let Some(reason) = reason {
+        *output = Some(reason.to_string());
+    }
+    true
+}
+
 /// Record an in-place patch of the block at raw-logical index `logical`: fold it into `floor` (the
 /// running minimum) **iff** it sits below `frontier` — the count of blocks already emitted *before*
 /// this fold batch. A patch at/above `frontier` touched a block appended within this same batch,
@@ -508,6 +542,17 @@ impl<'a> Replayer<'a> {
                         }
                     }
                 }
+                // #s600: a call a hook or a rule stopped before it ran reads Blocked, not Failed.
+                Message::ToolBlocked {
+                    tool_use_id,
+                    reason,
+                } => {
+                    if let Some(rel) = self.tool_slot.get(tool_use_id).map(|&i| i - self.base) {
+                        if mark_blocked(&mut self.out[rel], reason.as_deref()) {
+                            note_patch(&mut patch_floor, self.base + rel, emitted_frontier);
+                        }
+                    }
+                }
                 // #s470: the API-error form of the same stop folds the same way.
                 Message::RefusedNote { id, text } | Message::RefusedError { id, text } => {
                     match self.refused.remove(id) {
@@ -740,6 +785,15 @@ impl<'a> Replayer<'a> {
                             self.queue.push(QueueItem {
                                 content: c.trim().to_string(),
                                 marker_idx,
+                            });
+                        } else {
+                            // An enqueue with no content holds its place (#s608): Claude Code
+                            // writes one for an image-only message, then a content-less pop for
+                            // it. Without its slot that pop took the prompt queued behind it (69
+                            // pops on one machine), whose marker then went early.
+                            self.queue.push(QueueItem {
+                                content: String::new(),
+                                marker_idx: None,
                             });
                         }
                     }
