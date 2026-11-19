@@ -28,7 +28,7 @@ function displayName(name) {
  *  terminal verb arrives on a separate AgentDone record), so it must never be read as
  *  "still running" or every finished sub-agent in a closed session looks in-flight. */
 const FAILED_WORDS = new Set(["failed", "killed"]); // failure presentation, each keeping its word
-const REFUSED_WORDS = new Set(["declined", "cancelled"]); // failure presentation, each keeping its word
+const REFUSED_WORDS = new Set(["declined", "blocked", "cancelled"]); // failure presentation, each keeping its word (#s600: blocked)
 const DONE_WORDS = new Set(["completed", "done", "finished", "stopped", "launched"]);
 const EXIT = /^exit (-?\d+)$/;
 const LINES = /^(\d+) lines$/;
@@ -72,7 +72,7 @@ function toolHead(head) {
 }
 
 /** The one-pill label: a failure keeps the server's own word (failed, killed, declined,
- *  cancelled — "failed" when only the chip's class says so) and names its exit code; anything
+ *  blocked, cancelled — "failed" when only the chip's class says so) and names its exit code; anything
  *  else shows the chips' text. */
 function stateLabel(th) {
   if (th.state !== "failed") return th.text;

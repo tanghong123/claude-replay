@@ -3079,6 +3079,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const declined = toolHead({ chips: [{ c: "fail", x: "declined · 42ms" }] });
   // Here the word IS in the chips, so the pill is the chip text unchanged — never said twice.
   assert.deepEqual([declined.state, declined.status, declined.duration, stateLabel(declined)], ["failed", "declined", "42ms", "declined · 42ms"]);
+  // #s600: a call a hook or a permission rule stopped before it ran keeps its own word, and reads
+  // as a failure even where its chip carries no class.
+  const blocked = toolHead({ chips: [{ x: "blocked" }] });
+  assert.deepEqual([blocked.state, blocked.status, stateLabel(blocked)], ["failed", "blocked", "blocked"]);
   const long = toolHead({ chips: [{ x: "exit 0 · 1m 5s" }] });
   assert.deepEqual([long.state, long.exit, long.duration, stateLabel(long)], ["completed", 0, "1m 5s", "exit 0 · 1m 5s"]);
   // #s126: the exit code is a fact and the chip's class the verdict. A non-zero exit the client
