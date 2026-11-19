@@ -5804,9 +5804,10 @@ mod tests {
                 ask.contains("--pair-phone"),
                 "{what}: and told the phone's way: {ask}"
             );
-            // A header section cut short carries no body (the body is read only after its blank
-            // line), so a redeem from one never holds a code: that leg is the ask above, and
-            // `local_asker`'s own case (#s618 review).
+            // A header section the peer cut short (an end of file before its blank line) carries
+            // no body, so a redeem from one never holds a code: that leg is the ask above, and
+            // `local_asker`'s own case (#s618 review). The other way out of the header loop, 64 KiB
+            // past the cap, is refused on its own (`any_past_cap`), as the past-the-cap legs hold.
             if !*whole {
                 continue;
             }

@@ -407,8 +407,9 @@ nothing logs it. Page codes live in `<state>/page-codes`, apart from the phone's
 misses and a file lock beside it (`--pair-code` is a second process): one at a time, an ask every
 10 s, an hour's rest after three go unused, cleared at start (where it cannot be, no page pairing
 that run). A code pairs only once its use is SAVED: unsaved, a right code reads as a miss and stays
-good, and a miss burns nothing, so a guess bound never rests on a write that failed; a lock file that
-cannot be taken changes nothing at all. A display started for a code used meanwhile is taken down. A code a link carries (`/pair#code=…`,
+good, and a miss burns nothing, so a guess bound never rests on a write that failed (a right PHONE
+code too pairs only once saved, on every gate); a lock file that cannot be taken changes nothing at
+all. A display started for a code used meanwhile is taken down. A code a link carries (`/pair#code=…`,
 posted `?from=link`) is a phone code, never judged against a page code. The gate is unchanged without
 `with_page_pairing`. No test raises a real dialog: the harness sets `AGENT_MONITOR_PAIR_DIALOG=0`
 and the cases read the code from the monitor's state dir; the dialog's own tests run a stand-in.
