@@ -5360,7 +5360,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // Its own server and version, never the page's.
   assert.doesNotMatch(mountSource, /\bbackend\(\)|dataset\.version|import \{[^}]*\bbackend\b[^}]*\} from "\.\/backend\.js"/, "the mount reads no page-wide server and no body's version");
   assert.match(mountSource, /^  backend: handleOf\(viewMachine\),$/m, "the view is mounted on the mount's server, or on the machine it is mounted on now");
-  assert.match(mountSource, /^const handleOf = machine => \(merged \? options\.machines\.find\(entry => entry\.machine === machine\)\.handle : options\.backend\);$/m, "which is the one server's, or that machine's own handle");
+  assert.match(mountSource, /^const handles = new Map\(\(options\.machines \|\| \[\]\)\.map\(entry => \[entry\.machine, entry\.handle\]\)\);\nconst handleOf = machine => \(merged \? handles\.get\(machine\) : options\.backend\);$/m, "which is the one server's, or that machine's own handle, as the app mounted with it");
   assert.match(mountSource, /\.textContent = `v\$\{options\.version \|\| "dev"\}`;/, "the brand names the mount's version");
   // The monitor's page: one call, on its wrapper, with its own server and the version its body carries.
   assert.equal((hostSource.match(/\bmountApp\(/g) || []).length, 1, "app.js mounts the web app once");

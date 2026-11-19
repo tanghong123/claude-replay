@@ -22,7 +22,7 @@ function fixture() {
   let finish, payload, closed = 0, painted = 0;
   const NativeMode = loadClass(nativeSource, "NativeModeControls", { document });
   const native = Object.assign(Object.create(NativeMode.prototype), { ordinary: { compose: controlState }, actions: { selectedId: () => indexState.selected }, view: "ordinary", composerGeneration: 0, drafts: new Map(), draftRevisions: new Map() });
-  const Control = loadClass(controlSource, "ControlStore", { document, fetch: () => {}, Event: class { constructor(type) { this.type = type; } }, matchMedia: () => ({ matches: false }), runSend: value => { payload = value; return new Promise(resolve => { finish = resolve; }); } });
+  const Control = loadClass(controlSource, "ControlStore", { document, fetch: () => {}, backend: () => ({ fetch: () => {} }), Event: class { constructor(type) { this.type = type; } }, matchMedia: () => ({ matches: false }), runSend: value => { payload = value; return new Promise(resolve => { finish = resolve; }); } });
   const ordinary = Object.assign(Object.create(Control.prototype), { compose: controlState, actions: { selectedRow: () => ({ id: indexState.selected }), captureComposer: () => native.captureOrdinarySend(), repaintComposer: () => painted++, toast: () => {}, refreshIndex: () => {} }, close: () => closed++ });
   return { input, send, native, ordinary, controlState, indexState, get payload() { return payload; }, get closed() { return closed; }, get painted() { return painted; }, finish: () => finish({ consented: true, step: "send", outcome: { kind: "sent" } }) };
 }
