@@ -2855,15 +2855,15 @@ const searchCluster = viewRoot.$(".header-search-cluster");
 // the field keeps them drawn until it lifts (`search-pressing`): the press places the caret and starts
 // a selection by the layout under the pointer, which the glyphs going would move by their width, or the
 // count and the steps coming would narrow (the reviews of #s582; production.css keeps both as at rest
-// while it holds). A box already in use stays as it is. The main button only: the context menu may
-// keep the release from the page.
+// while it holds). A box already in use stays as it is. The main button only, and a context menu
+// ends it (a Ctrl-click on a Mac is the main button): the menu may keep the release from the page.
 searchCluster.addEventListener("pointerdown", event => {
   if (event.pointerType !== "mouse") return;
   if (event.button === 0 && event.target === byId("transcriptSearchInput") && !searchCluster.matches(":focus-within, .search-held")) searchCluster.classList.add("search-pressing");
   searchCluster.classList.add("search-held");
 }, { signal });
 const pressEnded = () => searchCluster.classList.remove("search-pressing");
-for (const type of ["pointerup", "pointercancel"]) document.addEventListener(type, pressEnded, { capture: true, signal });
+for (const type of ["pointerup", "pointercancel", "contextmenu"]) document.addEventListener(type, pressEnded, { capture: true, signal });
 addEventListener("blur", pressEnded, { signal });
 searchCluster.addEventListener("focusin", event => {
   searchCluster.classList.add("search-held");
