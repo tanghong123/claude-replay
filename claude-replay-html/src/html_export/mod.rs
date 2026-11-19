@@ -1762,7 +1762,12 @@ impl Emitter<'_> {
                     let handed = name == "SendUserFile"
                         && !matches!(
                             execution.as_ref().and_then(|e| e.status),
-                            Some(ToolStatus::Failed | ToolStatus::Declined | ToolStatus::Cancelled)
+                            Some(
+                                ToolStatus::Failed
+                                    | ToolStatus::Declined
+                                    | ToolStatus::Blocked
+                                    | ToolStatus::Cancelled
+                            )
                         );
                     if let Some(abs) = resolve_abs(base, target) {
                         head.extend(offered_path(&abs, handed));
@@ -6646,6 +6651,7 @@ mod tests {
         for status in [
             ToolStatus::Failed,
             ToolStatus::Declined,
+            ToolStatus::Blocked,
             ToolStatus::Cancelled,
         ] {
             for (path, fsig) in stamps(send(Some(status))) {

@@ -289,6 +289,7 @@ fn tool_status(s: ToolStatus) -> &'static str {
         ToolStatus::Completed => "completed",
         ToolStatus::Failed => "failed",
         ToolStatus::Declined => "declined",
+        ToolStatus::Blocked => "blocked",
         ToolStatus::Cancelled => "cancelled",
         ToolStatus::Unknown => "unknown",
     }

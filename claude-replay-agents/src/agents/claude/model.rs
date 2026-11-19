@@ -1450,9 +1450,10 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // client reads as refused at its permission prompt and #s594 reads Declined, the
             // person's `userFeedback` on the card; and `source: "hook"` (reasonType "hook",
             // `toolDenialKind` "permission-rule", which the client reads as blocked, never ran) on
-            // 596 records in 337 transcripts, still Failed here: whether a call a hook or a rule
-            // refused reads as refused, and whether its card says who refused it, is the owner's
-            // question in #s599.
+            // 596 records in 337 transcripts. Hong ruled on #s599 ("New word: blocked, reason
+            // kept"), and #s600 reads every lone result whose `toolDenialKind` is
+            // "permission-rule" as Blocked, whatever its `source` (`blocked_before_run`), the
+            // client's text, which names the hook or the rule, kept as its output.
             "permissionDecision",
             // #s215 (client 2.1.308): a boolean on the user record carrying a Bash tool_result —
             // whether the command ran inside Claude Code's sandbox. Every Bash result since 2.1.308
@@ -4675,6 +4676,7 @@ pub(crate) fn decode_line_known(
                             }
                             // #s594: read before the text moves into the result.
                             let declined = declined_before_run(&v, &txt, tool_results(arr));
+                            let blocked = blocked_before_run(&v, tool_results(arr));
                             msgs.push(Message::ToolResult {
                                 tool_use_id: tid.to_string(),
                                 text: txt,
@@ -4708,6 +4710,12 @@ pub(crate) fn decode_line_known(
                                 msgs.push(Message::ToolDeclined {
                                     tool_use_id: tid.to_string(),
                                     words,
+                                });
+                            }
+                            // #s600: one a hook or a rule stopped before it ran reads Blocked.
+                            if blocked {
+                                msgs.push(Message::ToolBlocked {
+                                    tool_use_id: tid.to_string(),
                                 });
                             }
                             if let Some(items) = blk.get("content").and_then(|c| c.as_array()) {
@@ -5301,6 +5309,23 @@ fn declined_before_run(v: &Value, txt: &str, results: usize) -> Option<Option<St
             .or_else(|| said().map(str::trim).filter(|w| !w.is_empty()))
             .map(str::to_string),
     )
+}
+
+/// #s600: whether the record carrying a call's result says a hook or a permission rule stopped the
+/// call before it ran, by the client's own reading (Claude Code 2.1.328 words a lone result's
+/// `toolDenialKind` "permission-rule" blocked-by-permissions): a PreToolUse hook's refusal
+/// (`permissionDecision` source "hook", 2.1.299+), a settings or safety rule's (source "config"),
+/// or an older client's that does not tell them apart (no `permissionDecision`, 2.1.215+). Neither
+/// `toolDenialAfterRun` nor `toolDenialFromHost` true, as for a decline. Only a record holding one
+/// result says it of that one (`results`). The result's text, which names the hook or the rule and
+/// its reason, stays the call's output. The auto mode kinds (`automode-blocked` and its kin) are
+/// left as they read, Failed: Hong's ruling on #s599 names a hook or a permission rule.
+fn blocked_before_run(v: &Value, results: usize) -> bool {
+    let flag = |key: &str| v.get(key).and_then(Value::as_bool) == Some(true);
+    results == 1
+        && v.get("toolDenialKind").and_then(Value::as_str) == Some("permission-rule")
+        && !flag("toolDenialAfterRun")
+        && !flag("toolDenialFromHost")
 }
 
 /// How many results a user record's content holds: a record-level key speaks of its result only
@@ -6138,6 +6163,10 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                         declined_before_run(&v, &txt, tool_results(arr))
                                     {
                                         decline(&mut out[idx], words.as_deref());
+                                    }
+                                    // #s600 mirror: a call a hook or a rule stopped.
+                                    if blocked_before_run(&v, tool_results(arr)) {
+                                        mark_blocked(&mut out[idx]);
                                     }
                                     // #s381 mirror: where the command ran.
                                     if sandbox_on
@@ -12020,7 +12049,7 @@ mod tests {
             // An older client's refused edit: no flag, Declined by its text.
             call("e1", "Edit"),
             result("e1", REFUSAL, rejected.clone(), serde_json::json!({})),
-            // A hook's refusal (permission-rule, source hook): Failed until #s600 reads it.
+            // A hook's refusal (permission-rule, source hook): not declined, Blocked (#s600).
             call("h1", "Bash"),
             result("h1", "PreToolUse:Bash hook error: [guard] blocked: deploys need a ticket",
                 serde_json::json!("Error: PreToolUse:Bash hook error: [guard] blocked: deploys need a ticket"),
@@ -12108,7 +12137,7 @@ mod tests {
             ),
             "an empty userFeedback leaves the reason in the text: {seen:?}"
         );
-        for id in ["b4", "b5", "b6", "h1", "k1", "x1", "t1", "t2"] {
+        for id in ["b4", "b5", "b6", "x1", "t1", "t2"] {
             assert_eq!(
                 status(id),
                 Some(Some(ToolStatus::Failed)),
@@ -12116,10 +12145,182 @@ mod tests {
             );
             assert!(output(id).is_some(), "{id} keeps its text: {seen:?}");
         }
+        // A hook's or a rule's refusal is no person's: Blocked (#s600), never Declined.
+        for id in ["h1", "k1"] {
+            assert_eq!(
+                status(id),
+                Some(Some(ToolStatus::Blocked)),
+                "{id}: {seen:?}"
+            );
+        }
         assert_eq!(
             (status("e1"), output("e1")),
             (Some(Some(ToolStatus::Declined)), None),
             "an older client's refused edit reads Declined by its text: {seen:?}"
+        );
+    }
+
+    /// #s600, Hong's ruling on #s599 ("New word: blocked, reason kept"): a call a hook or a
+    /// permission rule stopped before it ran reads Blocked, keyed on the client's own field,
+    /// `toolDenialKind` "permission-rule", never the text: a PreToolUse hook's refusal (source
+    /// "hook"), a settings or safety rule's (source "config"), an older client's with no
+    /// `permissionDecision`, on any tool, an edit included. The client's text, which names the hook
+    /// or the rule and its reason, stays the output. One the client marks after-run or from the
+    /// host, two results in one record, an auto mode block and the headless config denial
+    /// (`user-rejected`, #s594's) stay Failed; a question keeps its own reading (#281). Both parse
+    /// paths.
+    #[test]
+    fn a_call_a_hook_or_rule_stopped_before_it_ran_is_blocked_and_keeps_the_reason() {
+        const HOOK: &str = "PreToolUse:Bash hook error: [guard] blocked: deploys need a ticket";
+        const RULE: &str = "Permission to use Bash with command rm -rf build has been denied.";
+        let call = |id: &str, name: &str| {
+            let input = match name {
+                "Bash" => serde_json::json!({"command": "make deploy"}),
+                "AskUserQuestion" => serde_json::json!({"questions": [{"question": "Which host?",
+                    "header": "Host", "multiSelect": false, "options": [{"label": "staging",
+                    "description": "the staging host"}, {"label": "prod", "description": "prod"}]}]}),
+                _ => {
+                    serde_json::json!({"file_path": "/w/x.rs", "old_string": "alpha", "new_string": "beta"})
+                }
+            };
+            serde_json::json!({"type": "assistant", "message": {"content": [{"type": "tool_use",
+                "id": id, "name": name, "input": input}]}})
+            .to_string()
+        };
+        let result = |id: &str, text: &str, keys: Value| {
+            let mut record = serde_json::json!({"type": "user", "toolUseResult": format!("Error: {text}"),
+                "message": {"content": [{"type": "tool_result", "tool_use_id": id, "is_error": true,
+                "content": text}]}});
+            for (k, v) in keys.as_object().unwrap() {
+                record[k] = v.clone();
+            }
+            record.to_string()
+        };
+        let by = |source: &str, reason: &str| {
+            serde_json::json!({"toolDenialKind": "permission-rule",
+                "permissionDecision": {"decision": "reject", "source": source, "reasonType": reason}})
+        };
+        let jsonl = [
+            // A PreToolUse hook's refusal (2.1.299+).
+            call("h1", "Bash"),
+            result("h1", HOOK, by("hook", "hook")),
+            // A safety rule's (source config).
+            call("r1", "Bash"),
+            result("r1", RULE, by("config", "safetyCheck")),
+            // An older client's: the kind alone, hook and rule not told apart (2.1.215–2.1.289).
+            call("o1", "Bash"),
+            result("o1", RULE, serde_json::json!({"toolDenialKind": "permission-rule"})),
+            // An edit a hook stopped: Blocked too, its reason kept.
+            call("e1", "Edit"),
+            result("e1", "PreToolUse:Edit hook error: [guard] blocked: generated file", by("hook", "hook")),
+            // The client's exclusions: after-run, from the host.
+            call("a1", "Bash"),
+            result("a1", HOOK, serde_json::json!({"toolDenialKind": "permission-rule", "toolDenialAfterRun": true})),
+            call("f1", "Bash"),
+            result("f1", HOOK, serde_json::json!({"toolDenialKind": "permission-rule", "toolDenialFromHost": true})),
+            // Auto mode's own kind: left as it reads.
+            call("m1", "Bash"),
+            result("m1", "Auto mode blocked this command.", serde_json::json!({"toolDenialKind": "automode-blocked"})),
+            // The headless config denial is #s594's user-rejected: Failed, as it was.
+            call("c1", "Bash"),
+            result("c1", RULE, serde_json::json!({"toolDenialKind": "user-rejected",
+                "permissionDecision": {"decision": "reject", "source": "config"}})),
+            // Two results in one record: the record-level keys name neither.
+            serde_json::json!({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "make one"}},
+                {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "make two"}}]}})
+            .to_string(),
+            serde_json::json!({"type": "user", "toolDenialKind": "permission-rule",
+                "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "t1", "is_error": true, "content": HOOK},
+                {"type": "tool_result", "tool_use_id": "t2", "is_error": true, "content": HOOK}]}})
+            .to_string(),
+        ]
+        .join("\n");
+        let streamed = parse(&jsonl);
+        let reference = parse_main(jsonl.lines(), &mut Vec::new());
+        assert_eq!(streamed, reference, "the two parse paths agree");
+        let calls: Vec<Block> = streamed
+            .into_iter()
+            .flat_map(|b| match b {
+                Block::Thinking { tools, .. } => tools,
+                other => vec![other],
+            })
+            .collect();
+        // The calls in the order written.
+        const IDS: [&str; 10] = ["h1", "r1", "o1", "e1", "a1", "f1", "m1", "c1", "t1", "t2"];
+        let seen: Vec<(&str, Option<String>, Option<ToolStatus>, bool)> = calls
+            .into_iter()
+            .filter_map(|b| match b {
+                Block::ToolUse {
+                    output,
+                    execution,
+                    asked,
+                    ..
+                } => Some((output, execution.and_then(|e| e.status), asked.is_some())),
+                _ => None,
+            })
+            .zip(IDS)
+            .map(|((output, status, asked), id)| (id, output, status, asked))
+            .collect();
+        assert_eq!(seen.len(), IDS.len(), "every call is drawn: {seen:?}");
+        let get = |id: &str| {
+            seen.iter()
+                .find(|s| s.0 == id)
+                .unwrap_or_else(|| panic!("{id}: {seen:?}"))
+        };
+        for (id, reason) in [
+            ("h1", HOOK),
+            ("r1", RULE),
+            ("o1", RULE),
+            (
+                "e1",
+                "PreToolUse:Edit hook error: [guard] blocked: generated file",
+            ),
+        ] {
+            let (_, output, status, _) = get(id);
+            assert_eq!(
+                *status,
+                Some(ToolStatus::Blocked),
+                "{id} never ran: {seen:?}"
+            );
+            assert!(
+                output.as_deref().is_some_and(|o| o.contains(reason)),
+                "{id} keeps the client's reason: {seen:?}"
+            );
+        }
+        for id in ["a1", "f1", "m1", "c1", "t1", "t2"] {
+            let (_, output, status, _) = get(id);
+            assert_eq!(
+                *status,
+                Some(ToolStatus::Failed),
+                "{id} stays Failed: {seen:?}"
+            );
+            assert!(output.is_some(), "{id} keeps its text: {seen:?}");
+        }
+        // A question a hook stopped keeps its own reading (#281). The frozen reference parse
+        // builds no questions, so this is the streaming path's alone.
+        let question = [
+            call("q1", "AskUserQuestion"),
+            result(
+                "q1",
+                "PreToolUse:AskUserQuestion hook error: [guard] no questions now",
+                by("hook", "hook"),
+            ),
+        ]
+        .join("\n");
+        let read = parse(&question).into_iter().find_map(|b| match b {
+            Block::ToolUse {
+                asked: Some(a),
+                execution,
+                ..
+            } => Some((a.unanswered, execution.and_then(|e| e.status))),
+            _ => None,
+        });
+        assert_eq!(
+            read,
+            Some((Some(Unanswered::Failed), Some(ToolStatus::Failed))),
+            "a question keeps its own reading"
         );
     }
 

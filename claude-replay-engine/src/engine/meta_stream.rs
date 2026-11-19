@@ -407,11 +407,14 @@ pub const COMPACT_AFTER: usize = 256;
 /// v86: #s606 — a task carries taskq's two marks (`top_level`, `follows_up`), set by a new
 /// task op, `Lineage`, which a v85 stream never recorded.
 ///
+/// v87: #s600 — a Claude call a hook or a permission rule stopped before it ran (`toolDenialKind`
+/// "permission-rule") reads Blocked, a new tool status, where a v86 stream holds it Failed.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 86;
+pub const FOLD_VERSION: u16 = 87;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

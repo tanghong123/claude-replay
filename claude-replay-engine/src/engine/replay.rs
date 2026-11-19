@@ -238,6 +238,32 @@ pub fn decline(block: &mut Block, words: Option<&str>) -> bool {
     true
 }
 
+/// #s600: mark a call a hook or a permission rule stopped before it ran
+/// ([`Message::ToolBlocked`]): Blocked in place of the Failed its error made it, its output kept
+/// (the client's text, which names the hook or the rule and its reason). A question (`asked`) is
+/// left to its own reading (#281). Whether it changed the block. Shared with the full parse.
+#[doc(hidden)]
+pub fn mark_blocked(block: &mut Block) -> bool {
+    let Block::ToolUse {
+        execution, asked, ..
+    } = block
+    else {
+        return false;
+    };
+    if asked.is_some() {
+        return false;
+    }
+    execution
+        .get_or_insert(crate::model::ToolExecution {
+            status: None,
+            exit_code: None,
+            duration: None,
+            outside_sandbox: false,
+        })
+        .status = Some(crate::model::ToolStatus::Blocked);
+    true
+}
+
 /// Record an in-place patch of the block at raw-logical index `logical`: fold it into `floor` (the
 /// running minimum) **iff** it sits below `frontier` — the count of blocks already emitted *before*
 /// this fold batch. A patch at/above `frontier` touched a block appended within this same batch,
@@ -504,6 +530,14 @@ impl<'a> Replayer<'a> {
                 Message::ToolDeclined { tool_use_id, words } => {
                     if let Some(rel) = self.tool_slot.get(tool_use_id).map(|&i| i - self.base) {
                         if decline(&mut self.out[rel], words.as_deref()) {
+                            note_patch(&mut patch_floor, self.base + rel, emitted_frontier);
+                        }
+                    }
+                }
+                // #s600: a call a hook or a rule stopped before it ran reads Blocked, not Failed.
+                Message::ToolBlocked { tool_use_id } => {
+                    if let Some(rel) = self.tool_slot.get(tool_use_id).map(|&i| i - self.base) {
+                        if mark_blocked(&mut self.out[rel]) {
                             note_patch(&mut patch_floor, self.base + rel, emitted_frontier);
                         }
                     }
