@@ -2311,6 +2311,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // another up and keeps one no mark places; off by default, remembered, counted on its own.
   assert.match(viewSource, /const asked = row => !topLevelOnly \|\| !row\.task\.follows_up;/, "Top-level only hides the follow-ups and nothing else (#s606)");
   assert.match(viewSource, /const followUps = count\(titledRows\) - count\(taskShown\);/, "…counted apart from the states' and the untitled rule's hiding");
+  assert.match(viewSource, /\$\{followUps \? "Nothing live and top-level" : "Nothing live"\} — /, "…and a pane both filters emptied says both, since a hidden follow-up may be live (#s606 review)");
   assert.match(stateSource, /taskTopLevel: json\("am-prod-task-top-level", false\) === true,/, "…off by default, and remembered");
   assert.match(stateSource, /localStorage\.setItem\("am-prod-task-top-level", JSON\.stringify\(uiState\.taskTopLevel\)\);/, "…and written");
   assert.match(viewSource, /data-live-only="\$\{escapeText\(key\)\}"/, "…as a checkbox row in the menu");
@@ -3505,6 +3506,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.deepEqual(taskChips(done).map(c => c.kind), ["status", "owner", "checks", "blocked"]);
   assert.equal(taskChips(done)[0].text, "completed");
   assert.equal(taskChips({ status: "Pending", deferred: true })[0].text, "deferred");
+  // #s606: taskq's mark, one chip; another queue's task keeps the `#` taskq's own wording keeps.
+  const lineage = task => taskChips({ status: "Pending", ...task }).filter(c => c.kind === "lineage").map(c => c.text);
+  assert.deepEqual([lineage({ top_level: true }), lineage({ follows_up: "s10" }), lineage({ follows_up: "agentdev#s316" }), lineage({ top_level: true, follows_up: "q4" }), lineage({})], [["top level"], ["follows up #s10"], ["follows up agentdev#s316"], ["follows up #q4"], []]);
   assert.equal(taskRowMeta(done), "claude-code/hong@aries-black · blocked by #7 · 1 check");
   assert.equal(taskRowMeta({ id: "1", subject: "bare" }), "", "nothing to say leaves the row one line");
   assert.deepEqual(taskSections(done).map(s => s.label), ["description", "acceptance", "outcome", "worklog"]);

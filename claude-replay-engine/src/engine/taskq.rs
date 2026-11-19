@@ -511,7 +511,9 @@ pub fn taskq_ops(call_id: &str, text: &str) -> Vec<TaskOp> {
 /// before and after (`"metadata": {"from": {…}, "to": {…}}`), so its `to` is the whole of what
 /// the task now holds, and a mark absent from it is a mark the task no longer has. Measured over
 /// one session's 400-odd such records: every create carried one mark or the other as a change
-/// key, and every update, claim and the rest carried them inside `metadata`.
+/// key, and every update, claim and the rest carried them inside `metadata`. A record echoed
+/// later (`--with-history`) states the marks of its own time again, as an echoed status does;
+/// the queue file, where this checkout has it, corrects both (`enrich_from_queue`).
 fn lineage(rec: &Value, task: &str) -> Option<TaskOp> {
     let flag = |v: Option<&Value>| {
         v.is_some_and(|x| x.as_bool() == Some(true) || x.as_str() == Some("true"))

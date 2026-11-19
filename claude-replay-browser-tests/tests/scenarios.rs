@@ -5640,7 +5640,7 @@ fn fixture_task_life(name: &str) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
     let path = stores.claude_session(SID, &long_session(14, Shape::default()));
-    stores.claude_task_file(SID, 1, r#"{"id":"125","subject":"Render tasks the way the board does","description":"the prose the queue kept","activeForm":"Rendering the task card","status":"completed","blockedBy":[],"blocks":[],"accept":["the glyph and the chips","the worklog"],"owner":"claude-code/hong@aries-black","created_at":"2026-09-04T18:23:00Z","claimed_at":"2026-09-04T22:14:00Z","completed_at":"2026-09-04T22:53:00Z","updated_at":"2026-09-04T22:53:00Z","outcome":"shipped as v1.200.0","checks":["node tests/ui_contract.mjs"],"log":[{"ts":"2026-09-04T22:49:00Z","by":"claude-code","msg":"found the seam"},{"ts":"2026-09-04T22:51:00Z","by":"claude-code","msg":"both pages render it"}]}"#);
+    stores.claude_task_file(SID, 1, r#"{"id":"125","metadata":{"top_level":true},"subject":"Render tasks the way the board does","description":"the prose the queue kept","activeForm":"Rendering the task card","status":"completed","blockedBy":[],"blocks":[],"accept":["the glyph and the chips","the worklog"],"owner":"claude-code/hong@aries-black","created_at":"2026-09-04T18:23:00Z","claimed_at":"2026-09-04T22:14:00Z","completed_at":"2026-09-04T22:53:00Z","updated_at":"2026-09-04T22:53:00Z","outcome":"shipped as v1.200.0","checks":["node tests/ui_contract.mjs"],"log":[{"ts":"2026-09-04T22:49:00Z","by":"claude-code","msg":"found the seam"},{"ts":"2026-09-04T22:51:00Z","by":"claude-code","msg":"both pages render it"}]}"#);
     stores.claude_task_file(SID, 2, r#"{"id":"126","subject":"The blocked one","description":"waits on 125","status":"pending","blockedBy":["125"],"blocks":[],"owner":"claude-code/hong@aries-black","created_at":"2026-09-04T19:00:00Z","updated_at":"2026-09-04T19:00:00Z"}"#);
     Fixture {
         base,
@@ -5696,6 +5696,11 @@ fn scenario_a_task_reads_like_the_board(
                 .collect()
         })
         .unwrap_or_default();
+    // #s606: taskq's mark, on both pages (the classic page's card passed no mark before review).
+    assert!(
+        chips.iter().any(|c| c == "top level"),
+        "the card names the task's mark: {seen:?}"
+    );
     assert!(
         chips.iter().any(|c| c.contains("completed")),
         "a status chip: {chips:?}"

@@ -1954,7 +1954,7 @@ function renderNavigator() {
   // Both filters emptying the pane: each has its control, the second named for what it brings back.
   const followNote = followUps ? ` · ${followUps} ${followUps === 1 ? "follow-up" : "follow-ups"} hidden` : "";
   const noTasks = liveTasksOnly && hiddenTasks
-    ? `<div class="activity-empty"><span>Nothing live — ${hiddenTasks} finished ${hiddenTasks === 1 ? "task" : "tasks"} hidden${escapeText(followNote + untitledNote)}</span>${showFilteredControl("tasks", hiddenTasks)}${followUps ? showFilteredControl("followups", followUps, "Show follow-ups") : ""}</div>`
+    ? `<div class="activity-empty"><span>${followUps ? "Nothing live and top-level" : "Nothing live"} — ${hiddenTasks} finished ${hiddenTasks === 1 ? "task" : "tasks"} hidden${escapeText(followNote + untitledNote)}</span>${showFilteredControl("tasks", hiddenTasks)}${followUps ? showFilteredControl("followups", followUps, "Show follow-ups") : ""}</div>`
     : followUps
       ? `<div class="activity-empty"><span>Nothing top-level — ${followUps} ${followUps === 1 ? "follow-up" : "follow-ups"} hidden${escapeText(untitledNote)}</span>${showFilteredControl("followups", followUps)}</div>`
       : untitledTasks
@@ -3792,7 +3792,7 @@ function renderPanesMenu() {
       if (!recordState.tasksMarked && !top) return row + states;
       const hidden = (recordState.hiddenByFilter || {}).followups || 0;
       const title = top
-        ? `Showing only the tasks a person asked for${hidden ? ` — ${hidden} follow-ups hidden` : ""}`
+        ? `Showing only the tasks a person asked for${hidden ? ` — ${hidden} ${hidden === 1 ? "follow-up" : "follow-ups"} hidden` : ""}`
         : "Show only the tasks a person asked for, hiding the ones that follow another up";
       return `${row}${states}<button class="pane-option pane-suboption ${top ? "on" : ""}" type="button" role="menuitemcheckbox" aria-checked="${top}" data-top-level-only title="${escapeText(title)}"><span class="pane-check" aria-hidden="true"></span><span>Top-level only</span>${top && hidden ? `<small>${hidden} hidden</small>` : ""}</button>`;
     }
