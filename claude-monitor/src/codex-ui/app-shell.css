@@ -330,6 +330,7 @@ body{padding:0;background:#eef1f4}
 html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 :root{color-scheme:light}
 :root[data-theme="dark"]{color-scheme:dark}
+.app-mount{display:contents}
 #app:not(.preview-off)>#sessionView.pl-boxed.pl-phone:has(>.review-sheet){z-index:95}
 #app:not(.preview-off)>#sessionView.pl-boxed.pl-phone>.review-sheet{left:calc(0px - var(--pane-x));right:calc(0px - var(--pane-r));--pl-cut-left:0px;--pl-cut-right:0px}
 #app:not(.preview-off)>#sessionView.pl-boxed.pl-phone.pl-coarse.pl-max-h-500.preview-full>.review-sheet{left:0;right:0}
@@ -565,6 +566,13 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 #app:has(>#sessionView.pl-boxed.preview-off :is(.reading-cluster>.reading-options.open,.header-search-cluster>.navigator-options.open,.header-search-cluster>.search-suggest:not([hidden]),.composer.production-show .compose-dialog:not([hidden])))>.drawer-handle{visibility:hidden}
 #app:has(>#sessionView.pl-boxed.pl-phone>.task-scrim:not([hidden]))>.drawer-handle{z-index:60;pointer-events:none}
 #app:has(>#sessionView.pl-boxed.pl-phone>.task-scrim:not([hidden]):not(.catching))>.drawer-handle{color:color-mix(in srgb,var(--ink) 58%,rgb(14 19 31))}
+}
+#app.app-drawer:not(.mobile-detail)>#sessionView{isolation:isolate}
+#app.app-drawer.mobile-detail>#sessionView{animation:drawer-closing .22s}
+@keyframes drawer-closing{from,to{isolation:isolate}}
+@media (pointer:coarse) and (max-height:500px) and (min-width:900px){
+#app.app-drawer:not(.mobile-detail)>#sessionView{isolation:auto}
+#app.app-drawer.mobile-detail>#sessionView{animation:none}
 }
 :root{--peer:#2b6f8e}
 :root[data-theme="dark"]{--peer:#7ab8d6}

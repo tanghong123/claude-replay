@@ -2224,6 +2224,25 @@ pub fn chrome_tab() -> (
     first_tab(chrome)
 }
 
+/// A new browser and its first tab, paired with `monitor`, for the part of a case that navigates
+/// after a long stretch on one page. headless_chrome 1.0.22's browser-level loop stops once its
+/// idle timeout (30 s) passes with no TARGET event (a navigation, a title changing, a tab opening),
+/// and the transport then closes the whole connection at the next one, which the case's next
+/// navigation sends: it reads as a page that never loaded ("The event waited for never came", then
+/// every call refused as a closed connection). The app shell sets no title, so a minute of resizing
+/// and measuring it is such a stretch (train2's top-bar case, #s433). Calls and the tab's own events
+/// go on through the stretch, and so does a case that never navigates again.
+pub fn fresh_tab(
+    monitor: &Monitor,
+) -> (
+    headless_chrome::Browser,
+    std::sync::Arc<headless_chrome::Tab>,
+) {
+    let (browser, tab) = chrome_tab();
+    monitor.pair(&tab);
+    (browser, tab)
+}
+
 /// [`chrome_with`] and its first tab.
 pub fn chrome_with_tab(
     extra: &[&str],
@@ -4402,10 +4421,38 @@ pub fn open_host_page_with(
         body: page.replace("<!--host-policy-->", policy),
     }];
     answers.extend(more);
+    // What the page before it left in this origin's storage, which the host page reads as it mounts:
+    // said if the load never finishes, since a case that used the app first is the one that hung.
+    let stored = eval(
+        tab,
+        "JSON.stringify(Object.keys(localStorage).filter(k => k.startsWith('am-')).sort().map(k => k + '=' + String(localStorage.getItem(k)).slice(0, 40)))",
+    );
     answer_in_browser(tab, answers);
     tab.navigate_to(&monitor.url(&format!("session-view-host?{query}")))
         .unwrap();
-    tab.wait_until_navigated().unwrap();
+    // A page that did load (the host page's address, its document complete) goes on to the mount
+    // wait below, with one stderr line saying the navigation event was missed. One that did not is
+    // asked a plain sum, whose error says whether the browser's connection is still there: train2's
+    // case lost it here after a minute in the app, at headless_chrome's idle trap (`fresh_tab`).
+    if let Err(e) = tab.wait_until_navigated() {
+        let at = eval(tab, "JSON.stringify({ href: location.href, ready: document.readyState, host: !!window.__host, mounted: !!(window.__host && window.__host.mounted), error: window.__host && window.__host.error ? String(window.__host.error) : null })");
+        let seen: serde_json::Value =
+            serde_json::from_str(at.as_str().unwrap_or("null")).unwrap_or_default();
+        let loaded = seen["href"]
+            .as_str()
+            .is_some_and(|h| h.contains(&format!("session-view-host?{query}")))
+            && seen["ready"] == "complete";
+        if !loaded {
+            let alive = match tab.evaluate("1 + 1", false) {
+                Ok(r) => format!("{}", r.value.unwrap_or_default()),
+                Err(e) => format!("error: {e:#}"),
+            };
+            panic!("the host page (session-view-host?{query}) to finish loading: {e}; the tab answers 1 + 1 with: {alive}; the tab: {at}; stored before it: {stored}");
+        }
+        eprintln!(
+            "the host page (session-view-host?{query}) loaded with no navigation event ({e}): {at}"
+        );
+    }
     until(
         tab,
         "!!(window.__host && (window.__host.mounted || window.__host.error))",

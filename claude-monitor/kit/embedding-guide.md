@@ -5,7 +5,9 @@
 agent-monitor's page is two parts: the **session list** (the sessions on a machine, their state,
 project and agent, with a filter) and the **session view** (one session's transcript, its outline
 and artifact panes, and the compose box). This kit is those two parts as a host mounts them in a
-page of its own, from one release it pins and upgrades on purpose, as hosts do with mdrev's kit.
+page of its own, and the page a transcript, a document or an image opens in when the reader sends
+it to a tab of its own, from one release it pins and upgrades on purpose, as hosts do with mdrev's
+kit.
 
 ## 1. What is in the box
 
@@ -13,14 +15,17 @@ page of its own, from one release it pins and upgrades on purpose, as hosts do w
 agent-monitor-kit-{{version}}/
   package.json             the release's version, and the type that makes node read .js as modules
   bundle/                  what the reader's browser runs, served by you as static files
-    index.js                 the entry: mountSessionView, mountSessionList, backendHandle,
-                             useBackend, persist, and mergedBackend and splitMachineId for
-                             one list over several machines
+    index.js                 the entry: mountSessionView, mountSessionList, mountDetached,
+                             backendHandle, useBackend, persist, and mergedBackend and
+                             splitMachineId for one list over several machines
     index.d.ts               what each takes and answers
     session-view.css         the view's stylesheet, every rule under #sessionView
     session-list.css         the list's, every rule under #sessionList
+    detached.css             a tab of its own's, every rule under #detachedView
     *.js, shared/*.js        the modules index.js imports, byte for byte as agent-monitor
                              {{version}} serves them at /monitor-ui/
+    other files              agent-monitor's own apps' (app-shell.css among them): a host
+                             loads none of them
   docs/
     embedding-guide.md       this guide
     backend-contract.md      the routes the parts read, contract version {{contract}}
@@ -46,7 +51,7 @@ The parts fetch from that server with the page's credentials and no cross-origin
 page and the server share an origin: serve the page from it, or relay the server's routes under a
 prefix of your page's origin.
 
-Run the conformance check against it before you mount anything (section 7).
+Run the conformance check against it before you mount anything (section 8).
 
 ## 3. Serving the bundle
 
@@ -95,8 +100,8 @@ own containers (`.your-bar .active`), and keep blanket rules (`* { … }`, `div 
 
 The parts remember the reader's choices (reading size, outline, folds, the filter) in your
 origin's `localStorage`, and the reader's place in each session in its `sessionStorage`, under keys
-that start with `am-`. Two more are ours: `mdrev-held:` keys in `sessionStorage` carry a document
-the artifact pane opens in a tab of its own, and a `localStorage` key named `viewportTrace`, if you
+that start with `am-`. Three more are ours: `mdrev-held:` and `am-image:` keys in `sessionStorage`
+carry a document or an image the artifact pane opens in a tab of its own (section 7), and a `localStorage` key named `viewportTrace`, if you
 set it, turns on a debugging trace. mdrev's reader in the artifact pane keeps its own reading
 choices under names of its own.
 
@@ -142,7 +147,9 @@ The options, each in `index.d.ts`:
   `useBackend` last named, and with neither, the server at the directory of your page's address,
   as an unpaired one unless your page's body says `data-paired="true"` as the kit loads.
 - **`show`**: the optional controls, each shown unless `false`: `reading` (the Reading menu and
-  its keys), `history` (the viewport history's Save), `detach` (the artifact pane's ↗).
+  its keys), `history` (the viewport history's Save), `detach` (every ↗ to a tab of its own).
+- **`detachTo`**: your page that draws a tab of its own (section 7). Left out, the artifact pane's
+  ↗ opens the server's pages and the transcript has none.
 - **`write`**: `{ on(), confirm(ask) }`, for writing to a session. Left out, the view offers no
   writes. `on()` says whether the reader switched writing on (call `writeChanged()` when it
   changes); `confirm({ title, text, passcode })` asks before the server types into a live pane,
@@ -274,7 +281,60 @@ list.redraw()`, `refreshIndex: () => list.refresh()`, `pauseIndex: () => list.st
 `resumeIndex: () => list.start()`, as agent-monitor's own page does, and call the view's
 `indexChanged()` from the list's `onIndex`.
 
-## 7. The conformance check
+## 7. A tab of its own
+
+The reader can send a session's transcript, or a document or an image from the artifact pane, to a
+tab of its own. That tab is a page you serve, at a route of yours, and the kit draws it: give the
+view the page's address as `detachTo`, and on that page mount `mountDetached`:
+
+```js
+mountSessionView(document.getElementById("sessionView"), { /* … */ detachTo: "/agents/detached" });
+```
+
+```html
+<link rel="stylesheet" href="/static/agent-monitor/session-view.css">
+<link rel="stylesheet" href="/static/agent-monitor/detached.css">
+<div id="detachedView" style="position: fixed; inset: 0"></div>
+```
+
+```js
+import { backendHandle, mountDetached } from "/static/agent-monitor/index.js";
+
+const tab = mountDetached(document.getElementById("detachedView"), {
+  backend: backendHandle({ base: "/agents/monitor", paired: true, mdrevVersion: "{{mdrev}}" }),
+  theme: "light",
+});
+```
+
+Each ↗ opens your page with a query that says what to show: `?session=<id>` a session's
+transcript, `?root=…&path=…&cap=…` a Markdown document, `?path=…&sig=…` or `?held=…` an image.
+`mountDetached` reads it from your page's address, draws it in the element (no id or the id
+`detachedView`, empty, given a place and a size by you), and keeps the address and the page's
+title current as the reader moves: another range of a document, a session they go to from this
+one, which Back returns from. Its options, each optional, are in `index.d.ts`: `backend`, `theme`
+and `address` (a query to read in place of your page's own, which the tab then leaves alone). The
+handle has `kind`, `setTheme(theme)` and `unmount()`.
+
+Your page's address may carry a query and a fragment of its own (`/agents/detached?team=x#top`):
+the ↗ adds what to show to the query and keeps the fragment last, and the tab keeps your keys as
+it rewrites the address. Its own are `session`, `root`, `path`, `cap`, `from`, `to`, `since`,
+`sig`, `held` and `name`: leave those names to it, since it reads them to choose what to show and
+rewrites them as the reader moves. It writes the query back in its standard form (`a+b` for
+`a%20b`, `x=` for a bare `x`), so read your keys with `URLSearchParams`. A fragment reaches the
+transcript's view, which reads one naming a record (`#b12`) as the place to open at.
+
+The transcript's tab is a reader: the session view with no list, its keys bound at the page, its
+index read every 5 seconds, with no writes and no ↗ of its own. Its page needs the Mermaid line
+of section 3 too.
+
+`detachTo` may also be a function, asked at each ↗ with `{ kind, query, href }` (`href` is the
+server's own page for it), that answers the address to open. The view opens it with `window.open` and never `noopener`: text the transcript carries and
+an image it embeds reach the tab in a copy of your page's `sessionStorage`, which a window you open
+yourself does not get, and then the tab says the copy is gone. Without `detachTo` the artifact
+pane's ↗ opens the server's own `/markdown` and `/image` pages and the transcript has no ↗;
+`show: { detach: false }` hides every ↗.
+
+## 8. The conformance check
 
 `conform.mjs` checks your server against contract version {{contract}}, rule by rule. It needs
 node 20 or later and nothing else:
@@ -289,12 +349,11 @@ you do not serve answers 404 and its rules are skipped. It exits 0 when your ser
 1 when a rule fails. It sends no prompt, grants nothing, answers no dialog and reveals no file;
 the top of the file lists the little it does change.
 
-## 8. Upgrading
+## 9. Upgrading
 
 Pin one release: its kit, and a server that speaks the contract version this guide names. A new
 release that only adds to the contract keeps its version; one that removes or changes something
 moves it, and its guide says so. To upgrade, read the new release's notes, swap `bundle/`, run
 the conformance check again against your server, and load your page.
 
-Not in this kit yet: a page for a document or an image in a tab of its own (the ↗ opens the
-server's `/markdown` and `/image` pages), and a mapping of your sign-in to ours.
+Not in this kit yet: a mapping of your sign-in to ours.
