@@ -43,7 +43,7 @@ const NAMED: &[(&str, &str, &str)] = &[
     (
         "codex-ui/attachment-viewer.js",
         "const filePath = `/file?",
-        "the path the next two lines hand to backend().url and backend().fetch",
+        "the path the next two lines hand to the handle the download took from backend() as it began",
     ),
     (
         "codex-ui/mdrev-pane.js",
@@ -58,7 +58,7 @@ const NAMED: &[(&str, &str, &str)] = &[
     (
         "codex-ui/mdrev-pane.js",
         "bundleUrl(",
-        "a path of mdrev's bundle, which bundleUrl hands to backend().mdrevUrl, or to the host's own copy of the bundle where it carries one (assets, #s595)",
+        "a path of mdrev's bundle, which bundleUrl hands to the mount's handle (backend(), taken as the mount began), or to the host's own copy of the bundle where it carries one (assets, #s595)",
     ),
     (
         "codex-ui/merged-source.js",

@@ -4366,7 +4366,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
   assert.equal((comp.match(/besideOf\(h\)/g) || []).length, 2, "both attachment cards ask the one rule");
   const pane = readFileSync(new URL("../../claude-monitor/src/codex-ui/mdrev-pane.js", import.meta.url), "utf8");
-  assert.match(pane, /if \(item\.path && item\.fsig\) \{\n    try \{ return \{ \.\.\.\(await opened\(item\.path, item\.fsig\)\), held: false \}; \}\n    catch \(error\) \{ if \(item\.text == null\) throw error; \}/, "a stamped file opens as itself, the carried text only when it cannot");
+  assert.match(pane, /if \(item\.path && item\.fsig\) \{\n    try \{ return \{ \.\.\.\(await opened\(item\.path, item\.fsig, handle\)\), held: false \}; \}\n    catch \(error\) \{ if \(item\.text == null\) throw error; \}/, "a stamped file opens as itself, the carried text only when it cannot");
   console.log("#s27/#s29 beside-a-file cases passed");
 }
 
@@ -5393,9 +5393,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   useBackend(before);
   // Both halves of the bundle load through the one join, the fallback asks no server under assets,
   // and every route of mdrev's (the contract's two prefixes, `/markdown` for a tab) is the handle's.
-  assert.match(mdrevSource, /^const bundleUrl = path => \(assets\(\) \? assets\(\)\.mdrevUrl\(path\) : backend\(\)\.mdrevUrl\(path\)\);$/m, "the bundle loads from the app's copy, or the server's");
-  assert.equal((mdrevSource.match(/bundleUrl\(`\/mdrev\/\$\{version\}\/mdrev\.(css|js)`\)/g) || []).length, 2, "the stylesheet and the module both");
-  assert.match(mdrevSource, /loading = importBundle\(version\)\.catch\(async error => \{\n      if \(assets\(\)\) throw error;\n      const now = await servedVersion\(\);/, "#s352's fallback asks no server under assets");
+  assert.match(mdrevSource, /^const bundleUrl = \(path, handle\) => \(assets\(\) \? assets\(\)\.mdrevUrl\(path\) : handle\.mdrevUrl\(path\)\);$/m, "the bundle loads from the app's copy, or the mount's server's");
+  assert.equal((mdrevSource.match(/bundleUrl\(`\/mdrev\/\$\{version\}\/mdrev\.(css|js)`, handle\)/g) || []).length, 2, "the stylesheet and the module both");
+  assert.match(mdrevSource, /loading = importBundle\(version, handle\)\.catch\(async error => \{\n      if \(assets\(\)\) throw error;\n      const now = await servedVersion\(handle\);/, "#s352's fallback asks no server under assets");
   for (const line of mdrevSource.split("\n").filter(line => /CONTRACT|"\/markdown|`\/markdown/.test(line) && /\b(fetch|Url)\(/.test(line))) {
     assert.doesNotMatch(line, /assets\(\)|bundleUrl/, `a route of mdrev's goes through the handle: ${line.trim()}`);
   }

@@ -662,11 +662,14 @@ fn the_web_app_over_two_machines_reads_each_session_from_its_own_machine() {
             && bundle.contains(&&format!("{from_app}mdrev.css")),
         "mdrev's bundle is the release the app carries, from the app's copy, and nothing of it from a machine: {names:?}"
     );
+    // That no machine is asked which release it serves when the app's bundle fails to load is held
+    // in node (`codex_machines.test.mjs`): here the app's bundle loads, so nothing would ask.
     assert!(
-        asked.iter().any(|a| a.starts_with("/machine-b/api/mdrev/hold"))
-            && !asked.iter().any(|a| a.starts_with("/api/mdrev"))
-            && !asked.iter().any(|a| a.contains("/markdown")),
-        "mdrev's routes go to the session's machine, and no machine is asked which release it serves: {asked:?}"
+        asked
+            .iter()
+            .any(|a| a.starts_with("/machine-b/api/mdrev/hold"))
+            && !asked.iter().any(|a| a.starts_with("/api/mdrev")),
+        "mdrev's routes go to the session's machine: {asked:?}"
     );
     let pane_open = harness::probe(&tab, "(function () { var app = document.getElementById('app'), view = document.getElementById('sessionView'); return { app: app.classList.contains('preview-off'), view: view.classList.contains('preview-off') }; })()");
     assert_eq!(
@@ -696,17 +699,18 @@ fn the_web_app_over_two_machines_reads_each_session_from_its_own_machine() {
     );
     let switched = harness::probe(
         &tab,
-        &format!("(function () {{ var app = document.getElementById('app'), view = document.getElementById('sessionView'); var since = window.__host.asked.slice({asked_before}); return {{ remounted: document.querySelector('#sessionView .transcript').__s595 !== 'b', pulled: since.filter(function (a) {{ return /\\/pull\\?/.test(a); }}), stateOnApp: ['preview-off', 'preview-full'].every(function (c) {{ return app.classList.contains(c) === view.classList.contains(c); }}), pairHint: !document.getElementById('writeInfo').hidden, address: new URLSearchParams(location.search).get('session'), wrap: view.classList.contains('wrap-code') }}; }})()"),
+        &format!("(function () {{ var app = document.getElementById('app'), view = document.getElementById('sessionView'); var since = window.__host.asked.slice({asked_before}); return {{ remounted: document.querySelector('#sessionView .transcript').__s595 !== 'b', viewAsked: since.filter(function (a) {{ return !/\\/api\\/(sessions|layout|ignore)\\b/.test(a); }}), stateOnApp: ['preview-off', 'preview-full'].every(function (c) {{ return app.classList.contains(c) === view.classList.contains(c); }}), pairHint: !document.getElementById('writeInfo').hidden, address: new URLSearchParams(location.search).get('session'), wrap: view.classList.contains('wrap-code') }}; }})()"),
     );
-    let pulled: Vec<String> = serde_json::from_value(switched["pulled"].clone()).unwrap();
+    // Everything but the list's own reads, which go to every machine.
+    let view_asked: Vec<String> = serde_json::from_value(switched["viewAsked"].clone()).unwrap();
     // The old view may still have polled its machine before it went; from the new one's first pull
-    // on, every pull is the first machine's.
-    let first_a = pulled
+    // on, every request the view makes is the first machine's.
+    let first_a = view_asked
         .iter()
         .position(|a| a.starts_with(&format!("/pull?session={SID_BOTH}")));
     assert!(
-        first_a.is_some_and(|at| pulled[at..].iter().all(|a| a.starts_with("/pull?"))),
-        "the first machine's session is pulled from the first machine alone, by its own id: {switched}"
+        first_a.is_some_and(|at| view_asked[at..].iter().all(|a| !a.starts_with("/machine-b/"))),
+        "the first machine's session is read from the first machine alone, by its own id: {switched}"
     );
     assert_eq!(
         (&switched["remounted"], &switched["stateOnApp"], &switched["pairHint"], &switched["address"]),

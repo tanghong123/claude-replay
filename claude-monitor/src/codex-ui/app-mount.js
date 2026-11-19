@@ -98,8 +98,10 @@ if (options.assets && !page.$('meta[name="mermaid-runtime"]')) {
 }
 // Over several machines (#s595), the machine the view is mounted on now; "" for the one server.
 let viewMachine = merged ? options.machines[0].machine : "";
-/** A machine's handle; the one server's for "". */
-const handleOf = machine => (merged ? options.machines.find(entry => entry.machine === machine).handle : options.backend);
+/** A machine's handle; the one server's for "". Taken as the app mounts, as the merged source takes
+ *  its own: a host that changes its list afterwards changes neither. */
+const handles = new Map((options.machines || []).map(entry => [entry.machine, entry.handle]));
+const handleOf = machine => (merged ? handles.get(machine) : options.backend);
 /** Where a list id is read: its machine and the machine's own id (`<machine>/<id>` over several
  *  machines, the id itself for the one server); null for an id no machine of the list holds. */
 const place = id => {
