@@ -24077,6 +24077,147 @@ fn a_phone_held_sideways_gets_the_phone_layout_in_one_row() {
     );
 }
 
+/// Where the session's menu sits against the top bar's title row, opened from the title: the menu's
+/// box, the title's, the turn subtitle's (null where it is not drawn) and the bar's, rounded, with
+/// the window's height.
+const SESSION_MENU_PLACE: &str = "(function(){ var m = document.getElementById('sessionCopyMenu'); if (!m || !m.classList.contains('open') || getComputedStyle(m).opacity !== '1' || getComputedStyle(m).transform !== 'none') return null; var box = function(e){ if (!e || e.hidden || !e.getClientRects().length) return null; var r = e.getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom), left: Math.round(r.left), right: Math.round(r.right) }; }; return JSON.stringify({ menu: box(m), title: box(document.getElementById('sessionTitle')), subtitle: box(document.getElementById('turnSubtitle')), heading: box(document.querySelector('#sessionView .workspace>.topbar>.session-heading')), chip: box(document.querySelector('#sessionView .workspace>.topbar>.session-heading>.status-chip')), bar: box(document.querySelector('#sessionView .workspace>.topbar')), titleText: document.getElementById('sessionTitle').textContent, titleScroll: document.getElementById('sessionTitle').scrollWidth, phoneTop: getComputedStyle(document.getElementById('sessionCopyMenu')).getPropertyValue('--phone-top'), menuPosition: getComputedStyle(m).position, height: innerHeight, width: innerWidth }); })()";
+
+/// #s602 (hd-replay's walk of #s581, an iPhone 17 Pro Max held sideways in Safari, 956×330): the
+/// session's menu opened from the title hung with its top at 51px, across the turn subtitle under
+/// the title (45 to 61px), so half the subtitle showed above the menu and the menu cut through the
+/// title row. Wherever the view is 700px wide or less (upright, and a wide phone's view beside its
+/// list column) the menu was pinned 51px down, the bar's bottom only while nothing moves the bar's
+/// row down. A top safe-area inset does: the walk's row sat 14px lower than this page draws it with
+/// no inset, which a 14px top inset reproduces here (the walk did not record which inset it was),
+/// and the Home Screen app upright has the status bar's 62px. On a phone it now hangs from the
+/// bar's measured bottom (`--phone-top`), as Info does: clear of the title row held sideways at both
+/// sizes the walk saw, and upright in the Home Screen app; upright in Safari, with no top inset, it
+/// is exactly where it was. On the old CSS the 956x330 leg and the Home Screen app's fail; the
+/// 852x393 view is wider than 700px, so its menu hangs from the heading and passes either way.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_held_sideways_hangs_the_session_menu_below_the_title_row() {
+    let _serial = serial();
+    let mut seen = Vec::new();
+    let sideways_row_down = (14, 62, 20, 62);
+    // Each leg: the window, its safe-area insets, what it stands for, and whether the view is 700px
+    // wide or less, where the menu is the pinned one this case is about (852x393 has no list column,
+    // so its view is wider than 700px and its menu hangs from the heading).
+    let cases = [
+        (
+            956,
+            330,
+            sideways_row_down,
+            "sideways in Safari, the list column shown",
+            true,
+        ),
+        (852, 393, sideways_row_down, "sideways in Safari", false),
+        (
+            402,
+            874,
+            harness::PORTRAIT_INSETS,
+            "upright in the Home Screen app",
+            true,
+        ),
+        (402, 874, (0, 0, 0, 0), "upright in Safari", true),
+    ];
+    for (n, (w, h, insets, label, pinned)) in cases.into_iter().enumerate() {
+        let base = harness::base(&format!("s602-menu-{n}"));
+        let stores = harness::Stores::new(&base);
+        // One turn, which the subtitle under the title names.
+        let t = [
+            harness::user_at(
+                "Please read the release notes for the last three versions and tell me which of the phone fixes are still waiting on a walk",
+                &harness::rfc3339_secs_ago(120),
+            ),
+            harness::assistant_at(
+                "Three of them are: the drawer's handle, the dock's search and the reply box held sideways.",
+                &harness::rfc3339_secs_ago(110),
+            ),
+        ]
+        .concat();
+        stores.claude_session(PHONE_SID, &t);
+        let m = harness::Monitor::spawn(harness::Kind::V1, 3602, &base, Some(&stores), true);
+        let (_b, tab) = harness::chrome_tab();
+        harness::phone(&tab, w, h);
+        harness::safe_area(&tab, insets);
+        m.pair(&tab);
+        m.open(&tab, &format!("?ui=app&session={PHONE_SID}"));
+        harness::until(
+            &tab,
+            &format!("!!document.querySelector('.transcript .turn.user') && innerWidth === {w}"),
+            "the session at its size",
+            Duration::from_secs(20),
+            "innerWidth + 'x' + innerHeight + ' ' + document.getElementById('app').className",
+        );
+        harness::until(
+            &tab,
+            "(function(){ var s = document.getElementById('turnSubtitle'); return !!s && !s.hidden && s.getClientRects().length > 0 && s.textContent.trim().length > 0; })()",
+            "the turn subtitle under the title",
+            Duration::from_secs(15),
+            "(document.getElementById('turnSubtitle') || {}).outerHTML",
+        );
+        harness::eval(
+            &tab,
+            "document.getElementById('sessionTitle').click(); 'ok'",
+        );
+        harness::until(
+            &tab,
+            &format!("!!{SESSION_MENU_PLACE}"),
+            "the session's menu open and settled",
+            Duration::from_secs(10),
+            "document.getElementById('sessionCopyMenu').className",
+        );
+        let place = harness::eval(&tab, SESSION_MENU_PLACE);
+        let place: serde_json::Value =
+            serde_json::from_str(place.as_str().unwrap_or("{}")).unwrap_or_default();
+        eprintln!("#s602 {label}, {w}x{h}: {place}");
+        seen.push((label, pinned, place));
+    }
+    for (label, pinned, place) in &seen {
+        let top = place["menu"]["top"].as_i64().unwrap_or(-1);
+        let row = [&place["title"]["bottom"], &place["subtitle"]["bottom"]]
+            .iter()
+            .filter_map(|v| v.as_i64())
+            .max()
+            .unwrap_or(i64::MAX);
+        assert!(
+            place["subtitle"].is_object(),
+            "{label}: the subtitle is drawn under the title, so the case reads the row the menu must clear: {place}"
+        );
+        assert!(
+            top >= row,
+            "{label}: the session's menu starts at or below the title row's bottom (title and subtitle), so no part of the row shows above it: {place}"
+        );
+        assert!(
+            place["menu"]["bottom"].as_i64().unwrap_or(i64::MAX)
+                <= place["height"].as_i64().unwrap_or(0),
+            "{label}: the whole menu is on the screen: {place}"
+        );
+        // A pinned leg's menu is the one this case is about, hung from the bar's measured bottom: a
+        // view wider than 700px (the list column hidden) would hang it from the heading, and the leg
+        // would pass on the old CSS too.
+        if *pinned {
+            let phone_top = place["phoneTop"]
+                .as_str()
+                .and_then(|v| v.trim().strip_suffix("px"))
+                .and_then(|v| v.parse::<f64>().ok());
+            assert_eq!(
+                (&place["menuPosition"], phone_top.map(|v| v.round() as i64)),
+                (&serde_json::json!("fixed"), Some(top)),
+                "{label}: the menu is pinned (the view is 700px wide or less) and hangs from the bar's measured bottom: {place}"
+            );
+        }
+        if *label == "upright in Safari" {
+            assert_eq!(
+                (&place["menu"]["top"], &place["menu"]["left"]),
+                (&serde_json::json!(51), &serde_json::json!(10)),
+                "{label}: the menu is where it always was, 51px down and 10px in: {place}"
+            );
+        }
+    }
+}
+
 /// #s32, part 2: between the phone and 1180px the preview is an overlay; it covered 72vw of a
 /// session still laid out at full width and left a sliver no one could read. An open preview now
 /// covers the whole session area beside the sidebar. Since #s431 stage 3 the owner's order decides
