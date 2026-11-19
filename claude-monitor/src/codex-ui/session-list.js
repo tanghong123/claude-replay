@@ -8,11 +8,16 @@ import { families, groupSessions } from "./shared/session-visibility.js";
  * merged source names a group's machine in `machine`), each project id led by its machine where the
  * group's own key does not already name it, so two machines' desktop agents or same-named groups are
  * two projects, folded and opened apart, and their families are formed apart; then the machines'
- * agents as one, each agent's projects in the machines' order. Without a `machine` on any group it is
- * `build` itself, so one monitor's list is what it always was. `build` is the grouping a host's
- * `group` hook was handed (native mode's).
+ * agents as one. Each agent's projects are in the server's calm order across the machines (#s615,
+ * Hong: "the sessions are not sorted by the last active time"; they were every project of the first
+ * machine, then the second's): the machines' lists, each already in its server's order, merged by
+ * [`calmOrder`], so a project busy a minute ago on one machine comes before one idle for a week on
+ * another, and each machine's own projects keep their order (Group by machine shows each one's
+ * unchanged). The agents follow their first projects. Without a `machine` on any group it is `build`
+ * itself, so one monitor's list is what it always was. `build` is the grouping a host's `group` hook
+ * was handed (native mode's); `now` is the clock in seconds.
  */
-export function groupAcrossMachines(groups = [], build = groupSessions) {
+export function groupAcrossMachines(groups = [], build = groupSessions, now = Date.now() / 1000) {
   if (!groups.some(group => group.machine)) return build(groups);
   const byMachine = new Map();
   for (const group of groups) {
@@ -22,13 +27,55 @@ export function groupAcrossMachines(groups = [], build = groupSessions) {
   }
   const agents = new Map();
   for (const [machine, own] of byMachine) for (const agent of build(own)) {
-    if (!agents.has(agent.id)) agents.set(agent.id, { ...agent, projects: [] });
-    for (const project of agent.projects) {
+    if (!agents.has(agent.id)) agents.set(agent.id, { agent, lists: [] });
+    agents.get(agent.id).lists.push(agent.projects.map(project => {
       const id = machine && !String(project.id).startsWith(`${machine}/`) ? `${machine}/${project.id}` : project.id;
-      agents.get(agent.id).projects.push(machine ? { ...project, id, machine } : project);
-    }
+      return machine ? { ...project, id, machine } : project;
+    }));
   }
-  return [...agents.values()];
+  return byFirstProject([...agents.values()].map(({ agent, lists }) => ({ ...agent, projects: mergeInOrder(lists, now) })), now);
+}
+
+/** A project's newest activity, as the server dates a group: its newest row's `activityTs` (s). */
+function projectLatest(project) {
+  let latest = 0;
+  for (const row of project.sessions || project.rows || []) latest = Math.max(latest, Number(row.activityTs) || 0);
+  return latest;
+}
+
+/**
+ * The server's order for two projects (claude-monitor/src/index.rs, the groups' sort; owner,
+ * 2026-08-08: rows must not hop with an agent's bursty writes), negative when `a` comes first: those
+ * active in the last ten minutes (`CALM_SECS`) first, tied and by name; the rest newest first; then
+ * the name and the directory, compared as the server compares them (lower case, by code point).
+ */
+function calmOrder(a, b, now = Date.now() / 1000) {
+  const latestA = projectLatest(a), latestB = projectLatest(b);
+  const activeA = now - latestA < CALM_SECS, activeB = now - latestB < CALM_SECS;
+  if (activeA !== activeB) return activeA ? -1 : 1;
+  if (!activeA && latestA !== latestB) return latestB - latestA;
+  const text = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+  return text(String(a.name || "").toLowerCase(), String(b.name || "").toLowerCase()) || text(String(a.path || ""), String(b.path || ""));
+}
+
+/** `lists`, each in its own order, merged into one by [`calmOrder`]: each list keeps its order, and a
+ *  tie goes to the earlier list (the machines' order). */
+function mergeInOrder(lists, now) {
+  const at = lists.map(() => 0);
+  const out = [];
+  for (;;) {
+    let pick = -1;
+    for (let i = 0; i < lists.length; i++) {
+      if (at[i] < lists[i].length && (pick < 0 || calmOrder(lists[i][at[i]], lists[pick][at[pick]], now) < 0)) pick = i;
+    }
+    if (pick < 0) return out;
+    out.push(lists[pick][at[pick]++]);
+  }
+}
+
+/** Agents ordered by their first projects (a stable sort, so a tie keeps the order they came in). */
+function byFirstProject(agents, now) {
+  return agents.sort((a, b) => (a.projects.length && b.projects.length ? calmOrder(a.projects[0], b.projects[0], now) : b.projects.length - a.projects.length));
 }
 
 /**
@@ -55,9 +102,11 @@ export function machineShortLabel(label, labels = []) {
  * filtered or not, from `groupAcrossMachines`, whose projects name their `machine`). The sections are
  * in the order the merged source lists its `machines` (the host's order), each machine listed once,
  * a machine with no rows in view kept with no agents (its head still says how it answers), and a
- * machine the rows name that the list of machines does not is put after them.
+ * machine the rows name that the list of machines does not is put after them. Each machine's projects
+ * keep the order `groupAcrossMachines` merged them in, which is that machine's own (#s615), and its
+ * agents follow their first projects there.
  */
-export function machineSections(agents = [], machines = []) {
+export function machineSections(agents = [], machines = [], now = Date.now() / 1000) {
   const order = [];
   const seen = new Set();
   const add = entry => { if (entry?.machine && !seen.has(entry.machine)) { seen.add(entry.machine); order.push(entry); } };
@@ -65,9 +114,9 @@ export function machineSections(agents = [], machines = []) {
   for (const agent of agents) for (const project of agent.projects || []) if (project.machine) add({ machine: project.machine, label: project.machine, state: "live", since: null, error: null });
   return order.map(entry => ({
     machine: entry,
-    agents: agents
+    agents: byFirstProject(agents
       .map(agent => ({ ...agent, projects: (agent.projects || []).filter(project => project.machine === entry.machine) }))
-      .filter(agent => agent.projects.length)
+      .filter(agent => agent.projects.length), now)
   }));
 }
 

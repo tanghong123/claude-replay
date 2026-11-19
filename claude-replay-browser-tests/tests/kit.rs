@@ -1819,6 +1819,139 @@ fn a_phone_list_over_two_machines_groups_by_machine_from_the_filter() {
     groups_by_machine_from_the_filter(true, 3323, 3324);
 }
 
+/// #s615 (Hong, 2026-11-19: "the sessions are not sorted by the last active time"). The #s541 host
+/// over two hermetic monitors, each with two projects: the list put every project of the first machine
+/// before the second's, so one busy a minute ago on the second machine sat under one five hours idle
+/// on the first. Now the projects are in the server's calm order across the machines: those active in
+/// the last ten minutes first, by name, then the rest newest first; and Group by machine shows each
+/// machine's own projects in its own order.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_list_over_two_machines_puts_its_projects_in_the_order_of_their_last_activity() {
+    let _serial = serial();
+    let base = base("kit-merged-order");
+    let session = |stores: &Stores, sid: &str, dir: &str, ask: &str, ago: u64| {
+        let jsonl = harness::user_at(ask, &harness::rfc3339_secs_ago(ago + 5))
+            + &harness::assistant_at("done", &harness::rfc3339_secs_ago(ago));
+        stores.claude_session(
+            sid,
+            &jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"/w/{dir}\"")),
+        );
+    };
+    let stores = Stores::new(&base);
+    session(
+        &stores,
+        SID_ORDER[0],
+        "tern-old",
+        "list the tern nests",
+        5 * 3600,
+    );
+    session(
+        &stores,
+        SID_ORDER[1],
+        "tern-now",
+        "count the tern chicks",
+        30,
+    );
+    let monitor = Monitor::spawn(Kind::V1, 3325, &base, Some(&stores), true);
+    let there_base = base.join("machine-b");
+    let there_stores = Stores::new(&there_base);
+    session(
+        &there_stores,
+        SID_ORDER[2],
+        "skua-mid",
+        "map the skua burrows",
+        30 * 60,
+    );
+    session(
+        &there_stores,
+        SID_ORDER[3],
+        "auk-now",
+        "time the auk dives",
+        90,
+    );
+    let there = Monitor::spawn(Kind::V1, 3326, &there_base, Some(&there_stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let mut answers: Vec<Answer> = kit_answers("")
+        .into_iter()
+        .filter(|answer| answer.path != "/kit-host")
+        .collect();
+    answers.push(Answer {
+        pattern: "*/kit-merged*".into(),
+        path: "/kit-merged".into(),
+        content_type: "text/html; charset=utf-8".into(),
+        body: HOST_MERGED.replace("{{MERMAID}}", claude_replay_html::mermaid_runtime_path()),
+    });
+    harness::answer_and_relay_in_browser(
+        &tab,
+        answers,
+        vec![harness::Relay {
+            prefix: "/machine-b".into(),
+            port: there.port,
+            token: there.token(),
+        }],
+    );
+    tab.navigate_to(&monitor.url("kit-merged")).unwrap();
+    tab.wait_until_navigated().unwrap();
+    until(
+        &tab,
+        "!!(window.__host && (window.__host.mounted || window.__host.error))",
+        "the host to mount the list over two machines",
+        Duration::from_secs(20),
+        "JSON.stringify(window.__host || null)",
+    );
+    assert_eq!(
+        harness::probe(&tab, "window.__host.error"),
+        serde_json::Value::Null,
+        "the host mounts the list with the merged source"
+    );
+    // The tree's heads in order: a machine's (when grouped) and each project's title with its machine.
+    let heads = "JSON.stringify(Array.from(document.querySelectorAll('#tree > .tree-machine-group, #tree > .tree-row.project')).map(function (el) { return el.classList.contains('tree-machine-group') ? 'M:' + el.dataset.machine : el.querySelector('.tree-title').textContent + '@' + el.dataset.toggle.split('/')[0].replace('p:', ''); }))";
+    let order = serde_json::json!(["auk-now@b", "tern-now@a", "skua-mid@b", "tern-old@a"]);
+    until(
+        &tab,
+        &format!("{heads} === {:?}", order.to_string()),
+        "the projects of both machines in the order of their last activity",
+        Duration::from_secs(30),
+        &format!("JSON.stringify({{ heads: {heads}, list: (document.getElementById('sessionList') || {{}}).innerText, errors: window.__host.errors }})"),
+    );
+    // Grouped by machine, each machine's projects in its own order.
+    eval(&tab, "document.getElementById('filterBtn').click()");
+    eval(
+        &tab,
+        "document.querySelector('#sessionFilter [data-by-machine]').click()",
+    );
+    let grouped = serde_json::json!([
+        "M:a",
+        "tern-now@a",
+        "tern-old@a",
+        "M:b",
+        "auk-now@b",
+        "skua-mid@b"
+    ]);
+    until(
+        &tab,
+        &format!("{heads} === {:?}", grouped.to_string()),
+        "each machine's projects in its own order under its head",
+        Duration::from_secs(20),
+        &format!("JSON.stringify({{ heads: {heads}, errors: window.__host.errors }})"),
+    );
+    assert_eq!(
+        harness::probe(&tab, "window.__host.errors"),
+        serde_json::json!([]),
+        "and the page said no error"
+    );
+}
+
+/// The sessions of [`a_list_over_two_machines_puts_its_projects_in_the_order_of_their_last_activity`].
+const SID_ORDER: [&str; 4] = [
+    "cccccccc-0000-4000-8000-000000006151",
+    "cccccccc-0000-4000-8000-000000006152",
+    "cccccccc-0000-4000-8000-000000006153",
+    "cccccccc-0000-4000-8000-000000006154",
+];
+
 /// What a host page's tab of its own holds right now, for a failure message.
 const TAB_NOW: &str = "JSON.stringify({ href: location.href, tab: window.__tab || null, text: (document.getElementById('detachedView') || {}).innerText ? document.getElementById('detachedView').innerText.slice(0, 300) : '' })";
 
