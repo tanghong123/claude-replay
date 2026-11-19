@@ -208,6 +208,36 @@ pub fn withdrawable(b: &Block) -> bool {
     }
 }
 
+/// #s594: mark a call the client refused before it ran ([`Message::ToolDeclined`]): Declined in
+/// place of the Failed its error made it, its output the person's own reason or none. A question
+/// (`asked`) is left to its own reading (#281). Whether it changed the block. Shared with the full
+/// parse, so the two paths cannot disagree on what a refused call shows.
+#[doc(hidden)]
+pub fn decline(block: &mut Block, words: Option<&str>) -> bool {
+    let Block::ToolUse {
+        output,
+        execution,
+        asked,
+        ..
+    } = block
+    else {
+        return false;
+    };
+    if asked.is_some() {
+        return false;
+    }
+    execution
+        .get_or_insert(crate::model::ToolExecution {
+            status: None,
+            exit_code: None,
+            duration: None,
+            outside_sandbox: false,
+        })
+        .status = Some(crate::model::ToolStatus::Declined);
+    *output = words.map(str::to_string);
+    true
+}
+
 /// Record an in-place patch of the block at raw-logical index `logical`: fold it into `floor` (the
 /// running minimum) **iff** it sits below `frontier` — the count of blocks already emitted *before*
 /// this fold batch. A patch at/above `frontier` touched a block appended within this same batch,
@@ -467,6 +497,14 @@ impl<'a> Replayer<'a> {
                                     .outside_sandbox = true;
                                 note_patch(&mut patch_floor, self.base + rel, emitted_frontier);
                             }
+                        }
+                    }
+                }
+                // #s594: a call refused before it ran reads Declined, not Failed.
+                Message::ToolDeclined { tool_use_id, words } => {
+                    if let Some(rel) = self.tool_slot.get(tool_use_id).map(|&i| i - self.base) {
+                        if decline(&mut self.out[rel], words.as_deref()) {
+                            note_patch(&mut patch_floor, self.base + rel, emitted_frontier);
                         }
                     }
                 }

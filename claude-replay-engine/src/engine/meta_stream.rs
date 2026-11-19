@@ -396,11 +396,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// (v1.531.0 is 81, v1.532.0 is 83), so the metrics cursor, the monitor cache, the durable
 /// session cache and the cost ledger discard such a cursor anyway.
 ///
+/// v84: #s594 — a Claude call the client refused before it ran (`toolDenialBeforeRun`, or the
+/// person's no at the permission prompt) reads Declined, its output the person's reason or none,
+/// where a v83 stream holds it Failed with the client's sentence to the model as its output.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 83;
+pub const FOLD_VERSION: u16 = 84;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

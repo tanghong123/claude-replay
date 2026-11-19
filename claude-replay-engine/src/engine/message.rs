@@ -204,6 +204,16 @@ pub enum Message {
     /// `inside` the sandbox or not. An inside run also says the sandbox was on. Draws nothing
     /// itself; in a fold that knows the sandbox was on, an outside run marks its call.
     SandboxRun { tool_use_id: String, inside: bool },
+    /// The client says a call was refused before it ran (#s594; Claude Code's
+    /// `toolDenialBeforeRun`, or the person's no at its permission prompt), its result already
+    /// joined. The fold marks the call Declined in place of the Failed its error made it, its output
+    /// the person's own reason (`words`) when they gave one, else none: the client's sentence to the
+    /// model goes, as a refused edit's does. A question is left to its own reading (#281), which
+    /// already says the reader refused it.
+    ToolDeclined {
+        tool_use_id: String,
+        words: Option<String>,
+    },
     /// A loaded skill's instruction body (L1-detected). The fold nests it into the most
     /// recent `Skill` tool block; if there is none, it falls back to `fallback` as a
     /// `SystemNote`-style result block. Only L1 knows the raw format; the fold only places it.

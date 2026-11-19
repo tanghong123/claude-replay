@@ -1392,6 +1392,22 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // the owner.
             "summarizedTurnPromptUuids",
             "toolDenialKind",
+            // #s594 (client 2.1.326; in 2.1.326–2.1.328, not in 2.1.325): a boolean on the user
+            // record carrying a call's result, written only when true, beside `toolDenialKind`
+            // "user-rejected": the turn was stopped (by the person, or a remote cancel) before the
+            // call started, so it never ran. Met on 1 record on hong-devserver, 2026-11-19, a Bash
+            // call in a sub-agent (client 2.1.327). READ (`declined_before_run`): the call reads
+            // Declined, as the client reads it refused, not Failed. REVISIT: (1) the flag on a
+            // result whose `toolDenialKind` is not "user-rejected"; (2) the edit path: `refused()`
+            // reads an EDIT stopped while running as Declined from its text, which opens with the
+            // same refusal sentence though the client says it may have run in part — when one is
+            // met (the sentence, then "Correction to the text above"), read it as not refused; (3)
+            // its siblings in the same 2.1.328 writer, in no transcript yet and left out of this
+            // list so each reports as its own row: `toolDenialAfterRun`, `toolDenialFromHost`,
+            // `toolDenialEndsTurn`, `toolDenialMonitorBlocked`, `toolDenialUnanswered`,
+            // `toolResultRemedy`, `toolResultTypedCommand`, `hostClassifierContext`,
+            // `connectorFileLines`, `interruptedByShutdown`.
+            "toolDenialBeforeRun",
             "interruptedMessageId",
             "sourceToolUseID",
             "classifierBoundary",
@@ -1429,6 +1445,14 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // REVISIT: the first `source` other than "config" — a person in the prompt, a hook, a
             // classifier — is a RENDER question for the owner (a quiet "who allowed this" on the
             // tool card); queue it with the record count and client version, never decide it here.
+            // FIRED (#s594, 2026-11-19, hong-devserver): `source: "user_reject"` on 2 records
+            // (clients 2.1.311 and 2.1.314, both `toolDenialKind` "user-rejected"), which the
+            // client reads as refused at its permission prompt and #s594 reads Declined, the
+            // person's `userFeedback` on the card; and `source: "hook"` (reasonType "hook",
+            // `toolDenialKind` "permission-rule", which the client reads as blocked, never ran) on
+            // 596 records in 337 transcripts, still Failed here: whether a call a hook or a rule
+            // refused reads as refused, and whether its card says who refused it, is the owner's
+            // question in #s599.
             "permissionDecision",
             // #s215 (client 2.1.308): a boolean on the user record carrying a Bash tool_result —
             // whether the command ran inside Claude Code's sandbox. Every Bash result since 2.1.308
@@ -4649,6 +4673,8 @@ pub(crate) fn decode_line_known(
                             for op in taskq_ops(tid, &txt) {
                                 msgs.push(Message::TaskOp(op));
                             }
+                            // #s594: read before the text moves into the result.
+                            let declined = declined_before_run(&v, &txt, tool_results(arr));
                             msgs.push(Message::ToolResult {
                                 tool_use_id: tid.to_string(),
                                 text: txt,
@@ -4675,6 +4701,13 @@ pub(crate) fn decode_line_known(
                                 msgs.push(Message::SandboxRun {
                                     tool_use_id: tid.to_string(),
                                     inside,
+                                });
+                            }
+                            // #s594: a call the client refused before it ran reads Declined.
+                            if let Some(words) = declined {
+                                msgs.push(Message::ToolDeclined {
+                                    tool_use_id: tid.to_string(),
+                                    words,
                                 });
                             }
                             if let Some(items) = blk.get("content").and_then(|c| c.as_array()) {
@@ -5218,6 +5251,58 @@ fn refused(txt: &str, tur: &Value) -> bool {
     const REFUSALS: [&str; 2] = ["doesn't want to proceed", "rejected tool use"];
     let hit = |s: &str| REFUSALS.iter().any(|r| s.contains(r));
     hit(txt) || tur.as_str().is_some_and(hit)
+}
+
+/// #s594: whether the record carrying a call's result says the client REFUSED the call before it
+/// ran, by the client's own reading (Claude Code 2.1.328): `toolDenialKind` "user-rejected" with
+/// `toolDenialBeforeRun` true (a turn stopped before the call started, 2.1.326+) or with
+/// `permissionDecision.source` "user_reject" (the person's no at the permission prompt, 2.1.311+),
+/// and neither `toolDenialAfterRun` nor `toolDenialFromHost` true. Never read from the text: a call
+/// stopped WHILE running carries the same opening sentence, a correction after it, and no flag.
+/// Only a record holding one result says it of that one (`results`, the record's count).
+///
+/// `Some(words)` when refused: the person's own reason, from the record's `userFeedback` (when not
+/// empty), else from the text after the client's "the user said:" (its two wordings); `None` inside
+/// when they gave none, so the client's sentence to the model is not shown. An edit or a write card
+/// draws only its "rejected" note today, so there the reason is kept on the block but not shown.
+fn declined_before_run(v: &Value, txt: &str, results: usize) -> Option<Option<String>> {
+    let flag = |key: &str| v.get(key).and_then(Value::as_bool) == Some(true);
+    let refused = results == 1
+        && v.get("toolDenialKind").and_then(Value::as_str) == Some("user-rejected")
+        && (flag("toolDenialBeforeRun")
+            || v.pointer("/permissionDecision/source")
+                .and_then(Value::as_str)
+                == Some("user_reject"))
+        && !flag("toolDenialAfterRun")
+        && !flag("toolDenialFromHost");
+    if !refused {
+        return None;
+    }
+    const SAID: [&str; 2] = [
+        "To tell you how to proceed, the user said:",
+        "The user said:",
+    ];
+    let said = || {
+        SAID.iter()
+            .find_map(|marker| txt.split_once(marker).map(|(_, rest)| rest))
+    };
+    Some(
+        v.get("userFeedback")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|w| !w.is_empty())
+            .or_else(|| said().map(str::trim).filter(|w| !w.is_empty()))
+            .map(str::to_string),
+    )
+}
+
+/// How many results a user record's content holds: a record-level key speaks of its result only
+/// when there is one.
+fn tool_results(content: &[Value]) -> usize {
+    content
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+        .count()
 }
 
 /// The calls that change a file by name.
@@ -6041,6 +6126,12 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                             .unwrap_or(false),
                                     );
                                     apply_result(&mut out[idx], &txt, &tur, is_error);
+                                    // #s594 mirror: a call refused before it ran.
+                                    if let Some(words) =
+                                        declined_before_run(&v, &txt, tool_results(arr))
+                                    {
+                                        decline(&mut out[idx], words.as_deref());
+                                    }
                                     // #s381 mirror: where the command ran.
                                     if sandbox_on
                                         && v.get("sandboxed").and_then(Value::as_bool)
@@ -11764,6 +11855,174 @@ mod tests {
                 ),
                 ("Edit".to_string(), None, Some(ToolStatus::Declined)),
             ]
+        );
+    }
+
+    /// #s594: a call the client REFUSED before it ran reads Declined on any tool, keyed on the
+    /// client's own fields, never the text: `toolDenialBeforeRun` (a turn stopped before the call
+    /// started), or the person's no at the permission prompt (`permissionDecision.source`
+    /// "user_reject"), keeping their reason when they gave one (`userFeedback`, else the text after
+    /// the client's "the user said:"). A config denial, a call stopped WHILE running (the same
+    /// sentence, a correction after it, no flag) and one the client marks after-run stay Failed;
+    /// an older client's refused edit still reads Declined by its text (#s22). Both parse paths.
+    #[test]
+    fn a_call_refused_before_it_ran_is_declined_and_keeps_the_persons_words() {
+        const REFUSAL: &str = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.";
+        const DENIED: &str = "Permission for this tool use was denied. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file).";
+        let call = |id: &str, name: &str| {
+            let input = if name == "Bash" {
+                serde_json::json!({"command": "make deploy"})
+            } else {
+                serde_json::json!({"file_path": "/w/x.rs", "old_string": "alpha", "new_string": "beta"})
+            };
+            serde_json::json!({"type": "assistant", "message": {"content": [{"type": "tool_use",
+                "id": id, "name": name, "input": input}]}})
+            .to_string()
+        };
+        let result = |id: &str, text: &str, tur: Value, keys: Value| {
+            let mut record = serde_json::json!({"type": "user", "toolUseResult": tur, "message": {
+                "content": [{"type": "tool_result", "tool_use_id": id, "is_error": true,
+                "content": text}]}});
+            for (k, v) in keys.as_object().unwrap() {
+                record[k] = v.clone();
+            }
+            record.to_string()
+        };
+        let rejected = serde_json::json!("User rejected tool use");
+        let jsonl = [
+            // Stopped before it started (2.1.327's shape).
+            call("b1", "Bash"),
+            result("b1", REFUSAL, rejected.clone(),
+                serde_json::json!({"toolDenialKind": "user-rejected", "toolDenialBeforeRun": true})),
+            // The person's no at the prompt, with the reason they typed (2.1.314's shape).
+            call("b2", "Bash"),
+            result("b2", &format!("{DENIED} The user said: use the staging host instead"),
+                serde_json::json!(format!("Error: {DENIED} The user said: use the staging host instead")),
+                serde_json::json!({"toolDenialKind": "user-rejected", "userFeedback": "use the staging host instead",
+                    "permissionDecision": {"decision": "reject", "source": "user_reject"}})),
+            // A reason only in the text.
+            call("b3", "Bash"),
+            result("b3", &format!("{} To tell you how to proceed, the user said:\nnot on main", &REFUSAL[..REFUSAL.find(" STOP").unwrap()]),
+                rejected.clone(),
+                serde_json::json!({"toolDenialKind": "user-rejected", "toolDenialBeforeRun": true})),
+            // A headless denial by config: the client's block message, Failed.
+            call("b4", "Bash"),
+            result("b4", "Permission to use Bash with command make deploy has been denied.",
+                serde_json::json!("Error: Permission to use Bash with command make deploy has been denied."),
+                serde_json::json!({"toolDenialKind": "user-rejected",
+                    "permissionDecision": {"decision": "reject", "source": "config"}})),
+            // Stopped while running: the sentence, the correction, no flag.
+            call("b5", "Bash"),
+            result("b5", &format!("{REFUSAL}\n\nCorrection to the text above: this call was stopped while running, not refused before it ran. It may have run in part or in full."),
+                rejected.clone(),
+                serde_json::json!({"toolDenialKind": "user-rejected"})),
+            // The client's own exclusion: marked after-run too.
+            call("b6", "Bash"),
+            result("b6", REFUSAL, rejected.clone(),
+                serde_json::json!({"toolDenialKind": "user-rejected", "toolDenialBeforeRun": true, "toolDenialAfterRun": true})),
+            // An older client's refused edit: no flag, Declined by its text.
+            call("e1", "Edit"),
+            result("e1", REFUSAL, rejected.clone(), serde_json::json!({})),
+            // A hook's refusal (permission-rule, source hook): Failed until #s600 reads it.
+            call("h1", "Bash"),
+            result("h1", "PreToolUse:Bash hook error: [guard] blocked: deploys need a ticket",
+                serde_json::json!("Error: PreToolUse:Bash hook error: [guard] blocked: deploys need a ticket"),
+                serde_json::json!({"toolDenialKind": "permission-rule",
+                    "permissionDecision": {"decision": "reject", "source": "hook", "reasonType": "hook"}})),
+            // The flag on a refusal that is not the person's (a rule's): not declined here.
+            call("k1", "Bash"),
+            result("k1", "Permission to use Bash has been denied by a rule.",
+                serde_json::json!("Error: Permission to use Bash has been denied by a rule."),
+                serde_json::json!({"toolDenialKind": "permission-rule", "toolDenialBeforeRun": true})),
+            // The client's other exclusion: refused by the host.
+            call("x1", "Bash"),
+            result("x1", REFUSAL, rejected.clone(),
+                serde_json::json!({"toolDenialKind": "user-rejected", "toolDenialBeforeRun": true, "toolDenialFromHost": true})),
+            // An empty userFeedback beside a reason in the text: the text's reason.
+            call("b7", "Bash"),
+            result("b7", &format!("{DENIED} The user said: wait for the freeze to lift"),
+                rejected.clone(),
+                serde_json::json!({"toolDenialKind": "user-rejected", "userFeedback": "",
+                    "permissionDecision": {"decision": "reject", "source": "user_reject"}})),
+            // Two results in one record: the record-level keys name neither, both stay Failed.
+            serde_json::json!({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "make one"}},
+                {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "make two"}}]}})
+            .to_string(),
+            serde_json::json!({"type": "user", "toolDenialKind": "user-rejected", "toolDenialBeforeRun": true,
+                "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "t1", "is_error": true, "content": REFUSAL},
+                {"type": "tool_result", "tool_use_id": "t2", "is_error": true, "content": REFUSAL}]}})
+            .to_string(),
+        ]
+        .join("\n");
+        let streamed = parse(&jsonl);
+        let reference = parse_main(jsonl.lines(), &mut Vec::new());
+        assert_eq!(streamed, reference, "the two parse paths agree");
+        // The calls in the order written.
+        const IDS: [&str; 13] = [
+            "b1", "b2", "b3", "b4", "b5", "b6", "e1", "h1", "k1", "x1", "b7", "t1", "t2",
+        ];
+        // Consecutive calls sit under one thinking block: read inside it too.
+        let calls: Vec<Block> = streamed
+            .into_iter()
+            .flat_map(|b| match b {
+                Block::Thinking { tools, .. } => tools,
+                other => vec![other],
+            })
+            .collect();
+        let seen: Vec<(&str, Option<String>, Option<ToolStatus>)> = calls
+            .into_iter()
+            .filter_map(|b| match b {
+                Block::ToolUse {
+                    output, execution, ..
+                } => Some((output, execution.and_then(|e| e.status))),
+                _ => None,
+            })
+            .zip(IDS)
+            .map(|((output, status), id)| (id, output, status))
+            .collect();
+        assert_eq!(seen.len(), IDS.len(), "every call is drawn: {seen:?}");
+        let status = |id: &str| seen.iter().find(|s| s.0 == id).map(|s| s.2);
+        let output = |id: &str| seen.iter().find(|s| s.0 == id).and_then(|s| s.1.clone());
+        assert_eq!(
+            (status("b1"), output("b1")),
+            (Some(Some(ToolStatus::Declined)), None),
+            "refused before it ran: Declined, the client's sentence to the model not shown: {seen:?}"
+        );
+        assert_eq!(
+            (status("b2"), output("b2").as_deref()),
+            (
+                Some(Some(ToolStatus::Declined)),
+                Some("use the staging host instead")
+            ),
+            "refused at the prompt: Declined with the person's reason: {seen:?}"
+        );
+        assert_eq!(
+            (status("b3"), output("b3").as_deref()),
+            (Some(Some(ToolStatus::Declined)), Some("not on main")),
+            "a reason only in the text is still the person's: {seen:?}"
+        );
+        assert_eq!(
+            (status("b7"), output("b7").as_deref()),
+            (
+                Some(Some(ToolStatus::Declined)),
+                Some("wait for the freeze to lift")
+            ),
+            "an empty userFeedback leaves the reason in the text: {seen:?}"
+        );
+        for id in ["b4", "b5", "b6", "h1", "k1", "x1", "t1", "t2"] {
+            assert_eq!(
+                status(id),
+                Some(Some(ToolStatus::Failed)),
+                "{id} is not refused before it ran: {seen:?}"
+            );
+            assert!(output(id).is_some(), "{id} keeps its text: {seen:?}");
+        }
+        assert_eq!(
+            (status("e1"), output("e1")),
+            (Some(Some(ToolStatus::Declined)), None),
+            "an older client's refused edit reads Declined by its text: {seen:?}"
         );
     }
 
