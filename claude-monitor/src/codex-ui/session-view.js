@@ -4610,7 +4610,9 @@ var phoneDock;
     // #s298: the session waits on an answer the box can give (the desktop's button says so too).
     const asks = composeFab.classList.contains("asks");
     // #s577: a session the box cannot write to keeps ✎, greyed; a tap says why (control-store.js).
-    const blocked = composeFab.classList.contains("disabled");
+    // Not in Codex native mode's view: it draws its own composer, and the button's state it keeps
+    // may be the one the ordinary box drew as native mode started.
+    const blocked = !controls.nativeActive && composeFab.classList.contains("disabled");
     dockCompose.classList.toggle("has-draft", draft && !asks && !blocked);
     dockCompose.classList.toggle("asks", asks);
     dockCompose.classList.toggle("blocked", blocked);

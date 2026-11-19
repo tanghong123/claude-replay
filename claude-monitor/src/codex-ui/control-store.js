@@ -34,7 +34,7 @@ const BLOCK_WORDS = {
 /** The reason a row takes no message, as a sentence (#s577), or "" for a row that takes one. */
 export function blockReason(row) {
   const code = composeBlock(row, backend().writes);
-  return !code || code === "unpaired" ? "" : `Can't write here: ${BLOCK_WORDS[code] || BLOCK_WORDS.live}`;
+  return !code || code === "unpaired" ? "" : `Can't write here: ${Object.hasOwn(BLOCK_WORDS, code) ? BLOCK_WORDS[code] : BLOCK_WORDS.live}`;
 }
 /** What the host's confirm is titled: a grant lets the monitor type into a live pane. */
 const GRANT_TITLE = "Allow typing into this pane?";

@@ -165,7 +165,7 @@ A `Row` (the fields the page reads; the server sends a few more for other reader
 | `injectable` | `true`, optional | a send may type into the pane |
 | `sendsImages` | `true`, optional | the pane takes images |
 | `consented` | bool, optional | a standing grant covers the pane |
-| `sendBlock` | string, optional, open set | why a live row takes no message from the page, a lasting fact about the session: `project-busy`, `unsupported-agent`, `unproven-pane`, `no-pane`, `herdr-codex`, `pane-shared`, `not-foreground`, `other-terminal`, `continued`, `parked`. Absent when the row takes one, and for a refusal another control answers (a grant still to give) |
+| `sendBlock` | string, optional, open set | why a live row takes no message from the page, a lasting fact about the session: `project-busy`, `unsupported-agent`, `unproven-pane`, `no-pane`, `herdr-codex`, `pane-shared`, `not-foreground`, `other-terminal`, `parked`. Absent when the row takes one, and for a refusal another control answers (a grant still to give); a conversation continued in another session the page reads off `continuedIn` |
 | `pid` | number, optional | the process the row is linked to; the page reads a live row by it |
 | `continuedIn` | string, optional | the session this conversation went on in; such a row is finished and takes no resume |
 | `dialog` | `"question"`, `"permission"` or `"plan"`, optional | a dialog the page can answer |
@@ -545,7 +545,7 @@ A host that serves the monitor's page, or mounts its parts, supplies these with 
 
 | What | Read for | Without it |
 |---|---|---|
-| `<body data-paired>` | whether writes are offered, and whether an HTML file is framed in the pane | no compose box, no answers, no framed pages |
+| `<body data-paired>` | whether the server gates its readers: whether an HTML file is framed in the pane, and whether writes are offered where the page carries no `data-write` | no framed pages; with no `data-write` either, no compose box and no answers |
 | `<body data-write>` | whether this reader's writes are admitted (`open`), else what is missing: `monitor` (not paired), `browser` (this browser holds no token) or `host` (the host serves no writes) | writing follows `data-paired` |
 | `<body data-contract>` | the contract version | the page cannot say which version it reads |
 | `<body data-version>` | the build, shown in the brand | `vdev` |

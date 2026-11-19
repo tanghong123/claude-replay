@@ -27633,6 +27633,66 @@ fn the_write_switch_says_why_it_is_off_for_this_reader() {
     }
 }
 
+/// #s577 review: a paired browser that opens the page from a link in another app can write. The
+/// pairing cookie is `SameSite=Strict`, so that navigation carries none (a `data:` page here, which is
+/// cross-site); a paired monitor on Linux lets the same-user load read and draws the page as
+/// `data-write="browser"`, and the page reloads once from itself, which is same-site and brings the
+/// cookie. On macOS the gate refuses the load and its refusal page does the same (#341). Either way
+/// the reader lands on a page whose Write mode switch works, after one reload.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_paired_browser_opened_from_another_app_s_link_can_write() {
+    let _serial = serial();
+    let base = harness::base("write-cross-site");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        WRITE_SID,
+        &harness::long_session(3, harness::Shape::default()),
+    );
+    // Paired, and on Linux reading same-user browsers without the token, as a monitor does.
+    let m = harness::Monitor::spawn_with(
+        harness::Kind::V1,
+        3163,
+        &base,
+        Some(&stores),
+        true,
+        &[("AGENT_MONITOR_TOKEN_ONLY", "0")],
+    );
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1280.0, 900.0);
+    m.pair(&tab);
+    let target = m.url(&format!("?ui=app&session={WRITE_SID}"));
+    tab.navigate_to(&format!(
+        "data:text/html,<a id=go href=\"{target}\" style=\"font-size:40px\">open the monitor</a>"
+    ))
+    .unwrap();
+    tab.wait_until_navigated().unwrap();
+    tab.find_element("#go").unwrap().click().unwrap();
+    harness::until(
+        &tab,
+        &format!("location.port === '{}' && document.body && document.body.dataset.write === 'open' && !!document.querySelector('.transcript .turn.user') && document.getElementById('writeSwitch').getAttribute('aria-disabled') === 'false' && document.getElementById('writeReason').hidden", m.port),
+        "a paired browser arriving by another app's link to get a working Write mode switch",
+        Duration::from_secs(20),
+        "location.href + ' | ' + (document.body ? document.body.dataset.write : '') + ' | ' + ((performance.getEntriesByType('navigation')[0] || {}).type)",
+    );
+    assert_eq!(
+        harness::eval(
+            &tab,
+            "(performance.getEntriesByType('navigation')[0] || {}).type"
+        ),
+        serde_json::json!("reload"),
+        "the page it landed on is the one reload that brought the cookie"
+    );
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('writeSwitch').getAttribute('aria-checked') === 'true' && document.getElementById('composeFab').classList.contains('show') && !document.getElementById('composeFab').classList.contains('disabled')",
+        "write mode to turn on and offer the compose button",
+        Duration::from_secs(10),
+        WRITE_FACTS,
+    );
+}
+
 /// #s577: with write mode on, a session the compose box cannot write to keeps its compose button,
 /// greyed, with the reason beside it; a click says it again and opens nothing. On a phone ✎ stays
 /// in the dock, greyed, and a tap says why. A page whose server serves no writes (a host's,
