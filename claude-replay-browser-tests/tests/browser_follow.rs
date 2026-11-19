@@ -13714,11 +13714,12 @@ fn the_tight_session_top_bar_reads_glyphs_search_aa_info_and_pane() {
     // A finger's press on the box at rest changes nothing as it lands (#s547's iPad walk): WebKit spends
     // a tap whose press shows content as a hover and sends no click, so a box held open at the
     // press left its field without the focus, and nothing could be typed. The press is the page's
-    // own pointerdown as a finger gives it; the tap's click then opens the box with the field
-    // focused.
+    // own pointerdown as a finger gives it; the tap then gives the field its focus, as a touch
+    // browser does a tapped field (a script's click on a field focuses nothing), and the box takes
+    // the glyphs' room.
     let finger = harness::probe(
         &tab,
-        "(function(){ var box = document.getElementById('transcriptSearchInput'); var r = box.getBoundingClientRect(); var at = { pointerType: 'touch', isPrimary: true, bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }; box.dispatchEvent(new PointerEvent('pointerdown', at)); var held = document.querySelector('.header-search-cluster').classList.contains('search-held'); box.dispatchEvent(new PointerEvent('pointerup', at)); box.click(); return { held: held }; })()",
+        "(function(){ var box = document.getElementById('transcriptSearchInput'); var r = box.getBoundingClientRect(); var at = { pointerType: 'touch', isPrimary: true, bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }; box.dispatchEvent(new PointerEvent('pointerdown', at)); var held = document.querySelector('.header-search-cluster').classList.contains('search-held'); box.dispatchEvent(new PointerEvent('pointerup', at)); box.focus(); box.click(); return { held: held }; })()",
     );
     assert_eq!(
         finger["held"], false,

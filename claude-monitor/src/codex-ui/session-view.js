@@ -3915,7 +3915,8 @@ panesMenu.onclick = event => {
   // on it or on an Info that opens it.
   addEventListener("keydown", event => {
     if (event.key !== "Escape" || !popover.classList.contains("open")) return;
-    // The name's menu open inside the card (#s582) closes alone on this Escape, the card on the next.
+    // The menu of the session name, open inside the card (#s582), closes alone on this Escape, the
+    // card on the next.
     if (popover.contains(sessionCopyMenu) && sessionCopyMenu.classList.contains("open")) return;
     if (!viewEscape(event) && (pinned || !hovered(popover, ...triggers))) return;
     pinned = false;
