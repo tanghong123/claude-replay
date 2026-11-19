@@ -20,7 +20,7 @@
 // internals the released bundle does not export (the design says why). Either goes to a tab of its
 // own (#271): `/markdown` serves the viewer as the whole page, at the reader's document and range.
 
-import { backend } from "./backend.js";
+import { assets, backend } from "./backend.js";
 import { viewRoot } from "./view-root.js";
 
 const CONTRACT = "/api/mdrev";
@@ -35,8 +35,12 @@ const MARKDOWN = /\.(md|markdown|mdown|mkd)$/i;
  *  same test as mdrev's own; any other text it shows as source code (#s13). */
 export const isMarkdownName = name => MARKDOWN.test(String(name || ""));
 
-/** The pinned mdrev release's version, or "" from a server that carries none. */
-export const mdrevVersion = () => backend().mdrevVersion();
+/** The pinned mdrev release's version, or "" from a server that carries none; the host's own bundle's
+ *  where it carries one (`assets`, #s595), whatever release each server pins. */
+export const mdrevVersion = () => assets()?.mdrevVersion || backend().mdrevVersion();
+
+/** Where a path of the bundle loads from: the host's own copy (`assets`), else the server's. */
+const bundleUrl = path => (assets() ? assets().mdrevUrl(path) : backend().mdrevUrl(path));
 
 let loading = null;
 /** The version this page found the monitor serving in place of the one it was loaded with (#s352),
@@ -48,9 +52,9 @@ let updatedTo = "";
 function importBundle(version) {
   const link = document.createElement("link");
   link.rel = "stylesheet";
-  link.href = backend().mdrevUrl(`/mdrev/${version}/mdrev.css`);
+  link.href = bundleUrl(`/mdrev/${version}/mdrev.css`);
   viewRoot.sheets().appendChild(link);
-  return import(backend().mdrevUrl(`/mdrev/${version}/mdrev.js`)).catch(error => { link.remove(); throw error; });
+  return import(bundleUrl(`/mdrev/${version}/mdrev.js`)).catch(error => { link.remove(); throw error; });
 }
 
 /** The mdrev version the monitor serves NOW, read off its smallest page (`/markdown`, the detached
@@ -72,10 +76,12 @@ async function servedVersion() {
  *  plain text: Hong saw a Markdown file as raw source. So a failed load asks the monitor which
  *  version it serves and, when that is another, loads that one. An older shell with a newer bundle
  *  is the safe way round: what the host passes is mdrev's embedding contract, and the bundle then
- *  talks to the routes of the monitor that shipped it. */
+ *  talks to the routes of the monitor that shipped it. A host that carries its own bundle (`assets`,
+ *  #s595) asks no server: its release is the one it pins, whatever each server serves. */
 function loadMdrev(version) {
   if (!loading) {
     loading = importBundle(version).catch(async error => {
+      if (assets()) throw error;
       const now = await servedVersion();
       if (!now || now === version) throw error;
       const module = await importBundle(now);
