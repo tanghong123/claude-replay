@@ -4197,6 +4197,30 @@ pub struct Answer {
     pub body: String,
 }
 
+/// The kit as a host serves it (#s432): every file of its `bundle/` at `/kit/bundle/…` on the page's
+/// origin, answered by the browser itself from what `kit::files` lays out, so nothing a case loads
+/// from there comes from the monitor's own `/monitor-ui/`.
+pub fn kit_bundle() -> Vec<Answer> {
+    let files = claude_monitor::kit::files().expect("the kit is laid out");
+    files
+        .into_iter()
+        .filter_map(|(path, bytes)| {
+            let name = path.strip_prefix("bundle/")?;
+            let content_type = match name.rsplit_once('.')?.1 {
+                "js" => "text/javascript; charset=utf-8",
+                "css" => "text/css; charset=utf-8",
+                _ => return None,
+            };
+            Some(Answer {
+                pattern: format!("*/kit/bundle/{name}*"),
+                path: format!("/kit/{path}"),
+                content_type: content_type.into(),
+                body: String::from_utf8(bytes).expect("the kit's bundle is text"),
+            })
+        })
+        .collect()
+}
+
 /// Answer some of a tab's requests from the case, before they leave the browser (#s429 stage 6),
 /// through CDP's Fetch domain; every other request goes on to the server untouched. So a case can
 /// put a page of its own on the monitor's origin (a test host that mounts the session view alone),

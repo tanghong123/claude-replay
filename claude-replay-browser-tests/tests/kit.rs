@@ -110,24 +110,7 @@ try {
 /// origin, answered by the browser itself from what `kit::files` lays out, so nothing the case loads
 /// comes from the monitor's own `/monitor-ui/`.
 fn kit_answers(view_options: &str) -> Vec<Answer> {
-    let files = claude_monitor::kit::files().expect("the kit is laid out");
-    let mut answers: Vec<Answer> = files
-        .into_iter()
-        .filter_map(|(path, bytes)| {
-            let name = path.strip_prefix("bundle/")?;
-            let content_type = match name.rsplit_once('.')?.1 {
-                "js" => "text/javascript; charset=utf-8",
-                "css" => "text/css; charset=utf-8",
-                _ => return None,
-            };
-            Some(Answer {
-                pattern: format!("*/kit/bundle/{name}*"),
-                path: format!("/kit/{path}"),
-                content_type: content_type.into(),
-                body: String::from_utf8(bytes).expect("the kit's bundle is text"),
-            })
-        })
-        .collect();
+    let mut answers = harness::kit_bundle();
     answers.push(Answer {
         pattern: "*/kit-host*".into(),
         path: "/kit-host".into(),
@@ -277,7 +260,7 @@ try {
   const server = backendHandle({ paired: true });
   const backend = { ...server, fetch: (path, init) => { host.asks.push(String(path).split("?")[0]); return server.fetch(path, init); } };
   const root = document.getElementById("appRoot");
-  host.refused.push(refusal(() => native.mountApp(root, { backend, theme: "dark" })));
+  host.refused.push(refusal(() => native.mountApp(root, { backend, keyboard: "page" })));
   host.refused.push(refusal(() => native.mountApp(root, { version: "9.9.9-kit" })));
   native.mountApp(root, { backend, version: "9.9.9-kit" });
   host.again = refusal(() => native.mountApp(document.createElement("div"), { backend }));
@@ -366,7 +349,7 @@ fn the_web_app_mounts_from_the_kits_second_entry_with_its_own_server_and_version
             "error": null,
             "exports": ["mountApp"],
             "refused": [
-                "mountApp takes no option named theme; its options are backend, machines, assets, version",
+                "mountApp takes no option named keyboard; its options are backend, machines, assets, version, theme, show, onMachines, reviewSheet, frame",
                 "mountApp needs its backend: the server the web app reads, as a backend handle (backendHandle()), or the machines it reads",
             ],
             "again": "mountApp draws the web app once per page, and this page holds it already",
@@ -2332,5 +2315,311 @@ fn the_web_app_over_two_machines_keeps_each_machines_reading_place_for_a_shared_
     assert!(
         back["there"].is_null() || back["there"]["following"] == true,
         "the second machine's memory, when it wrote one, says it followed its end: {back}"
+    );
+}
+
+/// The native app's page as #s596's cases serve it: under the app's own content security policy
+/// (agent-monitor-app `KitPage.policy`, its `app://monitor/kit/` this origin's `/kit/`), so every
+/// script is the kit's or the host's file under `/kit/`, none inline; what the page reads of its
+/// machine goes to this origin; inline styles stay allowed, as there.
+const NATIVE_HOST: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src {{KIT}}; style-src {{KIT}} 'unsafe-inline'; font-src {{KIT}} data:; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' data: blob:; object-src 'none'; form-action 'none'; base-uri 'none'">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>The native app's own options</title>
+<link rel="stylesheet" href="/kit/bundle/app-shell.css">
+<link rel="stylesheet" href="/kit/bundle/session-list.css">
+<link rel="stylesheet" href="/kit/bundle/session-view.css">
+<script type="module" src="/kit/native-host.js"></script>
+</head>
+<body>
+<div id="appRoot"></div>
+</body>
+</html>
+"#;
+
+/// The host's script, a file under `/kit/` as the app's is: the mount with the native app's own
+/// options (#s596), its Machines row counting its calls.
+const NATIVE_SCRIPT: &str = r#"const host = window.__host = { mounted: false, error: null, errors: [], violations: [], machines: 0 };
+addEventListener("securitypolicyviolation", event => host.violations.push(`${event.effectiveDirective} ${event.blockedURI}`));
+addEventListener("error", event => host.errors.push(String(event.message)));
+addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
+try {
+  const native = await import("/kit/bundle/native-app.js");
+  const { backendHandle } = await import("/kit/bundle/index.js");
+  native.mountApp(document.getElementById("appRoot"), {
+    backend: backendHandle({ paired: true }),
+    version: "9.9.9-kit",
+    theme: "dark",
+    show: { detach: false },
+    onMachines: () => { host.machines += 1; },
+    reviewSheet: true,
+  });
+  host.mounted = true;
+} catch (error) {
+  host.error = String(error && error.stack || error);
+}
+"#;
+
+/// The kit, the native host page and its script, for #s596's cases on `monitor`.
+fn native_answers(monitor: &Monitor) -> Vec<Answer> {
+    let mut answers = harness::kit_bundle();
+    answers.push(Answer {
+        pattern: "*/kit-native*".into(),
+        path: "/kit-native".into(),
+        content_type: "text/html; charset=utf-8".into(),
+        body: NATIVE_HOST.replace("{{KIT}}", &monitor.url("kit/")),
+    });
+    answers.push(Answer {
+        pattern: "*/kit/native-host.js*".into(),
+        path: "/kit/native-host.js".into(),
+        content_type: "text/javascript; charset=utf-8".into(),
+        body: NATIVE_SCRIPT.into(),
+    });
+    answers
+}
+
+/// A recent session, so the list's default filter shows it.
+const SID_NATIVE: &str = "cccccccc-0000-4000-8000-000000005960";
+
+fn native_world(case: &str, port: u16) -> (Monitor, std::path::PathBuf) {
+    let base = base(case);
+    let stores = Stores::new(&base);
+    stores.claude_session(
+        SID_NATIVE,
+        &(harness::user_at(
+            "where do the terns nest this spring?",
+            &harness::rfc3339_secs_ago(400),
+        ) + &harness::assistant_at(
+            "on the north spit, past the second dune",
+            &harness::rfc3339_secs_ago(390),
+        )),
+    );
+    (
+        Monitor::spawn(Kind::V1, port, &base, Some(&stores), true),
+        base,
+    )
+}
+
+/// Where a control is and whether a reader reaches it: drawn, its box, whether its centre hit-tests
+/// to it, and the ids beside it.
+fn reach(tab: &headless_chrome::Tab, id: &str) -> serde_json::Value {
+    let read = eval(
+        tab,
+        &format!(
+            "(function () {{ var b = document.getElementById({id:?}); if (!b) return JSON.stringify(null); var r = b.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2, hit = document.elementFromPoint(x, y); return JSON.stringify({{ reached: r.width > 0 && r.height > 0 && x >= 0 && y >= 0 && x < innerWidth && y < innerHeight && !!hit && b.contains(hit), box: [r.left, r.top, r.width, r.height].map(Math.round), centre: [x, y], hit: hit ? hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') : null, before: b.previousElementSibling ? b.previousElementSibling.id : null, label: b.innerText.trim() || b.getAttribute('aria-label') }}); }})()"
+        ),
+    );
+    serde_json::from_str(read.as_str().unwrap_or("null")).unwrap()
+}
+
+fn mounted(tab: &headless_chrome::Tab, what: &str) {
+    until(
+        tab,
+        "!!(window.__host && (window.__host.mounted || window.__host.error)) && !!document.querySelector('#sessionView .transcript') && document.querySelector('#sessionView .transcript').innerText.indexOf('north spit') >= 0",
+        what,
+        Duration::from_secs(30),
+        "JSON.stringify({ host: window.__host || null, transcript: (document.querySelector('#sessionView .transcript') || {}).innerText })",
+    );
+}
+
+const THEMES: &str = "JSON.stringify({ page: document.documentElement.dataset.theme || 'light', list: document.getElementById('sessionList').dataset.theme || 'light', view: document.getElementById('sessionView').dataset.theme || 'light', stored: localStorage.getItem('am-demo-theme') })";
+
+/// #s596 (design/app-mount.md, "Kept for the native app", stage 4) — the web app from the kit with
+/// the native app's own options, under the app's content security policy. With nothing stored it
+/// opens in the start theme the app passed, the page, the list and the view alike; a theme the
+/// reader picks is stored and wins over the start at the next load. The Machines row sits after
+/// Search in the nav and a reader reaches it, at the default width and at the list's least (232px),
+/// and pressing it calls `onMachines`; on the rail it is a glyph after the filter's, pressed the
+/// same. `show: { detach: false }` draws no ↗ on the transcript's top bar. Nothing the page loads
+/// breaks the policy.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_native_app_s_own_options_from_the_kit_under_its_policy() {
+    let _serial = serial();
+    let (monitor, _base) = native_world("kit-native", 3341);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::answer_in_browser(&tab, native_answers(&monitor));
+    tab.navigate_to(&monitor.url("kit-native")).unwrap();
+    tab.wait_until_navigated().unwrap();
+    mounted(&tab, "the app from the kit, its first session read");
+    let opened: serde_json::Value =
+        serde_json::from_str(eval(&tab, THEMES).as_str().unwrap()).unwrap();
+    let row = reach(&tab, "machinesBtn");
+    let new_tab = eval(
+        &tab,
+        "(function () { var b = document.getElementById('sessionNewTab'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+    );
+    harness::click_when_settled(&tab, "#machinesBtn", "the Machines row");
+    let after_row = eval(&tab, "window.__host.machines");
+
+    // The rail: the glyph after the filter's, pressed the same.
+    harness::click_when_settled(&tab, "#sidebarCollapse", "the sidebar's collapse");
+    until(
+        &tab,
+        "document.getElementById('app').classList.contains('sidebar-off') && (function () { var b = document.getElementById('sidebarMiniMachines'); return !!b && b.offsetWidth > 0; })()",
+        "the rail, with its Machines glyph",
+        Duration::from_secs(10),
+        "document.getElementById('app').className",
+    );
+    let glyph = reach(&tab, "sidebarMiniMachines");
+    harness::click_when_settled(&tab, "#sidebarMiniMachines", "the rail's Machines glyph");
+    let after_glyph = eval(&tab, "window.__host.machines");
+    harness::click_when_settled(&tab, "#sidebarMiniExpand", "the rail's expand");
+    until(
+        &tab,
+        "!document.getElementById('app').classList.contains('sidebar-off')",
+        "the sidebar back",
+        Duration::from_secs(10),
+        "document.getElementById('app').className",
+    );
+
+    // The list at its least, and the theme the reader picks, after a load.
+    harness::click_when_settled(&tab, "#themeBtn", "the theme toggle");
+    eval(
+        &tab,
+        "localStorage.setItem('am-sidebar-width', '232'); 'ok'",
+    );
+    tab.navigate_to(&monitor.url("kit-native")).unwrap();
+    tab.wait_until_navigated().unwrap();
+    mounted(&tab, "the app again, after a load");
+    let reloaded: serde_json::Value =
+        serde_json::from_str(eval(&tab, THEMES).as_str().unwrap()).unwrap();
+    let narrow = reach(&tab, "machinesBtn");
+    let sidebar = eval(
+        &tab,
+        "(function () { var s = document.querySelector('#app>.sidebar').getBoundingClientRect(), b = document.getElementById('machinesBtn').getBoundingClientRect(); return JSON.stringify({ width: Math.round(s.width), inside: b.left >= s.left && b.right <= s.right + 0.5 }); })()",
+    );
+    let sidebar: serde_json::Value = serde_json::from_str(sidebar.as_str().unwrap()).unwrap();
+    let host: serde_json::Value = serde_json::from_str(
+        eval(&tab, "JSON.stringify(window.__host)")
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    drop(monitor);
+
+    assert_eq!(
+        opened,
+        serde_json::json!({ "page": "dark", "list": "dark", "view": "dark", "stored": null }),
+        "nothing stored: the app's start theme, everywhere"
+    );
+    assert!(
+        row["reached"] == true && row["before"] == "searchBtn" && row["label"] == "Machines",
+        "the Machines row after Search, reached: {row}"
+    );
+    assert_eq!(after_row, 1, "the row calls onMachines");
+    assert!(
+        glyph["reached"] == true && glyph["before"] == "sidebarMiniFilter",
+        "the rail's glyph after the filter's, reached: {glyph}"
+    );
+    assert_eq!(after_glyph, 2, "and so does the glyph");
+    assert_eq!(
+        new_tab, false,
+        "detach off: no ↗ on the transcript's top bar"
+    );
+    assert_eq!(
+        reloaded,
+        serde_json::json!({ "page": "light", "list": "light", "view": "light", "stored": "light" }),
+        "the reader's choice is stored and wins over the start"
+    );
+    assert!(
+        narrow["reached"] == true && sidebar["width"] == 232 && sidebar["inside"] == true,
+        "the row reached at the list's least, inside the sidebar: {narrow} {sidebar}"
+    );
+    assert_eq!(
+        (&host["error"], &host["errors"], &host["violations"]),
+        (
+            &serde_json::Value::Null,
+            &serde_json::json!([]),
+            &serde_json::json!([])
+        ),
+        "no error, and nothing breaks the app's policy"
+    );
+}
+
+/// #s596 on a phone: the Machines row is in the drawer's nav, upright, and in a wide phone's column
+/// held sideways, and a finger's tap on it calls `onMachines` in each.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_native_app_s_machines_row_is_reached_on_a_phone() {
+    let _serial = serial();
+    let (monitor, _base) = native_world("kit-native-phone", 3342);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::phone(&tab, 390, 844);
+    harness::answer_in_browser(&tab, native_answers(&monitor));
+    tab.navigate_to(&monitor.url("kit-native")).unwrap();
+    tab.wait_until_navigated().unwrap();
+    mounted(&tab, "the app on a phone");
+    harness::click_when_settled(&tab, "#drawerHandle", "the drawer's handle");
+    until(
+        &tab,
+        "!document.getElementById('app').classList.contains('mobile-detail') && (function () { var b = document.getElementById('machinesBtn'); if (!b) return false; var r = b.getBoundingClientRect(); var h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!h && b.contains(h) && document.getAnimations().every(function (a) { return a.playState !== 'running'; }); })()",
+        "the drawer open, its Machines row on top",
+        Duration::from_secs(10),
+        "document.getElementById('app').className",
+    );
+    let drawer = reach(&tab, "machinesBtn");
+    let centre = |v: &serde_json::Value| {
+        (
+            v["centre"][0].as_f64().unwrap(),
+            v["centre"][1].as_f64().unwrap(),
+        )
+    };
+    let (x, y) = centre(&drawer);
+    harness::finger_tap(&tab, x, y);
+    harness::until(
+        &tab,
+        "window.__host.machines === 1",
+        "the drawer's row to call onMachines",
+        Duration::from_secs(5),
+        "window.__host.machines",
+    );
+
+    harness::phone(&tab, 956, 440);
+    tab.navigate_to(&monitor.url("kit-native")).unwrap();
+    tab.wait_until_navigated().unwrap();
+    mounted(&tab, "the app on a wide phone held sideways");
+    until(
+        &tab,
+        "(function () { var b = document.getElementById('machinesBtn'); if (!b) return false; var r = b.getBoundingClientRect(); var h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!h && b.contains(h); })()",
+        "the column's Machines row",
+        Duration::from_secs(10),
+        "JSON.stringify({ app: document.getElementById('app').className, row: (function () { var b = document.getElementById('machinesBtn'); return b ? [b.offsetWidth, b.offsetHeight] : null; })() })",
+    );
+    let column = reach(&tab, "machinesBtn");
+    let (x, y) = centre(&column);
+    harness::finger_tap(&tab, x, y);
+    harness::until(
+        &tab,
+        "window.__host.machines === 1",
+        "the column's row to call onMachines",
+        Duration::from_secs(5),
+        "window.__host.machines",
+    );
+    let host: serde_json::Value = serde_json::from_str(
+        eval(&tab, "JSON.stringify(window.__host)")
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    drop(monitor);
+    assert!(
+        drawer["reached"] == true && column["reached"] == true,
+        "reached in the drawer and in the column: {drawer} {column}"
+    );
+    assert_eq!(
+        (&host["error"], &host["errors"], &host["violations"]),
+        (
+            &serde_json::Value::Null,
+            &serde_json::json!([]),
+            &serde_json::json!([])
+        ),
+        "no error, and nothing breaks the app's policy"
     );
 }
