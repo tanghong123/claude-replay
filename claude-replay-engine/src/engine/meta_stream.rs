@@ -412,11 +412,17 @@ pub const COMPACT_AFTER: usize = 256;
 /// its output the client's reason without the "Error: " an edit's join took, where a v86 stream
 /// holds it Failed.
 ///
+/// v88: #s608 (its own branch's v86, landed beside #s606 and #s600) — a Claude `enqueue` with no
+/// content (an image-only message) holds its place in the queue, so the content-less pop after it
+/// no longer takes the prompt queued behind it and suppresses that prompt's marker early; and an
+/// image block whose bytes are missing is no attachment. A stream from before it holds the earlier
+/// pops, whether it was written at v86 or v87.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 87;
+pub const FOLD_VERSION: u16 = 88;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

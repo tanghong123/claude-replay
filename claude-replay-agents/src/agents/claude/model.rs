@@ -4805,6 +4805,9 @@ pub(crate) fn decode_line_known(
             .then(|| a.and_then(|a| a.get("paths")).and_then(|p| p.as_array()))
             .flatten();
             if is_prompt {
+                if let Some(prompt) = a.and_then(|a| a.get("prompt")) {
+                    note_queued_prompt_shape(&v, prompt);
+                }
                 if let Some((p, images)) = a.and_then(|a| a.get("prompt")).map(queued_prompt) {
                     let p: &str = &p;
                     if !p.trim().is_empty() {
@@ -6287,6 +6290,13 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                 content: c.trim().to_string(),
                                 marker_idx,
                             });
+                        } else {
+                            // #s608 mirror: an enqueue with no content (an image-only message)
+                            // holds its place, so its own content-less pop takes it.
+                            queue.push(QueueItem {
+                                content: String::new(),
+                                marker_idx: None,
+                            });
                         }
                     }
                     Some("remove") | Some("dequeue") => {
@@ -6779,6 +6789,39 @@ fn load_attachment_from_event(a: &Value) -> Option<LoadedAttachment> {
     }
 }
 
+/// Report a `queued_command` prompt of a shape [`queued_prompt`] does not read (#s608): a content
+/// block that is neither text nor an image (dropped there), or a prompt that is neither a string
+/// nor a list of blocks (read as empty). Measured 2026-11-19 over 4,208 transcripts: every prompt
+/// was a string or a list of text and image blocks, so silence is the expected answer and a row
+/// is the next format change. Named under `content.type`, the prompt's place first.
+fn note_queued_prompt_shape(v: &Value, prompt: &Value) {
+    let name = match prompt {
+        Value::String(_) => return,
+        Value::Array(blocks) => {
+            for blk in blocks {
+                let kind = blk.get("type").and_then(Value::as_str);
+                if !matches!(kind, Some("text" | "image")) {
+                    note_unknown_shape(
+                        v,
+                        UnknownAt::ContentType,
+                        Some(&format!(
+                            "queued_command.prompt[].{}",
+                            kind.unwrap_or("(absent)")
+                        )),
+                        &[],
+                    );
+                }
+            }
+            return;
+        }
+        Value::Object(_) => "queued_command.prompt:object",
+        Value::Number(_) => "queued_command.prompt:number",
+        Value::Bool(_) => "queued_command.prompt:bool",
+        Value::Null => "queued_command.prompt:null",
+    };
+    note_unknown_shape(v, UnknownAt::ContentType, Some(name), &[]);
+}
+
 /// A `queued_command`'s prompt: its text and its image blocks. The client writes it as a string,
 /// or, for a prompt carrying pasted images, as the prompt's own content blocks (#s607, measured from
 /// client 2.1.251 to 2.1.327: a text block and the images, or the images alone). Read only as a
@@ -6853,7 +6896,13 @@ fn image_source(blk: &Value) -> Option<&Value> {
         return None;
     }
     let src = blk.get("source")?;
-    (src.get("type").and_then(|t| t.as_str()) == Some("base64")).then_some(src)
+    // Its bytes must be there (#s608): an image with `data` missing or not a string is no
+    // attachment on either side, or the loader, which needs the bytes, counts one fewer than the
+    // metadata walk and every later image on the line loads one slot off. An elided body is still
+    // a string (its marker).
+    (src.get("type").and_then(|t| t.as_str()) == Some("base64")
+        && src.get("data").and_then(Value::as_str).is_some())
+    .then_some(src)
 }
 
 fn image_mime(src: &Value) -> String {
@@ -7963,6 +8012,119 @@ mod tests {
             Some("YmF6")
         );
         assert_eq!(b64(line("\"prompt\":\"words alone\""), 0), None);
+    }
+
+    /// #s608: Claude Code writes an image-only mid-turn message as an `enqueue` with NO content,
+    /// then a content-less `dequeue` or `remove` for it (93 such enqueues on one machine). The
+    /// queue is first in, first out, so the enqueue holds its place: its own pop takes it, and a
+    /// prompt typed after it keeps its marker until ITS pop. Without the slot the image's pop took
+    /// the prompt queued behind it (69 pops on that machine), its marker went early, and the pops
+    /// after it were one off. Both parse paths agree.
+    #[test]
+    fn an_image_only_enqueue_holds_its_place_in_the_queue() {
+        let head = r##"
+{"type":"user","timestamp":"2026-11-19T09:00:00.000Z","message":{"content":"first turn"}}
+{"type":"assistant","timestamp":"2026-11-19T09:00:01.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-19T09:00:01.200Z"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-19T09:00:01.500Z","content":"typed while it worked"}
+{"type":"queue-operation","operation":"dequeue","timestamp":"2026-11-19T09:00:02.000Z"}
+{"type":"attachment","timestamp":"2026-11-19T09:00:02.000Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"humanTurn":true,"imagePasteIds":[1],"prompt":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}}]}}
+{"type":"user","timestamp":"2026-11-19T09:00:02.100Z","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]}}
+"##;
+        let tail = r##"{"type":"queue-operation","operation":"dequeue","timestamp":"2026-11-19T09:00:03.000Z"}
+{"type":"attachment","timestamp":"2026-11-19T09:00:03.000Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"prompt":"typed while it worked"}}
+"##;
+        let markers = |blocks: &[Block]| -> Vec<String> {
+            blocks
+                .iter()
+                .filter_map(|b| match b {
+                    Block::QueueEvent { text } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        for jsonl in [head.to_string(), format!("{head}{tail}")] {
+            let streamed = parse(&jsonl);
+            let reference = parse_main(
+                jsonl.lines().filter(|l| !l.trim().is_empty()),
+                &mut Vec::new(),
+            );
+            assert_eq!(streamed, reference, "the two parse paths agree");
+            let images = streamed
+                .iter()
+                .filter(|b| matches!(b, Block::Attachment(a) if a.kind == AttachmentKind::Image))
+                .count();
+            assert_eq!(images, 1, "{streamed:#?}");
+            if jsonl.len() == head.len() {
+                assert_eq!(
+                    markers(&streamed),
+                    vec!["typed while it worked"],
+                    "the image's own pop leaves the typed prompt waiting: {streamed:#?}"
+                );
+            } else {
+                assert!(
+                    markers(&streamed).is_empty(),
+                    "the typed prompt's own pop takes its marker: {streamed:#?}"
+                );
+            }
+        }
+    }
+
+    /// #s608: an image block whose bytes are missing, or not a string, is no attachment, on the
+    /// metadata walk and on the loader alike, so the images after it on the line still load their
+    /// own bytes. It used to be an attachment the loader could not count, and the next image on
+    /// the line loaded one slot off.
+    #[test]
+    fn an_image_without_bytes_is_no_attachment_and_the_next_loads_its_own() {
+        let jsonl = r##"{"type":"user","timestamp":"2026-11-19T09:00:00.000Z","message":{"content":[{"type":"text","text":"two pictures"},{"type":"image","source":{"type":"base64","media_type":"image/png"}},{"type":"image","source":{"type":"base64","media_type":"image/png","data":7}},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}}]}}"##;
+        let streamed = parse(jsonl);
+        let reference = parse_main(jsonl.lines(), &mut Vec::new());
+        assert_eq!(streamed, reference, "the two parse paths agree");
+        let images = streamed
+            .iter()
+            .filter(|b| matches!(b, Block::Attachment(a) if a.kind == AttachmentKind::Image))
+            .count();
+        assert_eq!(images, 1, "{streamed:#?}");
+        match nth_loaded_attachment(jsonl, 0) {
+            Some(LoadedAttachment::Base64 { b64, .. }) => assert_eq!(b64, "Zm9v"),
+            other => panic!("the one image loads its own bytes: {other:?}"),
+        }
+        assert!(nth_loaded_attachment(jsonl, 1).is_none());
+    }
+
+    /// #s608: a mid-turn prompt of a shape `queued_prompt` does not read is reported for
+    /// `agent-replay --unknown`: a block that is neither text nor an image, and a prompt that is
+    /// neither a string nor a list. A string prompt and a list of text and images report nothing.
+    #[test]
+    fn a_queued_prompt_of_an_unread_shape_is_reported() {
+        let jsonl = r##"
+{"type":"attachment","version":"9.9.608","sessionId":"s608-shapes","timestamp":"2026-11-19T09:00:00.000Z","attachment":{"type":"queued_command","commandMode":"prompt","prompt":[{"type":"text","text":"a"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}},{"type":"s608_block"}]}}
+{"type":"attachment","version":"9.9.608","sessionId":"s608-shapes","timestamp":"2026-11-19T09:00:01.000Z","attachment":{"type":"queued_command","commandMode":"prompt","prompt":{"s608":true}}}
+{"type":"attachment","version":"9.9.608","sessionId":"s608-shapes","timestamp":"2026-11-19T09:00:02.000Z","attachment":{"type":"queued_command","commandMode":"prompt","prompt":"words"}}
+"##;
+        let _ = parse(jsonl);
+        let seen: Vec<(String, String)> = unknown_shapes()
+            .into_iter()
+            .filter(|x| x.example.as_deref() == Some("s608-shapes"))
+            .map(|x| (x.at.as_str().to_string(), x.name))
+            .collect();
+        assert!(
+            seen.contains(&(
+                "content.type".into(),
+                "queued_command.prompt[].s608_block".into()
+            )),
+            "{seen:?}"
+        );
+        assert!(
+            seen.contains(&("content.type".into(), "queued_command.prompt:object".into())),
+            "{seen:?}"
+        );
+        assert!(
+            seen.iter().all(|(_, name)| !name.ends_with(".text")
+                && !name.ends_with(".image")
+                && !name.ends_with(":string")),
+            "{seen:?}"
+        );
     }
 
     /// #88: Claude Code sometimes writes a mid-turn typed prompt as a standalone `user`
