@@ -941,9 +941,9 @@ function markTitleWord() {
 // their own for the crumb. `var`: a header can be drawn during module evaluation.
 var headingFrame = 0;
 function fitHeading() {
-  const heading = sessionTitle.parentElement, crumb = byId("sessionCrumb");
+  const heading = sessionTitle.parentElement, crumb = byId("sessionCrumb"), chip = byId("statusChip");
   if (!heading?.classList.contains("session-heading") || !crumb) return;
-  heading.classList.remove("crumb-off");
+  heading.classList.remove("crumb-off", "chip-dot");
   if (sessionView.classList.contains("pl-phone") || sessionView.classList.contains("pl-outline-bar") || !heading.closest(".topbar")) return;
   const cut = node => node.scrollWidth > node.clientWidth + 1;
   const cap = parseFloat(getComputedStyle(sessionTitle).maxWidth);
@@ -954,6 +954,9 @@ function fitHeading() {
   // crumb's going gave its room to the search box, the name narrower than beside the crumb.
   if (off) heading.style.setProperty("--heading-room", `${heading.getBoundingClientRect().width}px`);
   heading.classList.toggle("crumb-off", off);
+  // #s598: then the status chip, with the crumb as just decided: where its words are cut (squeezed
+  // beside the name, or past its max-width), it shows only its dot (`chip-dot`), its words its title.
+  heading.classList.toggle("chip-dot", !!chip?.querySelector(".state-dot") && cut(chip));
 }
 /** At the next frame: the bar, the search box beside the heading and the header's text each change
  *  what fits, and the answer changes the box's room in turn, so it is read once they have settled. */
@@ -2736,12 +2739,13 @@ const TITLE_GIVES_TO = 80;
  *  in the bar the outline's glyphs join, and it is worked out again from the floor that rule gives
  *  without it, whenever the field, the bar or the title changes.
  *
- *  It measures with the crumb shown, as the bar was before #s581 took the crumb off a squeezed title,
- *  then decides the crumb for the floor it set (`fitHeading`), so the floor is the same whichever of
- *  the two ran last: measured with a crumb the last floor had taken off, the next fit gave the box
- *  more, and a fit made at once again gave it less. */
+ *  It measures with the crumb shown and the chip's words, as the bar was before #s581 took the crumb
+ *  off a squeezed title and #s598 made a cut chip its dot, then decides both for the floor it set
+ *  (`fitHeading`), so the floor is the same whichever of the two ran last: measured with a crumb the
+ *  last floor had taken off, the next fit gave the box more, and a fit made at once again gave it
+ *  less. */
 function fitDeskSearch(input) {
-  byId("sessionCrumb")?.parentElement?.classList.remove("crumb-off");
+  byId("sessionCrumb")?.parentElement?.classList.remove("crumb-off", "chip-dot");
   fitDeskSearchFloor(input);
   fitHeading();
 }
@@ -2773,14 +2777,17 @@ function fitDeskSearchFloor(input) {
   searchbox.style.maxWidth = "none"; searchbox.style.flexShrink = "0";
   const widest = searchbox.getBoundingClientRect().width + (box - own);
   [searchbox.style.maxWidth, searchbox.style.flexShrink] = held;
-  // What the title can give: down to what it keeps, and no more than its heading can, which keeps a
-  // floor of its own (the first word and what else it draws at its least): a title above its keep in
-  // a heading at that floor has nothing to give, and a floor counted on it pushed the bar's last
-  // controls out of the session's column (train2's measure, a long first word at 1100px).
+  // What the heading can give: all it draws down to what the title keeps and the least the heading
+  // draws beside it, the crumb gone and the chip its dot (`--heading-rest`), which is what the bar
+  // shows once the box has the room (#s598; `fitHeading` takes the crumb off a squeezed title and
+  // makes a cut chip its dot). Counted from the title's width beside a shown crumb, it left a held
+  // "lorem" 14px of its 37 at a 601px session column; and never past that least: a floor counted
+  // on more pushed the bar's last controls out of the session's column (train2's measure, a long
+  // first word at 1100px).
   const title = byId("sessionTitle"), heading = title?.parentElement;
   const keep = title ? Math.max(parseFloat(getComputedStyle(title).minWidth) || 0, Math.min(TITLE_GIVES_TO, title.scrollWidth)) : 0;
-  const headingGives = heading ? heading.getBoundingClientRect().width - (parseFloat(getComputedStyle(heading).minWidth) || 0) : Infinity;
-  const give = title ? Math.max(0, Math.min(title.getBoundingClientRect().width - keep, headingGives)) : 0;
+  const rest = heading ? parseFloat(getComputedStyle(heading).getPropertyValue("--heading-rest")) || 0 : 0;
+  const give = title && heading ? Math.max(0, heading.getBoundingClientRect().width - keep - rest) : 0;
   const floor = Math.floor(Math.min(box + short + 2, box + give, widest));
   if (floor > box) cluster.style.setProperty("--search-floor", `${floor}px`);
 }

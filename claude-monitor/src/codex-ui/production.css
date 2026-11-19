@@ -1398,6 +1398,13 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 #sessionView:not(.pl-phone) .workspace>.topbar>.session-heading.crumb-off{flex:0 0 var(--heading-room,auto);max-width:max-content}
 .session-copy-about{display:none;padding:6px 8px 8px;margin-bottom:2px;border-bottom:1px solid var(--line);color:var(--sub);font-size:11.5px;line-height:1.4;overflow-wrap:anywhere}
 .session-copy-menu.names-crumb .session-copy-about{display:block}
+/* #s598: the status chip gives way before the name as the crumb does, whole: where the bar would cut
+   its words (squeezed beside the name, or past its own max-width), it shows only its dot, whose colour
+   is the state; its words are its title, and Info names the state (`chip-dot`, set by `fitHeading`
+   from what the bar draws), no wider than the dot itself, as the bar's chip has no pill to pad: at
+   1000px the squeezed words left the dot 8px, and the name its whole 290px. At a 601px session column
+   it read "● D" and then nothing at all. */
+#sessionView:not(.pl-phone) .workspace>.topbar>.session-heading.chip-dot>.status-chip{flex:none;gap:0;padding:0;max-width:none;font-size:0}
 /* #s520: and off the phone the session's name keeps at least its first word (`--title-word`, its
    width in the title's font with the ellipsis a longer title draws, measured by session-view.js; at
    most 160px). The heading holds that and what else it draws at its least (the crumb's two gaps and
@@ -1405,6 +1412,13 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    before the bar runs out of room. The glyphs' bar draws no title (#s582, below). */
 #sessionView:not(.pl-phone) .workspace>.topbar>.session-heading>#sessionTitle{min-width:calc(min(var(--title-word,0px),160px) + 10px)}
 #sessionView:not(.pl-phone) .workspace>.topbar>.session-heading{min-width:calc(min(var(--title-word,0px),160px) + 65px)}
+/* #s598: with the crumb off, what the heading draws at its least is the name's first word, one divider
+   and the chip's dot (`--heading-rest`: the divider and its two gaps, 21px, and the 6px dot, less the
+   title's -5px margin), not the crumb's 55px it keeps beside a shown crumb, and the search box in use is let
+   take the rest (`fitDeskSearchFloor` counts on it): at a 601px session column a held "lorem" had 14px
+   of its 37 while the name kept 108px. */
+#sessionView:not(.pl-phone) .workspace>.topbar>.session-heading{--heading-rest:22px}
+#sessionView:not(.pl-phone) .workspace>.topbar>.session-heading.crumb-off{min-width:calc(min(var(--title-word,0px),160px) + 10px + var(--heading-rest))}
 #sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster{flex-shrink:1;min-width:150px}
 #sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster>.header-searchbox{max-width:100%}
 /* While the search is in use (typed in, held, or holding a query) the title gives way first: the
