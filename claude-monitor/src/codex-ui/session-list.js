@@ -25,19 +25,32 @@ export function groupAcrossMachines(groups = [], build = groupSessions, now = Da
     if (!byMachine.has(machine)) byMachine.set(machine, []);
     byMachine.get(machine).push(group);
   }
+  // The server dates a group by its newest row of ANY agent (a folder where Claude and Codex both
+  // work is one group), and orders its list by that; `build` splits a group by agent, so each project
+  // is dated here by its whole group, found through its rows (#s615 review).
+  const groupLatest = new Map();
+  for (const group of groups) {
+    let latest = 0;
+    for (const row of group.rows || []) latest = Math.max(latest, Number(row?.activityTs) || 0);
+    for (const row of group.rows || []) if (row && typeof row === "object") groupLatest.set(row, latest);
+  }
   const agents = new Map();
   for (const [machine, own] of byMachine) for (const agent of build(own)) {
     if (!agents.has(agent.id)) agents.set(agent.id, { agent, lists: [] });
     agents.get(agent.id).lists.push(agent.projects.map(project => {
       const id = machine && !String(project.id).startsWith(`${machine}/`) ? `${machine}/${project.id}` : project.id;
-      return machine ? { ...project, id, machine } : project;
+      let latest = 0;
+      for (const row of project.sessions || project.rows || []) latest = Math.max(latest, groupLatest.get(row) ?? (Number(row?.activityTs) || 0));
+      return machine ? { ...project, id, machine, latest } : { ...project, latest };
     }));
   }
   return byFirstProject([...agents.values()].map(({ agent, lists }) => ({ ...agent, projects: mergeInOrder(lists, now) })), now);
 }
 
-/** A project's newest activity, as the server dates a group: its newest row's `activityTs` (s). */
+/** A project's newest activity, as the server dates a group: its group's newest row's `activityTs`
+ *  (s), which `groupAcrossMachines` stamps as `latest`; else its own rows'. */
 function projectLatest(project) {
+  if (Number.isFinite(project.latest)) return project.latest;
   let latest = 0;
   for (const row of project.sessions || project.rows || []) latest = Math.max(latest, Number(row.activityTs) || 0);
   return latest;
@@ -47,7 +60,7 @@ function projectLatest(project) {
  * The server's order for two projects (claude-monitor/src/index.rs, the groups' sort; owner,
  * 2026-08-08: rows must not hop with an agent's bursty writes), negative when `a` comes first: those
  * active in the last ten minutes (`CALM_SECS`) first, tied and by name; the rest newest first; then
- * the name and the directory, compared as the server compares them (lower case, by code point).
+ * the name and the directory (the name in lower case), as the server compares them.
  */
 function calmOrder(a, b, now = Date.now() / 1000) {
   const latestA = projectLatest(a), latestB = projectLatest(b);

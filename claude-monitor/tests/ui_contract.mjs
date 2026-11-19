@@ -5918,5 +5918,18 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // drew the ten minutes a moment earlier): the merge never reorders one machine's projects.
   const skewed = groupAcrossMachines([group("a", "late", [row("a-late", "claude", 11 * 60)]), group("a", "early", [row("a-early", "claude", 5 * 60)])], undefined, now);
   assert.deepEqual(skewed[0].projects.map(project => project.id), ["a/p:~/code/late", "a/p:~/code/early"], "one machine's projects in its server's order, whatever the page's clock says");
+  // A folder where Claude and Codex both work is ONE group on its server, dated by its newest row of
+  // either agent, and its machine's list is in that order; each agent's project is dated by the whole
+  // group, or a project Claude left three days ago in a folder Codex is busy in would sink below one
+  // Claude used an hour ago and strand the machine's later projects (the #s615 review).
+  const mixed = groupAcrossMachines([
+    group("a", "shared", [row("a-cx", "codex", 30), row("a-cl", "claude", 3 * 86400)]),
+    group("a", "solo", [row("a-solo", "claude", 3600)]),
+    group("b", "other", [row("b-other", "claude", 2 * 86400)]),
+  ], undefined, now);
+  assert.deepEqual(mixed.map(agent => [agent.id, agent.projects.map(project => project.id)]), [
+    ["codex", ["a/p:~/code/shared"]],
+    ["claude", ["a/p:~/code/shared", "a/p:~/code/solo", "b/p:~/code/other"]],
+  ], "each agent's project is dated by its whole group, as the server dates it");
   console.log("#s615 merged order cases passed");
 }
