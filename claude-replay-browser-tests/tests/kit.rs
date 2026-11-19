@@ -2230,7 +2230,6 @@ fn the_web_app_over_two_machines_keeps_each_machines_reading_place_for_a_shared_
         Duration::from_secs(20),
         &now,
     );
-    std::thread::sleep(Duration::from_millis(900));
     let rows = |id: &str| format!("#sessionList .tree-row.session[data-session=\"{id}\"]");
     until(
         &tab,
@@ -2264,7 +2263,7 @@ fn the_web_app_over_two_machines_keeps_each_machines_reading_place_for_a_shared_
     );
     // The view either follows its end or restores a place as the records stream in; give a
     // restore every chance to happen before reading where it is.
-    let landed_there = (0..40)
+    let landed_there = (0..80)
         .find_map(|_| {
             std::thread::sleep(Duration::from_millis(250));
             let p = harness::probe(&tab, &place);
@@ -2276,6 +2275,10 @@ fn the_web_app_over_two_machines_keeps_each_machines_reading_place_for_a_shared_
         })
         .unwrap_or_else(|| harness::probe(&tab, &place));
     let own_memory = landed_there["own"].clone();
+    assert_ne!(
+        landed_there["anchor"]["key"], own_memory["key"],
+        "the second machine's copy is not at the first machine's turn: {landed_there}"
+    );
     assert_eq!(
         (&landed_there["tail"], &landed_there["skuas"]),
         (&serde_json::json!(true), &serde_json::json!(true)),
@@ -2296,6 +2299,11 @@ fn the_web_app_over_two_machines_keeps_each_machines_reading_place_for_a_shared_
             let p = harness::probe(&tab, &place);
             (p["session"] == format!("a/{SID_PLACE}") && p["anchor"]["key"] == own_memory["key"])
                 .then_some(p)
+        })
+        // Once there, it stays there: a restore that lands and then drifts is not one.
+        .map(|_| {
+            std::thread::sleep(Duration::from_millis(1500));
+            harness::probe(&tab, &place)
         })
         .unwrap_or_else(|| harness::probe(&tab, &place));
     drop(there);
