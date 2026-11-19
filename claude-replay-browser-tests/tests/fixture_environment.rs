@@ -159,6 +159,38 @@ fn a_mute_chrome_launch_is_given_up_and_killed() {
     assert!(left.is_empty(), "nothing of that launch is left: {left:?}");
 }
 
+/// #s614: a case's browser takes its singleton folder with it. Chrome links its profile's
+/// `SingletonSocket` into a folder of the system temp folder and removes that folder only when it
+/// exits on its own; headless_chrome's own drop SIGKILLs it right after `Browser.close`, and every
+/// launch left one (75,886 on hong-devserver). The case drops its browser as a case does and finds
+/// the folder gone.
+#[test]
+#[ignore]
+fn a_dropped_browser_takes_its_singleton_folder_with_it() {
+    let _serial = harness::serial();
+    let (browser, tab) = harness::chrome_tab();
+    let Some(folder) = browser.singleton().map(std::path::Path::to_path_buf) else {
+        assert!(
+            !cfg!(target_os = "macos"),
+            "Chrome for Testing links its profile's SingletonSocket into the system temp folder"
+        );
+        eprintln!("no SingletonSocket link in this browser's profile here; nothing to check");
+        return;
+    };
+    assert!(
+        folder.exists(),
+        "the folder is there while the browser runs: {}",
+        folder.display()
+    );
+    drop(tab);
+    drop(browser);
+    assert!(
+        !folder.exists(),
+        "the browser took its singleton folder with it: {} is still there",
+        folder.display()
+    );
+}
+
 /// #s293: a case that ends takes every process left of the browsers its runner launched with it —
 /// a helper whose browser was killed but which never exited — and leaves a sibling run's alone. On
 /// a drained, throttled Mac about 200 such helpers piled up under one scenarios binary.

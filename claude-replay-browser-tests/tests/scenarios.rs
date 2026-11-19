@@ -268,7 +268,7 @@ fn fixture_input_requests(name: &str, turns: u32) -> Fixture {
 /// root), a paired v2 monitor for the app shell. Returns the tab and what keeps the page alive.
 struct Opened {
     tab: std::sync::Arc<headless_chrome::Tab>,
-    _browser: headless_chrome::Browser,
+    _browser: harness::Chrome,
     _server: Option<claude_replay_html::LiveServer>,
     monitor: Option<Monitor>,
 }

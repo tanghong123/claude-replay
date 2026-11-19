@@ -106,7 +106,7 @@ fn fixture_audit(name: &str) -> Fixture {
 
 struct Opened {
     tab: std::sync::Arc<headless_chrome::Tab>,
-    _browser: headless_chrome::Browser,
+    _browser: harness::Chrome,
     _server: Option<claude_replay_html::LiveServer>,
     _monitor: Option<Monitor>,
 }
