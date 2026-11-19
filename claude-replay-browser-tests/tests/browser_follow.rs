@@ -14169,6 +14169,152 @@ fn the_tight_session_top_bar_reads_glyphs_search_aa_info_and_pane() {
     drop(monitor);
 }
 
+/// #s598 (hd-replay's iPad walk of #s581: sideways, the pane open, a 601px session column, a query held
+/// at rest; the field read "ridg" of "ridge" and the status chip "● D"): in a session column this
+/// narrow the bar has too little for every part's words, and what gives way is a deliberate short
+/// form, never a cut word. The query held in the search box shows whole, and the status chip shows its
+/// words whole or only its dot (its words are its title, and Info names the state). Every control stays
+/// inside the column, and the name keeps its first word. Measured at 601px and 650px, bare and with a
+/// query held at rest.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_narrow_session_column_keeps_a_held_query_whole_and_the_chip_whole_or_its_dot() {
+    let _serial = serial();
+    let base = base("narrow-bar");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000005a2".to_string();
+    let title = "Harbour tide table notes for the spring survey of every station";
+    let mut jsonl = harness::long_session(6, harness::Shape::default());
+    jsonl.push_str(&format!(
+        "{{\"type\":\"custom-title\",\"customTitle\":\"{title}\"}}\n"
+    ));
+    stores.claude_session(&sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3161, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let column = "document.querySelector('#sessionView .workspace>.topbar').parentElement.getBoundingClientRect().width";
+    let probe = "(function(){ var bar = document.querySelector('#sessionView .workspace>.topbar'), col = bar.parentElement.getBoundingClientRect(); var t = document.getElementById('sessionTitle'), h = t.parentElement, chip = document.getElementById('statusChip'), i = document.getElementById('transcriptSearchInput'), cluster = document.querySelector('.workspace>.topbar>.header-search-cluster'); var drawn = function (e) { return !!e && e.getClientRects().length > 0 && e.getBoundingClientRect().width > 0; }; var cs = getComputedStyle(i), ctx = document.createElement('canvas').getContext('2d'); ctx.font = cs.font; var text = i.value ? ctx.measureText(i.value).width : 0; var inner = i.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); var cr = chip.getBoundingClientRect(), dot = chip.querySelector('.state-dot'), dr = dot ? dot.getBoundingClientRect() : null; var parts = [].slice.call(bar.children).filter(drawn).map(function (e) { var r = e.getBoundingClientRect(); return (e.id ? '#' + e.id : '.' + String(e.className).split(' ')[0]) + ' ' + Math.round(r.left) + '..' + Math.round(r.right); }); var out = [].slice.call(bar.querySelectorAll('button, input, .status-chip, #sessionTitle')).filter(function (e) { var r = e.getBoundingClientRect(); return drawn(e) && (r.left < col.left - 1 || r.right > col.right + 1); }).map(function (e) { return e.id || String(e.className); }); return { col: Math.round(col.width), layout: document.getElementById('sessionView').className, heading: h.className, cluster: cluster.className, query: i.value, text: Math.ceil(text), inner: Math.floor(inner), fieldScroll: i.scrollWidth, fieldClient: i.clientWidth, chipText: chip.textContent.trim(), chipShown: drawn(chip), chipWhole: drawn(chip) && chip.scrollWidth <= chip.clientWidth + 1, chipW: Math.round(cr.width), chipScroll: chip.scrollWidth, dotShown: !!dr && dr.width >= 4 && dr.left >= cr.left - 0.5 && dr.right <= cr.right + 0.5, box: [].slice.call(document.querySelectorAll('.workspace>.topbar>.header-search-cluster *')).filter(function (e) { return drawn(e) && e.children.length === 0 || e.id === 'transcriptSearchCount'; }).map(function (e) { var r = e.getBoundingClientRect(); return (e.id || String(e.className).split(' ')[0] || e.tagName) + ' ' + Math.round(r.left) + '..' + Math.round(r.right) + (e.id === 'transcriptSearchCount' ? ' ' + JSON.stringify(e.textContent) : ''); }), head: [].slice.call(h.children).filter(drawn).map(function (e) { var r = e.getBoundingClientRect(); return (e.id || String(e.className).split(' ')[0]) + ' ' + Math.round(r.left) + '..' + Math.round(r.right); }).concat(['min ' + getComputedStyle(h).minWidth, 'flex ' + getComputedStyle(h).flex]), title: Math.round(t.getBoundingClientRect().width), titleWord: parseFloat(bar.style.getPropertyValue('--title-word')) || 0, parts: parts, out: out }; })()";
+    // The window narrowed until the session's column is `want` wide (the list and the outline take what
+    // the layout gives them at each width), then the bar's fits settled.
+    let at = |want: f64, what: &str| -> serde_json::Value {
+        let mut width = want + 300.0;
+        for _ in 0..6 {
+            harness::clear_metrics(&tab);
+            harness::resize(&tab, width.round(), 900.0);
+            harness::until(
+                &tab,
+                &format!(
+                    "innerWidth === {} && {VIEW_CAUGHT_UP}",
+                    width.round() as i64
+                ),
+                &format!("{what}: the window at {}px", width.round()),
+                Duration::from_secs(15),
+                "innerWidth",
+            );
+            harness::until_preview_parked(&tab);
+            harness::eval(&tab, TWO_FRAMES);
+            let now = harness::eval(&tab, column).as_f64().unwrap_or(0.0);
+            if (now - want).abs() < 0.5 {
+                break;
+            }
+            width += want - now;
+        }
+        harness::eval(&tab, TWO_FRAMES);
+        harness::eval(&tab, TWO_FRAMES);
+        harness::probe(&tab, probe)
+    };
+    let check = |seen: &serde_json::Value, want: f64, what: &str| {
+        assert_eq!(
+            seen["col"].as_f64(),
+            Some(want),
+            "{what}: the session's column: {seen}"
+        );
+        let short = seen["heading"]
+            .as_str()
+            .unwrap_or("")
+            .split(' ')
+            .any(|c| c == "chip-dot");
+        assert!(
+            seen["chipWhole"] == true || (short && seen["dotShown"] == true),
+            "{what}: the status chip shows its words whole, or only its dot, never a cut word: {seen}"
+        );
+        if !seen["query"].as_str().unwrap_or("").is_empty() {
+            assert!(
+                seen["text"].as_f64().unwrap_or(f64::MAX)
+                    <= seen["inner"].as_f64().unwrap_or(0.0) + 0.5
+                    && seen["fieldScroll"].as_f64().unwrap_or(f64::MAX)
+                        <= seen["fieldClient"].as_f64().unwrap_or(0.0) + 1.0,
+                "{what}: the held query shows whole in its field: {seen}"
+            );
+        }
+        assert_eq!(
+            seen["out"].as_array().map(|a| a.len()),
+            Some(0),
+            "{what}: every control stays inside the session's column: {seen}"
+        );
+        assert!(
+            seen["title"].as_f64().unwrap_or(0.0)
+                >= seen["titleWord"].as_f64().unwrap_or(f64::MAX).min(160.0) - 1.0,
+            "{what}: the name keeps its first word: {seen}"
+        );
+    };
+    let url = monitor.url(&format!("?ui=app&session={sid}"));
+    harness::resize(&tab, 1440.0, 900.0);
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.virtual-window .turn.user') && document.getElementById('sessionTitle').textContent === {title:?}"),
+        "the app shell to mount the fixture",
+        Duration::from_secs(30),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let seen = at(650.0, "650px bare");
+    eprintln!("#s598 650px bare: {seen}");
+    check(&seen, 650.0, "650px bare");
+    let seen = at(601.0, "601px bare");
+    eprintln!("#s598 601px bare: {seen}");
+    check(&seen, 601.0, "601px bare");
+    // A five-letter query, counted, then left: a press on the transcript lets the box rest with it held.
+    harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
+    harness::eval(
+        &tab,
+        "(function(){ var i = document.getElementById('transcriptSearchInput'); i.value = 'lorem'; i.dispatchEvent(new Event('input', { bubbles: true })); if (/⏎/.test(document.getElementById('transcriptSearchCount').textContent)) i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return 1; })()",
+    );
+    let count = "document.getElementById('transcriptSearchCount').textContent";
+    harness::until(
+        &tab,
+        &format!("/\\d/.test({count}) && !/⏎/.test({count})"),
+        "the query's matches counted",
+        Duration::from_secs(10),
+        count,
+    );
+    let away = harness::probe(
+        &tab,
+        "(function(){ var r = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height * 0.6) }; })()",
+    );
+    tab.click_point(headless_chrome::browser::tab::point::Point {
+        x: away["x"].as_f64().unwrap_or(0.0),
+        y: away["y"].as_f64().unwrap_or(0.0),
+    })
+    .expect("a press on the transcript");
+    harness::until(
+        &tab,
+        "(function(){ var c = document.querySelector('.workspace>.topbar>.header-search-cluster'); return !c.matches(':focus-within') && !c.classList.contains('search-held') && document.getElementById('transcriptSearchInput').value === 'lorem'; })()",
+        "the search box to rest with the query held",
+        Duration::from_secs(5),
+        "document.querySelector('.workspace>.topbar>.header-search-cluster').className",
+    );
+    let seen = at(601.0, "601px with a query held");
+    eprintln!("#s598 601px held: {seen}");
+    check(&seen, 601.0, "601px with a query held");
+    let seen = at(650.0, "650px with a query held");
+    eprintln!("#s598 650px held: {seen}");
+    check(&seen, 650.0, "650px with a query held");
+    harness::clear_metrics(&tab);
+    drop(monitor);
+}
+
 /// #s581 (Hong: "when the pane is too narrow to hold all of the agent name, agent type, and repo
 /// name, give room to agent name, and show agent type and repo name in the drop down menu when user
 /// clicks the agent name"): where the bar holds the session's name beside its crumb (the agent and the
@@ -14194,7 +14340,7 @@ fn a_squeezed_session_name_takes_the_crumbs_room_and_its_menu_names_them() {
     monitor.pair(&tab);
     // The heading as drawn, and the name's width with the crumb drawn and without it, read in one
     // task (the class taken off and put back), so the room the crumb takes is measured, not assumed.
-    let probe = "(function(){ var t = document.getElementById('sessionTitle'), h = t.parentElement, k = document.getElementById('sessionCrumb'), a = document.getElementById('sessionCopyAbout'), d = k.nextElementSibling; var drawn = function (e) { return !!e && e.getClientRects().length > 0 && e.getBoundingClientRect().width > 0; }; var off = h.classList.contains('crumb-off'); var now = t.getBoundingClientRect().width; h.classList.remove('crumb-off'); var withCrumb = t.getBoundingClientRect().width; h.classList.add('crumb-off'); var without = t.getBoundingClientRect().width; h.classList.toggle('crumb-off', off); return { off: off, crumb: drawn(k), divider: drawn(d), crumbText: k.textContent.trim(), crumbCut: k.scrollWidth > k.clientWidth + 1, title: Math.round(now), withCrumb: Math.round(withCrumb), without: Math.round(without), cap: parseFloat(getComputedStyle(t).maxWidth), menu: document.getElementById('sessionCopyMenu').classList.contains('open'), about: drawn(a), aboutText: a.textContent.trim(), layout: document.getElementById('sessionView').className }; })()";
+    let probe = "(function(){ var t = document.getElementById('sessionTitle'), h = t.parentElement, k = document.getElementById('sessionCrumb'), a = document.getElementById('sessionCopyAbout'), d = k.nextElementSibling; var drawn = function (e) { return !!e && e.getClientRects().length > 0 && e.getBoundingClientRect().width > 0; }; var off = h.classList.contains('crumb-off'); var now = t.getBoundingClientRect().width; h.classList.remove('crumb-off'); var withCrumb = t.getBoundingClientRect().width; h.classList.add('crumb-off'); var without = t.getBoundingClientRect().width; h.classList.toggle('crumb-off', off); return { off: off, crumb: drawn(k), divider: drawn(d), crumbText: k.textContent.trim(), crumbCut: k.scrollWidth > k.clientWidth + 1, title: Math.round(now), withCrumb: Math.round(withCrumb), without: Math.round(without), cap: parseFloat(getComputedStyle(t).maxWidth), menu: document.getElementById('sessionCopyMenu').classList.contains('open'), about: drawn(a), aboutText: a.textContent.trim(), layout: document.getElementById('sessionView').className, hc: h.className, room: h.style.getPropertyValue('--heading-room'), hw: Math.round(h.getBoundingClientRect().width * 10) / 10, kids: [].slice.call(h.children).filter(drawn).map(function (e) { var r = e.getBoundingClientRect(); return (e.id || String(e.className).split(' ')[0]) + ' ' + Math.round(r.left * 10) / 10 + '..' + Math.round(r.right * 10) / 10; }) }; })()";
     let at = |width: u32, off: Option<bool>| -> serde_json::Value {
         if width < 500 {
             harness::mouse_window(&tab, width, 900);
@@ -18680,10 +18826,11 @@ fn phone_tap_outside(tab: &headless_chrome::Tab) {
 }
 
 /// #s581: the point a reader taps to dismiss the session's menu, which hangs from the top bar into
-/// the band `phone_outside_point` taps: the transcript 40px under the menu, at the screen's middle.
-/// Since #s581 the menu names the agent and the project at its head on a phone, and at 390px it
-/// reached the middle of the screen, so a tap there landed on the menu and closed nothing (Linux CI
-/// on PR #65). The point is checked: on the page, outside the menu and above the dock.
+/// the band `phone_outside_point` taps (40px under the bar, halfway across): the transcript 40px
+/// under the menu, halfway across. Since #s581 the menu names the agent and the project at its head
+/// on a phone, which made it taller, so at 390px that band's point fell inside the menu, on one of its
+/// rows, and the tap closed nothing (Linux CI on PR #65). The point is checked: on the page, outside
+/// the menu and above the dock.
 fn phone_point_below_session_menu(tab: &headless_chrome::Tab) -> (f64, f64) {
     let at = harness::eval(
         tab,
