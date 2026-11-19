@@ -14440,9 +14440,8 @@ const HELD_QUERY_SCRIPT: &str = "window.__loops = []; addEventListener('error', 
 /// off a frame with that notice. The fit now waits for the next frame, so the box settles one frame
 /// after such a change (measured: the strip 172px and the cluster 252px in the first frame drawn, 166px
 /// and 246px from the next on); the case holds that it then holds still, and the reports show the
-/// move. And / on the
-/// held query draws the box as at rest from the first frame after the key and holds it (measured: it
-/// gives the observers no size report at all here).
+/// move. And / on the held query draws the box as at rest from the first frame after the key and
+/// holds it (measured: it gives the observers no size report at all here).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_held_query_emptied_beside_the_open_pane_raises_no_resize_observer_loop() {
@@ -14586,11 +14585,12 @@ fn a_held_query_emptied_beside_the_open_pane_raises_no_resize_observer_loop() {
                 // fit's observer the strip's new size, and after that report the cluster above the
                 // strip was resized again: before #s624 by the search fit inside that delivery (the
                 // write that raised the notice), now by the next frame's fits (the heading's and the
-                // search's, both through `fitHeading`). Measured order, before: cluster 252, strip
-                // 172, strip 166, cluster 246; now: cluster 252, strip 172, cluster 246, strip 166.
-                // Read from the reports, which hold either way, where the frames differ (before
-                // #s624 the fit was drawn in the first frame). With the pane shut the strip is
-                // reported too, and nothing is resized after it.
+                // search's, both through `fitHeading`; which fit moves it is read from the code).
+                // Measured order, before: cluster 252, strip 172, strip 166, cluster 246; now:
+                // cluster 252, strip 172, cluster 246, strip 166. Read from the reports, which hold
+                // either way, where the frames differ (before #s624 the fit was drawn in the first
+                // frame). With the pane shut the strip is reported too, and nothing after it
+                // (measured now: cluster 400, strip 206).
                 assert_eq!(
                     harness::eval(
                         &tab,
@@ -14615,12 +14615,16 @@ fn a_held_query_emptied_beside_the_open_pane_raises_no_resize_observer_loop() {
                         .nth(1)
                         .map(str::to_string)
                 };
+                // A report of the cluster before the strip's, so the one after it is a new width,
+                // not a change of height alone.
                 let resized_after = strip_at.is_some_and(|at| {
-                    let last = list[..at].iter().rev().find_map(cluster_of);
+                    let Some(last) = list[..at].iter().rev().find_map(cluster_of) else {
+                        return false;
+                    };
                     list[at + 1..]
                         .iter()
                         .filter_map(cluster_of)
-                        .any(|w| last.as_ref() != Some(&w))
+                        .any(|w| w != last)
                 });
                 assert!(
                     resized_after,
