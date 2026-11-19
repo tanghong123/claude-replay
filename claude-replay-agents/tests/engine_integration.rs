@@ -2531,6 +2531,49 @@ fn pop_all_on_a_live_tail_drops_every_marker_and_moves_changed_from_to_the_first
     let _ = std::fs::remove_file(&path);
 }
 
+/// #s608: an image-only mid-turn message is an `enqueue` with no content, popped by a content-less
+/// `dequeue`. The busy signal keeps the client's queue as the fold does, so that pop takes the
+/// image's own place: a prompt typed after it still waits, and once both are gone a later prompt
+/// still reads as one. A count took the typed prompt away with the image's pop, and a pop that
+/// matched nothing took one more, which left it below zero for the rest of the window.
+#[test]
+fn tail_pulse_keeps_an_image_only_message_s_place_in_the_queue() {
+    use claude_replay_engine::state::tail_pulse;
+    let working = concat!(
+        r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":null,"content":[{"type":"text","text":"working"}]},"timestamp":"2026-08-14T10:00:05Z"}"#,
+        "\n",
+        r#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-08-14T10:00:06Z"}"#,
+        "\n",
+        r#"{"type":"queue-operation","operation":"enqueue","content":"count the skua nests too","timestamp":"2026-08-14T10:00:07Z"}"#,
+        "\n",
+        r#"{"type":"queue-operation","operation":"dequeue","timestamp":"2026-08-14T10:00:08Z"}"#,
+        "\n",
+    );
+    assert!(
+        tail_pulse(&ClaudeAdapter, &tmp1(working)).queued_prompt,
+        "the image's pop takes the image: the typed prompt behind it still waits"
+    );
+    let later = format!(
+        "{working}{}\n{}\n{}\n{}\n",
+        r#"{"type":"queue-operation","operation":"remove","content":"count the skua nests too","timestamp":"2026-08-14T10:00:09Z"}"#,
+        r#"{"type":"queue-operation","operation":"remove","content":"a prompt this queue never held","timestamp":"2026-08-14T10:00:10Z"}"#,
+        r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":null,"content":[{"type":"text","text":"still working"}]},"timestamp":"2026-08-14T10:00:11Z"}"#,
+        r#"{"type":"queue-operation","operation":"enqueue","content":"and the petrels","timestamp":"2026-08-14T10:00:12Z"}"#,
+    );
+    assert!(
+        tail_pulse(&ClaudeAdapter, &tmp1(&later)).queued_prompt,
+        "a pop matching nothing takes nothing: the next prompt still reads as queued"
+    );
+    let delivered = format!(
+        "{later}{}\n",
+        r#"{"type":"user","message":{"role":"user","content":"and the petrels"},"timestamp":"2026-08-14T10:00:13Z"}"#,
+    );
+    assert!(
+        !tail_pulse(&ClaudeAdapter, &tmp1(&delivered)).queued_prompt,
+        "a prompt delivered with no pop recorded is no longer queued (#52)"
+    );
+}
+
 /// #242: `popAll` EMPTIES the queue, so the session is no longer holding a prompt. This arm
 /// did not exist when the variant was added and the op fell to the catch-all, which left
 /// `queued_prompt` true for the rest of the session — reporting a session as waiting on a
