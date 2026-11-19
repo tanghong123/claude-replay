@@ -4925,8 +4925,11 @@ var phoneDock;
       heading.classList.remove("crumb-off");
       if (headingHeld) (columnHomes.has(heading) ? info : sessionTitle).focus({ preventScroll: true });
     }
-    // Back in the bar, the title's least room is measured again in the bar's font.
-    if (!inBar) { markTitleWord(); fitHeadingSoon(); }
+    // Back in the bar from the card, the title's least room is measured again in the bar's font; only
+    // then, since a measure on every arrangement wrote over a first word measured or held before it.
+    // Out of the bar of glyphs the crumb is decided for the bar's room as it is now.
+    if (wasInCard && !columnHomes.has(heading)) markTitleWord();
+    if (!inBar) fitHeadingSoon();
     if (arrangement?.outline === "open") closePane();
   };
   openOutlinePanel = key => {
