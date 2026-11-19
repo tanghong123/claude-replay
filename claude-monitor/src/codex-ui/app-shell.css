@@ -506,6 +506,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 #app:where(.app-drawer) .section-view-menu .section-menu-name{max-width:60%;font-size:12px}
 :where(:root:has(#sessionView.pl-phone)) :is(#sessionView,#app) .navigator-options .scope-option{height:44px;font-size:14px}
 :where(:root:has(#sessionView.pl-phone)) :is(#sessionView,#app) .navigator-options .scope-menu-action{min-height:36px;padding:0 8px}
+:where(:root:has(#sessionView.pl-phone)) .phone-pane-menu .phone-pane-body .tasks-filter-row,:where(:root:has(#sessionView.pl-phone)) .phone-pane-menu .phone-pane-body .agents-filter-row{display:none}
 :where(:root:has(#sessionView.pl-phone)) .phone-pane-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 6px 6px}
 :where(:root:has(#sessionView.pl-phone)) .phone-pane-body .outline-turn-row,:where(:root:has(#sessionView.pl-phone)) .phone-pane-body .work-task-head,:where(:root:has(#sessionView.pl-phone)) .phone-pane-body .outline-agent{min-height:44px}
 :where(:root:has(#sessionView.pl-phone)) .phone-pane-body .outline-turn-row .outline-label{font-size:14px}
