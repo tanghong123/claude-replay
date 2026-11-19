@@ -1723,8 +1723,9 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   .phone-pane-close{width:44px;height:44px;border-radius:10px;background:transparent;color:var(--sub);font-size:17px;cursor:pointer}
   /* #s616: the list's filter is the sheet head's (session-view.js `renderFilter`), beside the title and
      before ✕, so a short list held sideways keeps all its height for the list; the list's own row is
-     not drawn in the sheet (a wide phone's column, which has no such head, still shows it). */
-  .phone-pane-head strong{flex:none}
+     not drawn in the sheet (a wide phone's column, which has no such head, still shows it). The title
+     and ✕ never shrink: a long label is cut with an ellipsis, and ✕ stays a 44px target. */
+  .phone-pane-head strong,.phone-pane-close{flex:none}
   .phone-pane-filter:not([hidden]){flex:0 1 auto;min-width:0;height:44px;margin-left:auto;padding:0 10px;border-radius:10px;background:transparent;color:var(--primary);font:inherit;font-size:14px;font-weight:570;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
   .phone-pane-filter:active,.phone-pane-filter:focus-visible{background:var(--hover);outline:0}
   .phone-pane-menu .phone-pane-body .tasks-filter-row,.phone-pane-menu .phone-pane-body .agents-filter-row{display:none}

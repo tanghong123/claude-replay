@@ -17656,8 +17656,8 @@ fn a_phone_hides_finished_agents_again_from_its_agents_sheet() {
     finger_on_filter(&tab, "#phonePaneMenu .phone-pane-filter");
     harness::until(
         &tab,
-        &format!("{sheet} && document.querySelectorAll('#phonePaneMenu .outline-agent-copy').length === 0 && !!document.querySelector('#phonePaneMenu [data-show-filtered=\"agents\"]')"),
-        "the agents hidden again, the sheet open, Show them back",
+        &format!("{sheet} && document.querySelectorAll('#phonePaneMenu .outline-agent-copy').length === 0 && !!document.querySelector('#phonePaneMenu [data-show-filtered=\"agents\"]') && document.querySelector('#phonePaneMenu .phone-pane-filter').hidden"),
+        "the agents hidden again, the sheet open, Show them back, and the head's control gone with the row (#s616: the head once read the list before this press)",
         Duration::from_secs(10),
         "document.getElementById('phonePaneMenu').hidden + ' ' + document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
     );
@@ -17666,6 +17666,60 @@ fn a_phone_hides_finished_agents_again_from_its_agents_sheet() {
         serde_json::json!(true),
         "the same remembered filter the desktop's menu row reads"
     );
+    drop(m);
+}
+
+/// #s616: a sheet's head mirrors the open list's filter row, so it must read the list as each press
+/// leaves it. The head was once mirrored before the Agents list was redrawn, and so read the list as
+/// the press before left it: with an agent running, every press left the head a step behind. Upright,
+/// a sheet, one agent running and two finished: the head names each end in turn, press by press.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_agents_sheet_head_follows_each_press_with_one_running() {
+    let _serial = serial();
+    let (m, _b, tab, _sid) =
+        emptied_panes_world(3166, "phone-sheet-head-running", Some((440, 956)), true);
+    phone_tap(&tab, "#phonePane-agents");
+    let sheet = "!document.getElementById('phonePaneMenu').hidden";
+    let rows = "document.querySelectorAll('#phonePaneMenu .outline-agent-copy').length";
+    let head = "(function(){ var b = document.querySelector('#phonePaneMenu .phone-pane-head .phone-pane-filter'); return b && !b.hidden ? b.textContent : ''; })()";
+    let show = format!("{sheet} && {rows} === 1 && {head} === 'Show 2 finished agents'");
+    harness::until(
+        &tab,
+        &show,
+        "the running agent, the head offering the two finished ones",
+        Duration::from_secs(20),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
+    );
+    for press in 0..2 {
+        finger_on_filter(&tab, "#phonePaneMenu .phone-pane-filter");
+        harness::until(
+            &tab,
+            &format!("{sheet} && {rows} === 3 && {head} === 'Hide finished agents' && !!document.querySelector('#phonePaneMenu .phone-pane-filter[data-hide-finished]')"),
+            &format!("press {}: all three listed, the head offering to hide the finished ones", 2 * press + 1),
+            Duration::from_secs(10),
+            "document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
+        );
+        assert_eq!(
+            harness::eval(&tab, AGENTS_FILTER_ON),
+            serde_json::json!(false)
+        );
+        finger_on_filter(&tab, "#phonePaneMenu .phone-pane-filter");
+        harness::until(
+            &tab,
+            &show,
+            &format!(
+                "press {}: the running agent alone, the head offering the finished ones again",
+                2 * press + 2
+            ),
+            Duration::from_secs(10),
+            "document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
+        );
+        assert_eq!(
+            harness::eval(&tab, AGENTS_FILTER_ON),
+            serde_json::json!(true)
+        );
+    }
     drop(m);
 }
 
@@ -18113,7 +18167,7 @@ const SHEET_FILTER: &str = "(function(){ var m = document.getElementById('phoneP
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_held_sideways_opens_its_tasks_sheet_with_its_filter_and_a_running_task_in_view() {
     let _serial = serial();
-    let (m, _b, tab, _sids) = top_level_world(3164, "top-level-phone-side", Some((874, 292)));
+    let (m, _b, tab, _sids) = top_level_world(3165, "top-level-phone-side", Some((874, 292)));
     phone_tap(&tab, "#phonePane-tasks");
     let sheet = "!document.getElementById('phonePaneMenu').hidden";
     let rows = "document.querySelectorAll('#phonePaneMenu .work-task').length";

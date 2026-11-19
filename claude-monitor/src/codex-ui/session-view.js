@@ -1934,7 +1934,8 @@ function renderNavigator() {
   // #s606, Hong: "there is no filter for top level tasks". Top-level only hides a task that follows
   // another up (taskq's `follows_up`), so what stays is what a person asked for, and what no mark
   // places (a task filed before taskq had them). On a phone as on a desktop: the phone's way to it is
-  // a row at the top of the list (`phoneTasksFilter`), as its Agents list has.
+  // a row at the top of the list (`phoneTasksFilter`), as its Agents list has; a sheet hides the row
+  // and mirrors it in its head (#s616, `renderFilter`).
   const topLevelOnly = uiState.taskTopLevel;
   const asked = row => !topLevelOnly || !row.task.follows_up;
   const titledRows = afterFilter.map(group => ({ ...group, rows: group.rows.filter(titled) }));
@@ -1969,7 +1970,6 @@ function renderNavigator() {
   const followAll = titledRows.reduce((n, group) => n + group.rows.filter(row => row.task.follows_up).length, 0);
   const taskRows = taskShown.map(group => `<div class="work-group" data-task-group="${group.key}"><span>${group.label}</span><span class="work-group-count">${group.rows.length}</span></div>${group.rows.map(taskRow).join("")}`).join("");
   byId("navigatorWork").innerHTML = taskRows ? phoneTasksFilter(topLevelOnly, followUps, followAll) + taskRows : noTasks;
-  mobileShell?.tasksChanged(); // the phone drop-down's jumps name the groups just drawn (#319)
   const agents = directAgents(), workers = sessionWorkers();
   const activeAgents = agents.filter(agent => agent.running).length + workers.filter(workerRunning).length;
   const allAgents = agents.length + workers.length;
@@ -1991,6 +1991,9 @@ function renderNavigator() {
     return `<div class="outline-agent-row"><button class="outline-agent" type="button" data-child-outline="${escapeText(agent.id)}" title="Open the sub-agent's transcript"><span class="agent-state ${agent.running ? "running" : "completed"}"></span><span class="outline-agent-copy"><strong>${escapeText(agent.title || agent.description || agent.id)}</strong><small>${escapeText(agent.type || agent.agent_type || "agent")}</small></span><span class="outline-agent-tail"></span></button>${spawn}</div>`;
   }).concat(shownWorkers.map(workerRow)).join("");
   byId("navigatorAgents").innerHTML = agentRows ? phoneAgentsFilter(liveAgentsOnly, hiddenAgents, allAgents - activeAgents) + agentRows : noAgents;
+  // Once BOTH lists are drawn: the phone drop-down's jumps name the Tasks groups (#319), and its
+  // head mirrors the open list's filter row, Agents' too (#s616), so it never shows the one before.
+  mobileShell?.tasksChanged();
   // What the filter is holding back, for the menu row that controls it to say so (#215). The head
   // reads "25 active · 253/308 done" either way, so without this the reader has no way to tell a
   // pane that is filtered from a pane that is simply short.
@@ -2030,7 +2033,8 @@ function showFilteredControl(pane, hidden, label = "Show them") {
 }
 /** A phone's way to Top-level only (#s606), as `phoneAgentsFilter` is to Active only: a row at the
  *  top of the Tasks list, on the same remembered choice, for whichever end applies. Only where some
- *  task follows another up, since otherwise the choice changes nothing. */
+ *  task follows another up, since otherwise the choice changes nothing. A sheet does not draw the
+ *  row; its head mirrors it (#s616, `renderFilter`), and a wide phone's column draws it. */
 function phoneTasksFilter(topLevelOnly, hidden, followUps) {
   if (!layout.phone()) return "";
   const what = n => `${n} ${n === 1 ? "follow-up" : "follow-ups"}`;
@@ -2041,7 +2045,8 @@ function phoneTasksFilter(topLevelOnly, hidden, followUps) {
  *  the list carries a row for whichever end applies, on the same remembered filter. Hide finished
  *  while the filter is off; while it is on, Show them, because with an agent still running the list
  *  is not empty and the emptied pane's control is not there. At the TOP of the list, which can run to
- *  149 agents. Every row here is a phone's alone: a desktop keeps the menu. */
+ *  149 agents; a sheet hides the row and mirrors it in its head (#s616, `renderFilter`). Every row
+ *  here is a phone's alone: a desktop keeps the menu. */
 function phoneAgentsFilter(liveOnly, hidden, finished) {
   if (!layout.phone()) return "";
   const what = n => `${n} finished ${n === 1 ? "agent" : "agents"}`;
