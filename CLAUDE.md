@@ -38,16 +38,25 @@ artifacts mode. "The classic page" below means export.js, the offline viewer's p
 **The session view is a module of its own** (#s429, `design/session-view-component.md`, embedding's
 step 4): `session-view.js` holds the transcript, the turn bar and search, the outline panes, the
 artifact pane, the compose box and the phone dock and sheets, behind `mountSessionView(element,
-options)`; `app.js` keeps the app around it (the session list, the drawer and rail, the brand, the
-theme, the session search and the toast) and mounts it. What a host may change is the view's options
+options)`; `app-mount.js` keeps the app around it (the session list, the drawer and rail, the brand,
+the theme, the session search and the toast) and mounts it, behind `mountApp(element, options)`
+(#s551, `design/app-mount.md`: once per page, never undone, its options one list it refuses any
+other name by, and a refused call draws nothing); the monitor's page carries an empty wrapper,
+`#appMount`, which `app.js` mounts the web app into with the page's own server and version. What a
+host may change is the view's options
 (stage 6; the doc comment over `mountSessionView` is the reference, every name is in `MOUNT_OPTIONS`
 and any other is refused, and the contract's mount interface cases hold them): `theme`; `show`, the
 optional controls by name (`reading`, `history`, `detach`, each shown unless `false`, booleans only;
 a control off is not drawn and takes no key; the app passes none); and `keyboard`, `"engaged"` by
 default (the view binds its keymap in the capture phase and answers, as the pane's image viewer
-does, only while the reader's last press or focus is inside it, as mdrev does) or `"page"`, the
+does, only while the reader's last press or focus is inside it, as mdrev does, and so does the
+Escape that closes its layers, except a layer a hover holds open and an Escape the focus inside
+the view receives, #s535, #s560) or `"page"`, the
 app's: the view binds none and the app's one keymap at the document routes keys to the handle's
-`keys`; and `room`, a function answering how much wider the host could make the view by narrowing
+`keys` (either way a MOUSE's press in the transcript focuses the transcript itself, with no ring, so
+Safari's keys reach it whatever a growth redraws; a finger's or a pen's tap, a press on its scrollbar
+and one inside a box that scrolls on its own, sideways or, under a max-height, down, do not,
+#s488); and `room`, a function answering how much wider the host could make the view by narrowing
 what it lays beside it (the app: its list's width less 232; 0 without it, #s476). What the view
 tells its host comes out as optional handlers with plain data, never a node (`onTitle`, `onTurn`,
 `onInfo`, `onFile`, `onLinkCopied`, `onToast`, and `onOutline`, `{wanted}`, the reader's outline
@@ -271,7 +280,10 @@ never wraps (#352, `a_phone_dock_keeps_one_row_with_a_query_and_a_chip`): the CL
 is its count, steps and ✕ — its chips (a scope chip is its letters alone, a tool chip wears a wrench;
 the word visually hidden, #353) wait in the open box. There the chips and the field are ONE strip
 (`.search-field`, wrapped at load) that scrolls as a whole, the field as wide as its text, so the end
-being typed stays in view; the count hangs as a tag ABOVE the find pill at its left; and the step
+being typed stays in view (an EMPTY field fills the strip from its start and shows the whole hint, or
+the first of "Search this session" and "Search" that fits, refitted by the strip's resize observer as
+the magnifier gives way while the field holds the focus, #s516: the hint cut its first letters on a 17 Pro
+upright); the count hangs as a tag ABOVE the find pill at its left; and the step
 arrows are SVG, centred. A tool chip is its wrench and the tools' own single-character
 selectors (`o(B)` reads "B", #355), and beside chips the field shows no placeholder. **The query is
 ONE prefix at the start of the box** (#367, `design/in-session-search.md` §9): letters u a t o w
@@ -423,11 +435,25 @@ herdr looked). A wait herdr saw publishes at once, and the row's `stateSource` s
 `derived`. The app shell's session filter (a glyph in the sidebar's head-actions row,
 between Expand every group and the sidebar collapse, opening Active recently / Blocked / Idle /
 Include hidden checkboxes; Active recently and Blocked by default, remembered, never an empty
-set; "Everything" checks the three and leaves Include hidden alone) filters by a COVER of that partition: Active recently is six hours of
+set; "Everything" checks the three and leaves Include hidden alone; over several machines a Group
+by machine box sits between Idle and Include hidden, #s561, below) filters by a COVER of that partition: Active recently is six hours of
 activity or busy now (`RECENT_SECS`; #202 set an hour, and #s253, the owner, "make it 6 hours", after
 an idle session an hour and five minutes old dropped out of view; the checkbox reads "Active in the
 last 6 hours") and overlaps Blocked by design (`sessionFilterBuckets`). It replaced the
 Needs attention and Show Hidden controls.
+
+**One list over several machines can be arranged machine first** (#s561, Hong on the iOS app:
+"extend the filter menu to have another check box to group agents by machine (right above include
+idle)"; "When group agents by machine is unchecked, need to show the host the agent is running on
+(limit to the first dot component maybe)"). A merged source's list (#s541) names each project's head
+and each row of the list by activity with its machine, as its host name's first label
+(`machineShortLabel` in `session-list.js`: an address in numbers, or a name with no dot, shown
+whole). The filter's sheet then offers Group by machine, drawn with the states and shown only while
+the list holds more than one machine; ticked (remembered, `am-prod-by-machine`), the list is a head
+per machine (`.tree-machine-group`, its state beside it while it does not answer, folding under
+`m:<machine>`) over that machine's own tree or list by activity (`machineSections`), whose project
+heads and rows do not repeat the machine, and the heads over the list give way to them
+(`a_list_over_two_machines_groups_by_machine_from_the_filter`, and its phone twin).
 
 **Which process a session is linked to** (#269, `index.rs` `link()`) decides liveness AND whether
 the compose box appears, and Claude Code 2.1.278 changed the shape it has to read: the session's
@@ -771,7 +797,7 @@ enter this repository. The bundle is served from memory at `/mdrev/<version>/` (
 names the version) and the page learns the version from `data-mdrev`. A page outlives its monitor
 (#s352, Hong saw a Markdown file as raw text): after an upgrade that moved the pin, a page loaded
 before it asks for a bundle the monitor answers 404, so the loader reads the version the monitor
-serves now off `/markdown` (about 700 bytes), loads that bundle, and the pane says once that a reload
+serves now off `/markdown` (the detached page, under 2 KiB), loads that bundle, and the pane says once that a reload
 brings the new page (`a_page_older_than_its_monitor_still_shows_markdown_in_mdrev`). The CLI is written into the
 monitor's scratch and run with node ≥ 20 (`MDREV_NODE`, final when set; else `PATH`; else the brew
 prefixes). node gates NOTES only: without it `open` declares `annotate: false` and history comes from
@@ -783,9 +809,19 @@ a transcript CARRIES is handed to the monitor (`POST hold`), kept content-addres
 `Cap::File` stamp as mdrev's `cap`, so the viewer reads nothing the page was not offered. Notes are
 `mdrev-cli notes …` behind `deny_mutation` (PATCH/DELETE included), one document at a time. The
 pane's ↗ opens the document in a tab of its own (#271): `/markdown` is a STATIC page
-(`ui::markdown_page` + `markdown-page.js`) that reads root, path, cap and the reader's range from its
-own address and goes through the same routes; held text reaches the tab through sessionStorage,
-which `window.open` copies into the tab it makes — so that control must never use `noopener`.
+(`ui::detached_page` + `detached-page.js`, below) that reads root, path, cap and the reader's range
+from its own address and goes through the same routes; held text reaches the tab through
+sessionStorage, which `window.open` copies into the tab it makes — so that control must never use
+`noopener`. **Every tab of its own is the kit's `mountDetached`** (#s433, `detached.js`, Hong's
+choices on #s519 and #s528): one page at `/detached` (`/markdown` and `/image` serve the same page,
+so an older tab still lands) reads what to show from its query, told apart by `session=` (the
+transcript: the session view with no list, its index polled, its keys bound at the page, no writes
+and no ↗ of its own), then `root=` (a document), then `path=`/`held=` (an image), and keeps the
+page's address and title current on its own path. The view's `detachTo` option says where a tab
+opens (the app's ↗s open `/detached?session=…`, `/markdown?…` and `/image?…`; left out, the pane's ↗ opens `/markdown` and `/image` and the
+transcript has no ↗); with it the top bar carries a ↗ for the transcript (`#sessionNewTab`), hidden
+on a phone as the pane's is. A host serves the same entry on a route of its own
+(`a_host_serves_a_tab_of_its_own_from_the_kit`).
 **An image opens in the pane on ONE click, as a delivered file's name does** (#s223, Hong: "if both
 are images, why not giving them a similar experience?"): the app shell draws each image as a small
 thumbnail (from `att_datauri` only — a path-only image shows its name, so Expand all still fetches
@@ -799,10 +835,10 @@ name). A multi-file `SendUserFile` carries Open all in its card's HEAD beside "f
 the card starts folded; its grid gives the state its own width there, or "4 lines" spilled over the
 chip in a narrow head and took its click.
 **An image gets a tab of its own too** (#s11, the owner, for the desktop): the pane's ↗ opens
-`/image` (`ui::image_page` + `image-page.js`), the image whole with the shared zoom
+`/image` (the detached page), the image whole with the shared zoom
 (`shared/image-view.js`); a FILE by the path and stamp it was offered under (`/file` reads it, under
 #s7's rules; a pasted image's saved original at full size), an EMBEDDED image by its bytes through
-sessionStorage (`imageTabHref` in `preview.js`), which is also the fallback where the file has gone.
+sessionStorage (`imageTabQuery` in `preview.js`), which is also the fallback where the file has gone.
 Hidden on a phone, as the Markdown ↗ is (#335); text and HTML pages have none yet.
 The pinned `mdrev-cli conform` against a live monitor is the definition of done
 (`mdrev_contract_passes_mdrev_cli_conform`); the mdrev browser cases need nothing installed and run in
@@ -847,7 +883,7 @@ by the monitor the contract's way when mdrev has a state directory and none is t
 `--viewer` on every call, so mdrev-cli takes the reader's own notes as theirs (filed, edited,
 closed, deleted; on a machine joined to a team's mdrev service too, where a keyless pane was refused
 every new note as an agent's, #s230) and turns away everything shared itself. `shares()` in
-`mdrev.rs` is the one test for shared review: the viewer key, never the notes key. The detached tab (`markdown-page.js` → `mountStandalone`) mounts it on
+`mdrev.rs` is the one test for shared review: the viewer key, never the notes key. The detached tab (`detached.js` → `mountStandalone`) mounts it on
 `api/mdrev-review/`, the same handler with mdrev's viewer key (`MDREV_STATE_DIR` or `~/.mdrev`, file
 `token`, read per request; without one the prefix is the pane's), which answers `review`,
 `review/fetch|push|pair`, `hide`, a body-only `PATCH` edit and Share (`POST annotations/{id}/share`,
@@ -895,7 +931,8 @@ extraction stays exact. **The page loads neither `reference.css` nor `production
 `session-view.css` (the session view's, every rule hung on `#sessionView`) from those two, through
 `scripts/session-view-css.mjs`, and the contract requires the byte match. A rule is still written in
 `production.css`; then run the script. A new class the app draws goes in one of the classifier's
-lists, which the contract checks against `app.js` and the shell. **The view draws no class the
+lists, which the contract checks against `app-mount.js` and the shell (which the mount draws from
+`app-shell-markup.js`, generated beside `app-shell.html` and held to it byte for byte). **The view draws no class the
 collaboration app styles in its own page** (#s438, where the view sits in a pane and a host's
 `.primary{…}` would reach ours by class): the view's are `sv-session-main`, `sv-task-card` and its
 `sv-task-card-*` family, `sv-pinned` and `sv-primary` (the app's confirm button keeps `.primary`),
@@ -917,7 +954,10 @@ relative paths; the served bytes still come from the html crate through `ui::ass
 `agent-monitor-kit-<version>.tar.gz` and its `.sha256` (`scripts/kit.sh`, run by the Release
 workflow), the two components for a host to mount from a pinned release. Its `bundle/` is
 `claude-monitor/kit/index.js` and every module that imports, walked from it and taken from `ui::asset()`
-byte for byte (`src/kit.rs`), so a new import joins the kit by itself; a new mount option or optional
+byte for byte (`src/kit.rs`), so a new import joins the kit by itself; the walk also starts from
+`kit/native-app.js`, the second entry (#s551): `mountApp`, the whole web app for the native app,
+which `package.json` does not export and nothing declares (`APP_WITHHELD` in `kit.rs`, kept in step
+with the mount's own `MOUNT_OPTIONS`), with `app-shell.css` beside the two components' stylesheets; a new mount option or optional
 control goes in `kit/index.d.ts` too (`the_declarations_follow_each_components_options` refuses one
 missing), and the guide (`kit/embedding-guide.md`) says it for a host. The kit offers only what the
 owner ruled a host may change and what mounting needs: an option it withholds (`VIEW_WITHHELD`,
@@ -1514,9 +1554,12 @@ merge path** (owner, 2026-10-16): the owner's agent reviews a teammate's change 
 risk, approves and lands it under the owner's account without asking, once all three hold:
 
 1. **Reviewed twice.** The agent's own review: the gates below, the browser cases the change
-   touches, the whole local browser suite for a change to page code, and an iOS Simulator walk for a
-   phone UI change. Then an independent review of the exact head commit by a fresh subagent or
-   another agent, never the session that lands it. Every thread on the change is answered.
+   touches, and an iOS Simulator walk for a phone UI change. Then an independent review of the exact
+   head commit by a fresh subagent or another agent, never the session that lands it. Every thread
+   on the change is answered. For a change to page code the whole local browser suite runs ONCE, on
+   the head that lands (main merged in), and a review round before that leans on CI's browser legs on
+   the change (the owner, 2026-11-18: the local Mac suite once per landing, review rounds on CI Linux
+   through draft PRs).
 2. **Green.** CI passed on that exact head: `fmt · clippy · test`, `secrets · blocked emails`,
    `version guard` and `browser (real Chrome)`.
 3. **Current.** main is merged in (or the branch rebased onto it), and the result is still green.

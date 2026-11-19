@@ -1,6 +1,6 @@
 import { indexState } from "./state.js";
 import { backend } from "./backend.js";
-import { groupSessions } from "./shared/session-visibility.js";
+import { groupAcrossMachines } from "./session-list.js";
 
 export class SessionIndexStore {
   constructor(handlers, options = {}) { this.handlers = handlers; this.backend = options.backend || backend; this.load = options.load; this.group = options.group; this.timer = 0; this.loading = null; this.revision = 0; this.stopped = false; this.generation = 0; }
@@ -46,11 +46,13 @@ export class SessionIndexStore {
           })
         }));
         indexState.ignoredCount = data.ignoredCount || 0;
+        // #s541: how each machine of a merged source answered (none from one monitor).
+        indexState.machines = Array.isArray(data.machines) ? data.machines : [];
         indexState.rows = new Map();
         for (const group of indexState.groups) for (const row of group.rows || []) { row._group = group; indexState.rows.set(row.id, row); }
         this.handlers.update?.();
       } catch (error) { if (generation === this.generation && !this.stopped && revision === this.revision) this.handlers.error?.(error); }
     } while (generation === this.generation && !this.stopped && revision !== this.revision);
   }
-  grouped() { return this.group ? this.group(indexState.groups, groupSessions) : groupSessions(indexState.groups); }
+  grouped() { return this.group ? this.group(indexState.groups, groupAcrossMachines) : groupAcrossMachines(indexState.groups); }
 }

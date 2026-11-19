@@ -1,7 +1,75 @@
 // The app shell's session list as ONE list (#s206). Pure, and importing only the shared grouping,
 // so the contract test runs it under node. It is the app shell's alone: the classic page has no
 // flat list, so it stays out of the shared modules every exported page inlines.
-import { families } from "./shared/session-visibility.js";
+import { families, groupSessions } from "./shared/session-visibility.js";
+
+/**
+ * The grouped index over several machines (#s541): `groupSessions` for each machine's groups (the
+ * merged source names a group's machine in `machine`), each project id led by its machine where the
+ * group's own key does not already name it, so two machines' desktop agents or same-named groups are
+ * two projects, folded and opened apart, and their families are formed apart; then the machines'
+ * agents as one, each agent's projects in the machines' order. Without a `machine` on any group it is
+ * `build` itself, so one monitor's list is what it always was. `build` is the grouping a host's
+ * `group` hook was handed (native mode's).
+ */
+export function groupAcrossMachines(groups = [], build = groupSessions) {
+  if (!groups.some(group => group.machine)) return build(groups);
+  const byMachine = new Map();
+  for (const group of groups) {
+    const machine = group.machine || "";
+    if (!byMachine.has(machine)) byMachine.set(machine, []);
+    byMachine.get(machine).push(group);
+  }
+  const agents = new Map();
+  for (const [machine, own] of byMachine) for (const agent of build(own)) {
+    if (!agents.has(agent.id)) agents.set(agent.id, { ...agent, projects: [] });
+    for (const project of agent.projects) {
+      const id = machine && !String(project.id).startsWith(`${machine}/`) ? `${machine}/${project.id}` : project.id;
+      agents.get(agent.id).projects.push(machine ? { ...project, id, machine } : project);
+    }
+  }
+  return [...agents.values()];
+}
+
+/**
+ * The name a row and a head show for a machine (#s561, Hong: "show the host the agent is running
+ * on (limit to the first dot component maybe)"): a host name's first label (`aries-black.tail…ts.net`
+ * shows `aries-black`). Only a label shaped like a host name is cut: one with no dot, an address
+ * written in numbers, and a name a person wrote (`Hong's Mac v1.2`) are shown whole. `labels`, the
+ * list's other machines' labels, keeps two machines apart: where another would read the same once
+ * cut (`mac.tail1.ts.net` beside `mac.tail2.ts.net`), the whole label is shown.
+ */
+export function machineShortLabel(label, labels = []) {
+  const text = String(label ?? "").trim();
+  if (!/^[a-z0-9-]+(\.[a-z0-9-]+)+\.?$/i.test(text) || /^[\d.]+\.?$/.test(text)) return text;
+  const short = text.slice(0, text.indexOf("."));
+  // Host names ignore case, so `Mac.tail1.ts.net` beside `mac.tail2.ts.net` keeps both whole too.
+  const cut = short.toLowerCase();
+  const clash = labels.some(other => { const name = String(other ?? "").trim(); return name && name !== text && (name.toLowerCase() === cut || machineShortLabel(name).toLowerCase() === cut); });
+  return clash ? text : short;
+}
+
+/**
+ * The list arranged machine first (#s561, Group by machine): one section per machine of a merged
+ * source, each holding that machine's own agents and their projects (`agents` is the grouped tree,
+ * filtered or not, from `groupAcrossMachines`, whose projects name their `machine`). The sections are
+ * in the order the merged source lists its `machines` (the host's order), each machine listed once,
+ * a machine with no rows in view kept with no agents (its head still says how it answers), and a
+ * machine the rows name that the list of machines does not is put after them.
+ */
+export function machineSections(agents = [], machines = []) {
+  const order = [];
+  const seen = new Set();
+  const add = entry => { if (entry?.machine && !seen.has(entry.machine)) { seen.add(entry.machine); order.push(entry); } };
+  for (const entry of machines) add(entry);
+  for (const agent of agents) for (const project of agent.projects || []) if (project.machine) add({ machine: project.machine, label: project.machine, state: "live", since: null, error: null });
+  return order.map(entry => ({
+    machine: entry,
+    agents: agents
+      .map(agent => ({ ...agent, projects: (agent.projects || []).filter(project => project.machine === entry.machine) }))
+      .filter(agent => agent.projects.length)
+  }));
+}
 
 /** How long a session counts as active for the list's ORDER — the server's `ACTIVE_WINDOW`
  *  (claude-monitor/src/index.rs, which a test holds to this), not the filter's hour. */

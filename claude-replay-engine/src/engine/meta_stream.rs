@@ -384,11 +384,23 @@ pub const COMPACT_AFTER: usize = 256;
 /// note's place, the reply's thinking and text under it. A v80 stream holds the reply where it
 /// was and the note as a `ToolResult`.
 ///
+/// v82: !30 — a Qoder-family reply naming the router ("auto") folds under the `runtime-config`
+/// head's selection, where a v81 stream holds it under the router. A resumed session would keep
+/// its old figure.
+///
+/// v83: !30 — the usage repeat guard keys on the RECORDED model, so a head rename between two
+/// lines of one call adds only growth. A v82 cursor stores the resolved name: restored into
+/// this build, a later line of that call recording the router reads as a new call whenever a
+/// pick was selected (the stored name is the pick, renamed or not), and still matches when no
+/// pick was selected (the stored name is the router itself). No released build carried 82
+/// (v1.531.0 is 81, v1.532.0 is 83), so the metrics cursor, the monitor cache, the durable
+/// session cache and the cost ledger discard such a cursor anyway.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 81;
+pub const FOLD_VERSION: u16 = 83;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

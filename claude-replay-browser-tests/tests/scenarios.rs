@@ -1765,6 +1765,34 @@ fn scenario_deep_jump_then_page_and_step(
         stepped - 1,
         "`[` steps back one turn: the spy named {stepped}, now {stepped_back}"
     );
+    // #s576: a Chinese keyboard can give the bracket keys as their full-width forms, 】 and 【
+    // (U+3011, U+3010); they step the same way.
+    key(tab, "\u{3011}", false);
+    settle();
+    let wide_top = turn_at_top(tab, surface);
+    let wide = named("after `】`");
+    assert!(
+        wide_top >= back && wide_top <= back + 3,
+        "`】` stays near where it was: {back} -> {wide_top}"
+    );
+    assert_eq!(
+        wide,
+        stepped_back + 1,
+        "`】` steps to the next turn: the spy named {stepped_back}, now {wide}"
+    );
+    key(tab, "\u{3010}", false);
+    settle();
+    let wide_back_top = turn_at_top(tab, surface);
+    let wide_back = named("after `【`");
+    assert!(
+        wide_back_top <= wide_top && wide_back_top + 3 >= wide_top,
+        "`【` stays near where it was: {wide_top} -> {wide_back_top}"
+    );
+    assert_eq!(
+        wide_back,
+        wide - 1,
+        "`【` steps back one turn: the spy named {wide}, now {wide_back}"
+    );
 }
 
 #[test]
@@ -1783,6 +1811,880 @@ fn app_shell_pages_and_steps_around_a_deep_jump() {
     let fx = fixture("scenario-deep-app", 120);
     let page = open(Surface::AppShell, &fx, 2856);
     scenario_deep_jump_then_page_and_step(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: an echo of the engine's own earlier write is not the reader's move (#s568) ───────
+
+/// How close the engine's two writes, and the echo after the second, must come for the shim to play
+/// it (`echo_shim`): inside the engine's own `ECHO_MS`, 120ms.
+const ECHO_WINDOW_MS: u32 = 100;
+
+/// How long the engine's writes must have stopped before the shim plays an echo with `during`: a
+/// frame and a little, so what the engine's second write set off (a measure of what the move mounted)
+/// has run and written too.
+const ECHO_QUIET_MS: u32 = 20;
+
+/// What the shim does, as iOS WebKit does it (#s568, measured on the iPad Simulator):
+/// WebKit scrolls on a thread of its own, and given two of the engine's writes close together it can
+/// hand the page the FIRST again after the second, the offset and the layout at it with a scroll event,
+/// before it settles on the second (or on whatever the engine wrote since). Chrome never does, so the
+/// shim hooks the scroller's `scrollTop` setter: once armed, the engine's write after its first puts
+/// the first back on the next task with its scroll event, and 12ms later the latest, with its own.
+/// Only where a browser could: WebKit did it for writes 0-50ms apart, the earlier offset coming back
+/// up to 26ms after the later write, and the engine takes an echo within `ECHO_MS` (120ms) of both.
+/// So the shim plays one only for two writes within `ECHO_WINDOW_MS` of each other, and only while it
+/// can still play it within as much of the second; a pair a loaded headless tab spaced further apart
+/// (a frame there can take a second) is set aside in `skips`, and the case grows the content again.
+/// Playing any gap made the case fail on the head: an "echo" a second late is the reader's move as
+/// far as any engine can tell. Once per arming, so it plays one echo and cannot feed on its own
+/// writes. A case's `next`, set after arming, runs in the frame after the engine's first write: the
+/// growth that makes the second. Its `during`, set after arming too, runs as the echo is played: the
+/// shim then plays the echo only once the engine's burst of writes has stopped for `ECHO_QUIET_MS`
+/// (a move mounts units, and their measure writes too, which would end the echoed layout before any
+/// check read it), still within `ECHO_WINDOW_MS` of the first write, keeps the browser's own scroll
+/// events from the page from the second write until the echo is over (WebKit's come late: an event
+/// reporting the latest write would make the echo a reader's move, rightly), and keeps the echo until the
+/// engine has recorded a transaction or that window has run out, so a transaction places while the
+/// page shows the echoed layout (each echo says which ran and whether it placed, in `during`, and
+/// whether the engine wrote meanwhile, `wroteDuring`). `done` counts the pairs played or set aside,
+/// and each echo records what the offset read once played back (`read`), so a playback that did not
+/// take shows.
+fn echo_shim(surface: Surface) -> String {
+    let window = ECHO_WINDOW_MS;
+    let quiet = ECHO_QUIET_MS;
+    let (scroller, target) = match surface {
+        Surface::Classic => ("document.scrollingElement", "window"),
+        Surface::AppShell => ("document.querySelector('.transcript')", "s"),
+    };
+    format!(
+        r#"(function(){{
+        var s = {scroller};
+        if (!s) return false;
+        if (!s.__echoHooked) {{
+            var desc = Object.getOwnPropertyDescriptor(Element.prototype, 'scrollTop');
+            var raw = function (v) {{ desc.set.call(s, v); }};
+            var st = window.__echo = {{ armed: false, last: null, echoes: [], skips: [], done: 0, held: 0 }}, w = {window};
+            // While an echo with `during` is pending, the browser's own scroll events (trusted) are kept
+            // from the page, as WebKit's come late (its event for the later write came by 55ms on the
+            // 11-inch iPad, probe568): the engine hears neither write reported until the echo is over,
+            // so the echo is still one to it when the transaction runs. The shim's own events pass.
+            window.addEventListener('scroll', function (e) {{
+                if (st.hold && e.isTrusted && (e.target === s || e.target === document)) {{ st.held++; e.stopImmediatePropagation(); }}
+            }}, {{ capture: true }});
+            Object.defineProperty(s, 'scrollTop', {{ configurable: true,
+                get: function () {{ return desc.get.call(this); }},
+                set: function (v) {{
+                    desc.set.call(this, v);
+                    var now = performance.now(), top = desc.get.call(this), prev = st.last;
+                    st.last = {{ top: top, at: now }};
+                    // The case's second growth starts from the engine's first write, in the next frame,
+                    // so the two writes come a frame apart whatever the tab's frame rate (two growths
+                    // in consecutive frames could be measured in one transaction, or a lazy frame apart).
+                    if (st.armed && st.next) {{ var next = st.next; st.next = null; requestAnimationFrame(next); }}
+                    if (!st.armed || !prev || Math.abs(prev.top - top) <= 1) return;
+                    st.armed = false;
+                    var echo = {{ from: Math.round(prev.top), to: Math.round(top), gap: Math.round(now - prev.at) }};
+                    var skip = function (why) {{ var held = st.hold; st.hold = false; echo.skipped = why; st.skips.push(echo); st.done++; if (held) {target}.dispatchEvent(new Event('scroll')); }};
+                    if (now - prev.at > w) return skip('the writes came ' + echo.gap + 'ms apart');
+                    var during = st.during; st.during = null;
+                    if (during) st.hold = true;
+                    // With `during`, the echo waits for the engine's burst of writes to end (what the
+                    // second write set off: a measure of what the move mounted writes too), so the
+                    // transaction `during` sets off places without writing and checks itself in the
+                    // echoed layout; still within the window of the FIRST write, which the engine
+                    // keeps as one it made for `ECHO_MS`.
+                    var play = function (go) {{
+                        if (!during) return setTimeout(go, 0);
+                        (function quiet() {{
+                            var at = performance.now();
+                            if (at - prev.at > w) return skip('the engine kept writing ' + Math.round(at - prev.at) + 'ms after the first write');
+                            if (at - st.last.at >= {quiet}) {{ echo.burst = Math.round(st.last.at - prev.at); echo.atEcho = Math.round(st.last.top); return go(); }}
+                            setTimeout(quiet, 2);
+                        }})();
+                    }};
+                    play(function () {{
+                        var late = performance.now() - now;
+                        if (late > w) return skip('the echo would come ' + Math.round(late) + 'ms after the second');
+                        echo.late = Math.round(late);
+                        st.echoes.push(echo);
+                        raw(prev.top); echo.read = Math.round(desc.get.call(s)); {target}.dispatchEvent(new Event('scroll'));
+                        var rest = function () {{ st.hold = false; echo.held = st.held; raw(st.last.top); echo.rested = Math.round(st.last.top); {target}.dispatchEvent(new Event('scroll')); st.done++; }};
+                        if (!during) return setTimeout(rest, 12);
+                        var states = window.__viewportHistory.states, n0 = states.length;
+                        during();
+                        (function wait() {{
+                            var now2 = performance.now(), after = window.__viewportHistory.states;
+                            if (after.length > n0) {{ echo.during = after.slice(n0).map(function (x) {{ return x.cause + '/' + x.placed; }}); echo.duringAt = Math.round(now2 - now); echo.wroteDuring = Math.round(st.last.top) !== echo.atEcho; return rest(); }}
+                            if (now2 - prev.at > w) {{ echo.during = null; return rest(); }}
+                            setTimeout(wait, 2);
+                        }})();
+                    }});
+                }} }});
+            s.__echoHooked = true;
+        }}
+        window.__echo.armed = true; window.__echo.last = null; window.__echo.next = null; window.__echo.during = null;
+        return true;
+    }})()"#
+    )
+}
+
+/// #s568: a jump's hold survives the browser echoing an earlier write of the engine's. On an iPad a
+/// reader who jumped to turn 307 was left on 306: after the jump the engine wrote the offset twice in
+/// 10ms (records arriving, then an estimate taken at rest), WebKit reported the first again after the
+/// second, and the engine took it for the reader's scroll, released the hold and re-read `P` where the
+/// layout briefly stood, a turn early. Here the jump is made, then the content just above the view
+/// grows twice in consecutive frames (each growth a write of the engine's, holding the target), the shim
+/// plays the first write back, and `P` must name the jump's turn in every state the engine records
+/// until it is quiet. With `during`, a unit below the view grows as the echo is played, so the engine
+/// measures, places and checks itself while the page shows the echoed layout; then it also records no
+/// violation of its invariants (framework §4.12): its I7 read the anchor in the echoed layout against
+/// where the write put it, and reported the echo's distance as the reader's displacement.
+fn scenario_an_echoed_write_keeps_the_jump(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+    during: bool,
+) {
+    let target = fx.turns / 2;
+    assert!(
+        harness::jump_to_turn(tab, surface, target),
+        "the pane lists turn {target}"
+    );
+    settle();
+    settle();
+    until_engine_quiet(tab);
+    let last = "JSON.stringify((function(){ var h = window.__viewportHistory.states, x = h[h.length - 1]; return [x.position, x.turn]; })())";
+    let read_last = || -> (Option<String>, Option<i64>) {
+        let got = eval(tab, last);
+        serde_json::from_str(got.as_str().unwrap_or("null"))
+            .unwrap_or_else(|e| panic!("the engine's last state ({got}): {e}"))
+    };
+    let jumped = read_last();
+    let jumped_turn = jumped
+        .1
+        .unwrap_or_else(|| panic!("the jump's state names a turn: {jumped:?}"));
+    assert!(
+        jumped.0.is_some() && (jumped_turn - target as i64).abs() <= 1,
+        "the jump put turn {target} under `P`: {jumped:?}"
+    );
+    let view_top = match surface {
+        Surface::Classic => "0",
+        Surface::AppShell => "document.querySelector('.transcript').getBoundingClientRect().top",
+    };
+    // The content just above the view grows twice, a frame apart; where the tab spaced the two writes
+    // too far apart for an echo (`echo_shim`), or no transaction came while the echo was shown, it
+    // grows again, up to six times.
+    const TRIES: usize = 6;
+    let played_well = if during {
+        "window.__echo.echoes.some(function (e) { return e.rested != null && e.during && e.during.some(function (d) { return /\\/placed$/.test(d); }) && e.wroteDuring === false; })"
+    } else {
+        "window.__echo.echoes.some(function (e) { return e.rested != null; })"
+    };
+    let below = if during {
+        "window.__echo.during = function () { var units = [...document.querySelectorAll('[data-unit-index]')], last = units[units.length - 1]; last.style.paddingBottom = ((parseFloat(last.style.paddingBottom) || 0) + 240) + 'px'; };"
+    } else {
+        ""
+    };
+    let mut grown = serde_json::Value::Null;
+    for attempt in 0..TRIES {
+        assert_eq!(
+            eval(tab, &echo_shim(surface)),
+            serde_json::Value::Bool(true),
+            "the shim is on the scroller"
+        );
+        let (first, second) = (700 + 4000 * attempt, 3700 + 4000 * attempt);
+        grown = eval(
+            tab,
+            &format!(
+                "(function(){{ var vt = {view_top}; var above = window.__s568above || [...document.querySelectorAll('[data-unit-index]')].filter(function (u) {{ return u.getBoundingClientRect().bottom < vt - 4; }}).pop(); if (!above) return null; window.__s568above = above; if (window.__s568t0 == null) window.__s568t0 = performance.now(); window.__echo.next = function () {{ above.style.paddingTop = '{second}px'; }}; {below} above.style.paddingTop = '{first}px'; return above.dataset.unitKey; }})()"
+            ),
+        );
+        assert!(grown.is_string(), "a unit above the view to grow: {grown}");
+        until(
+            tab,
+            &format!("window.__echo.done > {attempt}"),
+            "the engine to write twice as the content above grows, and the shim to play the first back or set the pair aside",
+            Duration::from_secs(10),
+            "JSON.stringify(window.__echo)",
+        );
+        if eval(tab, played_well) == serde_json::Value::Bool(true) {
+            break;
+        }
+        settle();
+        until_engine_quiet(tab);
+    }
+    let played = eval(tab, "JSON.stringify(window.__echo)");
+    assert_eq!(
+        eval(tab, played_well),
+        serde_json::Value::Bool(true),
+        "the engine to write twice within {ECHO_WINDOW_MS}ms in one of {TRIES} growths, for the shim to play an echo{}: {played}",
+        if during { " with a placement that wrote nothing while it showed" } else { "" }
+    );
+    assert_eq!(
+        eval(
+            tab,
+            "window.__echo.echoes.every(function (e) { return Math.abs(e.read - e.from) <= 1; })"
+        ),
+        serde_json::Value::Bool(true),
+        "each echo played took, the offset reading the earlier write: {played}"
+    );
+    settle();
+    until_engine_quiet(tab);
+    let since = eval(
+        tab,
+        "JSON.stringify(window.__viewportHistory.states.filter(function (x) { return x.t >= window.__s568t0; }).map(function (x) { return [x.cause, x.position, x.turn, x.top]; }))",
+    );
+    let since: Vec<(String, Option<String>, Option<i64>, serde_json::Value)> =
+        serde_json::from_str(since.as_str().unwrap_or("[]")).unwrap();
+    let echo = eval(tab, "JSON.stringify(window.__echo.echoes)");
+    assert!(!since.is_empty(), "the growth is recorded: {echo}");
+    let strays: Vec<_> = since.iter().filter(|x| x.2 != Some(jumped_turn)).collect();
+    assert!(
+        strays.is_empty(),
+        "every state after the echo keeps the jump's turn {jumped_turn} under `P` ({grown} grew; the echo {echo}): {strays:?}"
+    );
+    let last_now = read_last();
+    assert_eq!(
+        last_now, jumped,
+        "`P` is still the jump's: the echo {echo}, the states {since:?}"
+    );
+    let t0 = eval(tab, "window.__s568t0").as_f64().unwrap_or(0.0);
+    let broken: Vec<_> = violations(tab)
+        .into_iter()
+        .filter(|v| v["t"].as_f64().is_some_and(|t| t >= t0.floor()))
+        .collect();
+    assert!(
+        broken.is_empty(),
+        "the engine's checks hold through the echo ({echo}): {broken:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_keeps_a_jump_through_an_echoed_write() {
+    let _serial = serial();
+    let fx = fixture("scenario-echo-classic", 120);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_an_echoed_write_keeps_the_jump(&page.tab, Surface::Classic, &fx, false);
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_checks_itself_through_an_echoed_write() {
+    let _serial = serial();
+    let fx = fixture("scenario-echo-during-classic", 120);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_an_echoed_write_keeps_the_jump(&page.tab, Surface::Classic, &fx, true);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_keeps_a_jump_through_an_echoed_write() {
+    let _serial = serial();
+    let fx = fixture("scenario-echo-app", 120);
+    let page = open(Surface::AppShell, &fx, 3192);
+    scenario_an_echoed_write_keeps_the_jump(&page.tab, Surface::AppShell, &fx, false);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_checks_itself_through_an_echoed_write() {
+    let _serial = serial();
+    let fx = fixture("scenario-echo-during-app", 120);
+    let page = open(Surface::AppShell, &fx, 3193);
+    scenario_an_echoed_write_keeps_the_jump(&page.tab, Surface::AppShell, &fx, true);
+}
+
+// ── scenario: `[` from the end steps back one turn at a time (#s487) ────────────────────────
+
+/// Where the reader rests: the turn whose header is the first at the top of the view (`card`, the
+/// top of that turn's FIRST element, which is the one `turn_at_top` reads), how far the view is
+/// from the end, and what the turn bar names.
+fn resting(tab: &headless_chrome::Tab, surface: Surface) -> serde_json::Value {
+    let (s, root) = (surface.scroller(), surface.turns_root());
+    // A jump lands a turn's header at the landing line: 120px down the window on the classic page
+    // (`GOTO_Y`), the scroller's own `scroll-padding-top` in the app shell.
+    let (top, landing) = match surface {
+        Surface::Classic => ("0".to_string(), "120".to_string()),
+        Surface::AppShell => (
+            format!("{s}.getBoundingClientRect().top"),
+            format!("(parseFloat(getComputedStyle({s}).scrollPaddingTop) || 18)"),
+        ),
+    };
+    let geometry: serde_json::Value = serde_json::from_str(
+        eval(
+            tab,
+            &format!("(function(){{ var s = {s}, root = {root}, top = {top}; var cards = {{}}; root.querySelectorAll('[data-turn]').forEach(function (e) {{ if (!(e.dataset.turn in cards)) cards[e.dataset.turn] = Math.round(e.getBoundingClientRect().top - top); }}); return JSON.stringify({{ gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), landing: Math.round({landing}), cards: cards }}); }})()"),
+        )
+        .as_str()
+        .unwrap_or("{}"),
+    )
+    .unwrap_or_default();
+    let at = turn_at_top(tab, surface);
+    serde_json::json!({
+        "top": at,
+        "card": geometry["cards"][at.to_string()],
+        "gap": geometry["gap"],
+        "landing": geometry["landing"],
+        "bar": harness::sticky_turn(tab, surface).map(|b| b.0),
+    })
+}
+
+/// Where turn `turn`'s header sits, in px below the top of the view (the scroller's top in the app
+/// shell, the window's on the classic page); `None` while it is not mounted.
+fn turn_header_top(tab: &headless_chrome::Tab, surface: Surface, turn: i64) -> Option<i64> {
+    let (s, root) = (surface.scroller(), surface.turns_root());
+    let top = match surface {
+        Surface::Classic => "0".to_string(),
+        Surface::AppShell => format!("{s}.getBoundingClientRect().top"),
+    };
+    eval(tab, &format!("(function(){{ var e = {root}.querySelector('[data-turn=\"{turn}\"]'); return e ? Math.round(e.getBoundingClientRect().top - {top}) : null; }})()")).as_i64()
+}
+
+/// A follower at the end of a session whose last two turns fit within about a screen presses
+/// `[` twice: the first lands turn N-1, the second N-2, and each is where the reader still
+/// rests a second later (#s487's criterion).
+///
+/// It was red on both pages, for two reasons the owner decided (#s487). The app shell landed N-1
+/// 67px above the end, inside the hold slack, where the engine kept the pin (#94, #103); the jump
+/// mounted new units, their measure grew the content and the tail converged, so 0.1s later the
+/// reader was at the end again (a turn step now keeps the pin only at the end, #s502). The
+/// classic page went by position (the last turn whose header is above its landing line), and at
+/// the end N-1's header was on screen below that line, so its first `[` landed N-2 (it now counts
+/// from the turn its bar names, #s503).
+fn scenario_turn_back_from_the_end(tab: &headless_chrome::Tab, surface: Surface, fx: &Fixture) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "the jump to the end");
+    settle();
+    until_engine_quiet(tab);
+    let last = fx.turns as i64;
+    let at_end = resting(tab, surface);
+    let mut readings = vec![at_end.clone()];
+    for want in [last - 1, last - 2] {
+        key(tab, "[", false);
+        settle();
+        until_engine_quiet(tab);
+        let first = resting(tab, surface);
+        harness::pause("the reader rests", Duration::from_secs(1));
+        let later = resting(tab, surface);
+        readings.push(first.clone());
+        readings.push(later.clone());
+        assert_eq!(
+            (first["top"].as_i64(), later["top"].as_i64()),
+            (Some(want), Some(want)),
+            "`[` from turn {} rests on turn {want}, and is still there a second later: {readings:?}",
+            want + 1
+        );
+        assert_eq!(
+            first, later,
+            "…where the view RESTS: nothing moves it in the second after: {readings:?}"
+        );
+        // Its header at the landing, or below it where the end of the session stops the view: a
+        // header ABOVE the landing is a view the tail's converge took back to the end, which shows
+        // the turn before the last at the top whether or not `[` went there.
+        let (card, landing) = (
+            first["card"].as_i64().unwrap_or(i64::MIN),
+            first["landing"].as_i64().unwrap_or(0),
+        );
+        assert!(
+            card >= landing - 2 && (card <= landing + 2 || first["gap"].as_i64() == Some(0)),
+            "…with turn {want}'s header at the landing line ({landing}px), or below it only where the end stops the view: {readings:?}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_steps_back_a_turn_at_a_time_from_the_end() {
+    let _serial = serial();
+    let fx = fixture("scenario-turnback-classic", 30);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_turn_back_from_the_end(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_steps_back_a_turn_at_a_time_from_the_end() {
+    let _serial = serial();
+    let fx = fixture("scenario-turnback-app", 30);
+    let page = open(Surface::AppShell, &fx, 3184);
+    scenario_turn_back_from_the_end(&page.tab, Surface::AppShell, &fx);
+}
+
+/// #s487: the last two turns are so short that at the end turn N-1 is already in view, below the
+/// landing line, so the jump `[` makes to it moves nothing (the end of the session stops the
+/// view). The turn bar and the page's turn list name N-1 after the first press and N-2 after the
+/// second, each still so a second later. The end rule named the LAST turn there, so the bar kept
+/// naming N and the second `[` landed N-1 again: two presses and nothing seen to happen.
+fn scenario_turn_back_where_the_turn_before_is_in_view(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "the jump to the end");
+    settle();
+    until_engine_quiet(tab);
+    let named = |tab: &headless_chrome::Tab| named_turn(tab, surface);
+    let at_end = named(tab);
+    let premise = turn_header_top(tab, surface, 29).unwrap_or(-1);
+    let landing = at_end["rest"]["landing"].as_i64().unwrap_or(0);
+    assert!(
+        premise > landing + 2,
+        "the premise: at the end turn 29's header is in view below the landing line ({landing}px): {premise}px, {at_end}"
+    );
+    let mut readings = vec![at_end];
+    for want in [29i64, 28] {
+        key(tab, "[", false);
+        settle();
+        until_engine_quiet(tab);
+        let first = named(tab);
+        harness::pause("the reader rests", Duration::from_secs(1));
+        let later = named(tab);
+        readings.push(first.clone());
+        readings.push(later.clone());
+        assert_eq!(
+            (
+                first["bar"].as_i64(),
+                first["pane"].as_i64(),
+                later["bar"].as_i64(),
+                later["pane"].as_i64()
+            ),
+            (Some(want), Some(want), Some(want), Some(want)),
+            "`[` from turn {} makes turn {want} the current one, in the bar and the turn list, and a second later still: {readings:?}",
+            want + 1
+        );
+        assert_eq!(
+            first["rest"], later["rest"],
+            "…where the view rests: {readings:?}"
+        );
+    }
+}
+
+/// The turn the page names as the current one, in its bar and its turn list, and where the reader
+/// rests.
+fn named_turn(tab: &headless_chrome::Tab, surface: Surface) -> serde_json::Value {
+    serde_json::json!({
+        "bar": harness::sticky_turn(tab, surface).map(|b| b.0),
+        "pane": harness::pane_focus_turn(tab, surface),
+        "rest": resting(tab, surface),
+    })
+}
+
+/// A press of `key`, then what the page names: as the press leaves it, and a second later.
+fn press_and_name(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    k: &str,
+    readings: &mut Vec<serde_json::Value>,
+) -> (serde_json::Value, serde_json::Value) {
+    key(tab, k, false);
+    settle();
+    until_engine_quiet(tab);
+    let first = named_turn(tab, surface);
+    harness::pause("the reader rests", Duration::from_secs(1));
+    let later = named_turn(tab, surface);
+    readings.push(first.clone());
+    readings.push(later.clone());
+    (first, later)
+}
+
+/// Its bar and its turn list name `want`, as the press left them and a second later.
+fn names_both(first: &serde_json::Value, later: &serde_json::Value) -> [Option<i64>; 4] {
+    [
+        first["bar"].as_i64(),
+        first["pane"].as_i64(),
+        later["bar"].as_i64(),
+        later["pane"].as_i64(),
+    ]
+}
+
+/// At the end of the session, where turn 29 is in view (`fixture_short_last_turns`), `[` makes it
+/// the current turn without moving anything (the case above).
+fn step_back_from_the_end(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    readings: &mut Vec<serde_json::Value>,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "the jump to the end");
+    settle();
+    until_engine_quiet(tab);
+    readings.push(named_turn(tab, surface));
+    let (first, later) = press_and_name(tab, surface, "[", readings);
+    assert_eq!(
+        names_both(&first, &later),
+        [Some(29); 4],
+        "the premise: `[` from the end makes turn 29 the current one: {readings:?}"
+    );
+}
+
+// ── scenario: a commanded move ends a turn step's hold on the current turn (#s487) ──────────
+
+/// #s487 (review): at the end, where turn N-1 is already in view, `[` makes N-1 the current turn
+/// and moves nothing. The reader then clicks turn N in the page's turn list (the classic sidebar,
+/// the app shell's Turns pane): nothing moves, since the end of the session stops the view, but
+/// the reader chose N, so the bar and the list name N and the next `[` goes to N-1. The turn a
+/// step landed used to outlive every commanded move but the next step and the jump to the latest:
+/// the bar kept naming N-1 and that `[` went to N-2.
+fn scenario_a_turn_click_ends_a_turn_steps_hold(tab: &headless_chrome::Tab, surface: Surface) {
+    let mut readings = Vec::new();
+    step_back_from_the_end(tab, surface, &mut readings);
+    assert!(
+        harness::jump_to_turn(tab, surface, 30),
+        "turn 30's entry in the turn list: {readings:?}"
+    );
+    settle();
+    until_engine_quiet(tab);
+    let clicked = named_turn(tab, surface);
+    readings.push(clicked.clone());
+    assert!(
+        clicked["rest"]["gap"].as_i64().is_some_and(|g| g <= 2),
+        "the premise: the end of the session holds the view, so the click moves nothing: {readings:?}"
+    );
+    assert_eq!(
+        (clicked["bar"].as_i64(), clicked["pane"].as_i64()),
+        (Some(30), Some(30)),
+        "a click on turn 30 makes it the current turn, in the bar and the turn list: {readings:?}"
+    );
+    let (first, later) = press_and_name(tab, surface, "[", &mut readings);
+    assert_eq!(
+        names_both(&first, &later),
+        [Some(29); 4],
+        "…so the next `[` goes to turn 29, not 28, and stays: {readings:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_ends_a_turn_steps_hold_on_a_click_in_its_sidebar() {
+    let _serial = serial();
+    let fx = fixture_short_last_turns("scenario-turnhold-click-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_turn_click_ends_a_turn_steps_hold(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_ends_a_turn_steps_hold_on_a_click_in_its_turns_pane() {
+    let _serial = serial();
+    let fx = fixture_short_last_turns("scenario-turnhold-click-app");
+    let page = open(Surface::AppShell, &fx, 3189);
+    scenario_a_turn_click_ends_a_turn_steps_hold(&page.tab, Surface::AppShell);
+}
+
+// ── scenario: a click on the turn a step landed keeps it (#s487) ────────────────────────────
+
+/// #s487 (second review): at the end, where turn N-1 is already in view, `[` makes N-1 the current
+/// turn and moves nothing. The reader then clicks turn N-1 itself in the page's turn list (the
+/// classic sidebar, the app shell's Turns pane): nothing moves, and the bar and the list go on
+/// naming N-1, at rest and a second later, so the next `[` goes to N-2. A commanded move used to
+/// clear the turn a step landed whatever its target, so the end rule named N again and that `[`
+/// landed N-1 a second time: the click and the press both seemed to do nothing. A move to a turn's
+/// own record now makes that turn the one the step counts from.
+fn scenario_a_click_on_the_turn_a_step_landed_keeps_it(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) {
+    let mut readings = Vec::new();
+    step_back_from_the_end(tab, surface, &mut readings);
+    let before = named_turn(tab, surface);
+    readings.push(before.clone());
+    assert!(
+        harness::jump_to_turn(tab, surface, 29),
+        "turn 29's entry in the turn list: {readings:?}"
+    );
+    settle();
+    until_engine_quiet(tab);
+    let clicked = named_turn(tab, surface);
+    harness::pause("the reader rests", Duration::from_secs(1));
+    let later = named_turn(tab, surface);
+    readings.push(clicked.clone());
+    readings.push(later.clone());
+    assert!(
+        clicked["rest"]["gap"].as_i64().is_some_and(|g| g <= 2),
+        "the premise: the end of the session holds the view: {readings:?}"
+    );
+    for at in [&clicked, &later] {
+        assert_eq!(
+            (&at["rest"]["card"], &at["rest"]["gap"]),
+            (&before["rest"]["card"], &before["rest"]["gap"]),
+            "a click on turn 29, already where the step put it, moves nothing: {readings:?}"
+        );
+    }
+    assert_eq!(
+        names_both(&clicked, &later),
+        [Some(29); 4],
+        "…and the bar and the turn list go on naming turn 29, and a second later still: {readings:?}"
+    );
+    let (first, later) = press_and_name(tab, surface, "[", &mut readings);
+    assert_eq!(
+        names_both(&first, &later),
+        [Some(28); 4],
+        "…so the next `[` goes to turn 28, not 29 again, and stays: {readings:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_keeps_a_turn_steps_landing_on_a_click_on_that_turn_in_its_sidebar() {
+    let _serial = serial();
+    let fx = fixture_short_last_turns("scenario-turnhold-same-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_click_on_the_turn_a_step_landed_keeps_it(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_keeps_a_turn_steps_landing_on_a_click_on_that_turn_in_its_turns_pane() {
+    let _serial = serial();
+    let fx = fixture_short_last_turns("scenario-turnhold-same-app");
+    let page = open(Surface::AppShell, &fx, 3191);
+    scenario_a_click_on_the_turn_a_step_landed_keeps_it(&page.tab, Surface::AppShell);
+}
+
+// ── scenario: a wheel beside the transcript keeps a turn step's hold (#s487) ────────────────
+
+/// #s487 (review): a wheel over a panel beside the transcript (the classic page's sidebar, the app
+/// shell's session list) scrolls that panel and leaves the reader where the step put them, so the
+/// turn the step landed stays the current one: from the end, `[`, a real wheel DOWN over the panel
+/// (at the end, so nothing it could chain to moves the view), and `[` again go to N-1 and then
+/// N-2. The classic page ended the hold on a wheel anywhere in the window, so its second `[`
+/// counted from N again and landed N-1 a second time; the app shell already heard only the
+/// transcript's input. On the classic page the top bar's menus scroll themselves too (second
+/// review): a wheel over the open Filter menu's list, the menu then closed, keeps the hold as well.
+fn scenario_a_wheel_beside_the_transcript_keeps_a_turn_steps_hold(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) {
+    let mut readings = Vec::new();
+    step_back_from_the_end(tab, surface, &mut readings);
+    let panel = match surface {
+        Surface::Classic => "document.getElementById('sidebar')",
+        Surface::AppShell => "document.querySelector('#app>.sidebar .tree')",
+    };
+    wheel_over(tab, panel, &readings);
+    settle();
+    until_engine_quiet(tab);
+    let wheeled = named_turn(tab, surface);
+    readings.push(wheeled.clone());
+    assert_eq!(
+        (wheeled["bar"].as_i64(), wheeled["pane"].as_i64()),
+        (Some(29), Some(29)),
+        "a wheel over the panel leaves turn 29 the current one: {readings:?}"
+    );
+    if surface == Surface::Classic {
+        let opened = eval(
+            tab,
+            "(function(){ var b = document.getElementById('btn-tools'); if (!b || b.disabled) return false; b.click(); return document.getElementById('toolmenu').classList.contains('on'); })()",
+        );
+        assert_eq!(
+            opened.as_bool(),
+            Some(true),
+            "the premise: the Filter menu opens: {readings:?}"
+        );
+        settle();
+        wheel_over(tab, "document.getElementById('toolmenu')", &readings);
+        settle();
+        until_engine_quiet(tab);
+        eval(tab, "document.getElementById('btn-tools').click()");
+        settle();
+        let menu = named_turn(tab, surface);
+        readings.push(menu.clone());
+        assert_eq!(
+            (menu["bar"].as_i64(), menu["pane"].as_i64()),
+            (Some(29), Some(29)),
+            "a wheel over the open Filter menu leaves turn 29 the current one: {readings:?}"
+        );
+    }
+    let (first, later) = press_and_name(tab, surface, "[", &mut readings);
+    assert_eq!(
+        names_both(&first, &later),
+        [Some(28); 4],
+        "…so the next `[` goes to turn 28, and stays: {readings:?}"
+    );
+}
+
+/// A real CDP wheel DOWN at the middle of the element `element` (a JS expression) names, which must
+/// be the element there, not one drawn over it.
+fn wheel_over(tab: &headless_chrome::Tab, element: &str, readings: &[serde_json::Value]) {
+    use headless_chrome::protocol::cdp::Input::{DispatchMouseEvent, DispatchMouseEventTypeOption};
+    let at: Vec<f64> = serde_json::from_str(
+        eval(tab, &format!("(function(){{ var p = {element}; if (!p) return '[]'; var b = p.getBoundingClientRect(), x = b.left + b.width / 2, y = b.top + b.height / 2; var hit = document.elementFromPoint(x, y); if (!hit || !p.contains(hit)) return '[]'; return JSON.stringify([x, y]); }})()"))
+            .as_str()
+            .unwrap_or("[]"),
+    )
+    .unwrap_or_default();
+    assert_eq!(
+        at.len(),
+        2,
+        "the premise: {element} is drawn, on top where the wheel goes: {readings:?}"
+    );
+    tab.call_method(DispatchMouseEvent {
+        Type: DispatchMouseEventTypeOption::MouseWheel,
+        x: at[0],
+        y: at[1],
+        modifiers: None,
+        timestamp: None,
+        button: None,
+        buttons: None,
+        click_count: None,
+        force: None,
+        tangential_pressure: None,
+        tilt_x: None,
+        tilt_y: None,
+        twist: None,
+        delta_x: Some(0.0),
+        delta_y: Some(240.0),
+        pointer_Type: None,
+    })
+    .expect("a wheel over the element");
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_keeps_a_turn_steps_hold_through_a_wheel_over_its_sidebar() {
+    let _serial = serial();
+    let fx = fixture_short_last_turns("scenario-turnhold-wheel-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_wheel_beside_the_transcript_keeps_a_turn_steps_hold(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_keeps_a_turn_steps_hold_through_a_wheel_over_its_session_list() {
+    let _serial = serial();
+    let fx = fixture_short_last_turns("scenario-turnhold-wheel-app");
+    let page = open(Surface::AppShell, &fx, 3190);
+    scenario_a_wheel_beside_the_transcript_keeps_a_turn_steps_hold(&page.tab, Surface::AppShell);
+}
+
+/// Twenty-eight long turns, then two short ones.
+fn fixture_short_last_turns(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut session = long_session(28, Shape::default());
+    for i in 28..30 {
+        session += &harness::user(&format!("question {i}: a short one."), i);
+        session += &harness::assistant(&format!("answer {i}: short."), i);
+    }
+    let path = stores.claude_session(SID, &session);
+    Fixture {
+        base,
+        path,
+        turns: 30,
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_steps_back_from_the_end_where_the_turn_before_is_in_view() {
+    let _serial = serial();
+    let fx = fixture_short_last_turns("scenario-turnback-inview-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_turn_back_where_the_turn_before_is_in_view(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_steps_back_from_the_end_where_the_turn_before_is_in_view() {
+    let _serial = serial();
+    let fx = fixture_short_last_turns("scenario-turnback-inview-app");
+    let page = open(Surface::AppShell, &fx, 3186);
+    scenario_turn_back_where_the_turn_before_is_in_view(&page.tab, Surface::AppShell);
+}
+
+// ── scenario: `[` and `]` from inside a turn go by the turn the bar names (#s487) ───────────
+
+/// The reader is inside turn K: its header has scrolled above the landing line and the bar names
+/// K. `[` goes to the turn before the one the bar names (K-1) and `]` to the one after (K+1), each
+/// with its header at the landing line and still there a second later: the turn bar is what a
+/// step counts from, on both pages (the owner's #s503). The classic page went by position, the
+/// last turn whose header is above its landing line, so its `[` from inside K went back to K's own
+/// header.
+fn scenario_turn_steps_inside_a_turn(tab: &headless_chrome::Tab, surface: Surface) {
+    let k = 10i64;
+    scroll_by(tab, surface, -1_000_000);
+    settle();
+    for _ in 0..30 {
+        if turn_at_top(tab, surface) == k {
+            break;
+        }
+        key(tab, "]", false);
+        settle();
+    }
+    until_engine_quiet(tab);
+    let mut readings = vec![resting(tab, surface)];
+    // Into turn K from its header at the landing: the header above the landing, the bar naming K.
+    let inside = |tab: &headless_chrome::Tab, readings: &mut Vec<serde_json::Value>| {
+        scroll_by(tab, surface, 180);
+        settle();
+        until_engine_quiet(tab);
+        let r = resting(tab, surface);
+        let header = turn_header_top(tab, surface, k);
+        readings.push(serde_json::json!({ "inside": r.clone(), "header": header }));
+        let landing = r["landing"].as_i64().unwrap_or(0);
+        assert!(
+            r["bar"].as_i64() == Some(k) && header.is_some_and(|h| h < landing - 30),
+            "the premise: the reader is inside turn {k}, its header above the landing and the bar naming it: {readings:?}"
+        );
+    };
+    for (press, want) in [("[", k - 1), ("]", k + 1)] {
+        inside(tab, &mut readings);
+        key(tab, press, false);
+        settle();
+        until_engine_quiet(tab);
+        let first = resting(tab, surface);
+        harness::pause("the reader rests", Duration::from_secs(1));
+        let later = resting(tab, surface);
+        readings.push(first.clone());
+        readings.push(later.clone());
+        assert_eq!(
+            (first["top"].as_i64(), first["bar"].as_i64()),
+            (Some(want), Some(want)),
+            "`{press}` from inside turn {k} goes to turn {want}: {readings:?}"
+        );
+        assert_eq!(first, later, "…and rests there: {readings:?}");
+        let (card, landing) = (
+            first["card"].as_i64().unwrap_or(i64::MIN),
+            first["landing"].as_i64().unwrap_or(0),
+        );
+        assert!(
+            (card - landing).abs() <= 2,
+            "…with turn {want}'s header at the landing line ({landing}px): {readings:?}"
+        );
+        if press == "[" {
+            // Back to turn K's header for the next press.
+            key(tab, "]", false);
+            settle();
+            until_engine_quiet(tab);
+            let back = resting(tab, surface);
+            readings.push(back.clone());
+            assert_eq!(
+                back["top"].as_i64(),
+                Some(k),
+                "`]` from turn {} goes back to turn {k}: {readings:?}",
+                k - 1
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_steps_turns_from_inside_a_turn() {
+    let _serial = serial();
+    let fx = fixture("scenario-turn-inside-classic", 40);
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_turn_steps_inside_a_turn(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_steps_turns_from_inside_a_turn() {
+    let _serial = serial();
+    let fx = fixture("scenario-turn-inside-app", 40);
+    let page = open(Surface::AppShell, &fx, 3188);
+    scenario_turn_steps_inside_a_turn(&page.tab, Surface::AppShell);
 }
 
 // ── scenario: a resize while pinned keeps the tail ──────────────────────────────────────────
@@ -15067,7 +15969,7 @@ fn app_shell_the_search_box_shows_its_own_query() {
     let page = open(Surface::AppShell, &fx, 3046);
     let tab = &page.tab;
     let query = "uo(R): needle";
-    let probe = "(function(){ var box = document.querySelector('.header-searchbox'); var input = document.getElementById('transcriptSearchInput'); var count = document.getElementById('transcriptSearchCount'); var ids = ['findPrev', 'findNext', 'transcriptWholeWords', 'filterTranscriptBtn']; var rects = ids.map(function (id) { var el = document.getElementById(id); if (!el || !el.offsetWidth) return null; var r = el.getBoundingClientRect(); var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { id: id, left: Math.round(r.left), right: Math.round(r.right), hit: !!hit && el.contains(hit) }; }); return JSON.stringify({ bar: [...document.querySelector('.topbar').children].filter(function (c) { return c.offsetWidth; }).map(function (c) { return (c.id || c.className) + ':' + Math.round(c.getBoundingClientRect().width); }).join(' '), head: [...document.querySelector('.session-heading').children].map(function (c) { var cs = getComputedStyle(c); return (c.id || c.className) + ':' + Math.round(c.getBoundingClientRect().width) + '/' + cs.flexShrink + '/' + cs.minWidth; }).join(' '), box: Math.round(box.getBoundingClientRect().width), title: (function(){ var t = document.getElementById('sessionTitle'); t.textContent = 'A session whose name needs every pixel the top bar can give it'; var r = t.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.right), Math.round(box.getBoundingClientRect().left), t.scrollWidth, t.clientWidth, t.textContent]; })(), input: [input.scrollWidth, input.clientWidth], count: [count.scrollWidth, count.clientWidth, count.textContent], rects: rects }); })()";
+    let probe = "(function(){ var box = document.querySelector('.header-searchbox'); var input = document.getElementById('transcriptSearchInput'); var count = document.getElementById('transcriptSearchCount'); var ids = ['findPrev', 'findNext', 'transcriptWholeWords', 'filterTranscriptBtn']; var rects = ids.map(function (id) { var el = document.getElementById(id); if (!el || !el.offsetWidth) return null; var r = el.getBoundingClientRect(); var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return { id: id, left: Math.round(r.left), right: Math.round(r.right), hit: !!hit && el.contains(hit) }; }); return JSON.stringify({ bar: [...document.querySelector('.topbar').children].filter(function (c) { return c.offsetWidth; }).map(function (c) { return (c.id || c.className) + ':' + Math.round(c.getBoundingClientRect().width); }).join(' '), head: [...document.querySelector('.session-heading').children].map(function (c) { var cs = getComputedStyle(c); return (c.id || c.className) + ':' + Math.round(c.getBoundingClientRect().width) + '/' + cs.flexShrink + '/' + cs.minWidth; }).join(' '), box: Math.round(box.getBoundingClientRect().width), title: (function(){ var t = document.getElementById('sessionTitle'); t.textContent = 'A session whose name needs every pixel the top bar can give it'; var r = t.getBoundingClientRect(); return [Math.round(r.width), Math.round(r.right), Math.round(box.getBoundingClientRect().left), t.scrollWidth, t.clientWidth, t.textContent]; })(), input: [input.scrollWidth, input.clientWidth], field: (function(){ var f = document.getElementById('searchField'); return f ? [f.scrollWidth, f.clientWidth] : null; })(), chips: (function(){ var c = document.querySelector('.search-chips'); return c ? [c.scrollWidth, c.clientWidth, c.classList.contains('has-chips')] : null; })(), values: [...document.querySelectorAll('.search-chip-value')].map(function (v) { return [v.scrollWidth, v.clientWidth, v.textContent]; }), parts: [...box.children].filter(function (c) { return c.offsetWidth; }).map(function (c) { return (c.id || c.className.split(' ')[0]) + ':' + Math.round(c.getBoundingClientRect().width); }).join(' '), count: [count.scrollWidth, count.clientWidth, count.textContent], rects: rects }); })()";
     for (width, height) in [(1440.0, 900.0), (1100.0, 860.0), (820.0, 860.0)] {
         harness::resize(tab, width, height);
         harness::until(
@@ -15098,7 +16000,9 @@ fn app_shell_the_search_box_shows_its_own_query() {
         settle();
         for moment in ["focused", "clicked away"] {
             if moment == "clicked away" {
-                eval(tab, "(function(){ document.getElementById('transcriptSearchInput').blur(); var t = document.querySelector('.transcript'); if (t) t.dispatchEvent(new MouseEvent('mousedown', {bubbles: true})); return 'away'; })()");
+                // A mouse's press on the transcript, as a reader clicks away: the pointerdown is what
+                // releases the search (#s520), the mousedown and the blur follow it.
+                eval(tab, "(function(){ var t = document.querySelector('.transcript'); if (t) { t.dispatchEvent(new PointerEvent('pointerdown', {bubbles: true, pointerType: 'mouse', isPrimary: true})); t.dispatchEvent(new MouseEvent('mousedown', {bubbles: true})); } document.getElementById('transcriptSearchInput').blur(); return 'away'; })()");
                 settle();
             }
             let seen: serde_json::Value =
@@ -15112,6 +16016,23 @@ fn app_shell_the_search_box_shows_its_own_query() {
                 assert!(
                     input[0].as_i64() <= input[1].as_i64() && input[1].as_i64() > Some(0),
                     "at {width}px, {moment}: the box shows the whole query (scrollWidth <= clientWidth): {seen}"
+                );
+                // The strip scrolls (`overflow-x:auto`), so an input sized to its text could still
+                // leave the scope and tool chips scrolled out of the box: the strip shows whole too.
+                let field = &seen["field"];
+                assert!(
+                    field[0].as_i64() <= field[1].as_i64() && field[1].as_i64() > Some(0),
+                    "at {width}px, {moment}: the box shows the whole strip, its chips and the field (scrollWidth <= clientWidth): {seen}"
+                );
+                // And each chip whole: a chip's value shrinks to an ellipsis inside it, which neither
+                // the strip's nor the chips' own scroll width shows.
+                let values = seen["values"].as_array().cloned().unwrap_or_default();
+                assert!(
+                    values.len() == 2
+                        && values
+                            .iter()
+                            .all(|v| v[0].as_i64() <= v[1].as_i64() && v[1].as_i64() > Some(0)),
+                    "at {width}px, {moment}: the scope and tool chips show their values whole (scrollWidth <= clientWidth): {seen}"
                 );
             }
             let count = &seen["count"];
@@ -15140,7 +16061,8 @@ fn app_shell_the_search_box_shows_its_own_query() {
                 );
             }
             // The box grows into the spacer and never over the session's name, which stays
-            // readable: whole, or at least 120px, or what it had at rest if that was less. The
+            // readable: whole, or at least 80px (a word or two, what it gives way to while the box
+            // holds a query, `TITLE_GIVES_TO`), or what it had at rest if that was less. The
             // probe gives the title a long name, so this measures the squeeze, not the fixture.
             let title = &seen["title"];
             if narrow && moment == "focused" {
@@ -15153,7 +16075,7 @@ fn app_shell_the_search_box_shows_its_own_query() {
                 let wide = title[0].as_i64().unwrap_or(0);
                 let whole = title[3].as_i64() <= title[4].as_i64();
                 assert!(
-                    (whole || wide >= 120.min(rest_title - 1))
+                    (whole || wide >= 80.min(rest_title - 1))
                         && title[1].as_i64() <= title[2].as_i64(),
                     "at {width}px, {moment}: the session title stays readable (at rest it was \
                  {rest_title}px) and clear of the box: {seen}"
@@ -15171,6 +16093,128 @@ fn app_shell_the_search_box_shows_its_own_query() {
             );
         }
     }
+    // The floor's limits (train2's reviews), measured with the floor set: the session's name is a long
+    // one, held against the header's repaints, and its first word is emulated by its measure,
+    // `--title-word` on the bar, which the bar's rules and the fit read. Every limit is read and the
+    // failures reported together, so a change that breaks one shows which.
+    let long = "uo(R): needle beside a query far longer than any search box shows";
+    let short = "uo(R): needle";
+    let limits = "(function(){ var bar = document.querySelector('.workspace>.topbar'), cluster = document.querySelector('.header-search-cluster'), box = document.querySelector('.header-searchbox'), t = document.getElementById('sessionTitle'), h = t.parentElement, b = bar.getBoundingClientRect(), w = function (e) { return Math.round(e.getBoundingClientRect().width); }; var past = [...bar.children].filter(function (c) { return c.offsetWidth && c.getBoundingClientRect().right > b.right + 1; }).map(function (c) { return (c.id || c.className) + ':' + Math.round(c.getBoundingClientRect().right - b.right); }); return JSON.stringify({ floor: cluster.style.getPropertyValue('--search-floor'), cluster: w(cluster), box: w(box), title: [w(t), parseFloat(getComputedStyle(t).minWidth), t.scrollWidth], heading: [w(h), parseFloat(getComputedStyle(h).minWidth)], edges: [t.getBoundingClientRect().right, h.getBoundingClientRect().right, cluster.getBoundingClientRect().left].map(Math.round), past: past, bar: Math.round(b.width), view: w(document.getElementById('sessionView')), layout: document.getElementById('sessionView').className.split(' ').filter(function (c) { return /^pl-outline-|^pl-phone$/.test(c); }).join(' ') }); })()";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(eval(tab, limits).as_str().unwrap_or("{}")).unwrap()
+    };
+    let mut failed: Vec<String> = Vec::new();
+    // The box fills its cluster (a floor past the box's own width rule left a blank gap beside it),
+    // nothing in the bar goes past the session's column, and the title, held at its first word by its
+    // `min-width`, stays inside its heading, which stays clear of the search: a floor that kept the
+    // word by overflowing would lay the name under the box while nothing went past the bar.
+    let check = |what: &str, seen: &serde_json::Value| -> Vec<String> {
+        let mut out = Vec::new();
+        let gap = seen["cluster"].as_i64().unwrap_or(0) - seen["box"].as_i64().unwrap_or(0);
+        if gap.abs() > 1 {
+            out.push(format!(
+                "{what}: the cluster is {gap}px wider than its box: {seen}"
+            ));
+        }
+        if !seen["past"].as_array().is_some_and(|p| p.is_empty()) {
+            out.push(format!(
+                "{what}: the bar's controls go past the session's column: {seen}"
+            ));
+        }
+        let edge = |i: usize| seen["edges"][i].as_i64().unwrap_or(0);
+        if edge(0) > edge(1) + 1 || edge(1) > edge(2) + 1 {
+            out.push(format!(
+                "{what}: the title goes past its heading, or the heading under the search: {seen}"
+            ));
+        }
+        out
+    };
+    let hold = |word: &str, query: &str| {
+        eval(
+            tab,
+            &format!("(function(){{ var b = document.getElementById('transcriptSearchInput'); b.value = ''; b.dispatchEvent(new Event('input', {{bubbles: true}})); b.blur(); var t = document.getElementById('sessionTitle'); var name = 'A session whose name needs every pixel the top bar can give it'; if (!window.__heldTitle) {{ window.__heldTitle = new MutationObserver(function () {{ if (t.textContent !== name) t.textContent = name; }}); window.__heldTitle.observe(t, {{childList: true, characterData: true, subtree: true}}); }} t.textContent = name; document.querySelector('.workspace>.topbar').style.setProperty('--title-word', {word:?}); document.getElementById('sessionView').style.maxWidth = ''; return 'held'; }})()"),
+        );
+        settle();
+        eval(
+            tab,
+            &format!("(function(){{ var b = document.getElementById('transcriptSearchInput'); b.focus(); b.value = {query:?}; b.dispatchEvent(new Event('input', {{bubbles: true}})); b.dispatchEvent(new KeyboardEvent('keydown', {{key: 'Enter', bubbles: true, cancelable: true}})); return 'typed'; }})()"),
+        );
+        settle();
+    };
+    // The bar's room changes with no window resize (the pane's drag, as the view sees it: its own box
+    // narrows); the floor must be what a fit made now would set, which an input re-fits at once.
+    let narrowed = |what: &str,
+                    by: i64,
+                    before: &serde_json::Value|
+     -> (serde_json::Value, Vec<String>) {
+        let view = before["view"].as_i64().unwrap_or(0);
+        eval(tab, &format!("(function(){{ document.getElementById('sessionView').style.maxWidth = '{}px'; return 1; }})()", view - by));
+        settle();
+        settle();
+        let now = read();
+        eval(tab, "(function(){ document.getElementById('transcriptSearchInput').dispatchEvent(new Event('input', {bubbles: true})); return 1; })()");
+        let fresh = read();
+        let mut out = check(what, &now);
+        if now["floor"] != fresh["floor"] {
+            out.push(format!("{what}: the floor was not fitted again as the bar narrowed ({} held, a fit now sets {}): {now}", now["floor"], fresh["floor"]));
+        }
+        if now["layout"]
+            .as_str()
+            .is_some_and(|l| l.contains("pl-outline-bar") || l.contains("pl-phone"))
+        {
+            out.push(format!(
+                "{what}: the narrowing reached a layout the floor does not apply to: {now}"
+            ));
+        }
+        (now, out)
+    };
+    let resize = |width: f64| {
+        harness::resize(tab, width, 860.0);
+        harness::until(
+            tab,
+            &format!("innerWidth <= {width} && innerWidth > {width} - 40"),
+            "the window to take its new width",
+            Duration::from_secs(10),
+            "innerWidth",
+        );
+        harness::until_preview_parked(tab);
+    };
+    // At 1440px a long query asks more than the box's own width rule gives: the floor stops there.
+    resize(1440.0);
+    hold("110px", long);
+    let wide = read();
+    if wide["floor"].as_str().is_none_or(|f| f.is_empty()) {
+        failed.push(format!("at 1440px, a long query: a floor is set (the case measures nothing without one): {wide}"));
+    }
+    failed.extend(check("at 1440px, a long query", &wide));
+    // Narrowed by 340px, the title's first word leaves the query less than the floor held: a floor fitted
+    // to the old room pushed the bar's last controls out of the column.
+    let (after, out) = narrowed("at 1440px, the column narrowed by 340px", 340, &wide);
+    failed.extend(out);
+    if after["floor"] == wide["floor"] {
+        failed.push(format!("at 1440px narrowed by 340px: the narrowing changes what a fit sets (the case measures nothing otherwise): before {wide}, after {after}"));
+    }
+    // At 1100px the longest first word the bar keeps (160px), and a long one: the floor's default leaves
+    // the word its room, and the title's share is what its heading can give, at the window's width and
+    // narrowed by 40px.
+    resize(1100.0);
+    for word in ["160px", "110px"] {
+        hold(word, short);
+        let at = read();
+        failed.extend(check(&format!("at 1100px, a {word} first word"), &at));
+        let (_, out) = narrowed(
+            &format!("at 1100px with a {word} first word, the column narrowed by 40px"),
+            40,
+            &at,
+        );
+        failed.extend(out);
+    }
+    eval(tab, "(function(){ if (window.__heldTitle) window.__heldTitle.disconnect(); document.getElementById('sessionView').style.maxWidth = ''; return 1; })()");
+    assert!(
+        failed.is_empty(),
+        "the floor's limits:\n{}",
+        failed.join("\n")
+    );
 }
 
 /// #298 — the owner: "after / focuses on the search box, we should offer esc to defocus (same effect

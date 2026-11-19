@@ -116,7 +116,11 @@ Three things are the reader's, and only the reader's:
 - **Follow** — pinned to the tail (#103 hysteresis: acquiring needs the true end, keeping it only
   the hold slack; a scroll with no input behind it that leaves the tail is healed, not honoured).
   Follow is DROPPED only by the reader: their scroll past the hold slack, or their reshape of the
-  page (#185: growth they asked for is not the tail moving away).
+  page (#185: growth they asked for is not the tail moving away). One commanded move is held to the
+  acquire rule even while following: a TURN STEP (`[`/`]`, `pin: "acquire"`, #s487, the owner's
+  #s502) keeps the pin only where it lands at the true end, as a jump to the end would take it. A
+  step back from the end of a session whose last turns are short lands within the hold slack, and a
+  pin kept there let the tail's converge take the reader straight back to the end.
 
 ### 1.7 The position
 
@@ -270,7 +274,7 @@ What a page implements (the contract), and what the engine owns outright.
 | `afterMount(fresh)` | the elements just mounted, attached, before measurement (the classic page clamps long turns here; a no-op elsewhere) |
 | `afterRender()` / `afterScroll()` / `afterTransaction()` / `followChanged()` / `remember()` | the page's hooks. **A spy that reads the DOM belongs in `afterTransaction`** (#209), not in the other two: a transaction mounts, measures, then PLACES, and both of those fire before the placement, so a spy that ran there can hold a reading from a window the place has since moved. Measured on the walk fixture — the sums swung ±15k px as estimates landed, the offset was corrected by ±5k to hold the reader's record still, and the app shell's turn bar sat three turns behind the engine's own belief until a one-pixel nudge repainted it. `afterTransaction` fires once, after the last of a queued run, and never while a smooth write travels — the arrival calls it instead. **What runs there must not read layout**: the app shell repaints its bar from the engine's own belief (the position's key), because forcing a rect read at the boundary moved the reader by 190px in the smooth-step case, and the classic page — whose spy has only rects to measure — keeps its spy on the scroll frame. |
 | `following` | a get/set pair over the page's own flag |
-| `frame` | `{scrollTop, scrollTo, clientHeight, scrollHeight, viewportTop, on, onKey, isScrollbarTarget, laidOut}` — the element scroller or the document. `onKey` is where the reader's keys are heard, and a frame without it hears them through `on`. The element frame hears them on the scroller, as every other input, and at the window for a key on the page's body: a click on the transcript's text leaves the focus there, and the browser still scrolls the box with a key from there (it scrolls the box the last press landed in), but that key never passes through the box. A follower's Page Up was read as the browser's move and undone (#s431). A key on the body is the reader's only when the browser scrolls with it (the arrows, Page Up and Down, Home, End, Space), the last press on the page landed in the scroller, and no handler took it (`defaultPrevented`, read in the bubble phase). Any other key there (the page's `+`, `\` folding the list), one after a press elsewhere (the browser scrolls that box, or nothing) and one a host's keymap took are no move of the reader's in this box. `laidOut()` says whether the scroller has a box (#s464: a host can hide the view, and a hidden scroller reads every item as its margins and its offset as 0); while it has none the engine measures nothing, reads no `P` and writes none, a transaction changes the model alone (a prepend's translation of `P` is kept as the new `P`, and an anchor on the item after the prepended run takes its top from the sums), a jump drops the pin (the end is `follow`, which reads no gap), a move from the raw offset (a page key) moves nothing, and what was mounted waits for the page's pass and its placeholder fit; the first transaction with the box back runs those, drops a smooth write the hide stopped and a wait for a late event, mounts the window for `P` at the viewport it came back with and places `P` with no drift. The document is always laid out; a frame without `laidOut` is read as laid out |
+| `frame` | `{scrollTop, scrollTo, clientHeight, scrollHeight, viewportTop, on, onKey, isScrollbarTarget, laidOut}` — the element scroller or the document. `onKey` is where the reader's keys are heard, and a frame without it hears them through `on`. The element frame hears them on the scroller, as every other input, and at the window for a key on the page's body: a click on the transcript's text leaves the focus there, and the browser still scrolls the box with a key from there (it scrolls the box the last press landed in), but that key never passes through the box. A follower's Page Up was read as the browser's move and undone (#s431). A key on the body is the reader's only when the browser scrolls with it (the arrows, Page Up and Down, Home, End, Space), the last press on the page landed in the scroller, and no handler took it (`defaultPrevented`, read in the bubble phase). Any other key there (the page's `+`, `\` folding the list), one after a press elsewhere (the browser scrolls that box, or nothing) and one a host's keymap took are no move of the reader's in this box. **With the scroller itself focused the same rule holds** (#s488): the app shell focuses its transcript on a mouse's press, since WebKit sends a key from a pressed node a redraw has since replaced to the frame and scrolls nothing, so a key whose target is the scroller is the reader's only when it is one the browser scrolls with and nothing prevented it; a key on a control inside the box is heard as before. `laidOut()` says whether the scroller has a box (#s464: a host can hide the view, and a hidden scroller reads every item as its margins and its offset as 0); while it has none the engine measures nothing, reads no `P` and writes none, a transaction changes the model alone (a prepend's translation of `P` is kept as the new `P`, and an anchor on the item after the prepended run takes its top from the sums), a jump drops the pin (the end is `follow`, which reads no gap), a move from the raw offset (a page key) moves nothing, and what was mounted waits for the page's pass and its placeholder fit; the first transaction with the box back runs those, drops a smooth write the hide stopped and a wait for a late event, mounts the window for `P` at the viewport it came back with and places `P` with no drift. The document is always laid out; a frame without `laidOut` is read as laid out |
 | `mount` | `{top, window, bottom, content}` — the pads, the run, and what to watch for chrome growth |
 | parameters | `overscan`, `slacks {acquire, hold, heal}`, `userIntentMs`, `rememberMs`, `clampIndex`, `landing` |
 
@@ -349,6 +353,32 @@ mode (`violation` trace entries) and its no-violation scenario on both surfaces.
   `stepHead` keep their ease: it is reference behaviour) records its TARGET instead and owns
   every event until the offset arrives within a pixel of it or the reader's next input, whichever
   comes first; the frame's `scrollTo` takes the behaviour flag, so it is still the one write path.
+- **The browser may report an EARLIER own write after a later one** (#s568). iOS WebKit scrolls on a
+  thread of its own, and after two instant writes close together it can hand the page the first
+  again, the offset and the layout at it, through every read (the getter, a scroll event, a frame),
+  before it reports the second. Measured on the 11-inch iPad Simulator (90 trials of two writes
+  0-50ms apart): the first read back for up to 26ms after the second, whose own event came by 55ms;
+  never once that event had come; every trial rested at the second. Taken as the reader's scroll,
+  that event released a jump's hold, and the next transaction re-read `P` where the layout briefly
+  stood: a reader who jumped to turn 307 was left on 306. So `place()` keeps the instant writes made
+  within `ECHO_MS` (120ms, about twice the measure) of each other, and until a scroll event reports
+  the latest, an offset at one of the earlier ones is an ECHO (`echoOf`): `onScroll` ignores it, and
+  the questions that ask whether the reader moved (`positionFor`, `syncPosition`, a transaction's
+  drift, `place()`'s correction, a landing's decision, I1) read the latest write in its place
+  (`readTop`). The layout IS at the echo, so what is read on screen while it lasts is moved by the
+  difference to describe the view at the latest write: a captured anchor (`captureDomAnchor`, which
+  judges what is visible against the viewport moved there, and `anchorAfter`) and a model position
+  (`modelAnchor`) carry the latest write as their offset, the window chosen from the offset
+  (`rangeForScroll`) is the one there, and the checks that read the screen (I7, I10) read it there
+  too. Read as it stood, a capture named the echo's offset and the next placement wrote it for real,
+  or chose an item the reader could not see; a fallback mount missed the reader; and every
+  transaction during an echo reported the echo's distance as an I7 displacement. The node contract
+  holds the capture and the window over a frame that reads the earlier write. The record is forgotten wherever `wrote` is
+  (the reader's input, a drag, a hide, an event that was theirs), a smooth write keeps none, an event
+  delivered more than `ECHO_MS` after the latest write is no echo whatever its stamp, and nothing is
+  written again: the browser rests at the latest write by itself. Chrome never echoes; the scenarios
+  `*_keeps_a_jump_through_an_echoed_write` and `*_checks_itself_through_an_echoed_write` play one
+  through a `scrollTop` setter shim, the second with a transaction while the echo shows.
 - `transact()` is guarded against re-entry: an observer delivery or a page callback from
   `renderItem`/`afterMount` that reaches it while one is running is queued and run after, never
   nested.
@@ -626,7 +656,33 @@ computed); mounts around it (`rangeFor(P)`, with the caller's `dirtyFrom`); plac
 `syncPosition`, `scheduleRemember`, and the follow decision the classic page already states
 (`following ? atBottom() : atEnd()`): keep the pin within the hold slack when it was held, acquire
 it only at the true end otherwise — computed ONCE at the end, with `followChanged` called only if it
-differs from where the transaction started, so a jump to the end does not flip the pill twice.
+differs from where the transaction started, so a jump to the end does not flip the pill twice. The
+one exception is a move the page passes `pin: "acquire"`, which only a turn step does (#s487, the
+owner's #s502): it is decided by the acquire rule whether or not the pin was held, so a step that
+lands within the hold slack of the end leaves following (see §1.6).
+
+**Which turn a turn step counts from** (#s487, the owner's #s503) is the page's, not the engine's,
+and both pages now use one rule: `[` goes to the turn before the one the turn bar names and `]` to
+the one after. The classic page used to go by position (the last turn whose header is above its
+landing line), and at the end of a session the turn before the last can be on screen below that
+line, so its first `[` skipped a turn. Near the end, the bar's own rule (#89, #199: at the bottom
+the LAST turn is current) would make a step that the end clamps count from the last turn again, so
+each page keeps a memory of the turn its last step landed (`stepLanded`: the classic page's
+`landedTurn()`, the app shell's `landedTurnIndex()`) and names it while that turn's header is still
+where the step put it. The reader's input on the transcript ends it: a wheel or touch there or a
+scroll key, on both pages; the app shell also listens for a pointer down on its scroller, while on
+the classic page, whose scroller is the window, a scrollbar drag ends it through the position test
+(the header no longer where the step put it). So do the jump to the latest, the next step, another
+session and every commanded move to anything but a turn (a task, an agent, an artifact, a search or
+filter landing, a deep link, a restore), since one that moves nothing leaves the header where it
+was and would keep naming a turn the reader moved away from; a head step, which moves among the
+rows inside the turns, ends it only where it moves the view. A commanded move to a
+turn's own record (a click on a turn in the turn list or on the bar) SETS the memory to that turn
+instead: the reader chose it, and where the end holds the view the click moves nothing, so the end
+rule would otherwise name the last turn and the next `[` would land where the reader already is.
+Input on a panel that scrolls itself (the classic sidebar, task panel and top bar menus, the app
+shell's lists) does not end it.
+
 `follow()` is the one that SETS the pin: `P := tail`, the commanded converge, `followChanged`,
 remember. The classic page's `toBottom(commanded)` and the shell's `toBottom()` become it.
 

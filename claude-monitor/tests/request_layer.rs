@@ -18,6 +18,7 @@ const ROUTES: &[&str] = &[
     "__reveal",
     "search",
     "turn-index",
+    "detached",
     "markdown",
     "image",
     "mdrev",
@@ -53,6 +54,11 @@ const NAMED: &[(&str, &str, &str)] = &[
         "codex-ui/mdrev-pane.js",
         "const REVIEW_CONTRACT = \"/api/mdrev-review\"",
         "the detached tab's route prefix, joined through backend().mdrevUrl",
+    ),
+    (
+        "codex-ui/merged-source.js",
+        "const SESSIONS = \"/api/sessions\", LAYOUT = \"/api/layout\", IGNORE = \"/api/ignore\";",
+        "the routes the merged source answers in the page, and asks each machine's handle for by name",
     ),
     (
         "codex-ui/native-menu.js",
