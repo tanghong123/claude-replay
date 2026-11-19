@@ -10,8 +10,8 @@
 mod shutdown;
 
 use claude_monitor::control::{
-    ensure_token, printed_url, read_token, set_passcode_interactive, tokened_url,
-    withheld_token_note, Attempts,
+    ensure_token, printed_url, read_token, running_takes_token, set_passcode_interactive,
+    stale_pairing_note, tokened_url, withheld_token_note, Attempts,
 };
 use claude_monitor::index;
 
@@ -257,16 +257,28 @@ fn main() -> Result<()> {
             std::io::stdout().is_terminal(),
             std::io::stderr().is_terminal(),
         );
-        let shown = |terminal| printed_url(&url, token.as_deref(), terminal);
+        // #s604: the running monitor read its pairing when it started, so one started without this
+        // token does not take it. It is asked once, on the loopback: at most about 7 s for a monitor
+        // that has stalled, which then says nothing. Where it does not take the token, the address is
+        // opened and printed bare: such a gate answers a tokened `/` with its page, not the 302 that
+        // strips the token, so the token would stay in the browser's address bar and history.
+        let stale = token
+            .as_deref()
+            .is_some_and(|t| running_takes_token(&url, t) == Some(false));
+        let handed = if stale { None } else { token.as_deref() };
+        let shown = |terminal| printed_url(&url, handed, terminal);
         eprintln!(
             "agent-monitor is already running — opening {}",
             shown(err_tty)
         );
-        if token.is_some() && !err_tty {
+        if handed.is_some() && !err_tty {
             eprintln!("{}", withheld_token_note());
         }
+        if stale {
+            eprintln!("{}", stale_pairing_note());
+        }
         if open_browser {
-            open_url(&with_token(&url));
+            open_url(&tokened_url(&url, handed));
         }
         println!("{}", shown(out_tty));
         return Ok(());
