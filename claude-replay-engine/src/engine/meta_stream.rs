@@ -400,11 +400,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// person's no at the permission prompt) reads Declined, its output the person's reason or none,
 /// where a v83 stream holds it Failed with the client's sentence to the model as its output.
 ///
+/// v85: #s607 — a `queued_command` whose prompt is the prompt's own content blocks (a mid-turn
+/// message with pasted images) folds to the person's turn and its images, where a v84 stream holds
+/// nothing for it at all.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 84;
+pub const FOLD_VERSION: u16 = 85;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
