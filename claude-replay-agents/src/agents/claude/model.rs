@@ -6870,10 +6870,24 @@ pub(crate) fn nth_loaded_attachment(line: &str, index: usize) -> Option<LoadedAt
             }
             None
         }
-        Some("attachment") => v
-            .get("attachment")
-            .and_then(load_attachment_from_event)
-            .filter(|_| index == 0),
+        Some("attachment") => {
+            let a = v.get("attachment")?;
+            // #s607: a mid-turn prompt's pasted images, in the order both parse paths emit them
+            // (`queued_prompt`'s). Without this arm a small one, which the reader does not elide
+            // and the span path never sees, was drawn by name and could never be loaded.
+            if a.get("type").and_then(Value::as_str) == Some("queued_command")
+                && a.get("commandMode").and_then(Value::as_str) == Some("prompt")
+            {
+                let (_, images) = queued_prompt(a.get("prompt")?);
+                for blk in images {
+                    if let Some(hit) = take(load_image_attachment(blk)) {
+                        return hit;
+                    }
+                }
+                return None;
+            }
+            load_attachment_from_event(a).filter(|_| index == 0)
+        }
         // #16: an assistant line's ExitPlanMode call carries the plan body inline.
         Some("assistant") => {
             let content = v.pointer("/message/content").and_then(|c| c.as_array())?;
@@ -7819,7 +7833,8 @@ mod tests {
     /// prompt is the prompt's own content blocks, a text block and the images (client 2.1.251 to
     /// 2.1.327), not a string. It is the person's turn, its words and then its images, and its
     /// queued marker is popped at pickup as a string prompt's is; a prompt of images alone shows its
-    /// images. A string prompt is unchanged. Both parse paths agree.
+    /// images. A string prompt is unchanged. Both parse paths agree. The second message with an image
+    /// has an enqueue and no remove, so only its pickup's words can pop its marker.
     #[test]
     fn a_mid_turn_message_with_pasted_images_is_the_persons_turn() {
         let jsonl = r##"
@@ -7832,6 +7847,8 @@ mod tests {
 {"type":"assistant","timestamp":"2026-11-19T09:00:03.000Z","message":{"content":[{"type":"tool_use","id":"b2","name":"Bash","input":{"command":"pwd"}}]}}
 {"type":"attachment","timestamp":"2026-11-19T09:00:04.000Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"humanTurn":true,"imagePasteIds":[3],"prompt":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"YmF6"}}]}}
 {"type":"user","timestamp":"2026-11-19T09:00:04.100Z","message":{"content":[{"type":"tool_result","tool_use_id":"b2","content":"/w"}]}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-19T09:00:04.200Z","content":"[Image #4] one more"}
+{"type":"attachment","timestamp":"2026-11-19T09:00:04.500Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"humanTurn":true,"imagePasteIds":[4],"prompt":[{"type":"text","text":"[Image #4] one more"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"cXV4"}}]}}
 {"type":"attachment","timestamp":"2026-11-19T09:00:05.000Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"prompt":"words alone"}}
 {"type":"assistant","timestamp":"2026-11-19T09:00:06.000Z","message":{"content":[{"type":"text","text":"seen"}]}}
 {"type":"user","timestamp":"2026-11-19T09:00:07.000Z","message":{"content":"last turn"}}
@@ -7859,6 +7876,8 @@ mod tests {
                 "image",
                 "image",
                 "image",
+                "user [Image #4] one more",
+                "image",
                 "user words alone",
                 "user last turn",
             ],
@@ -7870,6 +7889,22 @@ mod tests {
                 .any(|b| matches!(b, Block::QueueEvent { .. })),
             "the queued marker is popped at pickup: {streamed:#?}"
         );
+        // And each image's bytes load from its line, in the order the parse paths drew them: a
+        // small image is not elided, so this walk is the only way its picture is ever shown.
+        let line = |needle: &str| jsonl.lines().find(|l| l.contains(needle)).unwrap();
+        let b64 = |l: &str, i: usize| match nth_loaded_attachment(l, i) {
+            Some(LoadedAttachment::Base64 { b64, .. }) => Some(b64),
+            _ => None,
+        };
+        let two = line("\"imagePasteIds\":[1,2]");
+        assert_eq!(b64(two, 0).as_deref(), Some("Zm9v"));
+        assert_eq!(b64(two, 1).as_deref(), Some("YmFy"));
+        assert_eq!(b64(two, 2), None);
+        assert_eq!(
+            b64(line("\"imagePasteIds\":[3]"), 0).as_deref(),
+            Some("YmF6")
+        );
+        assert_eq!(b64(line("\"prompt\":\"words alone\""), 0), None);
     }
 
     /// #88: Claude Code sometimes writes a mid-turn typed prompt as a standalone `user`
