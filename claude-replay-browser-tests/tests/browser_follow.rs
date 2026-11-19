@@ -14071,11 +14071,14 @@ fn the_tight_session_top_bar_reads_glyphs_search_aa_info_and_pane() {
     );
     // There the view is wider than the session (the pane beside it), so the bar takes the search
     // box rules of the next band up; a press on ↓ with no focus for the button still steps there.
+    // At rest in the 512px session the held query's count and steps take the box's room, as a
+    // phone's closed box with a query is its count and steps (#352), and the field is a sliver: a
+    // press on the count is a press for the field, as anywhere in the box but its buttons.
     harness::eval(
         &tab,
         "document.addEventListener('mousedown', window.__noButtonFocus, true); 1",
     );
-    harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
+    harness::click_when_settled(&tab, "#transcriptSearchCount", "the search box's count");
     harness::until(
         &tab,
         &reopened,
