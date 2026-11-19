@@ -1580,16 +1580,19 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    own), and it reads, left to right, the outline's three glyphs, the search box, Aa, Info and the
    pane's control, nothing else. The session's name leaves it for the head of Info's card, the agent,
    the project and the state with it (`placeOutlineGlyphs`, session-view.js); fold-all moves into
-   Aa's menu; the outline's expand control stays in its column. The search box is a box with the
+   Aa's menu; the outline's expand control stays in its column, unless a host gives the outline the
+   room to open (then it stands before Info). The search box is a box with the
    bar's room. While it is in use (`search-held`, session-view.js: from a mouse's press or a focus
    inside the search until a press outside it, a Tab out or Escape, since Safari gives a pressed
    button no focus) the glyphs give it their room too, so a query keeps a field beside its count,
-   steps and filter in a 480px column under the drawer's handle; they come back as it rests. */
+   steps and filter in a 480px column under the drawer's handle; they come back as it rests. A mouse's
+   press that brings it into use from the field keeps them until it lifts (`search-pressing`), so the
+   text does not move under the caret it places. */
 #sessionView.pl-outline-bar .workspace>.topbar{column-gap:4px;padding-right:10px}
 #sessionView.pl-outline-bar .workspace>.topbar>.top-spacer{display:none}
 #sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster{flex:1 1 auto;min-width:0}
 #sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster>.header-searchbox{width:100%;max-width:none}
-#sessionView.pl-outline-bar .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held))>.phone-pane{display:none}
+#sessionView.pl-outline-bar .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held):not(.search-pressing))>.phone-pane{display:none}
 /* The fold-all control is the one the bar can spare: it moves into Aa's menu there (the phone has
    neither). A host that switched Aa off keeps it in the bar, with Aa's room. */
 #sessionView .reading-options .reading-fold-all{display:none}

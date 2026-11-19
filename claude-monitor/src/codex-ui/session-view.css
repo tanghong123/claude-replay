@@ -2026,7 +2026,7 @@
 #sessionView.pl-outline-bar .workspace>.topbar>.top-spacer{display:none}
 #sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster{flex:1 1 auto;min-width:0}
 #sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster>.header-searchbox{width:100%;max-width:none}
-#sessionView.pl-outline-bar .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held))>.phone-pane{display:none}
+#sessionView.pl-outline-bar .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held):not(.search-pressing))>.phone-pane{display:none}
 #sessionView .reading-options .reading-fold-all{display:none}
 #sessionView.pl-outline-bar .reading-options .reading-fold-all{display:grid}
 #sessionView.pl-outline-bar .workspace>.topbar:has(>.reading-cluster)>#sessionFoldAll{display:none}

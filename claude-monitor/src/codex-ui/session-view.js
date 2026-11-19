@@ -2845,9 +2845,18 @@ document.addEventListener("pointerdown", event => {
 // is released, since what the reader did then is where they are.
 let searchFrom = null;
 const searchCluster = viewRoot.$(".header-search-cluster");
-// A press on the field itself holds nothing either: its focus holds it, a moment later, so where the
-// glyphs give the box their room (#s582) the field does not move under the press that places its caret.
-searchCluster.addEventListener("pointerdown", event => { if (event.pointerType === "mouse" && event.target !== byId("transcriptSearchInput")) searchCluster.classList.add("search-held"); }, { signal });
+// Where the outline's glyphs give the box their room as it comes into use (#s582), a mouse's press on
+// the field keeps them drawn until it lifts (`search-pressing`): the press places the caret and starts
+// a selection by the layout under the pointer, which the glyphs going would move by their width (the
+// review of #s582). A box already in use stays as it is.
+searchCluster.addEventListener("pointerdown", event => {
+  if (event.pointerType !== "mouse") return;
+  if (event.target === byId("transcriptSearchInput") && !searchCluster.matches(":focus-within, .search-held")) searchCluster.classList.add("search-pressing");
+  searchCluster.classList.add("search-held");
+}, { signal });
+const pressEnded = () => searchCluster.classList.remove("search-pressing");
+for (const type of ["pointerup", "pointercancel"]) document.addEventListener(type, pressEnded, { capture: true, signal });
+addEventListener("blur", pressEnded, { signal });
 searchCluster.addEventListener("focusin", event => {
   searchCluster.classList.add("search-held");
   if (event.relatedTarget && !searchCluster.contains(event.relatedTarget)) searchFrom = event.relatedTarget === transcript ? transcript : null;

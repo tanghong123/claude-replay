@@ -13810,6 +13810,73 @@ fn the_tight_session_top_bar_reads_glyphs_search_aa_info_and_pane() {
         &tab,
         "document.removeEventListener('mousedown', window.__noButtonFocus, true); 1",
     );
+    // A mouse's press on the resting field, its query held, keeps the glyphs drawn until it lifts, so
+    // the text does not move under the caret the press places (the review of #s582); as it lifts the
+    // box takes their room.
+    {
+        use headless_chrome::protocol::cdp::Input::{
+            DispatchMouseEvent, DispatchMouseEventTypeOption, MouseButton,
+        };
+        let field = harness::probe(
+            &tab,
+            "(function(){ var r = document.getElementById('transcriptSearchInput').getBoundingClientRect(); return { x: r.left + Math.min(20, r.width / 2), y: r.top + r.height / 2, left: r.left }; })()",
+        );
+        let (x, y) = (
+            field["x"].as_f64().expect("the field's x"),
+            field["y"].as_f64().expect("the field's y"),
+        );
+        let mouse = |kind: DispatchMouseEventTypeOption, buttons: u32| {
+            tab.call_method(DispatchMouseEvent {
+                Type: kind,
+                x,
+                y,
+                modifiers: None,
+                timestamp: None,
+                button: Some(MouseButton::Left),
+                buttons: Some(buttons),
+                click_count: Some(1),
+                force: None,
+                tangential_pressure: None,
+                tilt_x: None,
+                tilt_y: None,
+                twist: None,
+                delta_x: None,
+                delta_y: None,
+                pointer_Type: None,
+            })
+            .unwrap();
+        };
+        mouse(DispatchMouseEventTypeOption::MouseMoved, 0);
+        mouse(DispatchMouseEventTypeOption::MousePressed, 1);
+        harness::eval(&tab, TWO_FRAMES);
+        let held = harness::probe(
+            &tab,
+            "({ left: document.getElementById('transcriptSearchInput').getBoundingClientRect().left, turns: document.getElementById('phonePane-turns').getBoundingClientRect().width, focused: document.activeElement && document.activeElement.id, pressing: document.querySelector('.header-search-cluster').classList.contains('search-pressing') })",
+        );
+        mouse(DispatchMouseEventTypeOption::MouseReleased, 0);
+        assert!(
+            held["turns"].as_f64().unwrap_or(0.0) > 0.0
+                && (held["left"].as_f64().unwrap_or(f64::NAN) - field["left"].as_f64().unwrap_or(0.0)).abs() < 0.5
+                && held["focused"] == "transcriptSearchInput"
+                && held["pressing"] == true,
+            "while the press on the resting field lasts the glyphs stay and the field does not move ({field}): {held}"
+        );
+    }
+    harness::until(
+        &tab,
+        &reopened,
+        "the press on the field lifting to let the box take the glyphs' room",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ width: {box_width}, held: document.querySelector('.header-search-cluster').className }})"),
+    );
+    press_outside();
+    harness::until(
+        &tab,
+        &folded,
+        "a press outside to let the box rest again",
+        Duration::from_secs(5),
+        box_width,
+    );
     // As Chrome presses a button, which takes the focus: a Tab out of the open filter's rows shuts
     // the filter and lets the box rest, and Escape with the focus on ↓ does too.
     harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
