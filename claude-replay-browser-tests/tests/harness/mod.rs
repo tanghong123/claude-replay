@@ -2377,7 +2377,7 @@ impl Drop for Chrome {
 /// counting the tabs that did not answer in time. A tab whose page could not be read at all (gone,
 /// crashed) says nothing, and nor does one no thread could be started for. The list of tabs is taken
 /// first, under headless_chrome's own lock; then every tab is asked at once, each on a thread of its
-/// own, against one deadline of 2 s from the asking: a tab that has not answered by then is left to
+/// own, against one deadline of 2 s from the last ask: a tab that has not answered by then is left to
 /// the SIGTERM that follows, which also ends the question. The time it takes is a `CR_PROFILE` row of
 /// its own.
 fn report_loop_notices(browser: &headless_chrome::Browser) {

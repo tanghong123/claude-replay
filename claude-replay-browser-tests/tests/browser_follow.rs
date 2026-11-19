@@ -14423,9 +14423,10 @@ fn a_narrow_session_column_keeps_a_held_query_whole_and_the_chip_whole_or_its_do
 /// - `window.__frames`, from `window.__record()` or a `/` keydown once `window.__arm` is set (seen
 ///   first, at the window in the capture phase): six entries, one a frame, of the strip the fit's
 ///   observer watches (`#searchField`, its width), the cluster's floor, the cluster's width and the
-///   heading's two classes the fit decides, `|`-joined. Each is read at the start of a frame,
-///   before the page's own frame callbacks of that frame, so it is what the frame before it painted:
-///   the first is the first frame drawn after the key or the change.
+///   heading's two classes the fit decides, `|`-joined. Each is read at the start of a frame, before
+///   the frame callbacks the page asked for since the one before (the fit's, `fitHeadingSoon`'s), so
+///   it is what the frame before it painted, unless a task between the two frames changed the page
+///   (none in this case's steps): the first is the first frame drawn after the key or the change.
 const HELD_QUERY_SCRIPT: &str = "window.__loops = []; addEventListener('error', function (e) { if (!e.error && /^ResizeObserver loop/.test(String(e.message))) window.__loops.push(window.__step || null); }); window.__reports = []; (function () { var RO = window.ResizeObserver; window.ResizeObserver = function (callback) { return new RO(function (entries, observer) { entries.forEach(function (e) { var t = e.target; window.__reports.push(String(window.__step) + ' ' + (t.id ? '#' + t.id : '.' + String(t.className).split(' ')[0]) + ':' + Math.round(e.contentRect.width)); }); return callback.call(this, entries, observer); }); }; window.ResizeObserver.prototype = RO.prototype; })(); window.__sig = function () { var c = document.querySelector('.workspace>.topbar>.header-search-cluster'), f = document.getElementById('searchField'), crumb = document.getElementById('sessionCrumb'), h = crumb && crumb.parentElement; return [f ? Math.round(f.getBoundingClientRect().width) : -1, c ? c.style.getPropertyValue('--search-floor') : '?', c ? Math.round(c.getBoundingClientRect().width) : -1, h ? ['crumb-off', 'chip-dot'].filter(function (k) { return h.classList.contains(k); }).join(' ') : '?'].join('|'); }; window.__record = function () { var out = window.__frames = []; requestAnimationFrame(function () { (function next() { requestAnimationFrame(function () { out.push(window.__sig()); if (out.length < 6) next(); }); })(); }); }; addEventListener('keydown', function (e) { if (e.key !== '/' || !window.__arm) return; window.__arm = false; window.__record(); }, true);";
 
 /// #s624: at a desktop's width, the right pane shut and open, a query held in the search box, taken
@@ -14436,8 +14437,9 @@ const HELD_QUERY_SCRIPT: &str = "window.__loops = []; addEventListener('error', 
 /// other layout's check): the strip's new size went to the field's own observer, whose fit wrote the
 /// cluster's floor and the heading's classes, both above the field in the page, inside that delivery
 /// (measured: the cluster 252px then 246px within the frame), so the browser put the cluster's report
-/// off a frame with that notice. The fit now waits for the next frame, so the box settles a frame
-/// after such a change; the case holds that it settles rather than going back and forth. And / on the
+/// off a frame with that notice. The fit now waits for the next frame, so the box settles one frame
+/// after such a change (measured: the strip 172px and the cluster 252px in the first frame drawn, 166px
+/// and 246px from the next on); the case holds the move and that it then holds still. And / on the
 /// held query draws the box as at rest from the first frame after the key and holds it (measured: it
 /// gives the observers no size report at all here).
 #[test]
@@ -14571,15 +14573,20 @@ fn a_held_query_emptied_beside_the_open_pane_raises_no_resize_observer_loop() {
             let before = harness::eval(&tab, "(function(){ var b = window.__sig(); window.__record(); var i = document.getElementById('transcriptSearchInput'); i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })); i.blur(); return b; })()");
             let before = before.as_str().unwrap_or("").to_string();
             let frames = frames_of(&tab, "the emptying");
-            // It settles: a fit going back and forth from frame to frame raises no notice, and would
-            // show here. The first frame may still be the one before the observer's fit.
+            // It settles in the frame after the first: the first frame drawn is the one before the
+            // observer's fit, which waits for the next. A fit going back and forth from frame to
+            // frame raises no notice, and would show here.
             assert!(
-                frames.len() == 6 && strip(&frames[5]) > 0.0 && frames[3..].iter().all(|f| *f == frames[5]),
-                "{emptied}: the box settles within three frames and holds (strip|floor|cluster|heading): {before} before, then {frames:?}"
+                frames.len() == 6 && strip(&frames[5]) > 0.0 && frames[1..].iter().all(|f| *f == frames[5]),
+                "{emptied}: the box settles one frame after the emptying and holds (strip|floor|cluster|heading): {before} before, then {frames:?}"
             );
             if open {
-                // Not vacuous: where the notice came, the pane was open and the emptying gave the
-                // fit's observer the strip's new size.
+                // Not vacuous: where the notice came, the pane was open, the emptying gave the fit's
+                // observer the strip's new size, and the fit then resized the cluster above the strip,
+                // so the cluster was reported at two widths in the step (the write that raised the
+                // notice inside that delivery before #s624; read from the reports, which hold either
+                // way, where the frames differ: before #s624 the fit was drawn in the first frame).
+                // With the pane shut the strip is reported too, and the fit changes nothing.
                 assert_eq!(
                     harness::eval(
                         &tab,
@@ -14596,6 +14603,16 @@ fn a_held_query_emptied_beside_the_open_pane_raises_no_resize_observer_loop() {
                 assert!(
                     reports.contains(" #searchField:"),
                     "{emptied}: the strip's new size reported to the fit's observer: {reports}"
+                );
+                let list: Vec<String> = serde_json::from_str(&reports).unwrap_or_default();
+                let mut widths: Vec<&str> = list
+                    .iter()
+                    .filter_map(|r| r.split(" .header-search-cluster:").nth(1))
+                    .collect();
+                widths.dedup();
+                assert!(
+                    widths.len() >= 2,
+                    "{emptied}: the observer's fit resized the cluster above the strip, reported at two widths: {reports}"
                 );
             }
         }
