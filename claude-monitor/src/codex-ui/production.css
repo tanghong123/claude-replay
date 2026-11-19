@@ -1588,11 +1588,15 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    button no focus) the glyphs give it their room too, so a query keeps a field beside its count,
    steps and filter in a 480px column under the drawer's handle; they come back as it rests. A mouse's
    press that brings it into use from the field keeps them until it lifts (`search-pressing`), so the
-   text does not move under the caret it places. */
+   text does not move under the caret it places. At rest a held query is its text and the filter, the
+   count, the steps and the clear back with the box in use, as the narrower band's box at rest, whatever
+   the view's own width (beside the pane it reads the next band up, where they filled a 482px column's
+   box and pushed the filter over Aa). */
 #sessionView.pl-outline-bar .workspace>.topbar{column-gap:4px;padding-right:10px}
 #sessionView.pl-outline-bar .workspace>.topbar>.top-spacer{display:none}
 #sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster{flex:1 1 auto;min-width:0}
 #sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster>.header-searchbox{width:100%;max-width:none}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox .search-field~:is(.find-count,.find-nav,.search-clear){display:none}
 #sessionView.pl-outline-bar .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held):not(.search-pressing))>.phone-pane{display:none}
 /* The fold-all control is the one the bar can spare: it moves into Aa's menu there (the phone has
    neither). A host that switched Aa off keeps it in the bar, with Aa's room. */
