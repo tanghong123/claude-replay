@@ -1943,8 +1943,11 @@
 #sessionView:not(.pl-phone) .workspace>.topbar>.session-heading.crumb-off{flex:0 0 var(--heading-room,auto);max-width:max-content}
 :where(#sessionView) .session-copy-about{display:none;padding:6px 8px 8px;margin-bottom:2px;border-bottom:1px solid var(--line);color:var(--sub);font-size:11.5px;line-height:1.4;overflow-wrap:anywhere}
 :where(#sessionView) .session-copy-menu.names-crumb .session-copy-about{display:block}
+#sessionView:not(.pl-phone) .workspace>.topbar>.session-heading.chip-dot>.status-chip{flex:none;gap:0;padding:0;max-width:none;font-size:0}
 #sessionView:not(.pl-phone) .workspace>.topbar>.session-heading>#sessionTitle{min-width:calc(min(var(--title-word,0px),160px) + 10px)}
 #sessionView:not(.pl-phone) .workspace>.topbar>.session-heading{min-width:calc(min(var(--title-word,0px),160px) + 65px)}
+#sessionView:not(.pl-phone) .workspace>.topbar>.session-heading{--heading-rest:22px}
+#sessionView:not(.pl-phone) .workspace>.topbar>.session-heading.crumb-off{min-width:calc(min(var(--title-word,0px),160px) + 10px + var(--heading-rest))}
 #sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster{flex-shrink:1;min-width:150px}
 #sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster>.header-searchbox{max-width:100%}
 #sessionView:not(.pl-phone) .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held))>.session-heading,#sessionView:not(.pl-phone) .workspace>.topbar:has(>.header-search-cluster>.header-searchbox.has-query)>.session-heading{flex-shrink:2}
