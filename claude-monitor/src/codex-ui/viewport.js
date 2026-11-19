@@ -338,7 +338,7 @@ export class Viewport extends VirtualWindow {
     this.session = session || "";
     this.pendingTries = 0;
     let memory = null;
-    try { memory = parseViewMemory(sessionStorage.getItem(viewMemoryKey(this.session))); } catch (_) {}
+    try { memory = parseViewMemory(sessionStorage.getItem(viewMemoryKey(this.session, backend().base))); } catch (_) {}
     this.pending = memory && !memory.following ? memory : null;
     this.state.following = !this.pending;
     this.state.newRecords = 0;
@@ -355,7 +355,7 @@ export class Viewport extends VirtualWindow {
     const value = this.state.following ? { following: true } : this.captureDomAnchor();
     if (!value) return;
     const view = viewChoices(this.state);
-    try { sessionStorage.setItem(viewMemoryKey(this.session), serializeViewMemory(value.following ? { following: true, view } : { following: false, key: value.key, top: value.top, view })); } catch (_) {}
+    try { sessionStorage.setItem(viewMemoryKey(this.session, backend().base), serializeViewMemory(value.following ? { following: true, view } : { following: false, key: value.key, top: value.top, view })); } catch (_) {}
   }
 
   /** The store's update (framework §4.11): one records transaction whose mutation is this

@@ -4,7 +4,11 @@
 // reader was following the tail; following IS the position, so a followed session comes back
 // following rather than at a stale offset. Unit keys are the record ids the server assigns,
 // stable across reloads, which is what makes remembering by key work at all.
-export const viewMemoryKey = session => `am-view:${session}`;
+// A server's sessions are told apart from another's by the base of the handle the view reads it
+// through (#s597): over several machines one id may name a session on each, and a remount onto
+// another machine must not bring the first one's position. The page's own server (base "") keeps
+// the key it always had.
+export const viewMemoryKey = (session, base = "") => (base ? `am-view:${base}|${session}` : `am-view:${session}`);
 
 // The reader's CHOICES ride with the position (#114): which folds, processes and prompts
 // they opened, which turns they read raw, which caps they expanded — keyed by record

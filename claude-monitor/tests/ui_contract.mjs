@@ -1538,6 +1538,15 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 // key plus its offset; anything else is not a memory at all.
 {
   assert.equal(viewMemoryKey("s1"), "am-view:s1");
+  // #s597: another server's session of the same id is remembered apart; the page's own keeps its key.
+  assert.equal(viewMemoryKey("s1", ""), "am-view:s1");
+  assert.equal(viewMemoryKey("s1", "/machine-b"), "am-view:/machine-b|s1");
+  assert.notEqual(viewMemoryKey("s1", "app://d/tern"), viewMemoryKey("s1", "app://d/skua"));
+  {
+    const viewportText = readFileSync(new URL("../src/codex-ui/viewport.js", import.meta.url), "utf8");
+    assert.equal((viewportText.match(/viewMemoryKey\(this\.session, backend\(\)\.base\)/g) || []).length, 2, "the viewport reads and writes the memory under the handle's base");
+    assert.equal((viewportText.match(/viewMemoryKey\(/g) || []).length, 2, "and keys it nowhere else");
+  }
   assert.deepEqual(parseViewMemory(serializeViewMemory({ following: true })), { following: true });
   assert.deepEqual(parseViewMemory(serializeViewMemory({ following: false, key: "user:b12", top: 17.6 })), { following: false, key: "user:b12", top: 18 }, "an anchor round-trips, rounded to the pixel");
   assert.equal(parseViewMemory(""), null); assert.equal(parseViewMemory("nope"), null); assert.equal(parseViewMemory('{"key":"","top":1}'), null); assert.equal(parseViewMemory('{"key":"x","top":"1"}'), null, "a non-numeric offset is rejected");
