@@ -2,6 +2,10 @@
 //! client's reason, and that has to hold across a durable resume as well as a cold fold: a resume
 //! after the block's turn committed restores the Blocked block from the cache's bytes rather than
 //! folding it again.
+//!
+//! What it cannot do is split the mark from its result: both come from the one record line (its
+//! result and its `toolDenialKind`), so no resume point falls between them. It holds what a resume
+//! restores, the Blocked block and its reason, at every point there is.
 use claude_replay_agents::ClaudeAdapter;
 use claude_replay_engine::{
     adapter::TranscriptAdapter,

@@ -214,11 +214,16 @@ pub enum Message {
         tool_use_id: String,
         words: Option<String>,
     },
-    /// The client says a hook or a permission rule stopped a call before it ran (#s600; Claude
-    /// Code's `toolDenialKind` "permission-rule"), its result already joined. The fold marks the
-    /// call Blocked in place of the Failed its error made it, its output the client's text, which
-    /// names the hook or the rule and its reason. A question is left to its own reading (#281).
-    ToolBlocked { tool_use_id: String },
+    /// The client says a hook, a permission rule or auto mode stopped a call before it ran
+    /// (#s600; Claude Code's `toolDenialKind` "permission-rule" or an auto mode kind), its result
+    /// already joined. The fold marks the call Blocked in place of the Failed its error made it,
+    /// its output `reason`, the client's text as the result carries it, which names the hook, the
+    /// rule or auto mode and why (`None`: the output the result gave stays). A question is left
+    /// to its own reading (#281).
+    ToolBlocked {
+        tool_use_id: String,
+        reason: Option<String>,
+    },
     /// A loaded skill's instruction body (L1-detected). The fold nests it into the most
     /// recent `Skill` tool block; if there is none, it falls back to `fallback` as a
     /// `SystemNote`-style result block. Only L1 knows the raw format; the fold only places it.

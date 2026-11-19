@@ -238,14 +238,19 @@ pub fn decline(block: &mut Block, words: Option<&str>) -> bool {
     true
 }
 
-/// #s600: mark a call a hook or a permission rule stopped before it ran
-/// ([`Message::ToolBlocked`]): Blocked in place of the Failed its error made it, its output kept
-/// (the client's text, which names the hook or the rule and its reason). A question (`asked`) is
-/// left to its own reading (#281). Whether it changed the block. Shared with the full parse.
+/// #s600: mark a call a hook, a permission rule or auto mode stopped before it ran
+/// ([`Message::ToolBlocked`]): Blocked in place of the Failed its error made it, its output
+/// `reason` when there is one (the client's text, which names what stopped it and why; an edit's
+/// result joined as the client's `Error: …` string, or as nothing when that text matched a
+/// refusal's words), else as the result left it. A question (`asked`) is left to its own reading
+/// (#281). Whether it changed the block. Shared with the full parse.
 #[doc(hidden)]
-pub fn mark_blocked(block: &mut Block) -> bool {
+pub fn mark_blocked(block: &mut Block, reason: Option<&str>) -> bool {
     let Block::ToolUse {
-        execution, asked, ..
+        execution,
+        asked,
+        output,
+        ..
     } = block
     else {
         return false;
@@ -261,6 +266,9 @@ pub fn mark_blocked(block: &mut Block) -> bool {
             outside_sandbox: false,
         })
         .status = Some(crate::model::ToolStatus::Blocked);
+    if let Some(reason) = reason {
+        *output = Some(reason.to_string());
+    }
     true
 }
 
@@ -535,9 +543,12 @@ impl<'a> Replayer<'a> {
                     }
                 }
                 // #s600: a call a hook or a rule stopped before it ran reads Blocked, not Failed.
-                Message::ToolBlocked { tool_use_id } => {
+                Message::ToolBlocked {
+                    tool_use_id,
+                    reason,
+                } => {
                     if let Some(rel) = self.tool_slot.get(tool_use_id).map(|&i| i - self.base) {
-                        if mark_blocked(&mut self.out[rel]) {
+                        if mark_blocked(&mut self.out[rel], reason.as_deref()) {
                             note_patch(&mut patch_floor, self.base + rel, emitted_frontier);
                         }
                     }
