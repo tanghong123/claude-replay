@@ -7265,6 +7265,147 @@ fn app_shell_tool_heads_carry_state_exit_and_duration() {
     scenario_tool_heads_carry_state_exit_and_duration(&page.tab, Surface::AppShell, &fx);
 }
 
+// ── scenario: a call a hook or a permission rule stopped reads blocked (#s600) ─────────────
+
+/// A Claude session whose last turn holds a call a PreToolUse hook stopped before it ran, as
+/// Claude Code records it (`toolDenialKind: permission-rule` on the record carrying its lone
+/// result), and a call that ran and failed, for contrast.
+fn fixture_blocked(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(8, Shape::default());
+    t += &harness::user_at("Deploy it, then check the logs.", &harness::at("59:01"));
+    t += &tool_open_at("b-hook", &harness::at("59:02"));
+    t += &format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"b-hook\",\"is_error\":true,\"content\":\"PreToolUse:Bash hook error: [guard] deploys need a person\"}}]}},\"toolDenialKind\":\"permission-rule\",\"timestamp\":\"{}\"}}\n",
+        harness::at("59:03")
+    );
+    t += &tool_open_at("b-fail", &harness::at("59:04"));
+    t += &harness::error_result_at("b-fail", "exit 1: no such file", &harness::at("59:05"));
+    t += &assistant_at("The deploy needs you.", &harness::at("59:06"));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 9,
+    }
+}
+
+/// #s600 (Hong's ruling on #s599, "New word: blocked, reason kept"): a call a hook or a rule
+/// stopped before it ran says `blocked` where a failed call says it failed, with failure
+/// presentation, and its body is the client's reason as it wrote it.
+fn scenario_a_call_a_hook_stopped_reads_blocked(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    if surface == Surface::AppShell {
+        eval(
+            tab,
+            "document.querySelectorAll('[data-process-more][aria-expanded=\"false\"]').forEach(b => b.click())",
+        );
+        settle();
+    }
+    let heads = probe(
+        tab,
+        match surface {
+            Surface::Classic => "[...document.querySelectorAll('#stream .fold')].map(f => { var h = f.querySelector('.fold-h'); return { target: (h.querySelector('.tool-target,.tool-path') || {}).textContent || '', chips: [...h.querySelectorAll('.chip')].map(c => ({ c: c.className.replace('chip', '').trim(), x: c.textContent })), body: (f.querySelector('.fold-b') || {}).textContent || '' }; })",
+            Surface::AppShell => "[...document.querySelectorAll('.renderer[data-renderer-kind]')].map(r => ({ target: (r.querySelector('.renderer-target') || {}).textContent || '', state: r.dataset.state || '', pill: (r.querySelector('.renderer-state') || {}).textContent || '', body: r.textContent || '' }))",
+        },
+    );
+    let heads = heads.as_array().cloned().unwrap_or_default();
+    let find = |target: &str| {
+        heads
+            .iter()
+            .find(|h| h["target"] == target)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {target} head among {heads:?}"))
+    };
+    let blocked = find("echo b-hook");
+    let failed = find("echo b-fail");
+    match surface {
+        Surface::Classic => {
+            let last = |h: &serde_json::Value| {
+                h["chips"]
+                    .as_array()
+                    .and_then(|c| c.last().cloned())
+                    .unwrap_or_default()
+            };
+            assert_eq!(
+                last(&blocked),
+                serde_json::json!({ "c": "fail", "x": "blocked" }),
+                "a call a hook stopped says blocked, as a failure: {blocked:?}"
+            );
+            assert_eq!(
+                last(&failed),
+                serde_json::json!({ "c": "fail", "x": "failed" }),
+                "a call that ran and failed still says failed: {failed:?}"
+            );
+        }
+        Surface::AppShell => {
+            // The pill carries every chip, the word already among them, so it is not said twice.
+            assert_eq!(
+                (blocked["state"].as_str(), blocked["pill"].as_str()),
+                (Some("failed"), Some("1 lines · blocked")),
+                "a call a hook stopped says blocked, as a failure: {blocked:?}"
+            );
+            assert_eq!(
+                failed["state"].as_str(),
+                Some("failed"),
+                "a call that ran and failed is a failure: {failed:?}"
+            );
+            assert!(
+                !failed["pill"].as_str().unwrap_or("").contains("blocked"),
+                "…and never says blocked: {failed:?}"
+            );
+        }
+    }
+    // The reason is kept, as the call's output: the shell's renderer draws it; the classic
+    // page draws a fold's body once its head is clicked.
+    let reason = match surface {
+        Surface::Classic => {
+            eval(
+                tab,
+                "(function(){ var f = [...document.querySelectorAll('#stream .fold')].find(f => ((f.querySelector('.fold-h .tool-target,.fold-h .tool-path') || {}).textContent || '') === 'echo b-hook'); if (f) f.querySelector('.fold-h').click(); })()",
+            );
+            settle();
+            probe(
+                tab,
+                "(function(){ var f = [...document.querySelectorAll('#stream .fold')].find(f => ((f.querySelector('.fold-h .tool-target,.fold-h .tool-path') || {}).textContent || '') === 'echo b-hook'); return f ? f.textContent : null; })()",
+            )
+        }
+        Surface::AppShell => blocked["body"].clone(),
+    };
+    assert!(
+        reason
+            .as_str()
+            .unwrap_or("")
+            .contains("PreToolUse:Bash hook error: [guard] deploys need a person"),
+        "the client's reason is the blocked call's output: {reason:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_call_a_hook_stopped_reads_blocked() {
+    let _serial = serial();
+    let fx = fixture_blocked("scenario-blocked-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_call_a_hook_stopped_reads_blocked(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_a_call_a_hook_stopped_reads_blocked() {
+    let _serial = serial();
+    let fx = fixture_blocked("scenario-blocked-app");
+    let page = open(Surface::AppShell, &fx, 3164);
+    scenario_a_call_a_hook_stopped_reads_blocked(&page.tab, Surface::AppShell, &fx);
+}
+
 /// A spawn's `launched` chip is a launch EVENT, not liveness (#117): a closed session's
 /// sub-agents must read as finished work on both pages, not as calls still in flight.
 fn scenario_a_launched_spawn_is_not_a_running_head(
