@@ -2142,3 +2142,195 @@ fn the_monitor_opens_a_transcript_in_a_tab_of_its_own() {
         "the tab keeps the rest of its address"
     );
 }
+
+/// One session id on both machines, long enough to scroll, for #s612.
+const SID_PLACE: &str = "cccccccc-0000-4000-8000-000000006120";
+
+/// #s612 (#s597's browser case): a session's reading place is kept per machine. Over two machines
+/// one id names a session on each, and the view remembers where the reader was by the handle's base
+/// and the id (`viewMemoryKey`: `am-view:<id>` for the page's own server, `am-view:<base>|<id>` for
+/// another). The reader scrolls the first machine's copy to a turn well inside it, opens the second
+/// machine's copy of the same id, which has nothing remembered and so follows its own end, not the
+/// first machine's place; back on the first machine, its place comes back. The first machine is the
+/// page's own server, which keeps the key it always had.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_web_app_over_two_machines_keeps_each_machines_reading_place_for_a_shared_id() {
+    let _serial = serial();
+    let base = base("kit-app-places");
+    // Sixty turns at a fixed past hour, then a last one now, so the list shows the session.
+    let long = |last: &str| {
+        harness::long_session(60, harness::Shape::default())
+            + &harness::user_at(&format!("{last}?"), &harness::rfc3339_secs_ago(120))
+            + &harness::assistant_at(&format!("{last}, counted"), &harness::rfc3339_secs_ago(110))
+    };
+    let stores = Stores::new(&base);
+    stores.claude_session(SID_PLACE, &long("the terns on the north spit"));
+    let monitor = Monitor::spawn(Kind::V1, 3333, &base, Some(&stores), true);
+    let there_base = base.join("machine-b");
+    let there_stores = Stores::new(&there_base);
+    there_stores.claude_session(SID_PLACE, &long("the skuas on the ridge"));
+    let there = Monitor::spawn(Kind::V1, 3334, &there_base, Some(&there_stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let mut answers = kit_answers("");
+    answers.push(Answer {
+        pattern: "*/kit-machines*".into(),
+        path: "/kit-machines".into(),
+        content_type: "text/html; charset=utf-8".into(),
+        body: APP_MACHINES_HOST
+            .replace("{{MDREV}}", claude_monitor::kit::MDREV)
+            .replace("{{MERMAID}}", claude_replay_html::mermaid_runtime_path()),
+    });
+    harness::answer_and_relay_in_browser(
+        &tab,
+        answers,
+        vec![
+            harness::Relay {
+                prefix: "/machine-b".into(),
+                port: there.port,
+                token: there.token(),
+            },
+            harness::Relay {
+                prefix: "/app-vendor".into(),
+                port: monitor.port,
+                token: monitor.token(),
+            },
+        ],
+    );
+    let own_key = format!("am-view:{SID_PLACE}");
+    let there_key = format!("am-view:/machine-b|{SID_PLACE}");
+    // Where the view is: the first unit at the transcript's top (the viewport's own anchor, as it
+    // remembers it), whether it is at its end, which machine's text its end says, and what each
+    // machine's memory holds.
+    let place = format!(
+        "(function () {{ var s = document.querySelector('#sessionView .transcript'), w = document.querySelector('#sessionView .virtual-window'); var anchor = null; if (s && w) {{ var top = s.getBoundingClientRect().top; for (var c of w.children) {{ var r = c.getBoundingClientRect(); if (c.dataset.unitKey && r.bottom > top + 1) {{ anchor = {{ key: c.dataset.unitKey, top: Math.round(r.top - top) }}; break; }} }} }} var memory = function (k) {{ try {{ return JSON.parse(sessionStorage.getItem(k) || 'null'); }} catch (e) {{ return 'unreadable'; }} }}; var keys = []; for (var i = 0; i < sessionStorage.length; i++) {{ if (sessionStorage.key(i).indexOf('am-view:') === 0) keys.push(sessionStorage.key(i)); }} var text = (s && s.innerText) || ''; return {{ session: new URLSearchParams(location.search).get('session'), anchor: anchor, tail: !!s && s.scrollHeight - s.clientHeight - s.scrollTop <= 2, tall: !!s && s.scrollHeight > s.clientHeight * 3, terns: text.includes('the terns on the north spit, counted'), skuas: text.includes('the skuas on the ridge, counted'), own: memory({own_key:?}), there: memory({there_key:?}), keys: keys.sort() }}; }})()"
+    );
+    let now = format!("JSON.stringify({place})");
+    tab.navigate_to(&format!(
+        "{}?session=a%2F{SID_PLACE}",
+        monitor.url("kit-machines")
+    ))
+    .unwrap();
+    tab.wait_until_navigated().unwrap();
+    until(
+        &tab,
+        &format!("(function () {{ var p = {place}; return p.tall && p.tail && p.terns; }})()"),
+        "the first machine's session, tall enough to scroll, at its end",
+        Duration::from_secs(30),
+        &now,
+    );
+
+    // The reader scrolls the first machine's copy to a turn well inside it.
+    eval(&tab, "(function () { var s = document.querySelector('#sessionView .transcript'); s.dispatchEvent(new WheelEvent('wheel', { deltaY: 1 })); s.scrollTop = Math.floor(s.scrollHeight * 0.45); return 'ok'; })()");
+    until(
+        &tab,
+        &format!("(function () {{ var p = {place}; return !p.tail && !!p.own && p.own.following === false && !!p.anchor && p.anchor.key === p.own.key; }})()"),
+        "the first machine's place, remembered at the turn the reader scrolled to",
+        Duration::from_secs(20),
+        &now,
+    );
+    let rows = |id: &str| format!("#sessionList .tree-row.session[data-session=\"{id}\"]");
+    until(
+        &tab,
+        &format!(
+            "!!document.querySelector({:?}) && !!document.querySelector({:?})",
+            rows(&format!("a/{SID_PLACE}")),
+            rows(&format!("b/{SID_PLACE}"))
+        ),
+        "the session's row on each machine",
+        Duration::from_secs(30),
+        &now,
+    );
+
+    // The second machine's copy of the same id: nothing remembered there, so its own end.
+    eval(
+        &tab,
+        &format!(
+            "document.querySelector({:?}).click(); 'ok'",
+            rows(&format!("b/{SID_PLACE}"))
+        ),
+    );
+    until(
+        &tab,
+        &format!(
+            "(function () {{ var p = {place}; return p.session === {:?} && !!p.anchor; }})()",
+            format!("b/{SID_PLACE}")
+        ),
+        "the view mounted on the second machine",
+        Duration::from_secs(30),
+        &now,
+    );
+    // The view either follows its end or restores a place as the records stream in; give a
+    // restore every chance to happen before reading where it is.
+    let landed_there = (0..80)
+        .find_map(|_| {
+            std::thread::sleep(Duration::from_millis(250));
+            let p = harness::probe(&tab, &place);
+            (p["tail"] == true && p["skuas"] == true).then_some(p)
+        })
+        .map(|_| {
+            std::thread::sleep(Duration::from_millis(1500));
+            harness::probe(&tab, &place)
+        })
+        .unwrap_or_else(|| harness::probe(&tab, &place));
+    let own_memory = landed_there["own"].clone();
+    assert_ne!(
+        landed_there["anchor"]["key"], own_memory["key"],
+        "the second machine's copy is not at the first machine's turn: {landed_there}"
+    );
+    assert_eq!(
+        (&landed_there["tail"], &landed_there["skuas"]),
+        (&serde_json::json!(true), &serde_json::json!(true)),
+        "the second machine's copy opens at its own end, not at the first machine's turn: {landed_there}"
+    );
+
+    // Back on the first machine: its place comes back.
+    eval(
+        &tab,
+        &format!(
+            "document.querySelector({:?}).click(); 'ok'",
+            rows(&format!("a/{SID_PLACE}"))
+        ),
+    );
+    let back = (0..80)
+        .find_map(|_| {
+            std::thread::sleep(Duration::from_millis(250));
+            let p = harness::probe(&tab, &place);
+            (p["session"] == format!("a/{SID_PLACE}") && p["anchor"]["key"] == own_memory["key"])
+                .then_some(p)
+        })
+        // Once there, it stays there: a restore that lands and then drifts is not one.
+        .map(|_| {
+            std::thread::sleep(Duration::from_millis(1500));
+            harness::probe(&tab, &place)
+        })
+        .unwrap_or_else(|| harness::probe(&tab, &place));
+    drop(there);
+    drop(monitor);
+    assert_eq!(
+        back["anchor"]["key"], own_memory["key"],
+        "back on the first machine, the turn the reader left is at the top again: left {own_memory}, back {back}"
+    );
+    let drift = (back["anchor"]["top"].as_i64().unwrap_or(9999)
+        - own_memory["top"].as_i64().unwrap_or(0))
+    .abs();
+    assert!(
+        drift <= 6,
+        "…within a few pixels: left {own_memory}, back {back}"
+    );
+    // The page's own server keeps the key it always had; the second machine's is its own.
+    assert_eq!(
+        back["own"]["key"], own_memory["key"],
+        "the first machine's memory is under am-view:<id>, untouched by the second machine: {back}"
+    );
+    let keys: Vec<String> = serde_json::from_value(back["keys"].clone()).unwrap();
+    assert!(
+        keys.contains(&own_key) && keys.iter().all(|k| *k == own_key || *k == there_key),
+        "the views keep their places under am-view:<id> and am-view:/machine-b|<id> alone: {keys:?}"
+    );
+    assert!(
+        back["there"].is_null() || back["there"]["following"] == true,
+        "the second machine's memory, when it wrote one, says it followed its end: {back}"
+    );
+}
