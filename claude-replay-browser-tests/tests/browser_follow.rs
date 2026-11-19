@@ -18562,11 +18562,27 @@ fn a_browser_on_this_machine_pairs_from_the_page() {
         Duration::from_secs(10),
         "document.getElementById('msg').textContent",
     );
-    let stderr =
-        std::fs::read_to_string(base.join(format!("monitor-{}.stderr", m.key))).unwrap_or_default();
+    let stderr = std::fs::read_to_string(base.join(format!("monitor-{}.stderr", m.key)))
+        .expect("the monitor's stderr is kept in the case's root");
+    assert!(!stderr.is_empty(), "the monitor's stderr has its lines");
     assert!(
         !stderr.contains(&code) && !stderr.contains(&shown),
         "the code is in no line of the monitor's stderr"
+    );
+    // A restart clears a code a run before left, since nothing shows it any more (#s618 review: a
+    // start that skipped the clear passed every other case).
+    let codes_path = m.state.join("page-codes");
+    let exp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 300;
+    std::fs::write(&codes_path, format!("code QRSTUVWX {exp}\nfails 0\n")).unwrap();
+    let m = Monitor::respawn(m, &base, Some(&stores), true);
+    let left = std::fs::read_to_string(&codes_path).expect("the page codes' file is still there");
+    assert!(
+        !left.lines().any(|l| l.starts_with("code ")),
+        "a restart clears the waiting code: {left}"
     );
     drop(m);
 }

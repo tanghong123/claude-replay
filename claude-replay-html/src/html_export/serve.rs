@@ -1933,11 +1933,12 @@ pub struct AuthGate {
 /// never puts the code in a reply, a log or a notification; what shows it must not either, nor in
 /// any process's arguments, which every user of the machine can list.
 pub trait CodeDisplay: Send + Sync {
-    /// Show `code` (as the person types it, `ABCD-EFGH`) for `secs` seconds. True once it is
-    /// showing; false when it cannot be shown here, and then the code waits for the host's
-    /// terminal command instead. `ignored` is called if the person says they did not ask, which
-    /// burns the code; never when the display is withdrawn.
-    fn show(&self, code: &str, secs: u64, ignored: Box<dyn FnOnce() + Send>) -> bool;
+    /// Show `code` (as the person types it, `ABCD-EFGH`) for `secs` seconds, naming the page's
+    /// `port` so the person can tell which page asked. True once it is showing; false when it
+    /// cannot be shown here, and then the code waits for the host's terminal command instead.
+    /// `ignored` is called if the person says they did not ask, which burns the code; never when
+    /// the display is withdrawn.
+    fn show(&self, code: &str, secs: u64, port: u16, ignored: Box<dyn FnOnce() + Send>) -> bool;
     /// Take down whatever is showing: its code was used, burned or replaced.
     fn withdraw(&self);
 }
@@ -1948,6 +1949,37 @@ struct PagePairing {
     codes: std::sync::Arc<std::path::Path>,
     display: std::sync::Arc<dyn CodeDisplay>,
     code_command: &'static str,
+}
+
+/// One pairing request's view of page pairing: whether it came as this machine's own
+/// ([`local_asker`]), the port it reached, and whether its code came from a link (`?from=link`),
+/// which is a phone's code and never judged against a page code.
+#[derive(Clone, Copy)]
+struct PageCall<'a> {
+    pairing: &'a PagePairing,
+    local: bool,
+    port: u16,
+    from_link: bool,
+}
+
+/// #s618: whether a pairing request came to the loopback as this machine's own, the only kind that
+/// may ask for a page code or redeem one: a loopback peer; a `Host` that is this server's own
+/// loopback name and port (present: a browser always sends one); an `Origin` that is its own, or
+/// none; no relay's headers; and the header section whole, with no line past the cap left unread
+/// (a header there, an `Origin` say, is not checked). A phone over the tailnet keeps its own codes.
+fn local_asker(
+    peer: Option<std::net::SocketAddr>,
+    headers: &str,
+    port: u16,
+    headers_whole: bool,
+    any_past_cap: bool,
+) -> bool {
+    peer.is_some_and(|p| p.ip().is_loopback())
+        && headers_whole
+        && !any_past_cap
+        && !came_through_a_relay(headers)
+        && header_value(headers, "host").is_some()
+        && foreign_header(headers, port, None).is_none()
 }
 
 /// The refusal a gate gives when its host sets none — the monitor's own.
@@ -2856,18 +2888,22 @@ fn serve_connection_timed<R: Into<HttpReply>>(
         let page = gate.page_pairing.as_ref();
         let asks = page.is_some() && name == "api/pair/ask";
         if !denied_large_body && (name == "pair" || name == "api/pair" || asks) {
-            // #s618: a page code is asked for and redeemed only by a request that came to the
-            // loopback as this machine's own: a loopback peer, the server's own `Host` and its own
-            // `Origin` or none (never a trusted tailnet name), no relay's headers, and the header
-            // section whole. A phone over the tailnet keeps its own codes.
-            let local_asker = page.is_some()
-                && peer.is_some_and(|p| p.ip().is_loopback())
-                && headers_whole
-                && !relayed_past_cap
-                && !came_through_a_relay(&headers)
-                && host_is_local(header_value(&headers, "host"))
-                && foreign_header(&headers, local.map_or(0, |l| l.port()), None).is_none();
-            let page = page.map(|p| (p, local_asker));
+            // #s618: a page code is asked for and redeemed only by this machine's own request.
+            let port = local.map_or(0, |l| l.port());
+            let is_local = local_asker(
+                peer,
+                &headers,
+                port,
+                headers_whole,
+                past_cap > 0 || relayed_past_cap,
+            );
+            let from_link = query.split('&').any(|kv| kv == "from=link");
+            let page = page.map(|pairing| PageCall {
+                pairing,
+                local: is_local,
+                port,
+                from_link,
+            });
             let (r, cookie) =
                 pairing_route(&method, name, &body, tok, codes, gate.pair_command, page);
             let head = response_head(&r, &cookie);
@@ -3050,7 +3086,7 @@ fn pairing_route(
     token: &str,
     codes: &std::path::Path,
     command: &str,
-    page: Option<(&PagePairing, bool)>,
+    page: Option<PageCall<'_>>,
 ) -> (HttpResponse, String) {
     use super::pairing::PageRedeem;
     let wrong = || {
@@ -3064,15 +3100,25 @@ fn pairing_route(
     };
     // #s618: on this machine, a page code waiting is the one a typed code is judged against, and
     // a miss counts there alone; with none waiting the code is a phone code, as before.
-    let local_page = page.and_then(|(p, local)| local.then_some(p));
+    let local_page = page.filter(|c| c.local);
     match (name, method) {
-        ("pair", "GET") => (
-            HttpResponse::html(match local_page {
-                Some(p) => super::pairing::pair_page_here(p.code_command),
-                None => super::pairing::pair_page(command),
-            }),
-            String::new(),
-        ),
+        ("pair", "GET") => match local_page {
+            // Never framed (#s618 review): a site that framed it could have a click land on its
+            // "Show a code" and lay a box of its own beside the page.
+            Some(c) => {
+                let mut r =
+                    HttpResponse::html(super::pairing::pair_page_here(c.pairing.code_command));
+                r.headers = vec![
+                    "Content-Security-Policy: frame-ancestors 'none'".into(),
+                    "X-Frame-Options: DENY".into(),
+                ];
+                (r, String::new())
+            }
+            None => (
+                HttpResponse::html(super::pairing::pair_page(command)),
+                String::new(),
+            ),
+        },
         ("api/pair/ask", "POST") => (ask_route(page, command), String::new()),
         ("api/pair/ask", _) => (
             HttpResponse::method_not_allowed("POST /api/pair/ask"),
@@ -3081,7 +3127,10 @@ fn pairing_route(
         ("api/pair", "POST") => {
             let typed = String::from_utf8_lossy(body);
             let now = super::pairing::now_secs();
-            if let Some(p) = local_page {
+            // A code a link carried is a phone code: never judged against a page code, so a site
+            // that opens `/pair#code=…` spends no page code's guesses.
+            if let Some(c) = local_page.filter(|c| !c.from_link) {
+                let p = c.pairing;
                 match super::pairing::redeem_page_code(&p.codes, &typed, now) {
                     PageRedeem::Paired => {
                         p.display.withdraw();
@@ -3129,9 +3178,15 @@ fn json_status(code: &'static str, body: String) -> HttpResponse {
 /// `POST /api/pair/ask` (#s618): a browser on this machine asks for a page code, which the host
 /// shows on this machine only. The reply says where it was shown, never the code. `phone_command`
 /// is the host's command for a phone's code, named to a browser that may not ask.
-fn ask_route(page: Option<(&PagePairing, bool)>, phone_command: &str) -> HttpResponse {
+fn ask_route(page: Option<PageCall<'_>>, phone_command: &str) -> HttpResponse {
     use super::pairing::PageAsk;
-    let Some((p, local)) = page else {
+    let Some(PageCall {
+        pairing: p,
+        local,
+        port,
+        ..
+    }) = page
+    else {
         return HttpResponse::method_not_allowed("GET /pair, POST /api/pair");
     };
     let host = super::pairing::HOST_WORD;
@@ -3157,11 +3212,17 @@ fn ask_route(page: Option<(&PagePairing, bool)>, phone_command: &str) -> HttpRes
         PageAsk::Minted(code) => {
             let (path, ignored_code) = (p.codes.clone(), code.clone());
             let ignored = Box::new(move || {
-                super::pairing::ignore_page_code(&path, &ignored_code, super::pairing::now_secs());
+                // Unsaved, the code stays good until it expires; no page code redeems meanwhile.
+                let _ = super::pairing::ignore_page_code(
+                    &path,
+                    &ignored_code,
+                    super::pairing::now_secs(),
+                );
             });
             let shown = p.display.show(
                 &super::pairing::display_code(&code),
                 super::pairing::PAIR_CODE_TTL_SECS,
+                port,
                 ignored,
             );
             let body = if shown {
@@ -5447,13 +5508,21 @@ mod tests {
         shown: std::sync::Mutex<Vec<String>>,
         ignore: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
         withdrawn: std::sync::atomic::AtomicUsize,
+        port: std::sync::Mutex<Option<u16>>,
     }
 
     impl CodeDisplay for FakeDisplay {
-        fn show(&self, code: &str, _secs: u64, ignored: Box<dyn FnOnce() + Send>) -> bool {
+        fn show(
+            &self,
+            code: &str,
+            _secs: u64,
+            port: u16,
+            ignored: Box<dyn FnOnce() + Send>,
+        ) -> bool {
             if !self.can_show {
                 return false;
             }
+            *self.port.lock().unwrap() = Some(port);
             self.shown.lock().unwrap().push(code.to_string());
             *self.ignore.lock().unwrap() = Some(ignored);
             true
@@ -5528,6 +5597,11 @@ mod tests {
         assert!(
             page.contains("Pair this browser") && page.contains("agent-monitor --pair-code"),
             "the page here asks for a code and names the host's terminal command"
+        );
+        assert!(
+            page.contains("Content-Security-Policy: frame-ancestors 'none'")
+                && page.contains("X-Frame-Options: DENY"),
+            "the page that asks is never framed: {page}"
         );
         let ask = send_raw(
             port,
@@ -5633,8 +5707,13 @@ mod tests {
         );
         assert!(ask.starts_with("HTTP/1.1 200"), "{ask}");
         let code = display.shown.lock().unwrap()[0].clone();
+        assert_eq!(
+            *display.port.lock().unwrap(),
+            Some(port),
+            "the display names the page's port"
+        );
         let pad = format!("X-Pad: {}\r\n", "a".repeat(9000));
-        let flipped: [(&str, String, bool); 7] = [
+        let flipped: [(&str, String, bool); 9] = [
             (
                 "a relay's header",
                 format!("{here}X-Forwarded-For: 100.64.0.9\r\n"),
@@ -5665,6 +5744,16 @@ mod tests {
                 format!("{here}{pad}X-Forwarded-For: 100.64.0.9\r\n"),
                 true,
             ),
+            (
+                "a foreign Origin past the cap",
+                format!("Host: 127.0.0.1:{port}\r\n{pad}Origin: https://evil.example\r\n"),
+                true,
+            ),
+            (
+                "no Host",
+                format!("Origin: http://127.0.0.1:{port}\r\n"),
+                true,
+            ),
             ("headers cut short", here.clone(), false),
         ];
         for (what, headers, whole) in &flipped {
@@ -5682,18 +5771,26 @@ mod tests {
                 ask.contains("--pair-phone"),
                 "{what}: and told the phone's way: {ask}"
             );
-            if *whole {
-                let typed = send_raw(
-                    port,
-                    &format!("POST /api/pair HTTP/1.1\r\n{headers}"),
-                    &code,
-                    true,
-                );
-                assert!(
-                    typed.starts_with("HTTP/1.1 403") && !typed.contains("Set-Cookie"),
-                    "{what}: the page code does not pair from there: {typed}"
-                );
-            }
+            let typed = send_raw(
+                port,
+                &format!("POST /api/pair HTTP/1.1\r\n{headers}"),
+                &code,
+                *whole,
+            );
+            assert!(
+                !typed.starts_with("HTTP/1.1 200") && !typed.contains("Set-Cookie"),
+                "{what}: the page code does not pair from there: {typed}"
+            );
+        }
+        // A code a link carried (`/pair#code=…` posts `?from=link`) is a phone code, never judged
+        // against a page code: a site that opens the page with made-up codes spends none of it.
+        let link = format!("POST /api/pair?from=link HTTP/1.1\r\n{here}");
+        for _ in 0..super::super::pairing::PAIR_CODE_TRIES + 1 {
+            let by_link = send_raw(port, &link, &code, true);
+            assert!(
+                by_link.starts_with("HTTP/1.1 403") && !by_link.contains("Set-Cookie"),
+                "a link's code is not a page code: {by_link}"
+            );
         }
         assert_eq!(
             display.shown.lock().unwrap().len(),
@@ -5709,6 +5806,67 @@ mod tests {
             "the tries from elsewhere burned nothing: {right}"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #s618: `local_asker` alone, for what a socket in a test cannot flip: a peer that is not on
+    /// the loopback. Each condition is flipped by itself against one that passes.
+    #[test]
+    fn only_this_machines_own_request_is_a_local_asker() {
+        let here = "Host: 127.0.0.1:2727\r\nOrigin: http://127.0.0.1:2727\r\n";
+        let lo: std::net::SocketAddr = "127.0.0.1:50000".parse().unwrap();
+        let lo6: std::net::SocketAddr = "[::1]:50000".parse().unwrap();
+        let lan: std::net::SocketAddr = "192.168.1.5:50000".parse().unwrap();
+        let tailnet: std::net::SocketAddr = "100.64.0.9:50000".parse().unwrap();
+        assert!(local_asker(Some(lo), here, 2727, true, false));
+        assert!(local_asker(Some(lo6), here, 2727, true, false));
+        assert!(local_asker(
+            Some(lo),
+            "Host: localhost:2727\r\n",
+            2727,
+            true,
+            false
+        ));
+        assert!(
+            !local_asker(Some(lan), here, 2727, true, false),
+            "a LAN peer"
+        );
+        assert!(
+            !local_asker(Some(tailnet), here, 2727, true, false),
+            "a tailnet peer"
+        );
+        assert!(!local_asker(None, here, 2727, true, false), "no peer");
+        assert!(
+            !local_asker(Some(lo), here, 2727, false, false),
+            "cut short"
+        );
+        assert!(
+            !local_asker(Some(lo), here, 2727, true, true),
+            "a line past the cap"
+        );
+        assert!(
+            !local_asker(Some(lo), here, 2728, true, false),
+            "another port's Host"
+        );
+        assert!(
+            !local_asker(
+                Some(lo),
+                "Origin: http://127.0.0.1:2727\r\n",
+                2727,
+                true,
+                false
+            ),
+            "no Host"
+        );
+        assert!(
+            !local_asker(
+                Some(lo),
+                &format!("{here}X-Forwarded-Host: 127.0.0.1:2727\r\n"),
+                2727,
+                true,
+                false
+            ),
+            "a relay's header"
+        );
     }
 
     /// #s618: where no dialog can show, the code waits for the terminal command, and the reply

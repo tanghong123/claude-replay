@@ -3,9 +3,11 @@
 //! A browser on this machine asks the monitor to pair it; the monitor shows a code here and only
 //! here, and the person types it into the page. On macOS that is `osascript`'s `display dialog`,
 //! measured on macOS 27.0.1 from a monitor in a terminal and from one launchd runs: it shows with
-//! no permission prompt, and a SIGTERM closes it within 15 ms. The script, code and all, goes in on
-//! osascript's STDIN, never in its arguments, which every user of the machine can list; and the code
-//! goes nowhere else (no log, no reply, no notification). Anywhere the dialog cannot show (another
+//! no permission prompt, and a SIGTERM closes it within 15 ms. `withdraw` sends SIGKILL (std's
+//! `Child::kill`), which ends the same process and so its window; that signal was not measured
+//! apart. The dialog names the page's port, so the person can tell which page asked. The script,
+//! code and all, goes in on osascript's STDIN, never in its arguments, which every user of the
+//! machine can list; and the code goes nowhere else (no log, no reply, no notification). Anywhere the dialog cannot show (another
 //! platform, no one logged in at the console, `AGENT_MONITOR_PAIR_DIALOG=0`), the code waits for
 //! `agent-monitor --pair-code` in a terminal on the machine instead.
 //!
@@ -30,16 +32,18 @@ pub const DIALOG_SWITCH: &str = "AGENT_MONITOR_PAIR_DIALOG";
 /// One still running after this is taken as showing.
 const EARLY_EXIT: std::time::Duration = std::time::Duration::from_millis(600);
 
-/// The words of the dialog's script for `code` (`ABCD-EFGH`), giving up after `secs`.
-pub fn dialog_script(code: &str, secs: u64) -> String {
+/// The words of the dialog's script for `code` (`ABCD-EFGH`), giving up after `secs`, for the page
+/// on `port`.
+pub fn dialog_script(code: &str, secs: u64, port: u16) -> String {
     // Only the code's own characters reach the script, so nothing in it needs quoting.
     let code: String = code
         .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-')
         .collect();
     format!(
-        "display dialog \"A browser on this Mac asks to pair with Agent Monitor, so it can read the \
-         monitor and write to your sessions. Type this code in that page, and only there:\" & \
+        "display dialog \"A browser on this Mac asks to pair with Agent Monitor at localhost:{port}, \
+         so it can read the monitor and write to your sessions. Type this code in that page, and \
+         only there:\" & \
          return & return & \"{code}\" & return & return & \"It works once, for five minutes. If \
          you did not ask, someone else did: click Ignore.\" with title \"Agent Monitor\" buttons \
          {{\"Ignore\", \"Close\"}} default button \"Close\" with icon caution giving up after {secs}\n"
@@ -79,7 +83,7 @@ impl PairDialog {
         }
     }
 
-    fn spawn(&self, code: &str, secs: u64) -> Option<std::process::Child> {
+    fn spawn(&self, code: &str, secs: u64, port: u16) -> Option<std::process::Child> {
         use std::io::Write;
         use std::process::{Command, Stdio};
         let mut child = Command::new(&self.program)
@@ -90,7 +94,7 @@ impl PairDialog {
             .ok()?;
         let fed = child.stdin.take().is_some_and(|mut stdin| {
             stdin
-                .write_all(dialog_script(code, secs).as_bytes())
+                .write_all(dialog_script(code, secs, port).as_bytes())
                 .is_ok()
         });
         let started = std::time::Instant::now();
@@ -111,20 +115,34 @@ impl PairDialog {
 }
 
 impl CodeDisplay for PairDialog {
-    fn show(&self, code: &str, secs: u64, ignored: Box<dyn FnOnce() + Send>) -> bool {
-        self.withdraw();
-        if self.off {
-            return false;
-        }
-        let Some(child) = self.spawn(code, secs) else {
-            return false;
-        };
+    fn show(&self, code: &str, secs: u64, port: u16, ignored: Box<dyn FnOnce() + Send>) -> bool {
+        // What showed before goes, and this show takes its turn. A withdraw while the dialog is
+        // still starting (its code used or burned in that time, #s618 review) moves the turn on, and
+        // the dialog is then closed as soon as it has started rather than left up for a dead code.
         let generation = {
             let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
             slot.generation += 1;
-            slot.child = Some(child);
+            if let Some(mut child) = slot.child.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
             slot.generation
         };
+        if self.off {
+            return false;
+        }
+        let Some(mut child) = self.spawn(code, secs, port) else {
+            return false;
+        };
+        {
+            let mut slot = self.slot.lock().unwrap_or_else(|e| e.into_inner());
+            if slot.generation != generation {
+                let _ = child.kill();
+                let _ = child.wait();
+                return true;
+            }
+            slot.child = Some(child);
+        }
         // The watcher reads the answer once the dialog ends on its own. A withdrawn or replaced
         // dialog was killed under the lock and taken out of the slot, so it never calls `ignored`.
         let slot = self.slot.clone();
@@ -167,6 +185,14 @@ impl CodeDisplay for PairDialog {
     }
 }
 
+/// The page codes' file for a paired monitor that is starting, with any code a run before left
+/// cleared, since nothing shows it any more. None when they could not be cleared: the monitor
+/// then offers no page pairing for this run.
+pub fn page_codes_at_start(state_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    let path = state_dir.join(PAGE_CODES_FILE);
+    claude_replay_html::pairing::clear_page_codes(&path).then_some(path)
+}
+
 /// `agent-monitor --pair-code`: print the page code waiting, or a new one, to a terminal only.
 pub fn print_code(
     state_dir: &std::path::Path,
@@ -204,11 +230,11 @@ mod tests {
     /// code's own characters reaches it.
     #[test]
     fn the_dialog_script_carries_the_code_and_gives_up_at_expiry() {
-        let script = dialog_script("ABCD-EFGH", 300);
+        let script = dialog_script("ABCD-EFGH", 300, 2727);
         assert_eq!(script.matches("ABCD-EFGH").count(), 1, "{script}");
         assert!(script.contains("giving up after 300"), "{script}");
         assert!(script.contains("{\"Ignore\", \"Close\"}"), "{script}");
-        let hostile = dialog_script("AB\"CD & (do shell script \"x\")", 5);
+        let hostile = dialog_script("AB\"CD & (do shell script \"x\")", 5, 2727);
         assert!(!hostile.contains("do shell script"), "{hostile}");
         assert!(hostile.contains("\"ABCDdoshellscriptx\""), "{hostile}");
     }
@@ -229,7 +255,7 @@ mod tests {
             off: true,
             program: "/nonexistent/never-run".into(),
         };
-        assert!(!display.show("ABCD-EFGH", 300, Box::new(|| panic!("never ignored"))));
+        assert!(!display.show("ABCD-EFGH", 300, 2727, Box::new(|| panic!("never ignored"))));
         display.withdraw();
     }
 
@@ -248,7 +274,7 @@ mod tests {
             &program,
             format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$@\" > '{d}/args'\n\
-                 ps -o args= -p $$ > '{d}/ps'\ncat > '{d}/stdin'\n{behaviour}\n"
+                 echo $$ > '{d}/pid'\nps -o args= -p $$ > '{d}/ps'\ncat > '{d}/stdin'\n{behaviour}\n"
             ),
         )
         .unwrap();
@@ -285,18 +311,90 @@ mod tests {
         let shown = display.show(
             "WXYZ-2345",
             300,
+            2727,
             Box::new(move || flag.store(true, std::sync::atomic::Ordering::SeqCst)),
         );
         assert!(shown, "a dialog still up after the early window is showing");
         let stdin = wait_for(&dir.join("stdin"));
-        assert!(stdin.contains("WXYZ-2345") && stdin.contains("giving up after 300"));
+        assert!(
+            stdin.contains("WXYZ-2345")
+                && stdin.contains("giving up after 300")
+                && stdin.contains("localhost:2727"),
+            "{stdin}"
+        );
         let args = wait_for(&dir.join("args"));
         assert_eq!(args.trim(), "0", "no arguments at all: {args}");
         let ps = wait_for(&dir.join("ps"));
         assert!(!ps.contains("WXYZ"), "ps shows no code: {ps}");
+        let pid = wait_for(&dir.join("pid"));
+        assert!(alive(&pid), "the dialog is up");
         display.withdraw();
+        assert!(!alive(&pid), "withdrawn, the dialog is gone");
         std::thread::sleep(std::time::Duration::from_millis(600));
         assert!(!ignored.load(std::sync::atomic::Ordering::SeqCst));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    fn alive(pid: &str) -> bool {
+        std::process::Command::new("kill")
+            .args(["-0", pid.trim()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    /// #s618 review: a code used or burned while its dialog is still starting (the early window)
+    /// takes that dialog down as soon as it has started; it is never left up for a dead code.
+    #[cfg(unix)]
+    #[test]
+    fn a_dialog_withdrawn_while_it_starts_does_not_stay_up() {
+        let (display, dir) = stand_in("starting", "sleep 30");
+        let display = Arc::new(display);
+        let shower = display.clone();
+        let show = std::thread::spawn(move || {
+            shower.show("WXYZ-2345", 300, 2727, Box::new(|| panic!("never ignored")))
+        });
+        let pid = wait_for(&dir.join("pid"));
+        display.withdraw();
+        assert!(show.join().unwrap(), "it did start");
+        assert!(!alive(&pid), "and was taken down at once");
+        assert!(display.slot.lock().unwrap().child.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A paired monitor that starts clears the codes a run before left; where it cannot, it offers
+    /// no page pairing for the run.
+    #[cfg(unix)]
+    #[test]
+    fn a_starting_monitor_clears_page_codes_or_offers_no_page_pairing() {
+        use claude_replay_html::pairing;
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("cm-page-start-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(PAGE_CODES_FILE);
+        assert!(matches!(
+            pairing::ask_page_code(&path, pairing::now_secs()),
+            pairing::PageAsk::Minted(_)
+        ));
+        assert_eq!(page_codes_at_start(&dir).as_deref(), Some(path.as_path()));
+        assert!(
+            pairing::terminal_page_code(&path, pairing::now_secs()).is_some()
+                && pairing::redeem_page_code(&path, "ZZZZZZZZ", pairing::now_secs())
+                    == pairing::PageRedeem::Missed { burned: false },
+            "the old code is gone; a new one stands in its place"
+        );
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let root = std::fs::write(dir.join("probe"), "x").is_ok();
+        if !root {
+            assert_eq!(
+                page_codes_at_start(&dir),
+                None,
+                "not cleared, no page pairing"
+            );
+        }
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -314,7 +412,7 @@ mod tests {
             std::fs::set_permissions(&early, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         display.program = early;
-        assert!(!display.show("ABCD-EFGH", 300, Box::new(|| panic!("never"))));
+        assert!(!display.show("ABCD-EFGH", 300, 2727, Box::new(|| panic!("never"))));
         let _ = std::fs::remove_dir_all(&dir);
         for (answer, burns) in [
             ("button returned:Ignore, gave up:false", true),
@@ -323,7 +421,12 @@ mod tests {
         ] {
             let (display, dir) = stand_in("answer", &format!("sleep 1\necho '{answer}'"));
             let (tx, rx) = std::sync::mpsc::channel();
-            assert!(display.show("ABCD-EFGH", 300, Box::new(move || tx.send(()).unwrap())));
+            assert!(display.show(
+                "ABCD-EFGH",
+                300,
+                2727,
+                Box::new(move || tx.send(()).unwrap())
+            ));
             let heard = rx.recv_timeout(std::time::Duration::from_secs(4)).is_ok();
             assert_eq!(heard, burns, "{answer}");
             let _ = std::fs::remove_dir_all(&dir);

@@ -195,8 +195,10 @@ pub fn redeem_pair_code(path: &Path, typed: &str, now: u64) -> bool {
             false
         }
     };
-    let _ = write_store(path, &store);
-    ok
+    // A code pairs only once its use is saved (#s618 review): otherwise it stays good, and while
+    // the file cannot be written no miss is counted either. Unsaved, a hit reads as a miss, so a
+    // guesser cannot tell which guess was right.
+    write_store(path, &store).is_ok() && ok
 }
 
 // Page codes (#s618, design/pair-from-the-page.md): a browser on this machine asks, the host
@@ -221,7 +223,7 @@ fn with_page_lock<T>(path: &Path, f: impl FnOnce() -> T) -> T {
         open.mode(0o600);
     }
     // No lock file (a read-only state dir) leaves the in-process lock alone: writing the codes
-    // fails there too, and every caller fails closed on that.
+    // fails there too, and every caller fails closed on that: no code is minted, and none redeems.
     let file = open.open(&lock_path).ok();
     let held = file.as_ref().map(|f| f.lock().is_ok());
     let out = f();
@@ -341,8 +343,9 @@ pub fn terminal_page_code(path: &Path, now: u64) -> Option<String> {
 }
 
 /// The person said they did not ask for `code` (the dialog's Ignore): it is burned, and counts as
-/// one gone unused. Another code is left alone.
-pub fn ignore_page_code(path: &Path, code: &str, now: u64) {
+/// one gone unused. Another code is left alone. False when that could not be saved: the code then
+/// stays good until it expires, though while the file cannot be written no page code redeems.
+pub fn ignore_page_code(path: &Path, code: &str, now: u64) -> bool {
     with_page_lock(path, || {
         let mut store = read_store(path);
         settle_page(&mut store, now);
@@ -351,7 +354,7 @@ pub fn ignore_page_code(path: &Path, code: &str, now: u64) {
         if store.codes.len() < before {
             note_unused(&mut store, now);
         }
-        let _ = write_store(path, &store);
+        write_store(path, &store).is_ok()
     })
 }
 
@@ -393,21 +396,26 @@ fn redeem_page_code_held(path: &Path, code: &str, now: u64) -> PageRedeem {
             PageRedeem::Missed { burned }
         }
     };
-    let _ = write_store(path, &store);
-    answer
+    // As for a phone code: a hit pairs only once its use is saved, and unsaved it reads as a miss.
+    match (write_store(path, &store), answer) {
+        (Ok(()), answer) => answer,
+        (Err(_), PageRedeem::Paired) => PageRedeem::Missed { burned: false },
+        (Err(_), answer) => answer,
+    }
 }
 
 /// Clear every waiting page code: the host does this as it starts, since nothing shows them any
-/// more. The count of codes gone unused and any rest are kept.
-pub fn clear_page_codes(path: &Path) {
+/// more. The count of codes gone unused and any rest are kept. False when they could not be
+/// cleared; the host then offers no page pairing for the run.
+pub fn clear_page_codes(path: &Path) -> bool {
     with_page_lock(path, || {
         if !path.exists() {
-            return;
+            return true;
         }
         let mut store = read_store(path);
         store.codes.clear();
         store.fails = 0;
-        let _ = write_store(path, &store);
+        write_store(path, &store).is_ok()
     })
 }
 
@@ -451,7 +459,7 @@ button:disabled{opacity:.6}#msg{min-height:1.5em;margin:12px 0 0;color:var(--bad
         msg.textContent = "That code is wrong, used or expired. Run agent-monitor --pair-phone again."; })
       .catch(function(){ go.disabled = false; msg.textContent = "The monitor did not answer."; });
   }
-  document.getElementById("f").addEventListener("submit", function(e){ e.preventDefault(); pair(); });
+  document.getElementById("f").addEventListener("submit", function(e){ e.preventDefault(); pair(""); });
   var m = /(?:^#|&)code=([A-Za-z0-9-]+)/.exec(location.hash);
   if (m) { box.value = m[1]; history.replaceState(null, "", location.pathname); pair(); }
 })();
@@ -497,18 +505,21 @@ button:disabled{opacity:.6}#msg{min-height:1.5em;margin:12px 0 0;font-size:14px}
       })
       .catch(function(){ ask.disabled = false; say("The monitor did not answer.", true); });
   });
-  function pair(){
+  // A code a link carries (#code=, what --pair-phone's link holds) is a phone code: it is sent
+  // marked so, and the monitor never judges it against a code shown on this machine, so a site that
+  // opens this page with a made-up code cannot spend that code's guesses.
+  function pair(q){
     var code = box.value.trim();
     if (!code) return;
     go.disabled = true; say("");
-    fetch("/api/pair", { method: "POST", body: code, credentials: "same-origin", cache: "no-store" })
+    fetch("/api/pair" + (q || ""), { method: "POST", body: code, credentials: "same-origin", cache: "no-store" })
       .then(function(r){ if (r.ok) { location.replace("/"); return; } go.disabled = false;
         say("That code is wrong, used or expired. Ask for a new one.", true); })
       .catch(function(){ go.disabled = false; say("The monitor did not answer.", true); });
   }
-  document.getElementById("f").addEventListener("submit", function(e){ e.preventDefault(); pair(); });
+  document.getElementById("f").addEventListener("submit", function(e){ e.preventDefault(); pair(""); });
   var m = /(?:^#|&)code=([A-Za-z0-9-]+)/.exec(location.hash);
-  if (m) { box.value = m[1]; history.replaceState(null, "", location.pathname); pair(); }
+  if (m) { box.value = m[1]; history.replaceState(null, "", location.pathname); pair("?from=link"); }
 })();
 </script></body></html>
 "#;
@@ -771,5 +782,115 @@ mod tests {
         let path = store_path("empty");
         assert!(!redeem_pair_code(&path, "", 1));
         assert!(!redeem_pair_code(&path, "ABCDEFGH", 1));
+    }
+
+    /// `path`'s directory made read-only, so no store can be written there: false where that does
+    /// not stop a write (a test run as root), with the directory given back.
+    #[cfg(unix)]
+    fn freeze(path: &std::path::Path, frozen: bool) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = path.parent().unwrap();
+        let mode = if frozen { 0o500 } else { 0o700 };
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(mode)).unwrap();
+        if !frozen {
+            return true;
+        }
+        let probe = dir.join("probe");
+        if std::fs::write(&probe, "x").is_ok() {
+            let _ = std::fs::remove_file(&probe);
+            freeze(path, false);
+            return false;
+        }
+        true
+    }
+
+    /// #s618 review: a code pairs only once its use is saved. While the store cannot be written a
+    /// right code reads as a miss (so a guesser learns nothing), and it is still good once the
+    /// store can be written again; Ignore and the start's clear say they could not.
+    #[cfg(unix)]
+    #[test]
+    fn a_code_whose_use_cannot_be_saved_pairs_nothing_and_stays_good() {
+        let page = store_path("unsaved-page");
+        let PageAsk::Minted(code) = ask_page_code(&page, 1_000) else {
+            panic!("the first ask mints");
+        };
+        let phone = store_path("unsaved-phone");
+        let phone_code = mint_pair_code(&phone, 1_000).expect("a phone code");
+        if !freeze(&page, true) {
+            eprintln!("skipped: a read-only directory does not stop this user's writes (root)");
+            return;
+        }
+        assert!(freeze(&phone, true));
+        assert_eq!(
+            redeem_page_code(&page, &code, 1_001),
+            PageRedeem::Missed { burned: false },
+            "unsaved, a right page code reads as a miss"
+        );
+        assert!(
+            !redeem_pair_code(&phone, &phone_code, 1_001),
+            "unsaved, a right phone code reads as a miss"
+        );
+        assert!(
+            !ignore_page_code(&page, &code, 1_001),
+            "Ignore says it could not"
+        );
+        assert!(
+            !clear_page_codes(&page),
+            "the start's clear says it could not"
+        );
+        assert_eq!(ask_page_code(&page, 1_100), PageAsk::Failed);
+        freeze(&page, false);
+        freeze(&phone, false);
+        assert_eq!(
+            redeem_page_code(&page, &code, 1_002),
+            PageRedeem::Paired,
+            "the page code was never used"
+        );
+        assert!(
+            redeem_pair_code(&phone, &phone_code, 1_002),
+            "the phone code was never used"
+        );
+        assert!(clear_page_codes(&page));
+    }
+
+    /// #s618 review: the file lock, not only this process's own, holds off a change to the page
+    /// codes: `--pair-code` is a second process. A second open of the lock file stands in for it
+    /// (a file lock belongs to the open file, so it conflicts within one process too). And the
+    /// lock file is the owner's alone, as the codes are.
+    #[test]
+    fn another_holder_of_the_lock_file_holds_off_every_page_code_change() {
+        let path = store_path("page-flock");
+        let PageAsk::Minted(code) = ask_page_code(&path, 1_000) else {
+            panic!("the first ask mints");
+        };
+        let mut lock = path.as_os_str().to_owned();
+        lock.push(".lock");
+        let lock = std::path::PathBuf::from(lock);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            for p in [&path, &lock] {
+                let mode = std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+                assert_eq!(mode, 0o600, "{}", p.display());
+            }
+        }
+        let held = std::fs::OpenOptions::new().write(true).open(&lock).unwrap();
+        held.lock().unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let (p2, c2) = (path.clone(), code.clone());
+        let redeem = std::thread::spawn(move || {
+            tx.send(redeem_page_code(&p2, &c2, 1_001)).unwrap();
+        });
+        assert!(
+            rx.recv_timeout(std::time::Duration::from_millis(400))
+                .is_err(),
+            "a redeem waits while another holds the lock file"
+        );
+        held.unlock().unwrap();
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap(),
+            PageRedeem::Paired
+        );
+        redeem.join().unwrap();
     }
 }

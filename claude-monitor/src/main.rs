@@ -377,19 +377,27 @@ fn main() -> Result<()> {
         claude_monitor::pair_phone::tailnet_checks(port, token.is_none());
     let gate = match &token {
         Some(t) => {
+            let gate = claude_replay_html::AuthGate::with_token(t.as_str()).with_pair_codes(
+                index::state_dir().join(claude_monitor::pair_phone::PAIR_CODES_FILE),
+            );
             // #s618: a browser on this machine pairs from the page by a code shown here. A code
-            // left from a run before is cleared: nothing shows it any more.
-            let page_codes = index::state_dir().join(claude_monitor::pair_dialog::PAGE_CODES_FILE);
-            claude_replay_html::pairing::clear_page_codes(&page_codes);
-            claude_replay_html::AuthGate::with_token(t.as_str())
-                .with_pair_codes(
-                    index::state_dir().join(claude_monitor::pair_phone::PAIR_CODES_FILE),
-                )
-                .with_page_pairing(
+            // left from a run before is cleared, since nothing shows it any more; where it cannot
+            // be, there is no page pairing this run.
+            match claude_monitor::pair_dialog::page_codes_at_start(&index::state_dir()) {
+                Some(page_codes) => gate.with_page_pairing(
                     page_codes,
                     std::sync::Arc::new(claude_monitor::pair_dialog::PairDialog::from_env()),
                     claude_monitor::pair_dialog::PAIR_CODE_COMMAND,
-                )
+                ),
+                None => {
+                    eprintln!(
+                        "agent-monitor: no pairing from the page this run: the codes in {} could \
+                         not be cleared",
+                        index::state_dir().display()
+                    );
+                    gate
+                }
+            }
         }
         None => claude_replay_html::AuthGate::same_user(),
     }
