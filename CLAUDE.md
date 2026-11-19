@@ -397,14 +397,18 @@ runs on its connection's thread and `Request` (built by other crates too) gains 
 is said once the reply is written. A refused read that is not a page load stays quiet.
 **A browser on this machine pairs from the page** (#s618, `design/pair-from-the-page.md`, Hong's
 choice A on #s605, stage 1 of 2: a PAIRED monitor). `/pair` loaded as the machine's own (a loopback
-peer, its own `Host`, its own `Origin` or none, no relay's headers, the header section whole:
-`local_asker` in `serve.rs`) offers "Show a code"; `POST /api/pair/ask` mints a page code and the
+peer, its own `Host` present, its own `Origin` or none, no relay's headers, the header section
+whole with no line past the cap: `local_asker` in `serve.rs`) offers "Show a code" and refuses to be
+framed; `POST /api/pair/ask` mints a page code and the
 host's `CodeDisplay` shows it ON THIS MACHINE only (`pair_dialog.rs`: osascript's `display dialog`,
 its script on STDIN, so the code is in no process's arguments), or where none can show it waits for
 `agent-monitor --pair-code`, which prints only to a terminal. The reply says where, never the code;
 nothing logs it. Page codes live in `<state>/page-codes`, apart from the phone's, with their own
 misses and a file lock beside it (`--pair-code` is a second process): one at a time, an ask every
-10 s, an hour's rest after three go unused, cleared at start. The gate is unchanged without
+10 s, an hour's rest after three go unused, cleared at start (where it cannot be, no page pairing
+that run). A code pairs only once its use is SAVED: unsaved, a right code reads as a miss and stays
+good, so a guess bound never rests on a write that failed. A code a link carries (`/pair#code=…`,
+posted `?from=link`) is a phone code, never judged against a page code. The gate is unchanged without
 `with_page_pairing`. No test raises a real dialog: the harness sets `AGENT_MONITOR_PAIR_DIALOG=0`
 and the cases read the code from the monitor's state dir; the dialog's own tests run a stand-in.
 **The page saves to a Home Screen as itself** (#320): the tab icon's green mark, square and opaque

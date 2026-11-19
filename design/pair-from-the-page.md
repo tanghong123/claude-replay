@@ -1,8 +1,9 @@
 # Pairing a browser from the monitor's page (#s590)
 
-> **A proposal, not built.** Pairing is the owner's to decide, so nothing here is coded until the
-> owner rules on it. Until then the page keeps naming `agent-monitor --pair`, and phone codes stay
-> in the terminal (#s585).
+> **Stage 1 is built (#s618); stage 2 is not yet (#s619).** The owner chose to build both, in two
+> stages (#s605). Stage 1 is a paired monitor's page asking for a code (4.1–4.5, 4.7); stage 2 is an
+> unpaired monitor turning pairing on from the page (4.6). Each stage lands only on the owner's yes,
+> since pairing is the owner's. Phone codes stay in the terminal (#s585).
 
 ## 1. What it is for
 
@@ -89,14 +90,33 @@ must read and type cannot reach a browser they are not using.
   browser that asked, and redeeming it pairs only the browser that types it.
 - **At most one ask every 10 seconds.** After three page codes in a row expire or are burned unused,
   asks are refused for an hour. The reply says until when. `--pair-code` in a terminal still works.
-  Each ask is visible: a dialog on the owner's screen.
+  An ask is visible where a dialog can show: on the owner's screen, naming the monitor's port. Where
+  none can (another platform, nobody at the console, the dialog switched off), nobody sees the ask;
+  its code waits for `--pair-code` in a terminal, so an asker who is not at the machine can only
+  guess it.
 
 ### 4.4 Page codes are kept apart from phone codes
 
 Page codes live in a file of their own, `<state>/page-codes` (0600), with their own count of
 misses. A page code is redeemed only from a request that may ask (4.3). Phone codes are redeemed as
 today. So a code shown on the Mac's screen never pairs a phone over the tailnet, and misses at one
-kind never burn the other. The monitor clears page codes when it starts.
+kind never burn the other. The monitor clears page codes when it starts; where it cannot, it offers
+no page pairing for that run.
+
+A code pairs only once its use is saved, and every miss is counted in the same write. Where the file
+cannot be written, a right code is answered as a miss and stays good, so a guess there teaches
+nothing, and no page code pairs until the file can be written again. The guess bound below rests on
+this.
+
+A code a link carries (`/pair#code=…`, the shape of `--pair-phone`'s link) is a phone code: the page
+sends it marked so, and the monitor never judges it against a page code. A site that opens such a
+link with made-up codes spends none of a page code's guesses.
+
+**For the owner:** the codes file is in the monitor's state directory, beside the token, so two
+monitors on one machine that share a state directory (separate cache roots, separate ports) share
+their page codes as they share the token. A code one monitor shows pairs a browser at the other's
+page too. Both are this user's, under one token, so it pairs nothing the showing monitor could not;
+the dialog names the port that asked, so the person can tell.
 
 ### 4.5 What a pairing grants and writes
 
@@ -151,10 +171,10 @@ This part is a separate stage, and a separate choice (section 6). Paired monitor
 | Who | Can they ask? | Can they finish? |
 |---|---|---|
 | **Another user on this machine** | Yes, through the loopback. A dialog shows in the owner's session, or nowhere. | No. They cannot see the owner's screen or read the 0600 files. |
-| **A page on another site, in the owner's browser** | No. Its POST carries a foreign `Origin`, and it cannot read a reply. | No. |
+| **A page on another site, in the owner's browser** | No. Its POST carries a foreign `Origin`, and it cannot read a reply. It can open `/pair` in a tab, where only the person's own click asks; it cannot frame that page (`frame-ancestors 'none'`, `X-Frame-Options: DENY`), and a code its link carries is judged as a phone code alone. | No. |
 | **DNS rebinding** | No. The `Host` is a foreign name. | No. |
 | **Another tailnet device, through `tailscale serve`** | No. It carries a relay's headers or a tailnet name; it keeps `--pair-phone`. | No. A page code is never redeemed through the relay. |
-| **A raw relay (`tailscale serve --tcp`) or a same-user forwarder (`ssh -R`, `socat`, Docker Desktop's proxy)** | Yes. It can forge the loopback `Host` and `Origin`. Each ask raises a dialog on the owner's screen. | No. It never sees the code, which is in the dialog or the terminal. It gets five guesses at 1 in 31⁸ (about 8.5 × 10¹¹) per code, one code at a time, at most three codes before an hour's back-off: at most 360 guesses a day, about 1 in 2 × 10⁹, with every ask visible to the owner. |
+| **A raw relay (`tailscale serve --tcp`) or a same-user forwarder (`ssh -R`, `socat`, Docker Desktop's proxy)** | Yes. It can forge the loopback `Host` and `Origin`. Each ask raises a dialog on the owner's screen. | No. It never sees the code, which is in the dialog or the terminal. It gets five guesses at 1 in 31⁸ (about 8.5 × 10¹¹) per code, one code at a time, at most three codes before an hour's back-off: at most 360 guesses a day, about 1 in 2 × 10⁹. The bound holds because a miss is counted and a use saved before either is answered (4.4). Every ask is visible to the owner where a dialog can show. |
 | **A program running as the owner** | Not in scope. | It can read the token file today. |
 
 What is left is a person typing the code somewhere other than the page that asked. The dialog says
@@ -195,10 +215,12 @@ Considered and not proposed:
 
 - **The dialog, on the macOS versions the monitor supports.** `osascript`'s `display dialog`, raised
   by a monitor that launchd runs and by one started in a terminal:
-  - that it shows without a permission prompt;
+  - that it shows without a permission prompt (measured for stage 1 on macOS 27.0.1: it does, from
+    a terminal and from launchd);
   - what happens with the screen locked, with nobody logged in at the console, and under fast user
-    switching;
-  - that it closes when the monitor stops;
+    switching (not yet measured);
+  - that it closes when the monitor stops, and when its code is used (a SIGTERM closes it within
+    15 ms; the monitor's withdraw sends SIGKILL, which ends the same process);
   - whether it takes the focus from the browser.
 - **Linux:** no dialog in this design; the terminal is the way.
 
