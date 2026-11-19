@@ -2219,10 +2219,12 @@ pub fn browser_path() -> Option<std::path::PathBuf> {
 /// Measured with Chrome for Testing on a scratch profile: SIGKILL leaves the folder; SIGTERM
 /// removes it, as does `Browser.close` followed by a wait for the exit. So the guard sends SIGTERM
 /// (which needs no live DevTools connection: a browser whose connection the crate closed after its
-/// idle timeout ends the same way) and waits, at most [`GENTLE_END`], for the folder to go and the
-/// process to exit; the crate's SIGKILL is left for a Chrome that does not. Each end is a
-/// [`profile`] row saying whether the folder went (`CR_PROFILE`, which is how a run is checked for
-/// them), and a folder still there is also a stderr line naming it.
+/// idle timeout ends the same way) and waits, at most [`GENTLE_END`], for the process to exit; the
+/// crate's SIGKILL is left for a Chrome that does not. Chrome removes the folder before it exits, so
+/// the exit is the whole wait. On Linux Chrome keeps the folder even then (measured on CI's Ubuntu
+/// runner), but it makes it in `TMPDIR`, the workspace's scratch, which the sweep clears. Each end
+/// is a [`profile`] row saying whether the folder went (`CR_PROFILE`, which is how a run is checked
+/// for them), and a folder still there is also a stderr line naming it.
 pub struct Chrome {
     browser: Option<headless_chrome::Browser>,
     /// The folder the profile's `SingletonSocket` link named once the browser was up.
@@ -2253,20 +2255,39 @@ impl std::ops::Deref for Chrome {
     }
 }
 
+/// How a [`Chrome`] ended ([`Chrome::end`]).
+#[derive(Debug)]
+pub struct Ended {
+    /// The process exited on its own after the SIGTERM, within [`GENTLE_END`].
+    pub exited: bool,
+    /// From the SIGTERM to the end.
+    pub took: Duration,
+    /// The singleton folder, when it is still there after the end.
+    pub folder_left: Option<PathBuf>,
+}
+
 impl Chrome {
-    /// The folder in the system temp folder this browser's profile linked to as it came up, when
-    /// it did (a harness self-check reads it).
+    /// The folder this browser's profile linked its `SingletonSocket` into as it came up, when it
+    /// did (a harness self-check reads it).
     pub fn singleton(&self) -> Option<&Path> {
         self.singleton.as_deref()
     }
-}
 
-impl Drop for Chrome {
-    fn drop(&mut self) {
-        let Some(browser) = self.browser.take() else {
-            return;
-        };
+    /// End the browser now, as its drop does, and say how it went (a harness self-check reads it).
+    pub fn end(mut self) -> Ended {
+        self.finish()
+    }
+
+    fn finish(&mut self) -> Ended {
         let t0 = Instant::now();
+        let Some(browser) = self.browser.take() else {
+            return Ended {
+                exited: false,
+                took: Duration::ZERO,
+                folder_left: None,
+            };
+        };
+        let mut exited = false;
         if let Some(pid) = browser.get_process_id() {
             let _ = std::process::Command::new("kill")
                 .args(["-TERM", &pid.to_string()])
@@ -2274,13 +2295,14 @@ impl Drop for Chrome {
                 .status();
             let end = t0 + GENTLE_END;
             while Instant::now() < end {
-                let folder_gone = self.singleton.as_ref().is_none_or(|dir| !dir.exists());
-                if folder_gone && !process_runs(pid) {
+                if !process_runs(pid) {
+                    exited = true;
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(25));
             }
         }
+        let took = t0.elapsed();
         drop(browser);
         // Said through [`profile`] as well as stderr: libtest keeps a passing case's stderr to
         // itself, and a run is checked by these rows (`CR_PROFILE`).
@@ -2296,7 +2318,18 @@ impl Drop for Chrome {
             }
             Some(_) => "chrome end, singleton folder gone",
         };
-        profile(outcome, t0.elapsed());
+        profile(outcome, took);
+        Ended {
+            exited,
+            took,
+            folder_left: self.singleton.clone().filter(|dir| dir.exists()),
+        }
+    }
+}
+
+impl Drop for Chrome {
+    fn drop(&mut self) {
+        self.finish();
     }
 }
 

@@ -1341,7 +1341,8 @@ resizes the others (#159). Six drawer cases catch that in one run.
   guard: Chrome keeps a singleton folder in the system temp folder (`getconf DARWIN_USER_TEMP_DIR`,
   whatever `TMPDIR` says) and removes it only when it exits on its own, and the crate's own drop
   SIGKILLs it, so every launch left one (75,886 on one Mac). The guard sends SIGTERM and waits for
-  the folder and the process to go before that drop, and the reapers SIGTERM before they SIGKILL.
+  the process to exit before that drop (Chrome removes the folder first; on Linux it keeps it, in
+  `TMPDIR`, the workspace's scratch), and the reapers SIGTERM before they SIGKILL.
   A launch through `harness::first_tab` is one whatever launched it; `CR_PROFILE` rows say how each
   end went.
 - **Quick plain check:** `agent-replay <path|--latest> --dump -` renders to stdout
