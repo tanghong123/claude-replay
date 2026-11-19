@@ -1555,9 +1555,10 @@ const NATIVE_REVIEW_HOST: &str = r#"<!doctype html>
 "#;
 
 const NATIVE_REVIEW_SCRIPT: &str = r#"const host = window.__host = { mounted: false, error: null, errors: [], loops: [], violations: [] };
+window.__step = "the mount";
 addEventListener("securitypolicyviolation", event => host.violations.push(`${event.effectiveDirective} ${event.blockedURI}`));
-// A ResizeObserver loop notice is the browser putting a size report off to the next frame, not a throw: it is kept apart, with the step the case names, and fails nothing (#s596).
-addEventListener("error", event => /^ResizeObserver loop/.test(String(event.message)) ? host.loops.push({ step: window.__step || null, t: Math.round(performance.now()) }) : host.errors.push(String(event.message)));
+// A ResizeObserver loop notice is the browser putting a size report off to the next frame, not a throw: it is kept apart, with the step the case names, fails nothing, and the harness reports it as the case ends (#s596, #s624).
+addEventListener("error", event => !event.error && /^ResizeObserver loop/.test(String(event.message)) ? host.loops.push({ step: window.__step || null, t: Math.round(performance.now()) }) : host.errors.push(String(event.message)));
 addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
 try {
   const native = await import("/kit/bundle/native-app.js");
@@ -1687,6 +1688,7 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
     // jump-to, where the reader cannot see any of them. Pressed as the reader would, right after
     // Review, with nothing clicked inside the sheet. Every keydown is recorded on the window, after
     // the sheet's own listener, so a press that never arrived cannot pass by doing nothing.
+    eval(&tab, "window.__step = 'keys under the sheet'; 'ok'");
     harness::quiet_keys(&tab);
     eval(&tab, "window.__keys = []; addEventListener('keydown', e => window.__keys.push(e.key), true); 'ok'");
     let page_state = || {
@@ -1739,6 +1741,7 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
     // Closed by Escape with the focus inside mdrev's document (its heading made focusable, so the
     // unmount takes the focused element with it, as it takes a note field or one of mdrev's own
     // buttons), the focus still goes back to Review.
+    eval(&tab, "window.__step = 'the focus into the document'; 'ok'");
     eval(&tab, "(function(){ var h = document.querySelector('.review-sheet .mdrev-host h1'); h.tabIndex = -1; h.focus(); return 'ok'; })()");
     until(
         &tab,
@@ -1776,10 +1779,6 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
         "JSON.stringify(window.__keys)",
     );
     let host = eval(&tab, "JSON.stringify(window.__host)");
-    eprintln!(
-        "ResizeObserver loop notices, by step (none fails the case): {}",
-        eval(&tab, "JSON.stringify(window.__host.loops)")
-    );
     let host: serde_json::Value = serde_json::from_str(host.as_str().unwrap_or("{}")).unwrap();
     assert!(
         host["mounted"] == true
