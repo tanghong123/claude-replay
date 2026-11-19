@@ -1342,7 +1342,8 @@ resizes the others (#159). Six drawer cases catch that in one run.
   whatever `TMPDIR` says) and removes it only when it exits on its own, and the crate's own drop
   SIGKILLs it, so every launch left one (75,886 on one Mac). The guard sends SIGTERM and waits for
   the process to exit before that drop (Chrome removes the folder first; on Linux it keeps it, in
-  `TMPDIR`, the workspace's scratch), and the reapers SIGTERM before they SIGKILL.
+  `TMPDIR`, the workspace's scratch, where `scripts/sweep-scratch.sh`'s age rule clears it), and the
+  reapers SIGTERM a browser before they SIGKILL it.
   A launch through `harness::first_tab` is one whatever launched it; `CR_PROFILE` rows say how each
   end went.
 - **Quick plain check:** `agent-replay <path|--latest> --dump -` renders to stdout

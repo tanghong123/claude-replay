@@ -2222,7 +2222,8 @@ pub fn browser_path() -> Option<std::path::PathBuf> {
 /// idle timeout ends the same way) and waits, at most [`GENTLE_END`], for the process to exit; the
 /// crate's SIGKILL is left for a Chrome that does not. Chrome removes the folder before it exits, so
 /// the exit is the whole wait. On Linux Chrome keeps the folder even then (measured on CI's Ubuntu
-/// runner), but it makes it in `TMPDIR`, the workspace's scratch, which the sweep clears. Each end
+/// runner: `com.google.Chrome.XXXXXX`), but it makes it in `TMPDIR`, the workspace's scratch, whose
+/// age rule (`scripts/sweep-scratch.sh`) clears it after a day. Each end
 /// is a [`profile`] row saying whether the folder went (`CR_PROFILE`, which is how a run is checked
 /// for them), and a folder still there is also a stderr line naming it.
 pub struct Chrome {
@@ -2288,7 +2289,8 @@ impl Chrome {
             };
         };
         let mut exited = false;
-        if let Some(pid) = browser.get_process_id() {
+        let pid = browser.get_process_id();
+        if let Some(pid) = pid {
             let _ = std::process::Command::new("kill")
                 .args(["-TERM", &pid.to_string()])
                 .stderr(std::process::Stdio::null())
@@ -2304,10 +2306,18 @@ impl Chrome {
         }
         let took = t0.elapsed();
         drop(browser);
+        if let Some(pid) = pid {
+            // A pid the system hands out again must not find this profile (`profile_of`).
+            profiles().lock().unwrap().remove(&pid);
+        }
         // Said through [`profile`] as well as stderr: libtest keeps a passing case's stderr to
         // itself, and a run is checked by these rows (`CR_PROFILE`).
         let outcome = match self.singleton.as_ref() {
             None => "chrome end, no singleton folder",
+            // Linux's Chrome keeps it whatever, in the workspace's scratch the sweep clears.
+            Some(dir) if dir.exists() && dir.starts_with(std::env::temp_dir()) => {
+                "chrome end, singleton folder kept in TMPDIR"
+            }
             Some(dir) if dir.exists() => {
                 eprintln!(
                     "harness: chrome left its singleton folder {} (load {})",
@@ -2368,6 +2378,8 @@ fn singleton_folder(profile: &Path) -> Option<PathBuf> {
 
 /// Whether `pid` still runs: there and not a zombie. A browser this process launched stays its
 /// child until headless_chrome waits for it, so a Chrome that has exited still answers `kill -0`.
+/// A `ps` that cannot start (a box too loaded to fork) says nothing, so it reads as running: the
+/// wait then runs out and the SIGKILL ends the process, rather than an exit nobody saw.
 fn process_runs(pid: u32) -> bool {
     std::process::Command::new("ps")
         .args(["-o", "stat=", "-p", &pid.to_string()])
@@ -2377,12 +2389,15 @@ fn process_runs(pid: u32) -> bool {
             let stat = stat.trim();
             !stat.is_empty() && !stat.starts_with('Z')
         })
-        .unwrap_or(false)
+        .unwrap_or(true)
 }
 
 /// End `pids` (#s614): SIGTERM each, wait until none runs or [`GENTLE_END`] has passed, then
 /// SIGKILL what is left. SIGTERM first because a Chrome SIGKILLed leaves its singleton folder in
-/// the system temp folder, and one SIGTERMed removes it. Answers how many it ended.
+/// the system temp folder, and one SIGTERMed removes it. Before the SIGKILL each survivor's command
+/// line is read again and must still name a profile carrying the harness's mark (another
+/// worktree's included, as [`reap_stranded_browsers`] takes them), so a pid the system handed out
+/// again during the wait is never killed. Answers how many it ended.
 fn end_processes(pids: &[u32]) -> usize {
     let signal = |sig: &str, pid: u32| {
         std::process::Command::new("kill")
@@ -2403,7 +2418,18 @@ fn end_processes(pids: &[u32]) -> usize {
         left.retain(|&pid| process_runs(pid));
     }
     for &pid in &left {
-        signal("-KILL", pid);
+        let still_ours = std::process::Command::new("ps")
+            .args(["-wwo", "command=", "-p", &pid.to_string()])
+            .output()
+            .is_ok_and(|out| {
+                String::from_utf8_lossy(&out.stdout).split(' ').any(|arg| {
+                    arg.strip_prefix("--user-data-dir=")
+                        .is_some_and(|dir| dir.contains(BROWSER_PROFILE_MARK))
+                })
+            });
+        if still_ours {
+            signal("-KILL", pid);
+        }
     }
     sent.len()
 }
@@ -2941,9 +2967,10 @@ fn reap_stranded_browsers() {
 
 /// End every process left of the browsers THIS process launched (#s293), as each case ends: the
 /// [`Serial`] guard drops after the case's browsers, cases run one at a time and none keeps a
-/// browser across cases, so nothing live is in range. SIGTERM first, SIGKILL after [`GENTLE_END`]
-/// ([`end_processes`], #s614): a browser process still here (a case that kept a clone of its
-/// `Browser`) then removes its singleton folder too. A browser ends only its own process; its
+/// browser across cases, so nothing live is in range. A helper (`--type=`) is SIGKILLed at once, as
+/// ever: it owns no singleton folder. A browser process still here (none should be: each case's
+/// [`Chrome`] ends its own) is SIGTERMed first and SIGKILLed after [`GENTLE_END`] ([`end_processes`],
+/// #s614), so it removes its singleton folder too. A browser ends only its own process; its
 /// helpers then exit on their own, within a second on a Mac at rest. On
 /// a drained, throttled one they did not (2026-10-28: about 200 helpers with parent 1 under one
 /// scenarios binary, load near 1000, until the battery gave out), and
@@ -2962,18 +2989,29 @@ pub fn reap_own_browsers() {
     else {
         return;
     };
-    let ours: Vec<u32> = String::from_utf8_lossy(&out.stdout)
-        .lines()
-        .filter_map(|line| line.trim().split_once(' '))
-        .filter(|(_, command)| {
-            command.split(' ').any(|arg| {
-                arg.strip_prefix("--user-data-dir=")
-                    .is_some_and(|dir| dir.starts_with(&mark))
+    let (helpers, browsers): (Vec<(u32, bool)>, Vec<(u32, bool)>) =
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter_map(|line| line.trim().split_once(' '))
+            .filter(|(_, command)| {
+                command.split(' ').any(|arg| {
+                    arg.strip_prefix("--user-data-dir=")
+                        .is_some_and(|dir| dir.starts_with(&mark))
+                })
             })
-        })
-        .filter_map(|(pid, _)| pid.parse().ok())
-        .collect();
-    end_processes(&ours);
+            .filter_map(|(pid, command)| {
+                let helper = command.split(' ').any(|arg| arg.starts_with("--type="));
+                pid.parse().ok().map(|pid| (pid, helper))
+            })
+            .partition(|(_, helper)| *helper);
+    for (pid, _) in &helpers {
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    let browsers: Vec<u32> = browsers.into_iter().map(|(pid, _)| pid).collect();
+    end_processes(&browsers);
 }
 
 /// Kill a monitor a previous run left on this port. `Monitor`'s `Drop` has the same hole as the

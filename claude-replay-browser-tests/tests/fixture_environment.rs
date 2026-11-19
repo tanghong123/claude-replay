@@ -165,26 +165,22 @@ fn a_mute_chrome_launch_is_given_up_and_killed() {
 /// `Browser.close`, and every launch left one (75,886 on hong-devserver). The case ends its browser
 /// as a case's drop does: the process exits within [`harness::GENTLE_END`], unkilled, and on a Mac
 /// the folder is gone. On Linux Chrome keeps the folder even when it exits on its own (measured on
-/// CI's Ubuntu runner), in `TMPDIR`, the workspace's scratch the sweep clears, which the case checks.
+/// CI's Ubuntu runner), in `TMPDIR`, the workspace's scratch whose age rule clears it, which the case
+/// checks.
 #[test]
 #[ignore]
 fn a_dropped_browser_takes_its_singleton_folder_with_it() {
     let _serial = harness::serial();
     let (browser, tab) = harness::chrome_tab();
-    let folder = browser.singleton().map(std::path::Path::to_path_buf);
-    if cfg!(target_os = "macos") {
-        assert!(
-            folder.is_some(),
-            "Chrome for Testing links its profile's SingletonSocket into the system temp folder"
-        );
-    }
-    if let Some(folder) = &folder {
-        assert!(
-            folder.exists(),
-            "the folder is there while the browser runs: {}",
-            folder.display()
-        );
-    }
+    let folder = browser
+        .singleton()
+        .map(std::path::Path::to_path_buf)
+        .expect("Chrome links its profile's SingletonSocket into a folder of a temp folder");
+    assert!(
+        folder.exists(),
+        "the folder is there while the browser runs: {}",
+        folder.display()
+    );
     drop(tab);
     let ended = browser.end();
     assert!(
