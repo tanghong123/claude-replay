@@ -13815,16 +13815,17 @@ fn the_tight_session_top_bar_reads_glyphs_search_aa_info_and_pane() {
         &tab,
         "document.removeEventListener('mousedown', window.__noButtonFocus, true); 1",
     );
-    // A mouse's press on the resting field, its query held, keeps the glyphs drawn until it lifts, so
-    // the text does not move under the caret the press places (the review of #s582); as it lifts the
-    // box takes their room.
+    // A mouse's press on the resting field, its query held, keeps the glyphs drawn and the count and the
+    // steps away until it lifts, so the text does not move under the caret the press places (the
+    // reviews of #s582): pressed near its end, where a field narrowed by the count would move the text
+    // under the pointer. As it lifts the box takes their room.
     {
         use headless_chrome::protocol::cdp::Input::{
             DispatchMouseEvent, DispatchMouseEventTypeOption, MouseButton,
         };
         let field = harness::probe(
             &tab,
-            "(function(){ var r = document.getElementById('transcriptSearchInput').getBoundingClientRect(); return { x: r.left + Math.min(20, r.width / 2), y: r.top + r.height / 2, left: r.left }; })()",
+            "(function(){ var r = document.getElementById('transcriptSearchInput').getBoundingClientRect(); return { x: r.right - Math.min(12, r.width / 4), y: r.top + r.height / 2, left: r.left, width: r.width }; })()",
         );
         let (x, y) = (
             field["x"].as_f64().expect("the field's x"),
@@ -13856,12 +13857,14 @@ fn the_tight_session_top_bar_reads_glyphs_search_aa_info_and_pane() {
         harness::eval(&tab, TWO_FRAMES);
         let held = harness::probe(
             &tab,
-            "({ left: document.getElementById('transcriptSearchInput').getBoundingClientRect().left, turns: document.getElementById('phonePane-turns').getBoundingClientRect().width, focused: document.activeElement && document.activeElement.id, pressing: document.querySelector('.header-search-cluster').classList.contains('search-pressing') })",
+            "({ left: document.getElementById('transcriptSearchInput').getBoundingClientRect().left, width: document.getElementById('transcriptSearchInput').getBoundingClientRect().width, next: document.getElementById('findNext').getClientRects().length, turns: document.getElementById('phonePane-turns').getBoundingClientRect().width, focused: document.activeElement && document.activeElement.id, pressing: document.querySelector('.header-search-cluster').classList.contains('search-pressing') })",
         );
         mouse(DispatchMouseEventTypeOption::MouseReleased, 0);
         assert!(
             held["turns"].as_f64().unwrap_or(0.0) > 0.0
                 && (held["left"].as_f64().unwrap_or(f64::NAN) - field["left"].as_f64().unwrap_or(0.0)).abs() < 0.5
+                && (held["width"].as_f64().unwrap_or(f64::NAN) - field["width"].as_f64().unwrap_or(0.0)).abs() < 0.5
+                && held["next"] == 0
                 && held["focused"] == "transcriptSearchInput"
                 && held["pressing"] == true,
             "while the press on the resting field lasts the glyphs stay and the field does not move ({field}): {held}"
@@ -14258,6 +14261,20 @@ fn a_squeezed_session_name_takes_the_crumbs_room_and_its_menu_names_them() {
         "the app shell to mount the fixture",
         Duration::from_secs(30),
         "document.body.innerText.slice(0, 200)",
+    );
+    // 1440px, the outline open: the name, a long one, is cut short of its widest beside the crumb there,
+    // so the crumb goes; whatever the fit decides, the crumb is never drawn cut, and the menu names the
+    // agent and the project exactly when the bar does not draw them whole (the delta review of #s581).
+    let mid = at(1440, None);
+    assert!(
+        !(mid["crumb"] == true && mid["crumbCut"] == true),
+        "at 1440px the crumb is whole or gone, never cut: {mid}"
+    );
+    let menu = open_menu("at 1440px");
+    assert_eq!(
+        menu["about"],
+        serde_json::Value::Bool(mid["crumb"] != true),
+        "at 1440px the menu names the crumb exactly when the bar does not draw it: {mid} {menu}"
     );
     // 1800px: the name at its widest beside the whole crumb; the menu says nothing of them.
     let wide = at(1800, Some(false));

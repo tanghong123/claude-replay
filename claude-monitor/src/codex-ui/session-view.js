@@ -904,8 +904,9 @@ function renderHeader() {
 // the bar's rules give it that much room (`--title-word` on the bar, so the search box's floor beside
 // the heading reads it too, production.css) and let
 // the crumb, the status chip and the search box give way first. Measured with the title's own font
-// on a canvas, so nothing is laid out for it, and again only when the text or the font changed (a
-// host's stylesheet may arrive after the first header). `var`: a header can be drawn during module
+// on a canvas, so nothing is laid out for it, at each header drawn and as the name comes back from
+// Info's card, and anew only when the text or the font has changed since (a host's stylesheet that
+// arrives after the first header is read at the next one). `var`: a header can be drawn during module
 // evaluation.
 var titleRuler = null, titleWordKey = "";
 function markTitleWord() {
@@ -2852,11 +2853,13 @@ let searchFrom = null;
 const searchCluster = viewRoot.$(".header-search-cluster");
 // Where the outline's glyphs give the box their room as it comes into use (#s582), a mouse's press on
 // the field keeps them drawn until it lifts (`search-pressing`): the press places the caret and starts
-// a selection by the layout under the pointer, which the glyphs going would move by their width (the
-// review of #s582). A box already in use stays as it is.
+// a selection by the layout under the pointer, which the glyphs going would move by their width, or the
+// count and the steps coming would narrow (the reviews of #s582; production.css keeps both as at rest
+// while it holds). A box already in use stays as it is. The main button only: the context menu may
+// keep the release from the page.
 searchCluster.addEventListener("pointerdown", event => {
   if (event.pointerType !== "mouse") return;
-  if (event.target === byId("transcriptSearchInput") && !searchCluster.matches(":focus-within, .search-held")) searchCluster.classList.add("search-pressing");
+  if (event.button === 0 && event.target === byId("transcriptSearchInput") && !searchCluster.matches(":focus-within, .search-held")) searchCluster.classList.add("search-pressing");
   searchCluster.classList.add("search-held");
 }, { signal });
 const pressEnded = () => searchCluster.classList.remove("search-pressing");
@@ -4917,9 +4920,10 @@ var phoneDock;
       }
     }
     sessionView.classList.toggle("outline-in-bar", inBar);
-    // The name's menu does not travel open, nor the bar's crumb fit into the card, and a focus on the
-    // name goes on where the name is now: to it in the bar, to Info (the way to it) in the bar of
-    // glyphs, where the card is shut.
+    // The name's menu is closed as it moves, and the bar's crumb fit does not go into the card; a focus
+    // on the name goes on where the name is now: to it in the bar (where its focus opens its menu
+    // again, as any focus on the name does), to Info (the way to it) in the bar of glyphs, where the
+    // card is shut.
     if (wasInCard !== columnHomes.has(heading)) {
       setSessionCopyMenu(false);
       heading.classList.remove("crumb-off");
