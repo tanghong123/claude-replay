@@ -78,6 +78,9 @@ function taskChips(task) {
   const ids = list => list.map(id => "#" + id).join(" ");
   if (task.blockedBy && task.blockedBy.length) chips.push({ kind: "blocked", text: "blocked by " + ids(task.blockedBy) });
   if (task.blocks && task.blocks.length) chips.push({ kind: "blocks", text: "blocks " + ids(task.blocks) });
+  // taskq's marks (#s606): what a person asked for, or the task this one follows up.
+  if (task.follows_up) chips.push({ kind: "lineage", text: "follows up #" + task.follows_up });
+  else if (task.top_level) chips.push({ kind: "lineage", text: "top level" });
   return chips;
 }
 

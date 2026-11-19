@@ -454,10 +454,10 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 :is(#sessionView,#app) .activity-empty .activity-empty-show:hover{border-color:color-mix(in srgb,var(--primary) 26%,var(--line))}
 }
 :where(:root:has(#sessionView.pl-phone)) .activity-empty .activity-empty-show{min-height:44px;min-width:44px;padding:0 20px;font-size:15px}
-.agents-filter-row{display: block; width: 100%; min-height: 44px; padding: 0 12px; border-radius: 9px;
+.agents-filter-row,.tasks-filter-row{display: block; width: 100%; min-height: 44px; padding: 0 12px; border-radius: 9px;
   background: transparent; color: var(--primary);
   font: inherit; font-size: 14px; font-weight: 570; text-align: left; cursor: pointer;}
-.agents-filter-row:focus-visible{outline: 2px solid color-mix(in srgb, var(--primary) 48%, transparent); outline-offset: -2px;}
+.agents-filter-row:focus-visible,.tasks-filter-row:focus-visible{outline: 2px solid color-mix(in srgb, var(--primary) 48%, transparent); outline-offset: -2px;}
 .side-head{position:relative}
 .iconbtn.session-filter.on{background:var(--primary-soft);color:var(--primary);box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--primary) 55%,transparent)}
 .sidebar-mini-button.filter-mini.on{color:var(--primary)}

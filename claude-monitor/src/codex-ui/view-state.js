@@ -86,6 +86,10 @@ export const createViewState = ({ phone = false } = {}) => ({
   // The keys are the pane's own group keys, so the filter and the grouping cannot drift. Running
   // and pending by default, which is exactly what the one box used to mean.
   taskGroupsShown: new Set(json("am-prod-task-groups", ["in_progress", "pending"])),
+  // …and whether it shows only the tasks a person asked for, hiding the ones that follow another
+  // up (#s606, Hong: "there is no filter for top level tasks"): taskq's marks, `top_level` and
+  // `follows_up`. Off by default; a task with neither mark (filed before taskq had them) is shown.
+  taskTopLevel: json("am-prod-task-top-level", false) === true,
   searchScopes: new Set(["u", "a", "t", "o", "b", "r", "e"]), searchWhole: false, toolFilters: new Set(),
   // #303: the search box's frozen facets (design/in-session-search.md §8) — one scope chip (its
   // letters) and one tools chip (tool NAMES or `family*` keys, never the per-session letters).
@@ -114,5 +118,6 @@ export function persistView(uiState) {
   localStorage.setItem("am-prod-info-folds", JSON.stringify([...uiState.infoFolds]));
   localStorage.setItem("am-prod-live-only", JSON.stringify([...uiState.liveOnly]));
   localStorage.setItem("am-prod-task-groups", JSON.stringify([...uiState.taskGroupsShown]));
+  localStorage.setItem("am-prod-task-top-level", JSON.stringify(uiState.taskTopLevel));
   if (uiState.readingChosen) localStorage.setItem(READING_KEY, JSON.stringify(uiState.reading));
 }

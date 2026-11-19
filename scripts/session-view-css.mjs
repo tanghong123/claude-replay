@@ -367,7 +367,7 @@ export const ROOT_CLASSES = Object.freeze([
  *  A name that is one of these, or starts with one and a hyphen. */
 export const OUTSIDE = Object.freeze([
   "#navigatorTurns", "#navigatorWork", "#navigatorAgents", ".navigator-list",
-  ".activity-empty", ".agent-state", ".agents-filter-row", ".outline-agent", ".outline-epoch", ".outline-label", ".outline-number", ".outline-peer",
+  ".activity-empty", ".agent-state", ".agents-filter-row", ".tasks-filter-row", ".outline-agent", ".outline-epoch", ".outline-label", ".outline-number", ".outline-peer",
   ".outline-quote-marker", ".outline-quoted", ".outline-reply-count", ".outline-turn-pending", ".outline-turn-row",
   ".task-state", ".work-copy", ".work-group", ".work-tail", ".work-task",
 ]);

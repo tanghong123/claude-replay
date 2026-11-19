@@ -2306,10 +2306,16 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // still says the absence honestly (#187/#188), because a card is opened deliberately.
   assert.match(viewSource, /const titled = row => !!\(row\.task\.subject \|\| row\.task\.title\);/, "a task with no recorded title stays out of the pane (#217)");
   assert.match(viewSource, /\.map\(group => \(\{ \.\.\.group, rows: group\.rows\.filter\(titled\) \}\)\)/, "…filtered per ROW, never out of `tasks`, because a row's index is what opens its details");
-  assert.match(viewSource, /const untitledTasks = liveRows - taskShown\.reduce\(\(n, group\) => n \+ group\.rows\.length, 0\);/, "…and counted apart from the filter's own hiding, since only one of the two is the reader's to undo");
+  assert.match(viewSource, /const untitledTasks = liveRows - count\(titledRows\);/, "…and counted apart from the filters' own hiding, since only theirs is the reader's to undo");
+  // #s606, Hong: "there is no filter for top level tasks". Top-level only hides a task that follows
+  // another up and keeps one no mark places; off by default, remembered, counted on its own.
+  assert.match(viewSource, /const asked = row => !topLevelOnly \|\| !row\.task\.follows_up;/, "Top-level only hides the follow-ups and nothing else (#s606)");
+  assert.match(viewSource, /const followUps = count\(titledRows\) - count\(taskShown\);/, "…counted apart from the states' and the untitled rule's hiding");
+  assert.match(stateSource, /taskTopLevel: json\("am-prod-task-top-level", false\) === true,/, "…off by default, and remembered");
+  assert.match(stateSource, /localStorage\.setItem\("am-prod-task-top-level", JSON\.stringify\(uiState\.taskTopLevel\)\);/, "…and written");
   assert.match(viewSource, /data-live-only="\$\{escapeText\(key\)\}"/, "…as a checkbox row in the menu");
   assert.match(viewSource, /const live = event\.target\.closest\("\[data-live-only\]"\);/, "…handled before the pane toggle, since it sits inside that row's menu");
-  assert.match(viewSource, /recordState\.hiddenByFilter = \{ tasks: liveTasksOnly \? hiddenTasks : 0, agents: liveAgentsOnly \? hiddenAgents : 0 \};/, "…and the row says how much the filter is holding back, which the head's counts cannot");
+  assert.match(viewSource, /recordState\.hiddenByFilter = \{ tasks: liveTasksOnly \? hiddenTasks : 0, agents: liveAgentsOnly \? hiddenAgents : 0, followups: followUps \};/, "…and the row says how much the filter is holding back, which the head's counts cannot");
   const navCss215 = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.match(navCss215, /\.session-navigator>\.outline-card>\.outline-card-action\{z-index:3\}/, "a head's action outranks the head it sits on, or it answers no click at all (#215)");
   // #225, the owner: "the center on running tasks icon look weird and does not work." Two faults.
