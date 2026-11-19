@@ -14439,7 +14439,8 @@ const HELD_QUERY_SCRIPT: &str = "window.__loops = []; addEventListener('error', 
 /// (measured: the cluster 252px then 246px within the frame), so the browser put the cluster's report
 /// off a frame with that notice. The fit now waits for the next frame, so the box settles one frame
 /// after such a change (measured: the strip 172px and the cluster 252px in the first frame drawn, 166px
-/// and 246px from the next on); the case holds the move and that it then holds still. And / on the
+/// and 246px from the next on); the case holds that it then holds still, and the reports show the
+/// move. And / on the
 /// held query draws the box as at rest from the first frame after the key and holds it (measured: it
 /// gives the observers no size report at all here).
 #[test]
@@ -14581,12 +14582,15 @@ fn a_held_query_emptied_beside_the_open_pane_raises_no_resize_observer_loop() {
                 "{emptied}: the box settles one frame after the emptying and holds (strip|floor|cluster|heading): {before} before, then {frames:?}"
             );
             if open {
-                // Not vacuous: where the notice came, the pane was open, the emptying gave the fit's
-                // observer the strip's new size, and the fit then resized the cluster above the strip,
-                // so the cluster was reported at two widths in the step (the write that raised the
-                // notice inside that delivery before #s624; read from the reports, which hold either
-                // way, where the frames differ: before #s624 the fit was drawn in the first frame).
-                // With the pane shut the strip is reported too, and the fit changes nothing.
+                // Not vacuous: where the notice came, the pane was open, the emptying gave the search
+                // fit's observer the strip's new size, and after that report the cluster above the
+                // strip was resized again: before #s624 by the search fit inside that delivery (the
+                // write that raised the notice), now by the next frame's fits (the heading's and the
+                // search's, both through `fitHeading`). Measured order, before: cluster 252, strip
+                // 172, strip 166, cluster 246; now: cluster 252, strip 172, cluster 246, strip 166.
+                // Read from the reports, which hold either way, where the frames differ (before
+                // #s624 the fit was drawn in the first frame). With the pane shut the strip is
+                // reported too, and nothing is resized after it.
                 assert_eq!(
                     harness::eval(
                         &tab,
@@ -14605,14 +14609,22 @@ fn a_held_query_emptied_beside_the_open_pane_raises_no_resize_observer_loop() {
                     "{emptied}: the strip's new size reported to the fit's observer: {reports}"
                 );
                 let list: Vec<String> = serde_json::from_str(&reports).unwrap_or_default();
-                let mut widths: Vec<&str> = list
-                    .iter()
-                    .filter_map(|r| r.split(" .header-search-cluster:").nth(1))
-                    .collect();
-                widths.dedup();
+                let strip_at = list.iter().position(|r| r.contains(" #searchField:"));
+                let cluster_of = |r: &String| {
+                    r.split(" .header-search-cluster:")
+                        .nth(1)
+                        .map(str::to_string)
+                };
+                let resized_after = strip_at.is_some_and(|at| {
+                    let last = list[..at].iter().rev().find_map(cluster_of);
+                    list[at + 1..]
+                        .iter()
+                        .filter_map(cluster_of)
+                        .any(|w| last.as_ref() != Some(&w))
+                });
                 assert!(
-                    widths.len() >= 2,
-                    "{emptied}: the observer's fit resized the cluster above the strip, reported at two widths: {reports}"
+                    resized_after,
+                    "{emptied}: after the strip's report, the cluster above it resized to a new width: {reports}"
                 );
             }
         }
