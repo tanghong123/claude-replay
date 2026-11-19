@@ -1395,6 +1395,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    name's menu names the agent and the project at its head wherever the bar does not draw them whole
    (`names-crumb`, set as it opens: taken off, cut short, or not drawn, as on a phone). */
 .session-heading.crumb-off>:is(.crumb,.crumb+.header-divider){display:none}
+#sessionView:not(.pl-phone) .workspace>.topbar>.session-heading.crumb-off{flex:0 0 var(--heading-room,auto);max-width:max-content}
 .session-copy-about{display:none;padding:6px 8px 8px;margin-bottom:2px;border-bottom:1px solid var(--line);color:var(--sub);font-size:11.5px;line-height:1.4;overflow-wrap:anywhere}
 .session-copy-menu.names-crumb .session-copy-about{display:block}
 /* #s520: and off the phone the session's name keeps at least its first word (`--title-word`, its

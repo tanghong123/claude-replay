@@ -519,7 +519,7 @@ function setSessionCopyMenu(open) {
   if (open) {
     const crumb = byId("sessionCrumb"), words = crumb?.textContent.trim() || "";
     const whole = !!crumb && crumb.getClientRects().length > 0 && crumb.scrollWidth <= crumb.clientWidth + 1;
-    byId("sessionCopyAbout").textContent = words;
+    sessionCopyMenu.querySelector(".session-copy-about").textContent = words;
     sessionCopyMenu.classList.toggle("names-crumb", !!words && !whole);
   }
   sessionCopyMenu.classList.toggle("open", open);
@@ -947,7 +947,12 @@ function fitHeading() {
   const cut = node => node.scrollWidth > node.clientWidth + 1;
   const cap = parseFloat(getComputedStyle(sessionTitle).maxWidth);
   const squeezed = cut(sessionTitle) && !(sessionTitle.getBoundingClientRect().width >= cap - 1);
-  heading.classList.toggle("crumb-off", squeezed || cut(crumb));
+  const off = squeezed || cut(crumb);
+  // The heading keeps the width it had with the crumb (`--heading-room`), so the crumb's room goes to
+  // the name: the bar shares what it lacks out by each part's width, and a heading narrowed by the
+  // crumb's going gave its room to the search box, the name narrower than beside the crumb.
+  if (off) heading.style.setProperty("--heading-room", `${heading.getBoundingClientRect().width}px`);
+  heading.classList.toggle("crumb-off", off);
 }
 /** At the next frame: the bar, the search box beside the heading and the header's text each change
  *  what fits, and the answer changes the box's room in turn, so it is read once they have settled. */
@@ -4596,7 +4601,8 @@ var phoneDock;
     button.innerHTML = `${svg(key)}<span class="phone-pane-count" hidden></span>`;
     return { key, label, body, button };
   });
-  byId("previewBtn").before(info);
+  // Info right after Aa, before a host's ↗ (#s582: "search box, Aa, i, and the right-drawer toggle").
+  (sessionNewTab || byId("previewBtn")).before(info);
 
   // #s37 (design/phone-landscape.md §3.5a, the owner's idea): the toolbar floats at the bottom in a
   // PILL above the home indicator — Turns, Tasks, Agents and Aa — with search its own control beside

@@ -14278,14 +14278,16 @@ fn a_squeezed_session_name_takes_the_crumbs_room_and_its_menu_names_them() {
             && narrow["crumb"] == false
             && narrow["divider"] == false
             && narrow["without"].as_f64().unwrap_or(0.0)
-                > narrow["withCrumb"].as_f64().unwrap_or(0.0) + 20.0
+                > narrow["withCrumb"].as_f64().unwrap_or(0.0)
+            && narrow["without"].as_f64().unwrap_or(0.0)
+                >= narrow["cap"].as_f64().unwrap_or(f64::INFINITY) - 1.0
             && narrow["withCrumb"].as_f64().unwrap_or(0.0)
                 < narrow["cap"].as_f64().unwrap_or(0.0) - 1.0
             && !narrow["layout"]
                 .as_str()
                 .unwrap_or("")
                 .contains("pl-outline-bar"),
-        "at 1000px the crumb gives the name its room: {narrow}"
+        "at 1000px the crumb gives the name its room, the name (longer than its cap) reaching its cap: {narrow}"
     );
     let menu = open_menu("at 1000px");
     assert!(
