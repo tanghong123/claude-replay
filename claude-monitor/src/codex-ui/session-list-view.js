@@ -313,6 +313,8 @@ let sourceState = {};
 let layoutRetry = null;
 function retryLayout() { clearTimeout(layoutRetry); layoutRetry = setTimeout(() => { layoutRetry = null; refreshLayout(); }, 1000); }
 let arrangeStrip = null;
+// #s579: what the strip last drew, and whether its Details are open.
+let arrangeStripSource = null, arrangeStripLayout = null, arrangeDetailsOpen = false;
 const ARRANGE_LABELS = { "claude-app": "the Claude app", "codex-app": "the Codex app", herdr: "Herdr" };
 // An arranged section shows this many sessions before "Show more", the selected one always.
 const ARRANGED_LIMIT = 30;
@@ -1098,25 +1100,70 @@ function paintArrangeStrip(source, layout) {
     arrangeStrip.className = "arrange-strip"; arrangeStrip.id = "arrangeStrip"; arrangeStrip.hidden = true;
     arrangeStrip.setAttribute("role", "status");
     tree.insertAdjacentElement("beforebegin", arrangeStrip);
-    arrangeStrip.addEventListener("click", event => { if (event.target.closest("[data-arrange-off]")) setArrange(indexState.arrangeBefore); });
+    arrangeStrip.addEventListener("click", event => {
+      if (event.target.closest("[data-arrange-off]")) setArrange(indexState.arrangeBefore);
+      // #s579: the detail behind the plain line opens and shuts on a click, and stays as chosen. It
+      // is toggled in place, so the button keeps the focus a keyboard gave it.
+      const more = event.target.closest("[data-arrange-details]");
+      if (more) toggleArrangeDetails(more);
+    });
   }
+  // A detail opened for one source is not opened for the next one chosen.
+  if (source !== arrangeStripSource) arrangeDetailsOpen = false;
+  arrangeStripSource = source; arrangeStripLayout = layout;
   if (!source) { arrangeStrip.hidden = true; return; }
+  const { html, warn } = arrangeStripMarkup(source, layout);
+  if (arrangeStrip.dataset.html !== html) {
+    // A redraw keeps the focus on Details where it was: the button is drawn anew.
+    const active = page.active();
+    const focused = !!active && arrangeStrip.contains(active) && active.matches("[data-arrange-details]");
+    arrangeStrip.innerHTML = html; arrangeStrip.dataset.html = html;
+    if (focused) arrangeStrip.querySelector("[data-arrange-details]")?.focus();
+  }
+  arrangeStrip.classList.toggle("warn", warn);
+  arrangeStrip.hidden = false;
+}
+/** The line's markup for `source`'s `layout`, and whether it warns. */
+function arrangeStripMarkup(source, layout) {
   const label = ARRANGE_LABELS[source];
   const back = indexState.arrangeBefore === "flat" ? "one list by activity" : "by agent and project";
-  let text, detail = "", warn = false;
+  let text, detail = "", warn = false, more = "";
   if (layout?.available) {
     text = layout.stale ? `Arranged like ${label} · updating…` : `Arranged like ${label} · follows it`;
     const empty = (layout.sections || []).every(section => !(section.entries || []).length && (section.groups || []).every(group => !(group.entries || []).length));
-    detail = layout.note || (empty ? `${label[0].toUpperCase()}${label.slice(1)} lists no sessions right now` : "");
+    // #s579: one plain line, and only when the list differs from the app's in a way the reader would
+    // notice; the source's own words for it wait behind Details. Without a line (a server from
+    // before sends none; `summary` is optional), its note is shown as it was.
+    if (layout.summary) { detail = layout.summary; more = layout.note || ""; }
+    else detail = layout.note || "";
+    if (!detail && empty) detail = `${label[0].toUpperCase()}${label.slice(1)} lists no sessions right now`;
   }
   // A failed read from before the reader last stopped is old news: the source is being read again.
   else if (layout?.stale) text = `Reading ${label}'s list…`;
   else if (layout || layoutState.error) { warn = true; text = `Showing ${back}: ${label}'s list could not be read`; detail = layout?.reason || layoutState.error || ""; }
   else text = `Reading ${label}'s list…`;
-  const html = `<div class="arrange-strip-box"><span class="arrange-strip-text"><span>${escapeText(text)}</span>${detail ? `<small>${escapeText(detail)}</small>` : ""}</span><button class="arrange-strip-close" type="button" data-arrange-off aria-label="${escapeText(`Stop arranging like ${label}`)}" title="${escapeText(`Stop arranging like ${label} — back to ${back}`)}">${svg("x")}</button></div>`;
-  if (arrangeStrip.dataset.html !== html) { arrangeStrip.innerHTML = html; arrangeStrip.dataset.html = html; }
-  arrangeStrip.classList.toggle("warn", warn);
-  arrangeStrip.hidden = false;
+  // The status line is read out when it changes; Details and what it opens are the reader's own
+  // doing, said by the button's state, so they are left out of that (`aria-live="off"`).
+  const details = more ? ` <button class="arrange-strip-more" type="button" data-arrange-details aria-live="off" aria-expanded="${arrangeDetailsOpen}">${arrangeDetailsOpen ? "Hide details" : "Details"}</button>` : "";
+  const opened = more && arrangeDetailsOpen ? `<small class="arrange-strip-detail" aria-live="off">${escapeText(more)}</small>` : "";
+  const html = `<div class="arrange-strip-box"><span class="arrange-strip-text"><span>${escapeText(text)}</span>${detail ? `<small>${escapeText(detail)}${details}</small>` : ""}${opened}</span><button class="arrange-strip-close" type="button" data-arrange-off aria-label="${escapeText(`Stop arranging like ${label}`)}" title="${escapeText(`Stop arranging like ${label} — back to ${back}`)}">${svg("x")}</button></div>`;
+  return { html, warn };
+}
+/** Open or shut the detail under the line in place (#s579): the button, its state and its words
+ *  stay where they are, and the next paint finds the line as it would draw it. */
+function toggleArrangeDetails(button) {
+  arrangeDetailsOpen = !arrangeDetailsOpen;
+  button.setAttribute("aria-expanded", String(arrangeDetailsOpen));
+  button.textContent = arrangeDetailsOpen ? "Hide details" : "Details";
+  const text = arrangeStrip.querySelector(".arrange-strip-text");
+  text.querySelector(".arrange-strip-detail")?.remove();
+  if (arrangeDetailsOpen) {
+    const detail = document.createElement("small");
+    detail.className = "arrange-strip-detail"; detail.setAttribute("aria-live", "off");
+    detail.textContent = arrangeStripLayout?.note || "";
+    text.append(detail);
+  }
+  arrangeStrip.dataset.html = arrangeStripMarkup(arrangeStripSource, arrangeStripLayout).html;
 }
 
 /** Paint the glyphs and the sheet from the one state. */

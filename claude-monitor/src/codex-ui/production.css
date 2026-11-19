@@ -447,6 +447,9 @@ body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){displa
 .arrange-strip-text{display:flex;flex-direction:column;gap:2px;min-width:0;flex:1}
 .arrange-strip-text small{font-size:11px;line-height:14px;color:var(--faint)}
 .arrange-strip.warn .arrange-strip-text small{color:var(--sub)}
+/* #s579: one plain line over the arranged list, its detail behind Details. */
+.arrange-strip-more{display:inline;padding:0;border:0;background:none;color:var(--primary);font:inherit;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
+.arrange-strip-text .arrange-strip-detail{margin-top:2px;color:var(--sub);overflow-wrap:anywhere}
 .arrange-strip-close{flex:none;width:22px;height:22px;display:grid;place-items:center;border:0;border-radius:6px;background:transparent;color:var(--faint);cursor:pointer;padding:0}
 .arrange-strip-close .icon{width:14px;height:14px}
 .arrange-strip-close:hover{background:var(--hover);color:var(--ink)}
@@ -1612,6 +1615,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #sessionList .arranged-view{width:44px;height:44px;margin-top:-10px;margin-bottom:-10px}
   #sessionList .arranged-view .icon{width:18px;height:18px}
   #sessionList .arrange-strip-close{width:44px;height:44px;margin:-10px -6px -10px 0}
+  /* #s579: Details under the line, a 44px target that takes no more of the line than its words. */
+  #sessionList .arrange-strip-more{display:inline-flex;align-items:center;min-width:44px;min-height:44px;margin:-15px 0;padding:0 6px;vertical-align:middle}
 }
 @media(max-width:760px),(pointer:coarse) and (max-height:500px){
   :root{--sidebar:min(86vw,360px)}

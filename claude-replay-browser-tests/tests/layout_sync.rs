@@ -496,10 +496,98 @@ fn arranged_like_the_codex_app_shows_the_threads_it_lists() {
             .map(|i| i[2].clone())
     };
     assert_eq!(title(&x), Some(serde_json::json!("App thread X")), "{seen}");
+    // #s579: one plain line says the list is a guess; the source's own words (the catalogue was not
+    // found) wait behind Details, which is shut.
+    let strip = seen["strip"].as_str().unwrap();
     assert!(
-        seen["strip"].as_str().unwrap().contains("was not found"),
+        strip.contains("This list may show threads the Codex app does not")
+            && !strip.contains("was not found"),
         "{seen}"
     );
+    const DETAILS: &str = "#arrangeStrip [data-arrange-details]";
+    let details = |tab: &headless_chrome::Tab| -> serde_json::Value {
+        let js = format!("(function () {{ var b = document.querySelector({DETAILS:?}); return JSON.stringify({{ expanded: b && b.getAttribute('aria-expanded'), words: b && b.textContent, focused: !!b && document.activeElement === b, strip: document.getElementById('arrangeStrip').innerText }}); }})()");
+        eval(tab, &js)
+            .as_str()
+            .and_then(|s| serde_json::from_str(s).ok())
+            .unwrap_or_default()
+    };
+    let shut = details(&tab);
+    assert_eq!(shut["expanded"], "false", "{shut}");
+    // A keyboard reader: Details takes the focus and is pressed (a click on the focused button, as
+    // Enter gives it; a CDP Enter the page does not take repeats in this Chrome, #270), the detail
+    // opens in place, and the focus stays on the button, whose state says it is open; pressed
+    // again it shuts, the focus still there.
+    eval(
+        &tab,
+        &format!("document.querySelector({DETAILS:?}).focus(); 'ok'"),
+    );
+    click(&tab, DETAILS);
+    let opened = details(&tab);
+    assert!(
+        opened["expanded"] == "true"
+            && opened["words"] == "Hide details"
+            && opened["focused"] == true
+            && opened["strip"]
+                .as_str()
+                .unwrap_or("")
+                .contains("was not found"),
+        "Details opens the note in place and keeps the focus: {opened}"
+    );
+    // The next reads of the source leave it as the reader left it.
+    std::thread::sleep(Duration::from_millis(3500));
+    let kept = details(&tab);
+    assert!(
+        kept["expanded"] == "true" && kept["focused"] == true,
+        "a refresh keeps the detail open and the focus on Details: {kept}"
+    );
+    click(&tab, DETAILS);
+    let again = details(&tab);
+    assert!(
+        again["expanded"] == "false"
+            && again["focused"] == true
+            && !again["strip"]
+                .as_str()
+                .unwrap_or("")
+                .contains("was not found"),
+        "Enter again shuts it, the focus kept: {again}"
+    );
+    // On a touch screen Details is a 44px target, as the line's ✕ is.
+    {
+        use headless_chrome::protocol::cdp::Emulation;
+        let touch = |enabled: bool| {
+            tab.call_method(Emulation::SetTouchEmulationEnabled {
+                enabled,
+                max_touch_points: Some(5),
+            })
+            .expect("touch emulation");
+        };
+        touch(true);
+        until(
+            &tab,
+            "matchMedia('(pointer:coarse)').matches",
+            "a coarse pointer",
+            Duration::from_secs(5),
+            "matchMedia('(pointer:coarse)').matches",
+        );
+        let size = eval(
+            &tab,
+            &format!("(function () {{ var r = document.querySelector({DETAILS:?}).getBoundingClientRect(); return JSON.stringify([r.width, r.height]); }})()"),
+        );
+        let size: Vec<f64> =
+            serde_json::from_str(size.as_str().unwrap_or("[]")).unwrap_or_default();
+        assert!(
+            size.len() == 2 && size[0] >= 44.0 && size[1] >= 44.0,
+            "Details is a 44px target on a touch screen: {size:?}"
+        );
+        touch(false);
+    }
+    // Open, for the catalogue below: the detail goes with the line it explains.
+    click(&tab, DETAILS);
+    assert!(details(&tab)["strip"]
+        .as_str()
+        .unwrap_or("")
+        .contains("was not found"));
     click(&tab, "#tree .arranged-rest");
     let open = wait_list(
         &tab,
@@ -525,10 +613,17 @@ fn arranged_like_the_codex_app_shows_the_threads_it_lists() {
     let listed = wait_list(
         &tab,
         &|v| {
+            let strip = v["strip"].as_str().unwrap_or("");
             !heads(v).contains(&"CHATS".to_string())
-                && !v["strip"].as_str().unwrap_or("").contains("was not found")
+                && !strip.contains("may show threads")
+                && !strip.contains("was not found")
         },
-        "the catalogue decides",
+        "the catalogue decides, and the line and its detail go",
+    );
+    assert_eq!(
+        eval(&tab, &format!("!!document.querySelector({DETAILS:?})")),
+        serde_json::json!(false),
+        "no Details without a line: {listed}"
     );
     assert_eq!(
         heads(&listed),
