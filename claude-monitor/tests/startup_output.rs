@@ -15,8 +15,9 @@ fn scratch(name: &str) -> PathBuf {
 }
 
 /// The monitor with every store, state and cache root inside `base`, its output in `log` (one
-/// file for both streams, as launchd's StandardOutPath and StandardErrorPath name one file).
-fn monitor(base: &Path, log: &Path, port: u16) -> Command {
+/// file for both streams, as launchd's StandardOutPath and StandardErrorPath name one file),
+/// started with `--pair` when `pair`.
+fn monitor(base: &Path, log: &Path, port: u16, pair: bool) -> Command {
     let out = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
@@ -25,7 +26,10 @@ fn monitor(base: &Path, log: &Path, port: u16) -> Command {
     let err = out.try_clone().unwrap();
     let stores = base.join("stores");
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_agent-monitor"));
-    cmd.args(["--pair", "--no-open", "--port", &port.to_string()])
+    if pair {
+        cmd.arg("--pair");
+    }
+    cmd.args(["--no-open", "--port", &port.to_string()])
         .env("HOME", base.join("home"))
         .env("XDG_CONFIG_HOME", base.join("config"))
         .env("XDG_STATE_HOME", base.join("xdg-state"))
@@ -72,7 +76,7 @@ fn a_paired_monitor_writes_no_token_to_a_log() {
     let base = scratch("paired");
     let port = free_port();
     let log = base.join("agent-monitor.log");
-    let serving = Reap(monitor(&base, &log, port).spawn().unwrap());
+    let serving = Reap(monitor(&base, &log, port, true).spawn().unwrap());
 
     let deadline = Instant::now() + Duration::from_secs(60);
     let started = loop {
@@ -89,10 +93,15 @@ fn a_paired_monitor_writes_no_token_to_a_log() {
 
     // The hand-off: a second start finds the first and prints where it is, then exits.
     let handoff_log = base.join("handoff.log");
-    let status = monitor(&base, &handoff_log, port).status().unwrap();
+    let status = monitor(&base, &handoff_log, port, true).status().unwrap();
     assert!(status.success(), "the hand-off exited with {status}");
     let handoff = std::fs::read_to_string(&handoff_log).unwrap();
     drop(serving);
+    // #s604: the running monitor was paired with this token, so the hand-off says nothing more.
+    assert!(
+        !handoff.contains("does not take this token"),
+        "the hand-off to a monitor paired with the token said it was not: {handoff}"
+    );
 
     let token = std::fs::read_to_string(base.join("state/auth-token")).unwrap();
     let token = token.trim();
@@ -117,5 +126,54 @@ fn a_paired_monitor_writes_no_token_to_a_log() {
             "the {what} did not say where the token is: {text}"
         );
     }
+    let _ = std::fs::remove_dir_all(&base);
+}
+
+/// #s604: `--pair` handed off to a monitor that started unpaired writes a token the running
+/// monitor does not know until it restarts. The hand-off says so, and how to restart it, rather
+/// than opening a browser that would not be paired; it still writes no token to a log.
+#[test]
+fn a_pair_handed_to_an_unpaired_monitor_says_it_needs_a_restart() {
+    let base = scratch("unpaired");
+    let port = free_port();
+    let log = base.join("agent-monitor.log");
+    let serving = Reap(monitor(&base, &log, port, false).spawn().unwrap());
+
+    let deadline = Instant::now() + Duration::from_secs(60);
+    loop {
+        let text = std::fs::read_to_string(&log).unwrap_or_default();
+        if text.contains("agent-monitor serving") {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the monitor never said it was serving; its log: {text}"
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    assert!(
+        !base.join("state/auth-token").exists(),
+        "the unpaired monitor minted a token"
+    );
+
+    let handoff_log = base.join("handoff.log");
+    let status = monitor(&base, &handoff_log, port, true).status().unwrap();
+    assert!(status.success(), "the hand-off exited with {status}");
+    let handoff = std::fs::read_to_string(&handoff_log).unwrap();
+    drop(serving);
+
+    let token = std::fs::read_to_string(base.join("state/auth-token")).unwrap();
+    let token = token.trim();
+    assert!(!token.is_empty(), "--pair minted no token");
+    assert!(
+        !handoff.contains(token),
+        "the hand-off wrote the token to its log"
+    );
+    assert!(
+        handoff.contains("the monitor already running does not take this token yet")
+            && handoff.contains("Restart the monitor")
+            && handoff.contains("launchctl kickstart -k"),
+        "the hand-off to an unpaired monitor did not say it needs a restart: {handoff}"
+    );
     let _ = std::fs::remove_dir_all(&base);
 }

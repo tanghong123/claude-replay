@@ -10,8 +10,8 @@
 mod shutdown;
 
 use claude_monitor::control::{
-    ensure_token, printed_url, read_token, set_passcode_interactive, tokened_url,
-    withheld_token_note, Attempts,
+    ensure_token, printed_url, read_token, running_takes_token, set_passcode_interactive,
+    stale_pairing_note, tokened_url, withheld_token_note, Attempts,
 };
 use claude_monitor::index;
 
@@ -264,6 +264,13 @@ fn main() -> Result<()> {
         );
         if token.is_some() && !err_tty {
             eprintln!("{}", withheld_token_note());
+        }
+        // #s604: the running monitor read its pairing when it started; one that started before this
+        // token was written does not take it, and a browser opened with it would not be paired.
+        if let Some(t) = token.as_deref() {
+            if running_takes_token(&url, t) == Some(false) {
+                eprintln!("{}", stale_pairing_note());
+            }
         }
         if open_browser {
             open_url(&with_token(&url));
