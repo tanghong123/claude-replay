@@ -60,6 +60,10 @@ fn said_ignore(output: &str) -> bool {
 struct Slot {
     generation: u64,
     child: Option<std::process::Child>,
+    /// Dialogs taken down as they finished starting, their turn gone meanwhile: what the race
+    /// case reads, so it fails rather than passes when its withdraw came too late to race.
+    #[cfg(test)]
+    taken_down_starting: u32,
 }
 
 /// Shows page codes in a dialog on this Mac; see the module's doc.
@@ -69,6 +73,8 @@ pub struct PairDialog {
     off: bool,
     /// What runs the script: osascript, or a stand-in in a test.
     program: std::path::PathBuf,
+    /// How long a dialog that exits at once may take to: [`EARLY_EXIT`], longer in a test.
+    early: std::time::Duration,
 }
 
 impl PairDialog {
@@ -80,6 +86,7 @@ impl PairDialog {
             slot: Arc::default(),
             off,
             program: "/usr/bin/osascript".into(),
+            early: EARLY_EXIT,
         }
     }
 
@@ -98,7 +105,7 @@ impl PairDialog {
                 .is_ok()
         });
         let started = std::time::Instant::now();
-        while fed && started.elapsed() < EARLY_EXIT {
+        while fed && started.elapsed() < self.early {
             match child.try_wait() {
                 Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
                 // Gone already: no window server, or the script refused.
@@ -139,6 +146,10 @@ impl CodeDisplay for PairDialog {
             if slot.generation != generation {
                 let _ = child.kill();
                 let _ = child.wait();
+                #[cfg(test)]
+                {
+                    slot.taken_down_starting += 1;
+                }
                 return true;
             }
             slot.child = Some(child);
@@ -254,6 +265,7 @@ mod tests {
             slot: Arc::default(),
             off: true,
             program: "/nonexistent/never-run".into(),
+            early: EARLY_EXIT,
         };
         assert!(!display.show("ABCD-EFGH", 300, 2727, Box::new(|| panic!("never ignored"))));
         display.withdraw();
@@ -283,6 +295,7 @@ mod tests {
             slot: Arc::default(),
             off: false,
             program,
+            early: EARLY_EXIT,
         };
         (display, dir)
     }
@@ -349,7 +362,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_dialog_withdrawn_while_it_starts_does_not_stay_up() {
-        let (display, dir) = stand_in("starting", "sleep 30");
+        let (mut display, dir) = stand_in("starting", "sleep 30");
+        // A long early window, so the withdraw lands inside it even on a loaded box.
+        display.early = std::time::Duration::from_secs(3);
         let display = Arc::new(display);
         let shower = display.clone();
         let show = std::thread::spawn(move || {
@@ -359,7 +374,12 @@ mod tests {
         display.withdraw();
         assert!(show.join().unwrap(), "it did start");
         assert!(!alive(&pid), "and was taken down at once");
-        assert!(display.slot.lock().unwrap().child.is_none());
+        let slot = display.slot.lock().unwrap();
+        assert!(slot.child.is_none());
+        assert_eq!(
+            slot.taken_down_starting, 1,
+            "by the show itself, as it finished starting (a withdraw after that proves nothing)"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

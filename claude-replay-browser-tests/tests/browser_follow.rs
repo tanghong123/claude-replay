@@ -19066,6 +19066,24 @@ fn a_browser_on_this_machine_pairs_from_the_page() {
         replies.contains("terminal") && !replies.contains(&code) && !replies.contains(&shown),
         "the reply says where, never the code: {replies}"
     );
+    // A code a link carries is a phone code (#s618 review): another browser that opens
+    // `/pair#code=…` with the page code waiting is refused, and the page code keeps every guess.
+    let (_linked, tab3) = harness::chrome_tab();
+    tab3.navigate_to(&format!("http://127.0.0.1:{port}/pair#code={code}"))
+        .unwrap();
+    harness::until(
+        &tab3,
+        "/wrong, used or expired/.test((document.getElementById('msg') || {}).textContent || '')",
+        "a code a link carried to be refused as a phone code",
+        Duration::from_secs(10),
+        "location.href + ' | ' + document.body.innerText.slice(0, 200)",
+    );
+    let after = std::fs::read_to_string(m.state.join("page-codes")).unwrap();
+    assert!(
+        after.contains(&format!("code {code} ")) && after.lines().any(|l| l == "fails 0"),
+        "the page code still waits, with no miss counted: {}",
+        after.replace(&code, "<code>")
+    );
     tab.find_element("#code")
         .unwrap()
         .type_into(&shown.to_lowercase())

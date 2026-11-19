@@ -104,13 +104,17 @@ kind never burn the other. The monitor clears page codes when it starts; where i
 no page pairing for that run.
 
 A code pairs only once its use is saved, and every miss is counted in the same write. Where the file
-cannot be written, a right code is answered as a miss and stays good, so a guess there teaches
-nothing, and no page code pairs until the file can be written again. The guess bound below rests on
-this.
+cannot be written, every guess is answered as a miss: a right code stays good, a wrong one is not
+counted, and the miss that would burn the code burns nothing (whatever shows the code stays up). So
+no page code pairs until the file can be written again, and a guess there teaches nothing about
+which code is right. The guess bound below counts saved misses, which is all a guess can pair by.
+The same holds where the lock file beside the codes cannot be taken: nothing is minted, paired,
+ignored or cleared.
 
 A code a link carries (`/pair#code=…`, the shape of `--pair-phone`'s link) is a phone code: the page
 sends it marked so, and the monitor never judges it against a page code. A site that opens such a
-link with made-up codes spends none of a page code's guesses.
+link with made-up codes spends none of a page code's guesses. It still spends a phone code's, and can
+burn the phone codes waiting, as it could before this change.
 
 **For the owner:** the codes file is in the monitor's state directory, beside the token, so two
 monitors on one machine that share a state directory (separate cache roots, separate ports) share
@@ -174,7 +178,7 @@ This part is a separate stage, and a separate choice (section 6). Paired monitor
 | **A page on another site, in the owner's browser** | No. Its POST carries a foreign `Origin`, and it cannot read a reply. It can open `/pair` in a tab, where only the person's own click asks; it cannot frame that page (`frame-ancestors 'none'`, `X-Frame-Options: DENY`), and a code its link carries is judged as a phone code alone. | No. |
 | **DNS rebinding** | No. The `Host` is a foreign name. | No. |
 | **Another tailnet device, through `tailscale serve`** | No. It carries a relay's headers or a tailnet name; it keeps `--pair-phone`. | No. A page code is never redeemed through the relay. |
-| **A raw relay (`tailscale serve --tcp`) or a same-user forwarder (`ssh -R`, `socat`, Docker Desktop's proxy)** | Yes. It can forge the loopback `Host` and `Origin`. Each ask raises a dialog on the owner's screen. | No. It never sees the code, which is in the dialog or the terminal. It gets five guesses at 1 in 31⁸ (about 8.5 × 10¹¹) per code, one code at a time, at most three codes before an hour's back-off: at most 360 guesses a day, about 1 in 2 × 10⁹. The bound holds because a miss is counted and a use saved before either is answered (4.4). Every ask is visible to the owner where a dialog can show. |
+| **A raw relay (`tailscale serve --tcp`) or a same-user forwarder (`ssh -R`, `socat`, Docker Desktop's proxy)** | Yes. It can forge the loopback `Host` and `Origin`. Each ask raises a dialog on the owner's screen, where a dialog can show (macOS, someone at the console, the dialog not switched off); elsewhere an ask is seen by nobody, and its code waits for `--pair-code`. | No. It never sees the code, which is in the dialog or the terminal. It gets five guesses at 1 in 31⁸ (about 8.5 × 10¹¹) per code, one code at a time, at most three codes before an hour's back-off: at most 360 guesses a day, about 1 in 2 × 10⁹. The bound holds because a miss is counted and a use saved before either is answered (4.4). Every ask is visible to the owner where a dialog can show. |
 | **A program running as the owner** | Not in scope. | It can read the token file today. |
 
 What is left is a person typing the code somewhere other than the page that asked. The dialog says

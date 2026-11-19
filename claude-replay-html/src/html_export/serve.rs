@@ -3227,6 +3227,13 @@ fn ask_route(page: Option<PageCall<'_>>, phone_command: &str) -> HttpResponse {
                 port,
                 ignored,
             );
+            // Used or burned between the mint and the show (#s618 review), its withdraw came
+            // before the show took its turn: take the display down now.
+            if shown
+                && !super::pairing::page_code_waits(&p.codes, &code, super::pairing::now_secs())
+            {
+                p.display.withdraw();
+            }
             let body = if shown {
                 serde_json::json!({"ok": true, "shown": "dialog"})
             } else {
@@ -5511,6 +5518,9 @@ mod tests {
         ignore: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
         withdrawn: std::sync::atomic::AtomicUsize,
         port: std::sync::Mutex<Option<u16>>,
+        /// Uses the code (in this page codes' file) while it shows, as a browser typing it in the
+        /// moment the display takes to start would.
+        use_on_show: Option<std::path::PathBuf>,
     }
 
     impl CodeDisplay for FakeDisplay {
@@ -5527,6 +5537,14 @@ mod tests {
             *self.port.lock().unwrap() = Some(port);
             self.shown.lock().unwrap().push(code.to_string());
             *self.ignore.lock().unwrap() = Some(ignored);
+            if let Some(codes) = &self.use_on_show {
+                let used = super::super::pairing::redeem_page_code(
+                    codes,
+                    code,
+                    super::super::pairing::now_secs(),
+                );
+                assert_eq!(used, super::super::pairing::PageRedeem::Paired);
+            }
             true
         }
         fn withdraw(&self) {
@@ -5540,13 +5558,26 @@ mod tests {
         tag: &str,
         can_show: bool,
     ) -> (u16, std::sync::Arc<FakeDisplay>, std::path::PathBuf) {
-        let dir = std::env::temp_dir().join(format!("cr-page-pair-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
         let display = std::sync::Arc::new(FakeDisplay {
             can_show,
             ..FakeDisplay::default()
         });
+        page_pairing_gate_with(tag, display)
+    }
+
+    /// The directory [`page_pairing_gate`] keeps its codes in for `tag`.
+    fn page_pairing_dir(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("cr-page-pair-{}-{tag}", std::process::id()))
+    }
+
+    /// [`page_pairing_gate`] with a display of the case's own.
+    fn page_pairing_gate_with(
+        tag: &str,
+        display: std::sync::Arc<FakeDisplay>,
+    ) -> (u16, std::sync::Arc<FakeDisplay>, std::path::PathBuf) {
+        let dir = page_pairing_dir(tag);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
         let handler: RouteHandler =
             std::sync::Arc::new(|_: &Request| HttpResponse::html("the monitor".to_string()));
         let trusted: HostCheck = std::sync::Arc::new(|h: &str| h == "box.tail0.ts.net:2727");
@@ -5773,11 +5804,17 @@ mod tests {
                 ask.contains("--pair-phone"),
                 "{what}: and told the phone's way: {ask}"
             );
+            // A header section cut short carries no body (the body is read only after its blank
+            // line), so a redeem from one never holds a code: that leg is the ask above, and
+            // `local_asker`'s own case (#s618 review).
+            if !*whole {
+                continue;
+            }
             let typed = send_raw(
                 port,
                 &format!("POST /api/pair HTTP/1.1\r\n{headers}"),
                 &code,
-                *whole,
+                true,
             );
             assert!(
                 !typed.starts_with("HTTP/1.1 200") && !typed.contains("Set-Cookie"),
@@ -5806,6 +5843,34 @@ mod tests {
         assert!(
             right.starts_with("HTTP/1.1 200") && right.contains("Set-Cookie"),
             "the tries from elsewhere burned nothing: {right}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #s618 review: a code used (or burned) between its mint and its show, while the display was
+    /// still starting, is taken down as soon as the show returns, never left up for a dead code.
+    #[test]
+    fn a_code_gone_before_its_display_took_its_turn_is_taken_down() {
+        let tag = "gone-first";
+        let display = std::sync::Arc::new(FakeDisplay {
+            can_show: true,
+            use_on_show: Some(page_pairing_dir(tag).join("page-codes")),
+            ..FakeDisplay::default()
+        });
+        let (port, display, dir) = page_pairing_gate_with(tag, display);
+        let here = format!("Host: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\n");
+        let ask = send_raw(
+            port,
+            &format!("POST /api/pair/ask HTTP/1.1\r\n{here}"),
+            "",
+            true,
+        );
+        assert!(ask.starts_with("HTTP/1.1 200"), "{ask}");
+        assert_eq!(display.shown.lock().unwrap().len(), 1, "it was shown");
+        assert_eq!(
+            display.withdrawn.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "and taken down, its code already used"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

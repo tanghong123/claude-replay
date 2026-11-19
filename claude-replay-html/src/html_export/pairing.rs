@@ -210,8 +210,11 @@ pub fn redeem_pair_code(path: &Path, typed: &str, now: u64) -> bool {
 
 /// Hold the page codes while `f` reads and writes them. Besides this process's own lock, a file
 /// lock on `<path>.lock`: `--pair-code` runs as a second process beside the monitor, and a redeem
-/// landing between its read and its write would otherwise put a used code back.
-fn with_page_lock<T>(path: &Path, f: impl FnOnce() -> T) -> T {
+/// landing between its read and its write would otherwise put a used code back. None, and `f` not
+/// run, when that file lock cannot be taken (#s618 review: a lock file this user cannot open, as
+/// one a `sudo agent-monitor --pair-code` left): every caller then fails closed, minting nothing,
+/// pairing nothing and clearing nothing.
+fn with_page_lock<T>(path: &Path, f: impl FnOnce() -> T) -> Option<T> {
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut lock_path = path.as_os_str().to_owned();
     lock_path.push(".lock");
@@ -222,15 +225,11 @@ fn with_page_lock<T>(path: &Path, f: impl FnOnce() -> T) -> T {
         use std::os::unix::fs::OpenOptionsExt;
         open.mode(0o600);
     }
-    // No lock file (a read-only state dir) leaves the in-process lock alone: writing the codes
-    // fails there too, and every caller fails closed on that: no code is minted, and none redeems.
-    let file = open.open(&lock_path).ok();
-    let held = file.as_ref().map(|f| f.lock().is_ok());
+    let file = open.open(&lock_path).ok()?;
+    file.lock().ok()?;
     let out = f();
-    if let (Some(file), Some(true)) = (file.as_ref(), held) {
-        let _ = file.unlock();
-    }
-    out
+    let _ = file.unlock();
+    Some(out)
 }
 
 /// The seconds an ask waits after the last one.
@@ -289,7 +288,7 @@ fn note_unused(store: &mut Store, now: u64) {
 /// A page asks for a code at `now`. At most one waits; asks are spaced; and after
 /// [`PAGE_UNUSED_LIMIT`] codes in a row go unused, they rest for [`PAGE_REST_SECS`].
 pub fn ask_page_code(path: &Path, now: u64) -> PageAsk {
-    with_page_lock(path, || ask_page_code_held(path, now))
+    with_page_lock(path, || ask_page_code_held(path, now)).unwrap_or(PageAsk::Failed)
 }
 
 fn ask_page_code_held(path: &Path, now: u64) -> PageAsk {
@@ -340,6 +339,7 @@ pub fn terminal_page_code(path: &Path, now: u64) -> Option<String> {
         write_store(path, &store).ok()?;
         Some(code)
     })
+    .flatten()
 }
 
 /// The person said they did not ask for `code` (the dialog's Ignore): it is burned, and counts as
@@ -356,6 +356,19 @@ pub fn ignore_page_code(path: &Path, code: &str, now: u64) -> bool {
         }
         write_store(path, &store).is_ok()
     })
+    .unwrap_or(false)
+}
+
+/// Whether `code` is a page code still waiting at `now`. The host asks after it has shown a code,
+/// since the code may have been used or burned while the display was starting (#s618 review).
+pub fn page_code_waits(path: &Path, code: &str, now: u64) -> bool {
+    with_page_lock(path, || {
+        read_store(path)
+            .codes
+            .iter()
+            .any(|(c, exp)| *exp > now && c == code)
+    })
+    .unwrap_or(false)
 }
 
 /// Redeem a typed page code at `now`. Exactly once for a waiting code; a miss counts here only,
@@ -363,6 +376,7 @@ pub fn ignore_page_code(path: &Path, code: &str, now: u64) -> bool {
 pub fn redeem_page_code(path: &Path, typed: &str, now: u64) -> PageRedeem {
     let code = normalize_code(typed);
     with_page_lock(path, || redeem_page_code_held(path, &code, now))
+        .unwrap_or(PageRedeem::Missed { burned: false })
 }
 
 fn redeem_page_code_held(path: &Path, code: &str, now: u64) -> PageRedeem {
@@ -397,10 +411,11 @@ fn redeem_page_code_held(path: &Path, code: &str, now: u64) -> PageRedeem {
         }
     };
     // As for a phone code: a hit pairs only once its use is saved, and unsaved it reads as a miss.
-    match (write_store(path, &store), answer) {
-        (Ok(()), answer) => answer,
-        (Err(_), PageRedeem::Paired) => PageRedeem::Missed { burned: false },
-        (Err(_), answer) => answer,
+    // Nor does an unsaved miss burn anything (#s618 review): the codes are still good on disk, so
+    // whatever shows one stays up.
+    match write_store(path, &store) {
+        Ok(()) => answer,
+        Err(_) => PageRedeem::Missed { burned: false },
     }
 }
 
@@ -417,6 +432,7 @@ pub fn clear_page_codes(path: &Path) -> bool {
         store.fails = 0;
         write_store(path, &store).is_ok()
     })
+    .unwrap_or(false)
 }
 
 /// Seconds since the epoch.
@@ -459,7 +475,7 @@ button:disabled{opacity:.6}#msg{min-height:1.5em;margin:12px 0 0;color:var(--bad
         msg.textContent = "That code is wrong, used or expired. Run agent-monitor --pair-phone again."; })
       .catch(function(){ go.disabled = false; msg.textContent = "The monitor did not answer."; });
   }
-  document.getElementById("f").addEventListener("submit", function(e){ e.preventDefault(); pair(""); });
+  document.getElementById("f").addEventListener("submit", function(e){ e.preventDefault(); pair(); });
   var m = /(?:^#|&)code=([A-Za-z0-9-]+)/.exec(location.hash);
   if (m) { box.value = m[1]; history.replaceState(null, "", location.pathname); pair(); }
 })();
@@ -851,6 +867,100 @@ mod tests {
             "the phone code was never used"
         );
         assert!(clear_page_codes(&page));
+    }
+
+    /// #s618 review: a miss that cannot be saved burns nothing, so whatever shows the code stays
+    /// up, and the code is still good once the store can be written again.
+    #[cfg(unix)]
+    #[test]
+    fn a_miss_that_cannot_be_saved_burns_nothing() {
+        let page = store_path("unsaved-burn");
+        let PageAsk::Minted(code) = ask_page_code(&page, 1_000) else {
+            panic!("the first ask mints");
+        };
+        let wrong = if code == "ZZZZZZZZ" {
+            "YYYYYYYY"
+        } else {
+            "ZZZZZZZZ"
+        };
+        for _ in 1..PAIR_CODE_TRIES {
+            assert_eq!(
+                redeem_page_code(&page, wrong, 1_001),
+                PageRedeem::Missed { burned: false }
+            );
+        }
+        if !freeze(&page, true) {
+            eprintln!("skipped: a read-only directory does not stop this user's writes (root)");
+            return;
+        }
+        assert_eq!(
+            redeem_page_code(&page, wrong, 1_002),
+            PageRedeem::Missed { burned: false },
+            "the miss that would burn, unsaved, burns nothing"
+        );
+        freeze(&page, false);
+        assert!(page_code_waits(&page, &code, 1_002), "the code still waits");
+        assert_eq!(redeem_page_code(&page, &code, 1_003), PageRedeem::Paired);
+        assert!(
+            !page_code_waits(&page, &code, 1_003),
+            "used, it waits no more"
+        );
+    }
+
+    /// #s618 review: where the lock file cannot be opened (one a `sudo agent-monitor --pair-code`
+    /// left, here a directory in its place), nothing about the page codes changes: no ask mints,
+    /// no code pairs or is ignored, the start's clear says it could not, and nothing is written.
+    #[test]
+    fn a_lock_file_that_cannot_be_opened_changes_nothing() {
+        let path = store_path("page-no-lock");
+        let PageAsk::Minted(code) = ask_page_code(&path, 1_000) else {
+            panic!("the first ask mints");
+        };
+        assert!(page_code_waits(&path, &code, 1_001));
+        assert!(
+            !page_code_waits(&path, &code, 1_000 + PAIR_CODE_TTL_SECS),
+            "expired"
+        );
+        let mut lock = path.as_os_str().to_owned();
+        lock.push(".lock");
+        let lock = std::path::PathBuf::from(lock);
+        std::fs::remove_file(&lock).unwrap();
+        std::fs::create_dir(&lock).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        assert_eq!(
+            redeem_page_code(&path, &code, 1_001),
+            PageRedeem::Missed { burned: false },
+            "a right code pairs nothing"
+        );
+        assert_eq!(ask_page_code(&path, 1_100), PageAsk::Failed);
+        assert_eq!(terminal_page_code(&path, 1_100), None);
+        assert!(!ignore_page_code(&path, &code, 1_001));
+        assert!(!clear_page_codes(&path));
+        assert!(
+            !page_code_waits(&path, &code, 1_001),
+            "unknown, so not waiting"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), before, "nothing was written");
+        std::fs::remove_dir(&lock).unwrap();
+        assert_eq!(redeem_page_code(&path, &code, 1_001), PageRedeem::Paired);
+    }
+
+    /// #s618 review: the page this machine's browser gets sends a code a link carried (`#code=…`)
+    /// as a phone code, and a typed one as typed. (The browser case opens such a link.)
+    #[test]
+    fn the_here_page_sends_a_linked_code_as_a_phone_code() {
+        let page = pair_page_here("agent-monitor --pair-code");
+        assert!(page.contains(r#"fetch("/api/pair" + (q || ""),"#));
+        let hash = page
+            .lines()
+            .find(|l| l.contains("box.value = m[1]"))
+            .expect("the #code= line");
+        assert!(hash.contains(r#"pair("?from=link")"#), "{hash}");
+        let submit = page
+            .lines()
+            .find(|l| l.contains(r#"addEventListener("submit""#))
+            .expect("the submit line");
+        assert!(submit.contains(r#"pair("")"#), "{submit}");
     }
 
     /// #s618 review: the file lock, not only this process's own, holds off a change to the page
