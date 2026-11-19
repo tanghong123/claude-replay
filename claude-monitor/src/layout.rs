@@ -1577,6 +1577,9 @@ struct CodexSidebar {
     /// Projects the app is deleting, by either id: drawn nowhere, though the database may still
     /// hold them until the undo window ends.
     deleting: HashSet<String>,
+    /// The projects the state file names (`local-projects`), which the app drops a project from as
+    /// it deletes it (its project cache, read in its code, 26.1111.21308).
+    named: HashSet<String>,
     /// Whose atoms the sidebar was read from.
     atoms_from: AtomsFrom,
     /// The database's project id for a state-file project id.
@@ -1660,8 +1663,10 @@ fn codex_state<'a>(
 /// with ChatGPT 26.1111.21308, which hosts the Codex app, on 2026-11-18: every sidebar atom is there
 /// and `electron-persisted-atom-state` holds none), then `electron-persisted-atom-state`, where the
 /// app kept them before. Another account's atoms, which the app may keep beside, are read only
-/// where no signed-in account is named: they are that account's sidebar, not this one's. The first
-/// whose `sidebar-custom-sections-v3` holds an account's section order.
+/// where no signed-in account is named: they are that account's sidebar, not this one's. An account
+/// named whose atoms are not there yet (one just switched to) reads the shared atoms, and without
+/// them the database's sections stand in. The first whose `sidebar-custom-sections-v3` holds an
+/// account's section order.
 fn sidebar_atoms(state: &Value) -> Option<(&serde_json::Map<String, Value>, AtomsFrom)> {
     const OWNED: &str = "electron-owner-atoms:";
     let holds_sections = |atoms: &serde_json::Map<String, Value>| {
@@ -1670,12 +1675,14 @@ fn sidebar_atoms(state: &Value) -> Option<(&serde_json::Map<String, Value>, Atom
             .and_then(Value::as_object)
             .is_some_and(|accounts| accounts.values().any(|v| v.get("sectionOrder").is_some()))
     };
-    let owner = state
+    // Whether an account is named decides, not whether its atoms were found.
+    let named = state
         .get("electron-renderer-content-owner")
-        .and_then(Value::as_str)
+        .and_then(Value::as_str);
+    let owner = named
         .and_then(|owner| state.get(format!("{OWNED}{owner}").as_str()))
         .and_then(Value::as_object);
-    let mut others: Vec<(&String, &serde_json::Map<String, Value>)> = if owner.is_some() {
+    let mut others: Vec<(&String, &serde_json::Map<String, Value>)> = if named.is_some() {
         Vec::new()
     } else {
         state
@@ -1907,6 +1914,9 @@ fn parse_codex_sidebar(state: &Value) -> Result<CodexSidebar, String> {
         pinned,
         projects,
         deleting: pending_deletions(state),
+        named: names
+            .map(|n| n.keys().cloned().collect())
+            .unwrap_or_default(),
         atoms_from: found.map_or(AtomsFrom::Shared, |(_, from)| from),
         server_project,
         thread_project,
@@ -2052,15 +2062,16 @@ fn codex_sidebar_layout(data: &CodexData, sidebar: &CodexSidebar) -> Layout {
         })
         .collect();
     // #s579: a project the app still has: one the state file names, or one only the database knows
-    // (made since the app moved projects into it), unless the app is deleting it.
-    let exists = |project: &str, named: bool| {
+    // (made since the app moved projects into it), unless the app is deleting it. The same rule
+    // wherever a folder is drawn: Projects, and a custom section the person put it in.
+    let exists = |project: &str| {
         let server = sidebar
             .server_project
             .get(project)
             .map_or(project, String::as_str);
         !sidebar.deleting.contains(project)
             && !sidebar.deleting.contains(server)
-            && (named || data.projects.iter().any(|(id, _)| id == server))
+            && (sidebar.named.contains(project) || data.projects.iter().any(|(id, _)| id == server))
     };
     let builtin = |key: &str| sidebar.collapsed_builtin.get(key).copied().unwrap_or(false);
     let mut out = Vec::new();
@@ -2086,7 +2097,7 @@ fn codex_sidebar_layout(data: &CodexData, sidebar: &CodexSidebar) -> Layout {
                 groups: sidebar
                     .projects
                     .iter()
-                    .filter(|(id, name)| exists(id, name.is_some()))
+                    .filter(|(id, _)| exists(id))
                     .filter(|(id, _)| !in_custom.contains(id.as_str()))
                     .map(|(id, _)| folder(id))
                     .collect(),
@@ -2120,7 +2131,10 @@ fn codex_sidebar_layout(data: &CodexData, sidebar: &CodexSidebar) -> Layout {
                 for item in &section.items {
                     match item {
                         CustomItem::Thread(thread) => entries.extend(thread_entry(thread)),
-                        CustomItem::Project(project) => groups.push(folder(project)),
+                        CustomItem::Project(project) if exists(project) => {
+                            groups.push(folder(project))
+                        }
+                        CustomItem::Project(_) => {}
                     }
                 }
                 out.push(Section {
@@ -3255,6 +3269,52 @@ mod tests {
         assert_eq!(layout.summary, None, "a faithful list says nothing over it");
     }
 
+    /// #s579 review: a custom section draws a project folder only for a project the app still has,
+    /// as Projects does: not one the app is deleting (its database row stays through the undo
+    /// window), and not one neither the state file nor the database knows.
+    #[test]
+    fn a_custom_section_draws_only_the_projects_the_app_still_has() {
+        let mut state = codex_state_json();
+        state["electron-persisted-atom-state"]["sidebar-custom-sections-v3"]["acct-1"] = json!({
+            "sections": [
+                { "id": "cs-client", "name": "Client work",
+                  "itemKeys": ["codex:project:lp-api", "codex:project:lp-going", "codex:project:lp-gone"] },
+            ],
+            "collapsedSectionIds": [],
+            "sectionOrder": ["custom:cs-client", "threads"],
+        });
+        state["app-server-pending-project-deletions-by-host"] = json!({
+            "local:/h/.codex": { "lp-going": { "projectId": "srv-going", "deleteAfterMs": 1 } },
+        });
+        state["app-server-project-id-by-legacy-project-id-by-host"]["local:/h/.codex"]
+            ["lp-going"] = json!("srv-going");
+        let data = CodexData {
+            projects: vec![
+                ("srv-api".into(), "api".into()),
+                ("srv-going".into(), "going".into()),
+            ],
+            ..Default::default()
+        };
+        let layout = codex_sidebar_layout(&data, &parse_codex_sidebar(&state).unwrap());
+        let labels = |section: &Section| {
+            section
+                .groups
+                .iter()
+                .map(|g| g.label.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(layout.sections[0].label, "Client work");
+        assert_eq!(
+            labels(&layout.sections[0]),
+            vec!["api"],
+            "no folder for the project being deleted, nor for one nothing knows"
+        );
+        assert!(
+            !labels(&layout.sections[1]).contains(&"going".to_string()),
+            "nor in Projects"
+        );
+    }
+
     /// #s579: the app now keeps the sidebar's atoms per account, under
     /// `electron-owner-atoms:<owner>`, and none in `electron-persisted-atom-state`: they are read
     /// there, the account `electron-renderer-content-owner` names first, and the shared atoms still
@@ -3286,6 +3346,15 @@ mod tests {
         assert!(parse_codex_sidebar(&owned)
             .unwrap_err()
             .contains("sidebar-custom-sections-v3"));
+        // An account named whose atoms are not written yet (one just switched to): never another
+        // account's sidebar. The shared atoms if they hold one, else the database's sections.
+        let mut switched = owned.clone();
+        switched["electron-renderer-content-owner"] = json!("owner-new");
+        assert!(parse_codex_sidebar(&switched)
+            .unwrap_err()
+            .contains("sidebar-custom-sections-v3"));
+        switched["electron-persisted-atom-state"] = atoms.clone();
+        assert_eq!(read(&switched).atoms_from, AtomsFrom::Shared);
         // No account named: another account's, said over the list.
         let mut nobody = owned.clone();
         nobody
