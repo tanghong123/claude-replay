@@ -81,8 +81,8 @@ pub fn running_takes_token(base: &str, token: &str) -> Option<bool> {
 
 /// What the hand-off says when the running monitor does not take the token (#s604).
 pub fn stale_pairing_note() -> &'static str {
-    "  note: the monitor already running was started without this token, so it does not take it: \
-     this opens its page unpaired. Restart the monitor (Ctrl-C where it runs, or restart its \
+    "  note: the monitor already running was started without this token, so it does not take it, \
+     and its page stays unpaired. Restart the monitor (Ctrl-C where it runs, or restart its \
      service: under launchd, `launchctl kickstart -k gui/$(id -u)/<its label>`), then run \
      `agent-monitor --pair` again."
 }

@@ -189,5 +189,11 @@ fn a_pair_handed_to_an_unpaired_monitor_says_it_needs_a_restart() {
             && handoff.contains("launchctl kickstart -k"),
         "the hand-off to an unpaired monitor did not say it needs a restart: {handoff}"
     );
+    // The token is not handed on, so nothing is withheld: the paired case's note must not appear.
+    // With `--no-open` and no terminal this is what tells the bare hand-off from a tokened one.
+    assert!(
+        !handoff.contains("agent-monitor --pair` in a terminal"),
+        "the hand-off to an unpaired monitor still handed on the token: {handoff}"
+    );
     let _ = std::fs::remove_dir_all(&base);
 }
