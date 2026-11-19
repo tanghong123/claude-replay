@@ -24096,36 +24096,43 @@ const SESSION_MENU_PLACE: &str = "(function(){ var m = document.getElementById('
 /// #s602 (hd-replay's walk of #s581, an iPhone 17 Pro Max held sideways in Safari, 956×330): the
 /// session's menu opened from the title hung with its top at 51px, across the turn subtitle under
 /// the title (45 to 61px), so half the subtitle showed above the menu and the menu cut through the
-/// title row. Wherever the view is under 700px wide (upright, and a wide phone's view beside its
+/// title row. Wherever the view is 700px wide or less (upright, and a wide phone's view beside its
 /// list column) the menu was pinned 51px down, the bar's bottom only while nothing moves the bar's
-/// row: a top safe-area inset does (the walk's row sat 14px lower than this page draws it with no
-/// inset, which a 14px top inset reproduces; the Home Screen app upright has the status bar's 62px).
-/// On a phone it now hangs from the bar's measured bottom (`--phone-top`), as Info does: clear of
-/// the title row held sideways at both sizes the walk saw, and upright in the Home Screen app; and
-/// upright in Safari, with no top inset, exactly where it was.
+/// row down. A top safe-area inset does: the walk's row sat 14px lower than this page draws it with
+/// no inset, which a 14px top inset reproduces here (the walk did not record which inset it was),
+/// and the Home Screen app upright has the status bar's 62px. On a phone it now hangs from the
+/// bar's measured bottom (`--phone-top`), as Info does: clear of the title row held sideways at both
+/// sizes the walk saw, and upright in the Home Screen app; upright in Safari, with no top inset, it
+/// is exactly where it was. On the old CSS the 956x330 leg and the Home Screen app's fail; the
+/// 852x393 view is wider than 700px, so its menu hangs from the heading and passes either way.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_held_sideways_hangs_the_session_menu_below_the_title_row() {
     let _serial = serial();
     let mut seen = Vec::new();
     let sideways_row_down = (14, 62, 20, 62);
+    // Each leg: the window, its safe-area insets, what it stands for, and whether the view is 700px
+    // wide or less, where the menu is the pinned one this case is about (852x393 has no list column,
+    // so its view is the whole window and its menu hangs from the heading).
     let cases = [
         (
             956,
             330,
             sideways_row_down,
             "sideways in Safari, the list column shown",
+            true,
         ),
-        (852, 393, sideways_row_down, "sideways in Safari"),
+        (852, 393, sideways_row_down, "sideways in Safari", false),
         (
             402,
             874,
             harness::PORTRAIT_INSETS,
             "upright in the Home Screen app",
+            true,
         ),
-        (402, 874, (0, 0, 0, 0), "upright in Safari"),
+        (402, 874, (0, 0, 0, 0), "upright in Safari", true),
     ];
-    for (n, (w, h, insets, label)) in cases.into_iter().enumerate() {
+    for (n, (w, h, insets, label, pinned)) in cases.into_iter().enumerate() {
         let base = harness::base(&format!("s602-menu-{n}"));
         let stores = harness::Stores::new(&base);
         // One turn, which the subtitle under the title names.
@@ -24176,9 +24183,9 @@ fn a_phone_held_sideways_hangs_the_session_menu_below_the_title_row() {
         let place: serde_json::Value =
             serde_json::from_str(place.as_str().unwrap_or("{}")).unwrap_or_default();
         eprintln!("#s602 {label}, {w}x{h}: {place}");
-        seen.push((label, place));
+        seen.push((label, pinned, place));
     }
-    for (label, place) in &seen {
+    for (label, pinned, place) in &seen {
         let top = place["menu"]["top"].as_i64().unwrap_or(-1);
         let row = [&place["title"]["bottom"], &place["subtitle"]["bottom"]]
             .iter()
@@ -24198,6 +24205,20 @@ fn a_phone_held_sideways_hangs_the_session_menu_below_the_title_row() {
                 <= place["height"].as_i64().unwrap_or(0),
             "{label}: the whole menu is on the screen: {place}"
         );
+        // A pinned leg's menu is the one this case is about, hung from the bar's measured bottom: a
+        // view wider than 700px (the list column hidden) would hang it from the heading, and the leg
+        // would pass on the old CSS too.
+        if *pinned {
+            let phone_top = place["phoneTop"]
+                .as_str()
+                .and_then(|v| v.trim().strip_suffix("px"))
+                .and_then(|v| v.parse::<f64>().ok());
+            assert_eq!(
+                (&place["menuPosition"], phone_top.map(|v| v.round() as i64)),
+                (&serde_json::json!("fixed"), Some(top)),
+                "{label}: the menu is pinned (the view is 700px wide or less) and hangs from the bar's measured bottom: {place}"
+            );
+        }
         if *label == "upright in Safari" {
             assert_eq!(
                 (&place["menu"]["top"], &place["menu"]["left"]),
