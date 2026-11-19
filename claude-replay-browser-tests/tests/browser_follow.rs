@@ -14242,6 +14242,179 @@ fn the_tight_session_top_bar_reads_glyphs_search_aa_info_and_pane() {
     drop(monitor);
 }
 
+/// #s598 (hd-replay's iPad walk of #s581: sideways, the pane open, a 601px session column, a query held
+/// at rest; the field read "ridg" of "ridge" and the status chip "● D"): in a session column this
+/// narrow the bar has too little for every part's words, and what gives way is a deliberate short
+/// form, never a cut word. The query held in the search box shows whole, and the status chip shows its
+/// words whole or only its dot (its tooltip and Info say the state). Every control stays inside the
+/// column, and the name keeps its first word. Measured at 601px and 650px, bare and with a query held
+/// at rest, for a long name and for a name of a single word, which is never cut. A first word near the
+/// name's 160px cap leaves a 601px column no room for a held query beside it: the name keeps its first
+/// word first (#s520).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_narrow_session_column_keeps_a_held_query_whole_and_the_chip_whole_or_its_dot() {
+    let _serial = serial();
+    let base = base("narrow-bar");
+    let stores = Stores::new(&base);
+    // A long name, always cut at these widths, and a name of one word, never cut (its least is the
+    // word itself), whose crumb is taken off only where the crumb itself is cut.
+    let sessions = [
+        (
+            "a long name",
+            "cccccccc-0000-4000-8000-0000000005a2",
+            "Harbour tide table notes for the spring survey of every station",
+        ),
+        (
+            "a one-word name",
+            "cccccccc-0000-4000-8000-0000000005a3",
+            "hd-replay",
+        ),
+    ];
+    for (_, sid, title) in sessions {
+        let mut jsonl = harness::long_session(6, harness::Shape::default());
+        jsonl.push_str(&format!(
+            "{{\"type\":\"custom-title\",\"customTitle\":\"{title}\"}}\n"
+        ));
+        stores.claude_session(sid, &jsonl);
+    }
+    let monitor = Monitor::spawn(Kind::V1, 3161, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let column = "document.querySelector('#sessionView .workspace>.topbar').parentElement.getBoundingClientRect().width";
+    let probe = "(function(){ var bar = document.querySelector('#sessionView .workspace>.topbar'), col = bar.parentElement.getBoundingClientRect(); var t = document.getElementById('sessionTitle'), h = t.parentElement, chip = document.getElementById('statusChip'), i = document.getElementById('transcriptSearchInput'), cluster = document.querySelector('.workspace>.topbar>.header-search-cluster'); var drawn = function (e) { return !!e && e.getClientRects().length > 0 && e.getBoundingClientRect().width > 0; }; var cs = getComputedStyle(i), ctx = document.createElement('canvas').getContext('2d'); ctx.font = cs.font; var text = i.value ? ctx.measureText(i.value).width : 0; var inner = i.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); var cr = chip.getBoundingClientRect(), dot = chip.querySelector('.state-dot'), dr = dot ? dot.getBoundingClientRect() : null; var parts = [].slice.call(bar.children).filter(drawn).map(function (e) { var r = e.getBoundingClientRect(); return (e.id ? '#' + e.id : '.' + String(e.className).split(' ')[0]) + ' ' + Math.round(r.left) + '..' + Math.round(r.right); }); var out = [].slice.call(bar.querySelectorAll('button, input, .status-chip, #sessionTitle')).filter(function (e) { var r = e.getBoundingClientRect(); return drawn(e) && (r.left < col.left - 1 || r.right > col.right + 1); }).map(function (e) { return e.id || String(e.className); }); return { col: Math.round(col.width), view: Math.round(document.getElementById('sessionView').getBoundingClientRect().width), layout: document.getElementById('sessionView').className, heading: h.className, cluster: cluster.className, query: i.value, text: Math.ceil(text), inner: Math.floor(inner), fieldScroll: i.scrollWidth, fieldClient: i.clientWidth, chipText: chip.textContent.trim(), chipShown: drawn(chip), chipWhole: drawn(chip) && chip.scrollWidth <= chip.clientWidth + 1, chipW: Math.round(cr.width), chipScroll: chip.scrollWidth, dotShown: !!dr && dr.width >= 4 && dr.left >= cr.left - 0.5 && dr.right <= cr.right + 0.5, dotW: dr ? Math.round(dr.width * 10) / 10 : 0, chipWf: Math.round(cr.width * 10) / 10, chipFont: getComputedStyle(chip).fontSize, box: [].slice.call(document.querySelectorAll('.workspace>.topbar>.header-search-cluster *')).filter(function (e) { return drawn(e) && e.children.length === 0 || e.id === 'transcriptSearchCount'; }).map(function (e) { var r = e.getBoundingClientRect(); return (e.id || String(e.className).split(' ')[0] || e.tagName) + ' ' + Math.round(r.left) + '..' + Math.round(r.right) + (e.id === 'transcriptSearchCount' ? ' ' + JSON.stringify(e.textContent) : ''); }), head: [].slice.call(h.children).filter(drawn).map(function (e) { var r = e.getBoundingClientRect(); return (e.id || String(e.className).split(' ')[0]) + ' ' + Math.round(r.left) + '..' + Math.round(r.right); }).concat(['min ' + getComputedStyle(h).minWidth, 'flex ' + getComputedStyle(h).flex]), title: Math.round(t.getBoundingClientRect().width), titleWord: parseFloat(bar.style.getPropertyValue('--title-word')) || 0, parts: parts, out: out }; })()";
+    // The window narrowed until the session's column is `want` wide (the list and the outline take what
+    // the layout gives them at each width), then the bar's fits settled.
+    let at = |want: f64, what: &str| -> serde_json::Value {
+        let mut width = want + 300.0;
+        for _ in 0..6 {
+            harness::clear_metrics(&tab);
+            harness::resize(&tab, width.round(), 900.0);
+            harness::until(
+                &tab,
+                &format!(
+                    "innerWidth === {} && {VIEW_CAUGHT_UP}",
+                    width.round() as i64
+                ),
+                &format!("{what}: the window at {}px", width.round()),
+                Duration::from_secs(15),
+                "innerWidth",
+            );
+            harness::until_preview_parked(&tab);
+            harness::eval(&tab, TWO_FRAMES);
+            let now = harness::eval(&tab, column).as_f64().unwrap_or(0.0);
+            if (now - want).abs() < 0.5 {
+                break;
+            }
+            width += want - now;
+        }
+        harness::eval(&tab, TWO_FRAMES);
+        harness::eval(&tab, TWO_FRAMES);
+        harness::probe(&tab, probe)
+    };
+    let check = |seen: &serde_json::Value, want: f64, what: &str| {
+        assert_eq!(
+            seen["col"].as_f64(),
+            Some(want),
+            "{what}: the session's column: {seen}"
+        );
+        let short = seen["heading"]
+            .as_str()
+            .unwrap_or("")
+            .split(' ')
+            .any(|c| c == "chip-dot");
+        assert!(
+            seen["chipWhole"] == true || (short && seen["dotShown"] == true),
+            "{what}: the status chip shows its words whole, or only its dot, never a cut word: {seen}"
+        );
+        if short {
+            assert!(
+                seen["chipWf"].as_f64().unwrap_or(f64::MAX)
+                    <= seen["dotW"].as_f64().unwrap_or(0.0) + 1.0
+                    && seen["chipFont"] == "0px",
+                "{what}: the chip in its short form is its dot alone, its words taking no room: {seen}"
+            );
+        }
+        if !seen["query"].as_str().unwrap_or("").is_empty() {
+            assert!(
+                seen["text"].as_f64().unwrap_or(f64::MAX)
+                    <= seen["inner"].as_f64().unwrap_or(0.0) + 0.5
+                    && seen["fieldScroll"].as_f64().unwrap_or(f64::MAX)
+                        <= seen["fieldClient"].as_f64().unwrap_or(0.0) + 1.0,
+                "{what}: the held query shows whole in its field: {seen}"
+            );
+        }
+        assert_eq!(
+            seen["out"].as_array().map(|a| a.len()),
+            Some(0),
+            "{what}: every control stays inside the session's column: {seen}"
+        );
+        assert!(
+            seen["title"].as_f64().unwrap_or(0.0)
+                >= seen["titleWord"].as_f64().unwrap_or(f64::MAX).min(160.0) - 1.0,
+            "{what}: the name keeps its first word: {seen}"
+        );
+    };
+    for (name, sid, title) in sessions {
+        let url = monitor.url(&format!("?ui=app&session={sid}"));
+        harness::resize(&tab, 1440.0, 900.0);
+        tab.navigate_to(&url).unwrap();
+        tab.wait_until_navigated().unwrap();
+        harness::until(
+            &tab,
+            &format!("!!document.querySelector('.virtual-window .turn.user') && document.getElementById('sessionTitle').textContent === {title:?}"),
+            "the app shell to mount the fixture",
+            Duration::from_secs(30),
+            "document.body.innerText.slice(0, 200)",
+        );
+        for want in [650.0, 601.0] {
+            let what = format!("{name}, {want}px bare");
+            let seen = at(want, &what);
+            eprintln!("#s598 {what}: {seen}");
+            check(&seen, want, &what);
+        }
+        // A five-letter query, counted, then left: a press on the transcript lets the box rest
+        // with it held.
+        harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
+        harness::eval(
+            &tab,
+            "(function(){ var i = document.getElementById('transcriptSearchInput'); i.value = 'lorem'; i.dispatchEvent(new Event('input', { bubbles: true })); if (/⏎/.test(document.getElementById('transcriptSearchCount').textContent)) i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return 1; })()",
+        );
+        let count = "document.getElementById('transcriptSearchCount').textContent";
+        harness::until(
+            &tab,
+            &format!("/\\d/.test({count}) && !/⏎/.test({count})"),
+            "the query's matches counted",
+            Duration::from_secs(10),
+            count,
+        );
+        let away = harness::probe(
+            &tab,
+            "(function(){ var r = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height * 0.6) }; })()",
+        );
+        tab.click_point(headless_chrome::browser::tab::point::Point {
+            x: away["x"].as_f64().unwrap_or(0.0),
+            y: away["y"].as_f64().unwrap_or(0.0),
+        })
+        .expect("a press on the transcript");
+        harness::until(
+            &tab,
+            "(function(){ var c = document.querySelector('.workspace>.topbar>.header-search-cluster'); return !c.matches(':focus-within') && !c.classList.contains('search-held') && document.getElementById('transcriptSearchInput').value === 'lorem'; })()",
+            "the search box to rest with the query held",
+            Duration::from_secs(5),
+            "document.querySelector('.workspace>.topbar>.header-search-cluster').className",
+        );
+        for want in [601.0, 650.0] {
+            let what = format!("{name}, {want}px with a query held");
+            let seen = at(want, &what);
+            eprintln!("#s598 {what}: {seen}");
+            check(&seen, want, &what);
+        }
+    }
+    harness::clear_metrics(&tab);
+    drop(monitor);
+}
+
 /// #s581 (Hong: "when the pane is too narrow to hold all of the agent name, agent type, and repo
 /// name, give room to agent name, and show agent type and repo name in the drop down menu when user
 /// clicks the agent name"): where the bar holds the session's name beside its crumb (the agent and the
@@ -14267,7 +14440,7 @@ fn a_squeezed_session_name_takes_the_crumbs_room_and_its_menu_names_them() {
     monitor.pair(&tab);
     // The heading as drawn, and the name's width with the crumb drawn and without it, read in one
     // task (the class taken off and put back), so the room the crumb takes is measured, not assumed.
-    let probe = "(function(){ var t = document.getElementById('sessionTitle'), h = t.parentElement, k = document.getElementById('sessionCrumb'), a = document.getElementById('sessionCopyAbout'), d = k.nextElementSibling; var drawn = function (e) { return !!e && e.getClientRects().length > 0 && e.getBoundingClientRect().width > 0; }; var off = h.classList.contains('crumb-off'); var now = t.getBoundingClientRect().width; h.classList.remove('crumb-off'); var withCrumb = t.getBoundingClientRect().width; h.classList.add('crumb-off'); var without = t.getBoundingClientRect().width; h.classList.toggle('crumb-off', off); return { off: off, crumb: drawn(k), divider: drawn(d), crumbText: k.textContent.trim(), crumbCut: k.scrollWidth > k.clientWidth + 1, title: Math.round(now), withCrumb: Math.round(withCrumb), without: Math.round(without), cap: parseFloat(getComputedStyle(t).maxWidth), menu: document.getElementById('sessionCopyMenu').classList.contains('open'), about: drawn(a), aboutText: a.textContent.trim(), layout: document.getElementById('sessionView').className }; })()";
+    let probe = "(function(){ var t = document.getElementById('sessionTitle'), h = t.parentElement, k = document.getElementById('sessionCrumb'), a = document.getElementById('sessionCopyAbout'), d = k.nextElementSibling; var drawn = function (e) { return !!e && e.getClientRects().length > 0 && e.getBoundingClientRect().width > 0; }; var off = h.classList.contains('crumb-off'); var now = t.getBoundingClientRect().width; h.classList.remove('crumb-off'); var withCrumb = t.getBoundingClientRect().width; h.classList.add('crumb-off'); var without = t.getBoundingClientRect().width; h.classList.toggle('crumb-off', off); return { off: off, crumb: drawn(k), divider: drawn(d), crumbText: k.textContent.trim(), crumbCut: k.scrollWidth > k.clientWidth + 1, title: Math.round(now), withCrumb: Math.round(withCrumb), without: Math.round(without), cap: parseFloat(getComputedStyle(t).maxWidth), menu: document.getElementById('sessionCopyMenu').classList.contains('open'), about: drawn(a), aboutText: a.textContent.trim(), layout: document.getElementById('sessionView').className, hc: h.className, room: h.style.getPropertyValue('--heading-room'), hw: Math.round(h.getBoundingClientRect().width * 10) / 10, kids: [].slice.call(h.children).filter(drawn).map(function (e) { var r = e.getBoundingClientRect(); return (e.id || String(e.className).split(' ')[0]) + ' ' + Math.round(r.left * 10) / 10 + '..' + Math.round(r.right * 10) / 10; }) }; })()";
     let at = |width: u32, off: Option<bool>| -> serde_json::Value {
         if width < 500 {
             harness::mouse_window(&tab, width, 900);
@@ -15373,7 +15546,7 @@ fn shell_with_a_session(
     port: u16,
 ) -> (
     Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     shell_with_a_session_in(name, port, |_| {})
@@ -15386,7 +15559,7 @@ fn shell_with_a_session_in(
     prepare: impl FnOnce(&headless_chrome::Tab),
 ) -> (
     Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     let base = base(name);
@@ -17156,7 +17329,7 @@ fn emptied_panes_world(
     running: bool,
 ) -> (
     Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     &'static str,
 ) {
@@ -17540,6 +17713,372 @@ fn a_wide_phone_column_shows_and_hides_finished_agents_with_one_running() {
         harness::eval(&tab, AGENTS_FILTER_ON),
         serde_json::json!(true)
     );
+    drop(m);
+}
+
+/// #s606: a world of three sessions whose tasks carry taskq's marks, or none. The first holds a
+/// top-level task, three follow-ups of it (one running, one completed) and one filed before taskq
+/// had the marks; the second only follow-ups; the third native tasks with no marks at all. Served
+/// on `port`, the first open with its Tasks drawer open (on a desktop). Returns the monitor, the
+/// browser, the tab and the three ids.
+fn top_level_world(
+    port: u16,
+    case: &str,
+    phone: Option<(u32, u32)>,
+) -> (
+    Monitor,
+    harness::Chrome,
+    std::sync::Arc<headless_chrome::Tab>,
+    [&'static str; 3],
+) {
+    let sids = [
+        "eeeeeeee-0000-4000-8000-000000006061",
+        "eeeeeeee-0000-4000-8000-000000006062",
+        "eeeeeeee-0000-4000-8000-000000006063",
+    ];
+    let base = base(case);
+    let stores = Stores::new(&base);
+    let mut first = harness::long_session(6, harness::Shape::default());
+    first += &harness::taskq_create("call_t10", "s10", "Ship the filter", "top_level", 10);
+    first += &harness::taskq_create(
+        "call_t11",
+        "s11",
+        "Fix what the filter found",
+        "follows_up:s10",
+        11,
+    );
+    first += &harness::taskq_create(
+        "call_t12",
+        "s12",
+        "Write the filter's case",
+        "follows_up:s10",
+        12,
+    );
+    first += &harness::taskq_state("call_c12", "s12", "claim", "pending", "in_progress", 13);
+    first += &harness::taskq_create("call_t13", "s13", "A task from before the marks", "", 14);
+    first += &harness::taskq_create(
+        "call_t14",
+        "s14",
+        "Tidy what the case left",
+        "follows_up:s10",
+        15,
+    );
+    first += &harness::taskq_state("call_d14", "s14", "done", "pending", "completed", 16);
+    first += &harness::long_session(3, harness::Shape::default());
+    stores.claude_session(sids[0], &first);
+    let mut second = harness::long_session(4, harness::Shape::default());
+    second += &harness::taskq_create(
+        "call_t20",
+        "s20",
+        "A follow-up filed here",
+        "follows_up:s10",
+        10,
+    );
+    second += &harness::taskq_create("call_t21", "s21", "Another follow-up", "follows_up:s10", 11);
+    stores.claude_session(sids[1], &second);
+    stores.claude_session(
+        sids[2],
+        &harness::long_session(4, harness::Shape::default()),
+    );
+    stores.claude_tasks(sids[2], &[("1", "a native task", "pending")]);
+    let m = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let (browser, tab) = harness::chrome_tab();
+    match phone {
+        Some((w, h)) => harness::phone(&tab, w, h),
+        None => harness::resize(&tab, 1400.0, 1300.0),
+    }
+    m.pair(&tab);
+    open_top_level_session(&tab, &m, sids[0], phone.is_none());
+    (m, browser, tab, sids)
+}
+
+/// Open `sid` in the app shell and, on a desktop, its Tasks drawer.
+fn open_top_level_session(tab: &headless_chrome::Tab, m: &Monitor, sid: &str, desktop: bool) {
+    m.open(tab, &format!("?ui=app&session={sid}"));
+    harness::until(tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
+    if desktop {
+        harness::eval(tab, "(function(){ var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); return 'ok'; })()");
+        harness::until_drawers_settle(tab);
+    }
+}
+
+/// The Tasks pane as it reads: its groups with their task titles, its empty line and its controls.
+const TOP_LEVEL_PANE: &str = "(function(){ var w = document.getElementById('navigatorWork'); var groups = [...w.querySelectorAll('.work-group')].map(function (g) { var rows = []; for (var n = g.nextElementSibling; n && n.classList.contains('work-task'); n = n.nextElementSibling) rows.push(n.querySelector('strong').textContent.trim()); return g.dataset.taskGroup + ': ' + rows.join(' | '); }); var empty = w.querySelector('.activity-empty'); var filter = w.querySelector('.tasks-filter-row'); return { groups: groups, empty: empty ? empty.querySelector('span') ? empty.querySelector('span').textContent : empty.textContent : '', shows: [...w.querySelectorAll('[data-show-filtered]')].map(function (b) { return b.dataset.showFiltered + ':' + b.textContent; }), hint: [...w.querySelectorAll('.activity-empty-hint')].map(function (h) { return h.textContent; }), filterRow: filter ? filter.textContent : '', filterFirst: !!filter && w.firstElementChild === filter, stored: localStorage.getItem('am-prod-task-top-level') }; })()";
+
+/// The panes menu's Top-level only row, opened by hovering its trigger as a reader does: whether it
+/// is there, where (right after the task states), checked or not, what it holds back, and whether
+/// its centre is what a pointer meets.
+fn top_level_menu_row(tab: &headless_chrome::Tab) -> serde_json::Value {
+    harness::eval(
+        tab,
+        "document.getElementById('navigatorPanesTrigger').dispatchEvent(new PointerEvent('pointerenter', { bubbles: true })); 'ok'",
+    );
+    // The menu fades in: a hit test during its opening meets what lies under it.
+    harness::until(
+        tab,
+        "(function(){ var m = document.getElementById('navigatorPanesMenu'); if (!m) return false; var c = getComputedStyle(m); return c.visibility === 'visible' && c.opacity === '1'; })()",
+        "the outline's drop-down to finish opening",
+        Duration::from_secs(5),
+        "(function(){ var m = document.getElementById('navigatorPanesMenu'); var c = getComputedStyle(m); return JSON.stringify({ open: m.classList.contains('open'), visibility: c.visibility, opacity: c.opacity }); })()",
+    );
+    harness::probe(
+        tab,
+        "(function(){ var m = document.getElementById('navigatorPanesMenu'); var r = m.querySelector('[data-top-level-only]'); var out = { open: m.classList.contains('open'), there: !!r }; if (r) { var b = r.getBoundingClientRect(); var hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); out.checked = r.getAttribute('aria-checked'); out.label = r.querySelector('span:nth-of-type(2)').textContent; out.hidden = (r.querySelector('small') || {}).textContent || ''; out.afterStates = !!(r.previousElementSibling && r.previousElementSibling.dataset.taskGroup === 'completed'); out.hit = !!(hit && (hit === r || r.contains(hit))); out.hitTag = hit ? hit.tagName + '.' + String(hit.className || '').split(' ')[0] : null; out.box = [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)]; } return out; })()",
+    )
+}
+
+fn close_panes_menu(tab: &headless_chrome::Tab) {
+    harness::eval(
+        tab,
+        "(function(){ var t = document.getElementById('navigatorPanesTrigger'); t.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true })); document.getElementById('navigatorPanesMenu').dispatchEvent(new PointerEvent('pointerleave', { bubbles: true })); return 'ok'; })()",
+    );
+    std::thread::sleep(Duration::from_millis(300));
+}
+
+/// The details card of the task titled `title`, as its chips read.
+fn top_level_card_chips(tab: &headless_chrome::Tab, title: &str) -> String {
+    harness::eval(
+        tab,
+        &format!("(function(){{ var row = [...document.querySelectorAll('#navigatorWork .work-task')].find(function (r) {{ return r.querySelector('strong').textContent.trim() === {title:?}; }}); row.querySelector('[data-task-open]').click(); return 'ok'; }})()"),
+    );
+    harness::until(
+        tab,
+        "!document.getElementById('taskPopover').hidden",
+        "the task's details card",
+        Duration::from_secs(5),
+        "document.getElementById('taskPopover').hidden",
+    );
+    let chips = harness::eval(
+        tab,
+        "[...document.querySelectorAll('#taskPopover [class*=\"chip\"]')].map(function (c) { return c.textContent.trim(); }).filter(Boolean).join(' · ')",
+    );
+    harness::eval(
+        tab,
+        "document.querySelector('#taskPopover .task-popover-close').click(); 'ok'",
+    );
+    harness::until(
+        tab,
+        "document.getElementById('taskPopover').hidden",
+        "the details card closed",
+        Duration::from_secs(5),
+        "document.getElementById('taskPopover').hidden",
+    );
+    chips.as_str().unwrap_or_default().to_string()
+}
+
+/// #s606, Hong: "there is no filter for top level tasks for agent-monitor". taskq marks a task a
+/// person asked for `top_level` and one filed on the way `follows_up` another, and its records carry
+/// both. The Tasks pane's row in the Outline menu, Top-level only, under the task states, hides the
+/// follow-ups (a task with neither mark stays), says how many it holds back, is remembered, and is
+/// offered only where some task carries a mark. A pane it empties says so with the way back, and a
+/// task's details card names its mark. Red before #s606: no such row, and no mark reached the page.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_tasks_pane_narrows_to_top_level_tasks_from_the_outline_menu() {
+    let _serial = serial();
+    let (m, _b, tab, sids) = top_level_world(3162, "top-level-desktop", None);
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 4",
+        "the four live tasks",
+        Duration::from_secs(20),
+        "document.getElementById('navigatorWork').innerText.slice(0, 300)",
+    );
+    let pane = harness::probe(&tab, TOP_LEVEL_PANE);
+    assert_eq!(
+        pane["groups"],
+        serde_json::json!([
+            "in_progress: Write the filter's case",
+            "pending: Ship the filter | Fix what the filter found | A task from before the marks"
+        ]),
+        "every live task, the filter off by default: {pane}"
+    );
+    // Each card names its mark; the one from before the marks names none.
+    assert!(top_level_card_chips(&tab, "Ship the filter").contains("top level"));
+    assert!(top_level_card_chips(&tab, "Fix what the filter found").contains("follows up #s10"));
+    let old = top_level_card_chips(&tab, "A task from before the marks");
+    assert!(
+        !old.contains("top level") && !old.contains("follows up"),
+        "no mark on record, none named: {old}"
+    );
+
+    let row = top_level_menu_row(&tab);
+    assert_eq!(
+        (
+            row["open"].clone(),
+            row["there"].clone(),
+            row["checked"].clone(),
+            row["label"].clone()
+        ),
+        (
+            serde_json::json!(true),
+            serde_json::json!(true),
+            serde_json::json!("false"),
+            serde_json::json!("Top-level only")
+        ),
+        "the menu offers Top-level only, unchecked: {row}"
+    );
+    assert_eq!(
+        row["afterStates"], true,
+        "right after the task states: {row}"
+    );
+    assert_eq!(
+        row["hit"], true,
+        "its centre is what a pointer meets: {row}"
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('#navigatorPanesMenu [data-top-level-only]').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 2",
+        "the follow-ups hidden",
+        Duration::from_secs(5),
+        "document.getElementById('navigatorWork').innerText.slice(0, 300)",
+    );
+    let pane = harness::probe(&tab, TOP_LEVEL_PANE);
+    assert_eq!(
+        pane["groups"],
+        serde_json::json!(["pending: Ship the filter | A task from before the marks"]),
+        "what a person asked for, and the task no mark places: {pane}"
+    );
+    assert_eq!(pane["stored"], "true", "the choice is remembered: {pane}");
+    let row = top_level_menu_row(&tab);
+    assert_eq!(
+        (row["checked"].clone(), row["hidden"].clone()),
+        (serde_json::json!("true"), serde_json::json!("2 hidden")),
+        "checked, saying what it holds back (the completed follow-up is the states' to hide): {row}"
+    );
+    close_panes_menu(&tab);
+
+    // Remembered across a reload.
+    open_top_level_session(&tab, &m, sids[0], true);
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 2",
+        "the follow-ups still hidden after a reload",
+        Duration::from_secs(20),
+        "document.getElementById('navigatorWork').innerText.slice(0, 300)",
+    );
+
+    // A session of follow-ups alone: the pane says what emptied it and offers the way back.
+    open_top_level_session(&tab, &m, sids[1], true);
+    harness::until(
+        &tab,
+        "/Nothing top-level/.test(document.getElementById('navigatorWork').textContent)",
+        "the emptied pane's line",
+        Duration::from_secs(20),
+        "document.getElementById('navigatorWork').innerText.slice(0, 300)",
+    );
+    let pane = harness::probe(&tab, TOP_LEVEL_PANE);
+    assert_eq!(
+        (
+            pane["empty"].clone(),
+            pane["shows"].clone(),
+            pane["hint"].clone()
+        ),
+        (
+            serde_json::json!("Nothing top-level — 2 follow-ups hidden"),
+            serde_json::json!(["followups:Show them"]),
+            serde_json::json!(["Top-level only, in the Outline menu, hides them again"])
+        ),
+        "the line, its control and where the setting lives: {pane}"
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('#navigatorWork [data-show-filtered=\"followups\"]').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 2",
+        "the follow-ups shown again",
+        Duration::from_secs(5),
+        "document.getElementById('navigatorWork').innerText.slice(0, 300)",
+    );
+    let pane = harness::probe(&tab, TOP_LEVEL_PANE);
+    assert_eq!(
+        pane["stored"], "false",
+        "Show them took the choice off: {pane}"
+    );
+    let row = top_level_menu_row(&tab);
+    assert_eq!(row["checked"], "false", "and the menu says so: {row}");
+    close_panes_menu(&tab);
+
+    // A session no mark reaches: the menu does not offer a choice that would change nothing.
+    open_top_level_session(&tab, &m, sids[2], true);
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 1",
+        "the native task",
+        Duration::from_secs(20),
+        "document.getElementById('navigatorWork').innerText.slice(0, 300)",
+    );
+    let row = top_level_menu_row(&tab);
+    assert_eq!(
+        (row["open"].clone(), row["there"].clone()),
+        (serde_json::json!(true), serde_json::json!(false)),
+        "no Top-level only where no task carries a mark: {row}"
+    );
+    close_panes_menu(&tab);
+    drop(m);
+}
+
+/// #s606: a phone has no Outline menu, so its Tasks sheet carries Top-level only as a row at the top
+/// of the list, as its Agents sheet carries Active only (#s358): Hide follow-ups, then Show N
+/// follow-ups, on the same remembered choice. The phone shows every task state (#319), so the
+/// completed follow-up is counted too.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_hides_follow_ups_from_its_tasks_sheet() {
+    let _serial = serial();
+    let (m, _b, tab, _sids) = top_level_world(3163, "top-level-phone", Some((440, 956)));
+    phone_tap(&tab, "#phonePane-tasks");
+    let sheet = "!document.getElementById('phonePaneMenu').hidden";
+    let rows = "document.querySelectorAll('#phonePaneMenu .work-task').length";
+    harness::until(
+        &tab,
+        &format!("{sheet} && {rows} === 5 && !!document.querySelector('#phonePaneMenu [data-hide-follow-ups]')"),
+        "the Tasks sheet, every task under a row that hides the follow-ups",
+        Duration::from_secs(20),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 300)",
+    );
+    let pane = harness::probe(&tab, TOP_LEVEL_PANE);
+    assert_eq!(
+        (pane["filterRow"].clone(), pane["filterFirst"].clone()),
+        (
+            serde_json::json!("Hide follow-ups"),
+            serde_json::json!(true)
+        ),
+        "the row is the list's first, above every state: {pane}"
+    );
+    finger_on_filter(&tab, "#phonePaneMenu [data-hide-follow-ups]");
+    harness::until(
+        &tab,
+        &format!("{sheet} && {rows} === 2 && /Show 3 follow-ups/.test((document.querySelector('#phonePaneMenu .tasks-filter-row') || {{}}).textContent || '')"),
+        "what a person asked for, under a row offering the three follow-ups",
+        Duration::from_secs(10),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 300)",
+    );
+    let pane = harness::probe(&tab, TOP_LEVEL_PANE);
+    assert_eq!(
+        pane["groups"],
+        serde_json::json!(["pending: Ship the filter | A task from before the marks"]),
+        "{pane}"
+    );
+    assert_eq!(
+        pane["stored"], "true",
+        "the same remembered choice the menu row reads: {pane}"
+    );
+    finger_on_filter(&tab, "#phonePaneMenu .tasks-filter-row");
+    harness::until(
+        &tab,
+        &format!("{sheet} && {rows} === 5 && !!document.querySelector('#phonePaneMenu [data-hide-follow-ups]')"),
+        "every task again, the sheet still open",
+        Duration::from_secs(10),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 300)",
+    );
+    assert_eq!(harness::probe(&tab, TOP_LEVEL_PANE)["stored"], "false");
     drop(m);
 }
 
@@ -18729,7 +19268,7 @@ fn phone_world(
     h: u32,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     let (m, b, tab, _) = phone_world_at(port, case, w, h, "");
@@ -18746,7 +19285,7 @@ fn phone_world_at(
     extra: &str,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     std::path::PathBuf,
 ) {
@@ -18783,12 +19322,7 @@ fn phone_world_at(
 
 /// A desktop browser (1280×900, no phone emulation) on `m`, open on the phone's session in the app
 /// shell — the width a phone-only rule must leave as it was.
-fn desktop_tab(
-    m: &harness::Monitor,
-) -> (
-    headless_chrome::Browser,
-    std::sync::Arc<headless_chrome::Tab>,
-) {
+fn desktop_tab(m: &harness::Monitor) -> (harness::Chrome, std::sync::Arc<headless_chrome::Tab>) {
     let (browser, tab) = harness::chrome_tab();
     harness::resize(&tab, 1280.0, 900.0);
     m.pair(&tab);
@@ -18808,10 +19342,7 @@ fn phone_tab(
     m: &harness::Monitor,
     w: u32,
     h: u32,
-) -> (
-    headless_chrome::Browser,
-    std::sync::Arc<headless_chrome::Tab>,
-) {
+) -> (harness::Chrome, std::sync::Arc<headless_chrome::Tab>) {
     let (browser, tab) = harness::chrome_tab();
     harness::phone(&tab, w, h);
     m.pair(&tab);
@@ -18879,10 +19410,11 @@ fn phone_tap_outside(tab: &headless_chrome::Tab) {
 }
 
 /// #s581: the point a reader taps to dismiss the session's menu, which hangs from the top bar into
-/// the band `phone_outside_point` taps: the transcript 40px under the menu, at the screen's middle.
-/// Since #s581 the menu names the agent and the project at its head on a phone, and at 390px it
-/// reached the middle of the screen, so a tap there landed on the menu and closed nothing (Linux CI
-/// on PR #65). The point is checked: on the page, outside the menu and above the dock.
+/// the band `phone_outside_point` taps (40px under the bar, halfway across): the transcript 40px
+/// under the menu, halfway across. Since #s581 the menu names the agent and the project at its head
+/// on a phone, which made it taller, so at 390px that band's point fell inside the menu, on one of its
+/// rows, and the tap closed nothing (Linux CI on PR #65). The point is checked: on the page, outside
+/// the menu and above the dock.
 fn phone_point_below_session_menu(tab: &headless_chrome::Tab) -> (f64, f64) {
     let at = harness::eval(
         tab,
@@ -19492,7 +20024,7 @@ fn pinched_image_in_the_pane(
     case: &str,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     &'static str,
     (f64, f64),
@@ -20202,7 +20734,7 @@ fn phone_tasks_world(
     case: &str,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     let base = harness::base(case);
@@ -20647,7 +21179,7 @@ fn tail_first_world(
     case: &str,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     let base = harness::base(case);
@@ -21556,7 +22088,7 @@ fn phone_files_world(
     artifact: bool,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     Vec<String>,
 ) {
@@ -21610,10 +22142,7 @@ fn remote_phone_tab(
     m: &harness::Monitor,
     w: u32,
     h: u32,
-) -> (
-    headless_chrome::Browser,
-    std::sync::Arc<headless_chrome::Tab>,
-) {
+) -> (harness::Chrome, std::sync::Arc<headless_chrome::Tab>) {
     let (browser, tab) = harness::remote_phone(w, h);
     m.open_remote(&tab, &format!("?ui=app&session={PHONE_SID}"));
     harness::until(
@@ -22034,7 +22563,7 @@ fn tail_first_phone(
     index: bool,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     let base = harness::base(case);
@@ -23567,7 +24096,7 @@ fn landscape_world(
     phone: bool,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     String,
 ) {
@@ -23742,7 +24271,7 @@ fn drawer_world(
     insets: Option<(u32, u32, u32, u32)>,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     let base = harness::base(case);
@@ -26888,7 +27417,7 @@ fn workers_world(
     phone: Option<(u32, u32)>,
 ) -> (
     Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     [&'static str; 3],
 ) {

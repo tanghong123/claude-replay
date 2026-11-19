@@ -1029,6 +1029,26 @@ pub fn taskq_state(call_id: &str, task: &str, op: &str, from: &str, to: &str, s:
     tool_open_at(call_id, &ts) + &tool_result_text(call_id, &text, &ts)
 }
 
+/// A `taskq` CREATE record riding a Bash result (#s606), the way taskq prints one: its subject,
+/// status `pending`, and taskq's mark flattened into the changes as a create carries it, `mark`
+/// being `top_level`, `follows_up:<id>` or empty for a task filed before taskq had the marks. The
+/// command half is not a taskq invocation, so the record alone stands the task up, titled.
+pub fn taskq_create(call_id: &str, task: &str, subject: &str, mark: &str, s: u32) -> String {
+    let ts = stamp(s);
+    let mark = match mark.split_once(':') {
+        _ if mark == "top_level" => r#",\"top_level\":{\"from\":null,\"to\":true}"#.to_string(),
+        Some(("follows_up", of)) => {
+            format!(r#",\"follows_up\":{{\"from\":null,\"to\":\"{of}\"}}"#)
+        }
+        _ => String::new(),
+    };
+    let record = format!(
+        r#"##taskq/v1 {{\"rid\":\"rc-{task}\",\"ts\":\"{ts}\",\"repo\":\"claude-replay\",\"op\":\"create\",\"kind\":\"content\",\"task\":\"{task}\",\"subject\":\"{subject}\",\"by\":\"claude-code/hong@aries-black\",\"changes\":{{\"status\":{{\"from\":null,\"to\":\"pending\"}}{mark}}}}}"#
+    );
+    let text = format!(r#"Task #{task} created successfully: {subject}\n{record}"#);
+    tool_open_at(call_id, &ts) + &tool_result_text(call_id, &text, &ts)
+}
+
 /// An ISO timestamp `secs_ago` seconds before now — for records that must read as live.
 pub fn now_minus(secs_ago: u64) -> String {
     let t = std::time::SystemTime::now() - Duration::from_secs(secs_ago);
@@ -2148,13 +2168,7 @@ impl Monitor {
 /// loopback and no proxy, emulated at `w`×`h`. Where the reader is decides what the pages offer —
 /// a reveal only to one at this machine — so a case about what a phone is offered over the tailnet
 /// opens it this way; one at 127.0.0.1 is a reader at this machine, whatever its width.
-pub fn remote_phone(
-    w: u32,
-    h: u32,
-) -> (
-    headless_chrome::Browser,
-    std::sync::Arc<headless_chrome::Tab>,
-) {
+pub fn remote_phone(w: u32, h: u32) -> (Chrome, std::sync::Arc<headless_chrome::Tab>) {
     let rule = format!("--host-resolver-rules=MAP {REMOTE_HOST} 127.0.0.1");
     let (browser, tab) = chrome_with_tab(&[rule.as_str(), "--no-proxy-server"]);
     phone(&tab, w, h);
@@ -2215,15 +2229,240 @@ pub fn browser_path() -> Option<std::path::PathBuf> {
     })
 }
 
-pub fn chrome() -> headless_chrome::Browser {
+/// A browser a case launched (#s614): headless_chrome's `Browser`, which it derefs to, and which
+/// it ends the way Chrome cleans up after itself before the crate's own `Drop` runs.
+///
+/// Chrome keeps a folder in the system temp folder (`com.google.chrome.for.testing.*` on a Mac,
+/// holding `SingletonSocket` and `SingletonCookie`; `getconf DARWIN_USER_TEMP_DIR`, whatever
+/// `TMPDIR` says), linked from the profile's own `SingletonSocket`, and removes it only when it
+/// exits on its own. headless_chrome 1.0.22 ends a browser it launched by sending `Browser.close`,
+/// returning on the reply, and then SIGKILLing the process (`TemporaryProcess::drop`) before Chrome
+/// has cleaned up, so every launch left one such folder: hd-steward found 75,886 on hong-devserver,
+/// 2,855 of them from one day, and Finder spent a core recounting the folder that holds them.
+/// Measured with Chrome for Testing on a scratch profile: SIGKILL leaves the folder; SIGTERM
+/// removes it, as does `Browser.close` followed by a wait for the exit. So the guard sends SIGTERM
+/// (which needs no live DevTools connection: a browser whose connection the crate closed after its
+/// idle timeout ends the same way) and waits, at most [`GENTLE_END`], for the process to exit; the
+/// crate's SIGKILL is left for a Chrome that does not. Chrome removes the folder before it exits, so
+/// the exit is the whole wait. On Linux Chrome keeps the folder even then (measured on CI's Ubuntu
+/// runner: `com.google.Chrome.XXXXXX`), but it makes it in `TMPDIR`, the workspace's scratch, whose
+/// age rule (`scripts/sweep-scratch.sh`) clears it after a day. Each end
+/// is a [`profile`] row saying whether the folder went (`CR_PROFILE`, which is how a run is checked
+/// for them), and one left outside `TMPDIR` is also a stderr line naming it.
+pub struct Chrome {
+    browser: Option<headless_chrome::Browser>,
+    /// The folder the profile's `SingletonSocket` link named once the browser was up.
+    singleton: Option<PathBuf>,
+}
+
+/// How long [`Chrome`] and the reapers wait for a SIGTERMed Chrome before they SIGKILL it. A
+/// headless Chrome at rest exits in a fraction of a second.
+pub const GENTLE_END: Duration = Duration::from_secs(3);
+
+impl From<headless_chrome::Browser> for Chrome {
+    fn from(browser: headless_chrome::Browser) -> Self {
+        let singleton = browser
+            .get_process_id()
+            .and_then(profile_of)
+            .and_then(|profile| singleton_folder(&profile));
+        Chrome {
+            browser: Some(browser),
+            singleton,
+        }
+    }
+}
+
+impl std::ops::Deref for Chrome {
+    type Target = headless_chrome::Browser;
+    fn deref(&self) -> &headless_chrome::Browser {
+        self.browser.as_ref().expect("a browser until it drops")
+    }
+}
+
+/// How a [`Chrome`] ended ([`Chrome::end`]).
+#[derive(Debug)]
+pub struct Ended {
+    /// The process exited on its own after the SIGTERM, within [`GENTLE_END`].
+    pub exited: bool,
+    /// From the SIGTERM to the end.
+    pub took: Duration,
+    /// The singleton folder, when it is still there after the end.
+    pub folder_left: Option<PathBuf>,
+}
+
+impl Chrome {
+    /// The folder this browser's profile linked its `SingletonSocket` into as it came up, when it
+    /// did (a harness self-check reads it).
+    pub fn singleton(&self) -> Option<&Path> {
+        self.singleton.as_deref()
+    }
+
+    /// End the browser now, as its drop does, and say how it went (a harness self-check reads it).
+    pub fn end(mut self) -> Ended {
+        self.finish()
+    }
+
+    fn finish(&mut self) -> Ended {
+        let t0 = Instant::now();
+        let Some(browser) = self.browser.take() else {
+            return Ended {
+                exited: false,
+                took: Duration::ZERO,
+                folder_left: None,
+            };
+        };
+        let mut exited = false;
+        let pid = browser.get_process_id();
+        if let Some(pid) = pid {
+            let _ = std::process::Command::new("kill")
+                .args(["-TERM", &pid.to_string()])
+                .stderr(std::process::Stdio::null())
+                .status();
+            let end = t0 + GENTLE_END;
+            while Instant::now() < end {
+                if !process_runs(pid) {
+                    exited = true;
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(25));
+            }
+        }
+        let took = t0.elapsed();
+        drop(browser);
+        if let Some(pid) = pid {
+            // A pid the system hands out again must not find this profile (`profile_of`).
+            profiles().lock().unwrap().remove(&pid);
+        }
+        // Said through [`profile`] as well as stderr: libtest keeps a passing case's stderr to
+        // itself, and a run is checked by these rows (`CR_PROFILE`).
+        let outcome = match self.singleton.as_ref() {
+            None => "chrome end, no singleton folder",
+            // Linux's Chrome keeps it whatever, in the workspace's scratch the sweep clears.
+            Some(dir) if dir.exists() && dir.starts_with(std::env::temp_dir()) => {
+                "chrome end, singleton folder kept in TMPDIR"
+            }
+            Some(dir) if dir.exists() => {
+                eprintln!(
+                    "harness: chrome left its singleton folder {} (load {})",
+                    dir.display(),
+                    load_average()
+                );
+                "chrome end, singleton folder left"
+            }
+            Some(_) => "chrome end, singleton folder gone",
+        };
+        profile(outcome, took);
+        Ended {
+            exited,
+            took,
+            folder_left: self.singleton.clone().filter(|dir| dir.exists()),
+        }
+    }
+}
+
+impl Drop for Chrome {
+    fn drop(&mut self) {
+        self.finish();
+    }
+}
+
+/// The profile directory `pid` was launched with: the harness's own record of its launches, else
+/// the process's `--user-data-dir` (a case that launches with headless_chrome's own temporary
+/// profile).
+fn profile_of(pid: u32) -> Option<PathBuf> {
+    if let Some(profile) = profiles().lock().unwrap().get(&pid) {
+        return Some(profile.clone());
+    }
+    let out = std::process::Command::new("ps")
+        .args(["-wwo", "command=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .split(' ')
+        .find_map(|arg| arg.strip_prefix("--user-data-dir="))
+        .map(PathBuf::from)
+}
+
+/// The folder a running Chrome's profile links its `SingletonSocket` into, read within a second
+/// of the launch (the link is there by the time Chrome prints its DevTools address, measured).
+fn singleton_folder(profile: &Path) -> Option<PathBuf> {
+    let link = profile.join("SingletonSocket");
+    let end = Instant::now() + Duration::from_secs(1);
+    loop {
+        if let Ok(target) = std::fs::read_link(&link) {
+            return target.parent().map(Path::to_path_buf);
+        }
+        if Instant::now() >= end {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    }
+}
+
+/// Whether `pid` still runs: there and not a zombie. A browser this process launched stays its
+/// child until headless_chrome waits for it, so a Chrome that has exited still answers `kill -0`.
+/// A `ps` that cannot start (a box too loaded to fork) says nothing, so it reads as running: the
+/// wait then runs out and the SIGKILL ends the process, rather than an exit nobody saw.
+fn process_runs(pid: u32) -> bool {
+    std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", &pid.to_string()])
+        .output()
+        .map(|out| {
+            let stat = String::from_utf8_lossy(&out.stdout);
+            let stat = stat.trim();
+            !stat.is_empty() && !stat.starts_with('Z')
+        })
+        .unwrap_or(true)
+}
+
+/// End `pids` (#s614): SIGTERM each, wait until none runs or [`GENTLE_END`] has passed, then
+/// SIGKILL what is left. SIGTERM first because a Chrome SIGKILLed leaves its singleton folder in
+/// the system temp folder, and one SIGTERMed removes it. Before the SIGKILL each survivor's command
+/// line is read again and must still name a profile carrying the harness's mark (another
+/// worktree's included, as [`reap_stranded_browsers`] takes them), so a pid the system handed out
+/// again during the wait is never killed. Answers how many it ended.
+fn end_processes(pids: &[u32]) -> usize {
+    let signal = |sig: &str, pid: u32| {
+        std::process::Command::new("kill")
+            .args([sig, &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    let sent: Vec<u32> = pids
+        .iter()
+        .copied()
+        .filter(|&pid| signal("-TERM", pid))
+        .collect();
+    let end = Instant::now() + GENTLE_END;
+    let mut left = sent.clone();
+    while !left.is_empty() && Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(50));
+        left.retain(|&pid| process_runs(pid));
+    }
+    for &pid in &left {
+        let still_ours = std::process::Command::new("ps")
+            .args(["-wwo", "command=", "-p", &pid.to_string()])
+            .output()
+            .is_ok_and(|out| {
+                String::from_utf8_lossy(&out.stdout).split(' ').any(|arg| {
+                    arg.strip_prefix("--user-data-dir=")
+                        .is_some_and(|dir| dir.contains(BROWSER_PROFILE_MARK))
+                })
+            });
+        if still_ours {
+            signal("-KILL", pid);
+        }
+    }
+    sent.len()
+}
+
+pub fn chrome() -> Chrome {
     chrome_with(&[])
 }
 
 /// [`chrome`] and its first tab — how a case opens its browser.
-pub fn chrome_tab() -> (
-    headless_chrome::Browser,
-    std::sync::Arc<headless_chrome::Tab>,
-) {
+pub fn chrome_tab() -> (Chrome, std::sync::Arc<headless_chrome::Tab>) {
     first_tab(chrome)
 }
 
@@ -2235,24 +2474,14 @@ pub fn chrome_tab() -> (
 /// every call refused as a closed connection). The app shell sets no title, so a minute of resizing
 /// and measuring it is such a stretch (train2's top-bar case, #s433). Calls and the tab's own events
 /// go on through the stretch, and so does a case that never navigates again.
-pub fn fresh_tab(
-    monitor: &Monitor,
-) -> (
-    headless_chrome::Browser,
-    std::sync::Arc<headless_chrome::Tab>,
-) {
+pub fn fresh_tab(monitor: &Monitor) -> (Chrome, std::sync::Arc<headless_chrome::Tab>) {
     let (browser, tab) = chrome_tab();
     monitor.pair(&tab);
     (browser, tab)
 }
 
 /// [`chrome_with`] and its first tab.
-pub fn chrome_with_tab(
-    extra: &[&str],
-) -> (
-    headless_chrome::Browser,
-    std::sync::Arc<headless_chrome::Tab>,
-) {
+pub fn chrome_with_tab(extra: &[&str]) -> (Chrome, std::sync::Arc<headless_chrome::Tab>) {
     first_tab(|| chrome_with(extra))
 }
 
@@ -2269,18 +2498,17 @@ pub fn chrome_with_tab(
 /// load). Waiting longer on the same browser cannot help; a fresh one does.
 ///
 /// The retry covers the launch and the first tab and nothing after it, so it cannot hide what a
-/// page does; every retry is a stderr line, and running out says it was the machine.
-pub fn first_tab(
-    launch: impl Fn() -> headless_chrome::Browser,
-) -> (
-    headless_chrome::Browser,
-    std::sync::Arc<headless_chrome::Tab>,
-) {
+/// page does; every retry is a stderr line, and running out says it was the machine. A browser
+/// launched here is a [`Chrome`], so one a case launches with headless_chrome itself is ended as
+/// gently as the harness's own, and so is a dead one dropped for the next launch (#s614).
+pub fn first_tab<B: Into<Chrome>>(
+    launch: impl Fn() -> B,
+) -> (Chrome, std::sync::Arc<headless_chrome::Tab>) {
     const LAUNCHES: u64 = 4;
     let t0 = Instant::now();
     let mut last = String::new();
     for attempt in 1..=LAUNCHES {
-        let browser = launch();
+        let browser: Chrome = launch().into();
         match browser.new_tab() {
             Ok(tab) => {
                 profile("chrome", t0.elapsed());
@@ -2357,7 +2585,7 @@ fn load_average() -> String {
 /// [`chrome`], with extra command-line switches — e.g. `--host-resolver-rules=MAP phone.test
 /// 127.0.0.1`, which lets a case reach a monitor by a name that is NOT the loopback, as a phone
 /// through `tailscale serve` does (#313's gzip is only for such a client).
-pub fn chrome_with(extra: &[&str]) -> headless_chrome::Browser {
+pub fn chrome_with(extra: &[&str]) -> Chrome {
     reap_stranded_browsers();
     const LAUNCHES: u32 = 3;
     let mut last = String::new();
@@ -2396,12 +2624,12 @@ pub fn chrome_args<'a>(extra: &[&'a str]) -> Vec<&'a std::ffi::OsStr> {
 /// hour on one, at 0% CPU. The launch runs on a worker; giving up kills exactly this launch's
 /// processes, the ones carrying its own profile directory, so the read ends. An explicit port
 /// stops headless_chrome relaunching behind our back, and a browser the worker produces after
-/// all is dropped, which kills it.
+/// all is dropped, which ends it.
 pub fn launch_within(
     path: Option<PathBuf>,
     extra: &[&str],
     patience: Duration,
-) -> Result<headless_chrome::Browser, String> {
+) -> Result<Chrome, String> {
     let profile = browser_profile();
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
@@ -2418,25 +2646,27 @@ pub fn launch_within(
         ];
         args.extend(extra.iter().map(std::ffi::OsStr::new));
         args.extend(NO_KEYCHAIN.iter().map(std::ffi::OsStr::new));
-        let _ = tx.send(headless_chrome::Browser::new(
+        let launched = headless_chrome::Browser::new(
             headless_chrome::LaunchOptions::default_builder()
                 .path(path)
                 .headless(true)
                 .window_size(Some((1400, 900)))
-                .user_data_dir(Some(dir))
+                .user_data_dir(Some(dir.clone()))
                 .port(Some(port))
                 .args(args)
                 .build()
                 .unwrap(),
-        ));
+        )
+        .map(|browser| {
+            if let Some(pid) = browser.get_process_id() {
+                profiles().lock().unwrap().insert(pid, dir);
+            }
+            Chrome::from(browser)
+        });
+        let _ = tx.send(launched);
     });
     match rx.recv_timeout(patience) {
-        Ok(Ok(browser)) => {
-            if let Some(pid) = browser.get_process_id() {
-                profiles().lock().unwrap().insert(pid, profile);
-            }
-            Ok(browser)
-        }
+        Ok(Ok(browser)) => Ok(browser),
         Ok(Err(e)) => Err(format!("chrome did not launch: {e}")),
         Err(_) => Err(format!(
             "chrome printed no DevTools address in {:.0}s; killed its {} process(es) (load {})",
@@ -2447,8 +2677,10 @@ pub fn launch_within(
     }
 }
 
-/// Kill every process whose command line names `profile` as its user data dir: one launch's
-/// browser and helpers, never another run's or the developer's own Chrome.
+/// End every process whose command line names `profile` as its user data dir: one launch's
+/// browser and helpers, never another run's or the developer's own Chrome. SIGTERM first and
+/// SIGKILL only after [`GENTLE_END`] ([`end_processes`], #s614), so a Chrome that did come up
+/// takes its singleton folder with it.
 fn kill_launch(profile: &Path) -> usize {
     let mark = format!("--user-data-dir={}", profile.display());
     let Ok(out) = std::process::Command::new("ps")
@@ -2457,22 +2689,13 @@ fn kill_launch(profile: &Path) -> usize {
     else {
         return 0;
     };
-    let mut killed = 0;
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let Some((pid, command)) = line.trim().split_once(' ') else {
-            continue;
-        };
-        if command.split(' ').any(|arg| arg == mark)
-            && std::process::Command::new("kill")
-                .args(["-9", pid])
-                .stderr(std::process::Stdio::null())
-                .status()
-                .is_ok_and(|s| s.success())
-        {
-            killed += 1;
-        }
-    }
-    killed
+    let pids: Vec<u32> = String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| line.trim().split_once(' '))
+        .filter(|(_, command)| command.split(' ').any(|arg| arg == mark))
+        .filter_map(|(pid, _)| pid.parse().ok())
+        .collect();
+    end_processes(&pids)
 }
 
 /// Where every Chrome profile the harness launches lives (#s391): a folder under the workspace
@@ -2689,9 +2912,10 @@ pub fn list_names_with(
     }
 }
 
-/// Kill the browsers a previous run left behind, once per process, before the first launch.
+/// End the browsers a previous run left behind, once per process, before the first launch: SIGTERM,
+/// then SIGKILL after [`GENTLE_END`] for any still running ([`end_processes`], #s614).
 ///
-/// A `Browser`'s `Drop` kills its child — but a SIGKILL of the test binary (an OOM kill, a
+/// A browser's `Drop` ends its child — but a SIGKILL of the test binary (an OOM kill, a
 /// harness timeout) runs no `Drop` at all, and macOS has no PDEATHSIG to fall back on, so those
 /// browsers keep running. On 2026-09-06 sixty such processes exhausted this machine's memory and
 /// the OS killed every background job in the session, the suite among them; a machine that has
@@ -2711,7 +2935,7 @@ fn reap_stranded_browsers() {
             Ok(out) => String::from_utf8_lossy(&out.stdout).into_owned(),
             Err(_) => return,
         };
-        let mut killed = 0;
+        let mut stranded = Vec::new();
         for line in listing.lines() {
             let Some((pid, command)) = line.trim().split_once(' ') else {
                 continue;
@@ -2727,16 +2951,13 @@ fn reap_stranded_browsers() {
             if owner == std::process::id() || pid_is_alive(owner) {
                 continue;
             }
-            if std::process::Command::new("kill")
-                .args(["-9", pid])
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-            {
-                killed += 1;
+            if let Ok(pid) = pid.parse::<u32>() {
+                stranded.push(pid);
             }
         }
+        // SIGTERM first (#s614): a stranded browser SIGKILLed leaves its singleton folder in the
+        // system temp folder.
+        let killed = end_processes(&stranded);
         // The profiles themselves: an explicit `user_data_dir` is not the crate's temp dir, so
         // nothing else removes them. They sit under `target/`, which `scripts/sweep.sh` and
         // `cargo clean` clear, but a run that reaps should not also leave litter. Under the
@@ -2767,10 +2988,13 @@ fn reap_stranded_browsers() {
     });
 }
 
-/// Kill every process left of the browsers THIS process launched (#s293), as each case ends: the
+/// End every process left of the browsers THIS process launched (#s293), as each case ends: the
 /// [`Serial`] guard drops after the case's browsers, cases run one at a time and none keeps a
-/// browser across cases, so nothing live is in range. headless_chrome kills only the browser
-/// process when it drops; its helpers then exit on their own, within a second on a Mac at rest. On
+/// browser across cases, so nothing live is in range. A helper (`--type=`) is SIGKILLed at once, as
+/// ever: it owns no singleton folder. A browser process still here (none should be: each case's
+/// [`Chrome`] ends its own) is SIGTERMed first and SIGKILLed after [`GENTLE_END`] ([`end_processes`],
+/// #s614), so it removes its singleton folder too. A browser ends only its own process; its
+/// helpers then exit on their own, within a second on a Mac at rest. On
 /// a drained, throttled one they did not (2026-10-28: about 200 helpers with parent 1 under one
 /// scenarios binary, load near 1000, until the battery gave out), and
 /// [`reap_stranded_browsers`] takes only processes whose owner is gone, never a running binary's
@@ -2788,21 +3012,35 @@ pub fn reap_own_browsers() {
     else {
         return;
     };
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let Some((pid, command)) = line.trim().split_once(' ') else {
-            continue;
-        };
+    let listing = String::from_utf8_lossy(&out.stdout);
+    let (mut helpers, mut browsers) = (Vec::new(), Vec::new());
+    for (pid, command) in listing
+        .lines()
+        .filter_map(|line| line.trim().split_once(' '))
+    {
         let ours = command.split(' ').any(|arg| {
             arg.strip_prefix("--user-data-dir=")
                 .is_some_and(|dir| dir.starts_with(&mark))
         });
-        if ours {
-            let _ = std::process::Command::new("kill")
-                .args(["-9", pid])
-                .stderr(std::process::Stdio::null())
-                .status();
+        let Ok(pid) = pid.parse::<u32>() else {
+            continue;
+        };
+        if !ours {
+            continue;
+        }
+        if command.split(' ').any(|arg| arg.starts_with("--type=")) {
+            helpers.push(pid);
+        } else {
+            browsers.push(pid);
         }
     }
+    for pid in &helpers {
+        let _ = std::process::Command::new("kill")
+            .args(["-KILL", &pid.to_string()])
+            .stderr(std::process::Stdio::null())
+            .status();
+    }
+    end_processes(&browsers);
 }
 
 /// Kill a monitor a previous run left on this port. `Monitor`'s `Drop` has the same hole as the

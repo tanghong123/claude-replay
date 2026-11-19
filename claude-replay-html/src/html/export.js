@@ -1320,6 +1320,7 @@
         updated: t.updated, outcome: t.outcome, accept: t.accept, checks: t.checks,
         deferred: t.deferred, deferred_reason: t.deferred_reason, log: t.log,
         blockedBy: t.blocked_by || [], blocks: t.blocks || [],
+        top_level: t.top_level, follows_up: t.follows_up,
       };
     }
     function item(t) {

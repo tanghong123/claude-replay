@@ -186,6 +186,7 @@ pub fn activities(tools: &[Block]) -> String {
                     s,
                     crate::model::ToolStatus::Failed
                         | crate::model::ToolStatus::Declined
+                        | crate::model::ToolStatus::Blocked
                         | crate::model::ToolStatus::Cancelled
                 )
             });
