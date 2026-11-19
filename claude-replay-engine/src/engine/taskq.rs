@@ -194,12 +194,12 @@ fn taskq_calls(cmd: &str) -> Vec<TaskqCall> {
             i += 1;
         }
         while i < words.len() && (words[i].starts_with("--") || words[i] == "-m") {
-            // `stop`'s two directions take no value.
-            if matches!(words[i].as_str(), "--cancel" | "--release") {
-                call.status = if words[i] == "--cancel" {
-                    "cancelled"
-                } else {
+            // `stop`'s directions take no value; `--retire` closes a lock as cancelled.
+            if matches!(words[i].as_str(), "--cancel" | "--release" | "--retire") {
+                call.status = if words[i] == "--release" {
                     "pending"
+                } else {
+                    "cancelled"
                 }
                 .into();
                 i += 1;
@@ -207,8 +207,9 @@ fn taskq_calls(cmd: &str) -> Vec<TaskqCall> {
             }
             // A flag that takes no value is skipped alone, or it would take the next flag as its
             // value and the reading would stop at that flag's value (#s609:
-            // `create --top-level --subject X` lost its subject and description).
-            if VALUELESS.contains(&words[i].as_str()) {
+            // `create --top-level --subject X` lost its subject and description). So is a flag
+            // written with its value in the same word (`--type=bug`).
+            if VALUELESS.contains(&words[i].as_str()) || words[i].contains('=') {
                 i += 1;
                 continue;
             }
@@ -632,6 +633,23 @@ mod tests {
     /// stand, and `-m` takes its message.
     #[test]
     fn valueless_taskq_flags_are_skipped_alone() {
+        // Each valueless flag, and a flag written with its value, alone before the text.
+        for flag in VALUELESS.iter().copied().chain(["--type=bug"]) {
+            let calls = taskq_calls(&format!(
+                "taskq create {flag} --subject 'Fix it' --description 'Why'"
+            ));
+            assert_eq!(
+                (calls[0].subject.as_str(), calls[0].description.as_str()),
+                ("Fix it", "Why"),
+                "{flag}"
+            );
+        }
+        // A flag with a value still takes it: the word after it is not read as a flag.
+        let calls = taskq_calls("taskq create --type --subject --subject 'Fix it'");
+        assert_eq!(calls[0].subject, "Fix it");
+        let calls = taskq_calls("taskq stop s15 --retire -m 'no longer needed'");
+        assert_eq!(calls[0].status, "cancelled");
+
         let calls = taskq_calls(concat!(
             "taskq create --top-level --local --subject 'Fix it' --json --description 'Why and how' ",
             "--active-form Fixing --meta k=v --user",
