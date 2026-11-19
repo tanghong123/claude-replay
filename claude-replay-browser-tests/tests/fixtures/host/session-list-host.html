@@ -43,8 +43,9 @@
 <div class="host-rail" id="hostRail"></div>
 <script type="module">
 // `holds`: the host keeps the reader where they are (a draft to keep, say) and opens nothing.
-const host = window.__host = { mounted: false, error: null, opened: [], indexed: 0, toasts: [], drawn: 0, holds: false, keys: [], errors: [], requests: [], hold: null, held: 0, unmountIn: null, unmountedAt: null, drawnAtUnmount: null };
-addEventListener("error", event => { host.error = host.error || String(event.message); host.errors.push(String(event.message)); });
+const host = window.__host = { mounted: false, error: null, opened: [], indexed: 0, toasts: [], drawn: 0, holds: false, keys: [], errors: [], loops: [], requests: [], hold: null, held: 0, unmountIn: null, unmountedAt: null, drawnAtUnmount: null };
+// A ResizeObserver loop notice is the browser putting a size report off to the next frame, not a throw: it is kept apart, with the step the case names, and fails nothing (#s596).
+addEventListener("error", event => { if (/^ResizeObserver loop/.test(String(event.message))) { host.loops.push({ step: window.__step || null, t: Math.round(performance.now()) }); return; } host.error = host.error || String(event.message); host.errors.push(String(event.message)); });
 addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
 // Every request the page makes, with when; a reply the case holds waits for `release`.
 const fetched = window.fetch, waiting = [];
