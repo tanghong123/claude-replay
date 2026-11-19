@@ -342,30 +342,20 @@ fn main() -> Result<()> {
     #[cfg(not(feature = "codex-native"))]
     let public_assets = claude_monitor::ui::PUBLIC_ASSETS;
     #[cfg(feature = "codex-native")]
-    let handler = claude_monitor::codex_workspace::handler(handler, native_runtime.clone(), idx);
+    let handler = claude_monitor::codex_workspace::handler(
+        handler,
+        native_runtime.clone(),
+        idx,
+        token.is_some(),
+    );
     // #196 §4.2: paired ⇒ the token gate (same-user OR the token); unpaired ⇒ D3b same-user.
     let (tailnet_hosts, tailnet_relay) =
         claude_monitor::pair_phone::tailnet_checks(port, token.is_none());
     let gate = match &token {
-        Some(t) => claude_replay_html::AuthGate::with_token(t.as_str()),
+        Some(t) => claude_replay_html::AuthGate::with_token(t.as_str())
+            .with_pair_codes(index::state_dir().join(claude_monitor::pair_phone::PAIR_CODES_FILE)),
         None => claude_replay_html::AuthGate::same_user(),
     }
-    // #11: a phone's one-time code; the gate answers it only while paired, so an unpaired monitor
-    // carries it too, for the page that pairs it while it runs (#s577).
-    .with_pair_codes(index::state_dir().join(claude_monitor::pair_phone::PAIR_CODES_FILE))
-    // #s577: the page pairs its own browser, as `--pair` would, without a restart: the same 0600
-    // token file, minted on the click; the gate checks who may click.
-    .with_self_pairing({
-        let root = root.clone();
-        claude_replay_html::SelfPairing {
-            mint: std::sync::Arc::new(move || ensure_token(&root).ok()),
-            peer_user: std::sync::Arc::new(claude_monitor::peer_user::peer_user),
-        }
-    })
-    // #s577: and a paired browser makes a phone's code, as `--pair-phone` does, in the file above.
-    .with_phone_pairing(claude_replay_html::PhonePairing {
-        offer: std::sync::Arc::new(claude_monitor::pair_phone::phone_pairing),
-    })
     // #320: the icons and the manifest, which a phone reads to put the page on its Home Screen.
     .with_public(public_assets)
     // #331: the tailnet name `tailscale serve` relays to this port is the monitor's own too; and

@@ -26984,40 +26984,28 @@ fn write_facts(tab: &headless_chrome::Tab) -> serde_json::Value {
         .unwrap_or_default()
 }
 
-/// A `fetch` from the page, answered as `"<status> <body>"`.
-fn page_post(tab: &headless_chrome::Tab, path: &str) -> String {
-    harness::eval(
-        tab,
-        &format!("fetch('{path}', {{ method: 'POST', cache: 'no-store' }}).then(function (r) {{ return r.text().then(function (t) {{ return r.status + ' ' + t; }}); }})"),
-    )
-    .as_str()
-    .unwrap_or_default()
-    .to_string()
-}
-
-/// #s577: where this browser's writes cannot reach the monitor, Write mode's switch is disabled with
-/// the reason under it, and an unpaired monitor's page pairs its own browser over the real socket.
-/// The click mints the 0600 token, the gate requires it at once, this browser gets the cookie that
-/// carries it and may write, a second pairing is refused with 409 and leaves the token alone, and a
-/// phone's code is made through the listener. Another browser, without the cookie, may not write:
-/// on Linux, where the gate lets a same-user browser read, its switch says it is not paired and how
-/// to pair it, and it is refused a phone's code; on macOS, which cannot verify the peer, the gate
-/// refuses it the page.
+/// #s577: where this reader's writes cannot reach the monitor, Write mode's switch is disabled with
+/// the reason under it and a click opens the help, which names the command that pairs: an unpaired
+/// monitor's page says the monitor needs pairing; a paired monitor's page, opened with its token,
+/// writes; and a browser without the token may not write: on Linux, where a paired gate lets a
+/// same-user browser read without the token, its switch says this browser is not paired; on macOS,
+/// which cannot verify the peer, the gate refuses it the page.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
-fn the_write_switch_says_why_it_is_off_and_the_page_pairs_this_browser() {
+fn the_write_switch_says_why_it_is_off_for_this_reader() {
     let _serial = serial();
-    let base = harness::base("write-pair-self");
+    let base = harness::base("write-reason");
     let stores = harness::Stores::new(&base);
     stores.claude_session(
         WRITE_SID,
         &harness::long_session(3, harness::Shape::default()),
     );
-    let m = harness::Monitor::spawn(harness::Kind::V1, 3160, &base, Some(&stores), false);
+    // An unpaired monitor.
+    let unpaired = harness::Monitor::spawn(harness::Kind::V1, 3160, &base, Some(&stores), false);
     let (_browser, tab) = harness::chrome_tab();
     harness::resize(&tab, 1280.0, 900.0);
-    m.pair(&tab);
-    m.open(&tab, &format!("?ui=app&session={WRITE_SID}"));
+    unpaired.pair(&tab);
+    unpaired.open(&tab, &format!("?ui=app&session={WRITE_SID}"));
     harness::until(
         &tab,
         "document.body.dataset.write === 'monitor' && !!document.querySelector('.transcript .turn.user')",
@@ -27029,49 +27017,40 @@ fn the_write_switch_says_why_it_is_off_and_the_page_pairs_this_browser() {
     assert!(
         off["disabled"] == "true"
             && off["checked"] == "false"
-            && off["reason"]
-                .as_str()
-                .is_some_and(|r| r.contains("Needs a paired monitor"))
-            && off["pair"] == true,
-        "an unpaired monitor's switch is disabled, its line says why and offers the pairing: {off}"
+            && off["reason"].as_str().is_some_and(
+                |r| r.contains("Needs a paired monitor") && r.contains("agent-monitor --pair")
+            ),
+        "an unpaired monitor's switch is disabled and its line names the command: {off}"
     );
     harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
     let asked = write_facts(&tab);
     assert!(
         asked["checked"] == "false"
-            && asked["help"]
-                .as_str()
-                .is_some_and(|h| h.contains("Pair this browser to write")),
+            && !asked["fab"].as_str().unwrap_or_default().contains("show")
+            && asked["help"].as_str().is_some_and(
+                |h| h.contains("needs a paired monitor") && h.contains("agent-monitor --pair")
+            ),
         "a click on the disabled switch turns nothing on and opens the help: {asked}"
     );
-    harness::eval(
-        &tab,
-        "document.querySelector('#writeHelp .pair-primary').click(); 'ok'",
+    drop(unpaired);
+
+    // A paired monitor that, on Linux, lets a same-user browser read without the token.
+    let paired = harness::Monitor::spawn_with(
+        harness::Kind::V1,
+        3161,
+        &base,
+        Some(&stores),
+        true,
+        &[("AGENT_MONITOR_TOKEN_ONLY", "0")],
     );
+    paired.pair(&tab);
+    paired.open(&tab, &format!("?ui=app&session={WRITE_SID}"));
     harness::until(
         &tab,
-        "document.body.dataset.write === 'open' && document.getElementById('writeSwitch').getAttribute('aria-disabled') === 'false' && document.getElementById('writeReason').hidden",
-        "the page to reload paired, its switch enabled and its line gone",
+        "document.body.dataset.write === 'open' && !!document.querySelector('.transcript .turn.user') && document.getElementById('writeReason').hidden",
+        "the page opened with the token to say writing is open",
         Duration::from_secs(20),
         WRITE_FACTS,
-    );
-    let token = m.token().expect("the click minted the token file");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(m.state.join("auth-token"))
-            .unwrap()
-            .permissions()
-            .mode();
-        assert_eq!(mode & 0o777, 0o600, "the token file is the owner's alone");
-    }
-    let cookies = tab.get_cookies().unwrap();
-    assert!(
-        cookies
-            .iter()
-            .any(|c| c.name.starts_with("cmauth-") && c.value == token && c.http_only),
-        "this browser holds the token in the pairing cookie: {:?}",
-        cookies.iter().map(|c| &c.name).collect::<Vec<_>>()
     );
     harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
     harness::until(
@@ -27081,52 +27060,28 @@ fn the_write_switch_says_why_it_is_off_and_the_page_pairs_this_browser() {
         Duration::from_secs(10),
         WRITE_FACTS,
     );
-    let again = page_post(&tab, "/api/pair/self");
-    assert!(
-        again.starts_with("409 ") && again.contains("reload"),
-        "a paired monitor is not paired again: {again}"
-    );
-    assert_eq!(
-        m.token().as_deref(),
-        Some(token.as_str()),
-        "the refused pairing left the token as it was"
-    );
-    // A phone's code, from the paired page's help: made by the listener, whatever Tailscale here says.
-    harness::eval(&tab, "document.getElementById('writeInfo').click(); 'ok'");
-    harness::eval(
-        &tab,
-        "document.querySelector('#writeHelp .pair-primary').click(); 'ok'",
-    );
-    harness::until(
-        &tab,
-        "/Pair a phone|Serve the monitor to your tailnet first|Install Tailscale first/.test(document.getElementById('writeHelp').querySelector('b').textContent)",
-        "the help to show a phone's code, or what to set up first",
-        Duration::from_secs(15),
-        WRITE_FACTS,
-    );
 
     let (_other_browser, other) = harness::chrome_tab();
     harness::resize(&other, 1280.0, 900.0);
     other
-        .navigate_to(&m.url(&format!("?ui=app&session={WRITE_SID}")))
+        .navigate_to(&paired.url(&format!("?ui=app&session={WRITE_SID}")))
         .unwrap();
     other.wait_until_navigated().unwrap();
     if cfg!(target_os = "linux") {
         harness::until(
             &other,
             "document.body && document.body.dataset.write === 'browser' && !!document.getElementById('writeReason')",
-            "a browser without the cookie to read the page, told it is not paired",
+            "a browser without the token to read the page, told it is not paired",
             Duration::from_secs(20),
             "document.body && document.body.dataset.write",
         );
-        let unpaired = write_facts(&other);
+        let unpaired_browser = write_facts(&other);
         assert!(
-            unpaired["disabled"] == "true"
-                && unpaired["pair"] == false
-                && unpaired["reason"]
+            unpaired_browser["disabled"] == "true"
+                && unpaired_browser["reason"]
                     .as_str()
                     .is_some_and(|r| r.contains("This browser is not paired")),
-            "its switch is disabled and says why, with no pairing to offer: {unpaired}"
+            "its switch is disabled and says why: {unpaired_browser}"
         );
         harness::eval(
             &other,
@@ -27138,11 +27093,6 @@ fn the_write_switch_says_why_it_is_off_and_the_page_pairs_this_browser() {
                 && !h.contains("printed in its terminal")),
             "the help names the command that pairs a browser, not an address nobody printed: {help}"
         );
-        let phone = page_post(&other, "/api/pair/phone");
-        assert!(
-            phone.starts_with("401 ") && phone.contains("\"why\""),
-            "a browser without the token is refused a phone's code: {phone}"
-        );
     } else {
         let refused = harness::eval(
             &other,
@@ -27151,7 +27101,7 @@ fn the_write_switch_says_why_it_is_off_and_the_page_pairs_this_browser() {
         assert_eq!(
             refused.as_u64(),
             Some(401),
-            "the paired gate refuses a browser without the cookie"
+            "the paired gate refuses a browser without the token"
         );
     }
 }
@@ -27178,7 +27128,7 @@ fn a_session_the_box_cannot_write_to_keeps_its_button_greyed_and_says_why() {
         qoder += &harness::assistant_at("An answer.", &harness::now_minus(at - 5));
     }
     stores.qoder_session(WRITE_QODER, &qoder);
-    let m = harness::Monitor::spawn(harness::Kind::V1, 3161, &base, Some(&stores), true);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3162, &base, Some(&stores), true);
     const WHY: &str = "Can't write here: only Claude and Codex sessions take messages here.";
 
     let (_browser, tab) = harness::chrome_tab();

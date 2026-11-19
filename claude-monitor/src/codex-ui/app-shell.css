@@ -589,14 +589,3 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .sidebar .write-reason[hidden]{display:none}
 .sidebar .write-reason code{font:11px var(--mono);color:var(--sub);white-space:nowrap}
 .sidebar-mini-button.disabled{opacity:.5}
-.sidebar .write-pair{display:inline;padding:0;border:0;background:none;color:var(--primary);font:inherit;font-weight:560;cursor:pointer;text-decoration:underline;text-underline-offset:2px}
-.write-help .pair-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
-.write-help .pair-actions button{min-height:30px;padding:0 12px;border:1px solid var(--line);border-radius:9px;background:var(--panel);color:var(--ink);font:inherit;font-size:12px;cursor:pointer}
-.write-help .pair-actions button.pair-primary{background:var(--primary);border-color:var(--primary);color:#fff;font-weight:560}
-.write-help .pair-actions button:disabled{opacity:.6;cursor:default}
-.write-help .pair-qr{width:176px;height:176px;margin:4px 0 8px;border-radius:8px;overflow:hidden;background:#fff}
-.write-help .pair-qr svg{display:block;width:100%;height:100%}
-.write-help .pair-code{margin:2px 0 8px;font:600 18px/1.3 var(--mono);letter-spacing:.06em;color:var(--ink)}
-.write-help .pair-why{color:var(--ink)}
-.write-help .pair-note{margin:0;color:var(--faint)}
-.write-help code{white-space:pre-wrap;overflow-wrap:anywhere}

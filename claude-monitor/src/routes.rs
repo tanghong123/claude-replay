@@ -265,15 +265,11 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
     match name {
         // The app shell, whatever `?ui=` says: `?ui=classic` and a `ui.json` that remembered the
         // classic view both get it since that view was retired (#s98).
-        // #s577: the gate's pairing NOW, which the page may have changed since the start.
-        "" | "index.html" => {
-            let paired = claude_replay_html::gate_paired().unwrap_or(front.paired);
-            HttpResponse::html(ui::app_page(
-                front.version,
-                paired,
-                write_gate(paired, ceiling.writes, req.authenticated),
-            ))
-        }
+        "" | "index.html" => HttpResponse::html(ui::app_page(
+            front.version,
+            front.paired,
+            write_gate(front.paired, ceiling.writes, req.authenticated),
+        )),
         // A Markdown document from the preview pane, in a tab of its own (#271).
         "markdown" => HttpResponse::html(ui::markdown_page()),
         // An image from the preview pane, in a tab of its own (#s11).
@@ -868,11 +864,7 @@ mod tests {
         let rows = contract_index::rows(&doc);
         assert!(rows.len() > 15, "read only {} rows", rows.len());
         let mut asked = 0;
-        // The listener's own rows are answered before the table (#s577): its tests hold them.
-        for row in rows
-            .iter()
-            .filter(|row| row.tier != "native" && row.tier != "listener")
-        {
+        for row in rows.iter().filter(|row| row.tier != "native") {
             let name = contract_index::probe(
                 row,
                 mdrev::VERSION,

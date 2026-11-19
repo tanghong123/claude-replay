@@ -438,9 +438,7 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
         // The table's answer to a path no route has: its fallback's 404 or 403.
         let no_route = (reply.code == "404 Not Found" && reply.text() == "not found")
             || (reply.code == "403 Forbidden" && reply.text() == "forbidden");
-        // Native mode is the monitor's build's, and the listener's rows the monitor's listener's
-        // (#s577): a mounted table answers neither.
-        if row.tier == "native" || row.tier == "listener" {
+        if row.tier == "native" {
             assert!(no_route, "{what}");
         } else if left_out.contains(&row.path.as_str()) {
             assert_ne!(row.tier, "core", "a host cannot leave out {what}");

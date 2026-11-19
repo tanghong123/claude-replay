@@ -37,11 +37,13 @@ pub fn body_limit(route: &str) -> usize {
 }
 
 /// Compose inert native support with the unchanged reader routes.
-/// No runtime is activated by construction, assets, status or session reading.
+/// No runtime is activated by construction, assets, status or session reading. `paired` is whether
+/// the monitor requires pairing, which its page says (#s577).
 pub fn handler(
     legacy: RouteHandler,
     runtime: Arc<NativeRuntime>,
     index: Arc<Index>,
+    paired: bool,
 ) -> StreamingRouteHandler {
     struct Ownership(std::sync::Weak<NativeRuntime>);
     impl crate::index::NativeSessions for Ownership {
@@ -59,7 +61,7 @@ pub fn handler(
     }
     index.require_shared_codex_runtime(Arc::new(Ownership(Arc::downgrade(&runtime))));
     Arc::new(move |request| {
-        if let Some(reply) = workspace_page(request).or_else(|| asset(request.name)) {
+        if let Some(reply) = workspace_page(request, paired).or_else(|| asset(request.name)) {
             return reply.into();
         }
         if matches!(
@@ -265,8 +267,7 @@ fn native_reader_page(page: String) -> String {
 /// The workspace's page, naming what this request's writes still need (#s577) as the monitor's own
 /// page does: native mode needs pairing too, so a page drawn unpaired, or for a browser without the
 /// token, says so beside its Write mode switch.
-fn monitor_page(request: &Request) -> String {
-    let paired = claude_replay_html::gate_paired().unwrap_or(request.authenticated);
+fn monitor_page(request: &Request, paired: bool) -> String {
     let write = crate::routes::write_gate(paired, true, request.authenticated);
     native_reader_page(crate::ui::app_page(
         env!("CARGO_PKG_VERSION"),
@@ -291,13 +292,13 @@ fn invalid(message: &str) -> HttpResponse {
     reply
 }
 
-/// The workspace's page itself, drawn for `request` ([`monitor_page`]).
-pub fn workspace_page(request: &Request) -> Option<HttpResponse> {
+/// The workspace's page itself, drawn for `request` to a monitor `paired` or not ([`monitor_page`]).
+pub fn workspace_page(request: &Request, paired: bool) -> Option<HttpResponse> {
     matches!(
         request.name,
         "codex-workspace" | "codex-workspace/" | "codex-workspace/index.html"
     )
-    .then(|| HttpResponse::html(monitor_page(request)))
+    .then(|| HttpResponse::html(monitor_page(request, paired)))
 }
 
 /// Embed the workspace at build time, preserving Monitor's standalone binary. The page itself is
@@ -505,33 +506,35 @@ mod tests {
     /// own page does, rather than saying writing is open whatever the pairing.
     #[test]
     fn the_workspace_page_says_what_writing_needs_for_this_request() {
-        let draw = |authenticated| {
+        let draw = |paired, authenticated| {
             String::from_utf8(
-                workspace_page(&claude_replay_html::get_request(
-                    "codex-workspace",
-                    "",
-                    authenticated,
-                ))
+                workspace_page(
+                    &claude_replay_html::get_request("codex-workspace", "", authenticated),
+                    paired,
+                )
                 .unwrap()
                 .body,
             )
             .unwrap()
         };
-        assert!(draw(true).contains(r#"data-write="open""#));
+        assert!(draw(true, true).contains(r#"data-write="open""#));
         assert!(
-            draw(false).contains(r#"data-write="monitor""#),
-            "no gate, no token: the page names pairing"
+            draw(false, false).contains(r#"data-write="monitor""#),
+            "an unpaired monitor: the page names pairing"
+        );
+        assert!(
+            draw(true, false).contains(r#"data-write="browser""#),
+            "a paired monitor, a browser without the token"
         );
     }
 
     #[test]
     fn workspace_entry_keeps_original_reader_and_loads_only_the_enabling_control() {
         let page = String::from_utf8(
-            workspace_page(&claude_replay_html::get_request(
-                "codex-workspace",
-                "",
+            workspace_page(
+                &claude_replay_html::get_request("codex-workspace", "", true),
                 true,
-            ))
+            )
             .unwrap()
             .body,
         )
@@ -603,7 +606,9 @@ mod tests {
             "codex-workspace/",
             "codex-workspace/index.html",
         ] {
-            assert!(workspace_page(&claude_replay_html::get_request(name, "", true)).is_some());
+            assert!(
+                workspace_page(&claude_replay_html::get_request(name, "", true), true).is_some()
+            );
             assert!(!PUBLIC_ASSETS.contains(&name));
         }
         for name in [
@@ -713,7 +718,7 @@ mod tests {
         let legacy: RouteHandler = Arc::new(move |request: &Request| {
             claude_replay_html::service_routes(None, &fallback, request)
         });
-        let serve = handler(legacy, runtime, index);
+        let serve = handler(legacy, runtime, index, true);
         let ask = |name: &str| -> Option<HttpResponse> {
             match serve(&Request {
                 method: "GET",

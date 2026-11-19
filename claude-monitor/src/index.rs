@@ -3985,24 +3985,10 @@ pub(crate) fn run_bounded_env(
     env: &[(&str, &str)],
     limit: std::time::Duration,
 ) -> String {
-    run_bounded_keyed(args[0], args, env, limit).unwrap_or_default()
-}
-
-/// [`run_bounded_env`] under an abandoned-probe rule of its own, named `guard`, and saying which of
-/// "no output" and "not run" it was: `None` when the probe was not started (one under `guard` is
-/// still running, abandoned) or gave no answer within `limit`. The scan's probes share one guard per
-/// program; a probe outside the scan (the page's pairing check, #s577) takes its own, so neither
-/// can stop the other.
-pub(crate) fn run_bounded_keyed(
-    guard: &str,
-    args: &[&str],
-    env: &[(&str, &str)],
-    limit: std::time::Duration,
-) -> Option<String> {
     use std::process::{Command, Stdio};
-    let program = guard.to_string();
+    let program = args[0].to_string();
     if abandoned_probes().lock().unwrap().contains(&program) {
-        return None;
+        return String::new();
     }
     let Ok(mut child) = Command::new(args[0])
         .args(&args[1..])
@@ -4012,7 +3998,7 @@ pub(crate) fn run_bounded_keyed(
         .stderr(Stdio::null())
         .spawn()
     else {
-        return Some(String::new());
+        return String::new();
     };
     let stdout = child.stdout.take();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -4025,7 +4011,7 @@ pub(crate) fn run_bounded_keyed(
     });
     if let Ok(out) = rx.recv_timeout(limit) {
         let _ = child.wait();
-        return Some(String::from_utf8_lossy(&out).into_owned());
+        return String::from_utf8_lossy(&out).into_owned();
     }
     abandoned_probes().lock().unwrap().insert(program.clone());
     let _ = child.kill();
@@ -4034,7 +4020,7 @@ pub(crate) fn run_bounded_keyed(
         let _ = rx.recv();
         abandoned_probes().lock().unwrap().remove(&program);
     });
-    None
+    String::new()
 }
 
 /// The executable's path at the head of a `ps` command line (#s266). `ps` joins argv with
