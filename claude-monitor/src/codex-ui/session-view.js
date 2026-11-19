@@ -1940,7 +1940,8 @@ function renderNavigator() {
   // #s606, Hong: "there is no filter for top level tasks". Top-level only hides a task that follows
   // another up (taskq's `follows_up`), so what stays is what a person asked for, and what no mark
   // places (a task filed before taskq had them). On a phone as on a desktop: the phone's way to it is
-  // a row at the top of the list (`phoneTasksFilter`), as its Agents list has.
+  // a row at the top of the list (`phoneTasksFilter`), as its Agents list has; a sheet hides the row
+  // and mirrors it in its head (#s616, `renderFilter`).
   const topLevelOnly = uiState.taskTopLevel;
   const asked = row => !topLevelOnly || !row.task.follows_up;
   const titledRows = afterFilter.map(group => ({ ...group, rows: group.rows.filter(titled) }));
@@ -1975,7 +1976,6 @@ function renderNavigator() {
   const followAll = titledRows.reduce((n, group) => n + group.rows.filter(row => row.task.follows_up).length, 0);
   const taskRows = taskShown.map(group => `<div class="work-group" data-task-group="${group.key}"><span>${group.label}</span><span class="work-group-count">${group.rows.length}</span></div>${group.rows.map(taskRow).join("")}`).join("");
   byId("navigatorWork").innerHTML = taskRows ? phoneTasksFilter(topLevelOnly, followUps, followAll) + taskRows : noTasks;
-  mobileShell?.tasksChanged(); // the phone drop-down's jumps name the groups just drawn (#319)
   const agents = directAgents(), workers = sessionWorkers();
   const activeAgents = agents.filter(agent => agent.running).length + workers.filter(workerRunning).length;
   const allAgents = agents.length + workers.length;
@@ -1997,6 +1997,9 @@ function renderNavigator() {
     return `<div class="outline-agent-row"><button class="outline-agent" type="button" data-child-outline="${escapeText(agent.id)}" title="Open the sub-agent's transcript"><span class="agent-state ${agent.running ? "running" : "completed"}"></span><span class="outline-agent-copy"><strong>${escapeText(agent.title || agent.description || agent.id)}</strong><small>${escapeText(agent.type || agent.agent_type || "agent")}</small></span><span class="outline-agent-tail"></span></button>${spawn}</div>`;
   }).concat(shownWorkers.map(workerRow)).join("");
   byId("navigatorAgents").innerHTML = agentRows ? phoneAgentsFilter(liveAgentsOnly, hiddenAgents, allAgents - activeAgents) + agentRows : noAgents;
+  // Once BOTH lists are drawn: the phone drop-down's jumps name the Tasks groups (#319), and its
+  // head mirrors the open list's filter row, Agents' too (#s616), so it never shows the one before.
+  mobileShell?.tasksChanged();
   // What the filter is holding back, for the menu row that controls it to say so (#215). The head
   // reads "25 active · 253/308 done" either way, so without this the reader has no way to tell a
   // pane that is filtered from a pane that is simply short.
@@ -2036,7 +2039,8 @@ function showFilteredControl(pane, hidden, label = "Show them") {
 }
 /** A phone's way to Top-level only (#s606), as `phoneAgentsFilter` is to Active only: a row at the
  *  top of the Tasks list, on the same remembered choice, for whichever end applies. Only where some
- *  task follows another up, since otherwise the choice changes nothing. */
+ *  task follows another up, since otherwise the choice changes nothing. A sheet does not draw the
+ *  row; its head mirrors it (#s616, `renderFilter`), and a wide phone's column draws it. */
 function phoneTasksFilter(topLevelOnly, hidden, followUps) {
   if (!layout.phone()) return "";
   const what = n => `${n} ${n === 1 ? "follow-up" : "follow-ups"}`;
@@ -2047,7 +2051,8 @@ function phoneTasksFilter(topLevelOnly, hidden, followUps) {
  *  the list carries a row for whichever end applies, on the same remembered filter. Hide finished
  *  while the filter is off; while it is on, Show them, because with an agent still running the list
  *  is not empty and the emptied pane's control is not there. At the TOP of the list, which can run to
- *  149 agents. Every row here is a phone's alone: a desktop keeps the menu. */
+ *  149 agents; a sheet hides the row and mirrors it in its head (#s616, `renderFilter`). Every row
+ *  here is a phone's alone: a desktop keeps the menu. */
 function phoneAgentsFilter(liveOnly, hidden, finished) {
   if (!layout.phone()) return "";
   const what = n => `${n} finished ${n === 1 ? "agent" : "agents"}`;
@@ -4874,7 +4879,7 @@ var phoneDock;
   menu.id = "phonePaneMenu";
   menu.hidden = true;
   menu.setAttribute("role", "dialog");
-  menu.innerHTML = '<div class="phone-pane-head"><strong></strong><button type="button" class="phone-pane-close" aria-label="Close">✕</button></div><div class="phone-pane-jumps" role="toolbar" aria-label="Jump to a state" hidden></div><div class="phone-pane-body"></div>';
+  menu.innerHTML = '<div class="phone-pane-head"><strong></strong><button type="button" class="phone-pane-filter" hidden></button><button type="button" class="phone-pane-close" aria-label="Close">✕</button></div><div class="phone-pane-jumps" role="toolbar" aria-label="Jump to a state" hidden></div><div class="phone-pane-body"></div>';
   // #s55: the session dims behind an open sheet; a tap there closes it (the outside tap below).
   const paneScrim = document.createElement("div");
   paneScrim.className = "pane-scrim";
@@ -4882,11 +4887,27 @@ var phoneDock;
   sessionView.append(paneScrim, menu);
   const menuBody = menu.querySelector(".phone-pane-body");
   const jumps = menu.querySelector(".phone-pane-jumps");
+  const headFilter = menu.querySelector(".phone-pane-filter");
   let openPane = null, home = null;
   // #319: the Tasks drop-down lists every state (a phone cannot reach the outline's state filter),
   // so its head jumps between them — each named and counted as the state's own head in the list,
   // which stays pinned at the top while its rows scroll under it (production.css).
+  // #s616: the list's filter (#s606's Hide follow-ups, #s358's Hide finished agents, and the Show N
+  // that undoes each) is drawn in the sheet's HEAD, beside its title, where it costs the list nothing.
+  // Held sideways the list is about 97px, and the opening scroll to what is still moving took the row
+  // at the list's top out of reach; pinned there, the row and a state's head left no task readable.
+  // The list keeps its row (not drawn in the sheet, production.css; a wide phone's column shows it),
+  // and the head's control carries the row's data, so a press goes through `navigatorClick` as the
+  // row's did, and the redraw it makes calls this again (`tasksChanged`).
+  const renderFilter = () => {
+    const row = openPane ? menuBody.querySelector(".tasks-filter-row, .agents-filter-row") : null;
+    for (const name of headFilter.getAttributeNames()) if (name.startsWith("data-") || name === "aria-label") headFilter.removeAttribute(name);
+    headFilter.hidden = !row;
+    headFilter.textContent = row ? row.textContent : "";
+    if (row) for (const name of row.getAttributeNames()) if (name.startsWith("data-") || name === "aria-label") headFilter.setAttribute(name, row.getAttribute(name));
+  };
   const renderJumps = () => {
+    renderFilter();
     const heads = openPane?.key === "tasks" ? [...menuBody.querySelectorAll(".work-group[data-task-group]")] : [];
     jumps.hidden = !heads.length;
     jumps.innerHTML = heads.map(head => {

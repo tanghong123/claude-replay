@@ -1293,11 +1293,16 @@ resizes the others (#159). Six drawer cases catch that in one run.
   running or it is finished. **A pane its filter emptied offers to undo it from where the reader is
   looking** (#s356, Hong: "is there way to show those agents?"): the empty line carries Show them,
   which clears the same remembered filter the menu's row does, and on a desktop a hint names that
-  row. A phone has no such menu, so its Agents list (the sheet and a wide phone's column) opens on a
-  row for whichever end applies, Hide finished agents or Show N finished agents (#s358, Hong's choice
-  on #s357; `phoneAgentsFilter`), at the top because the list can be long; with an agent running the
-  list is not empty, so the empty line alone would strand the reader. A phone's Tasks pane shows every
-  state (#319) and needs neither. **A task the session recorded no title for is not listed** in that pane
+  row. A phone has no such menu, so its Agents list carries a control for whichever end applies, Hide
+  finished agents or Show N finished agents (#s358, Hong's choice on #s357; `phoneAgentsFilter`), and
+  its Tasks list one for Top-level only, Hide follow-ups or Show N follow-ups (#s606;
+  `phoneTasksFilter`); with an agent running the list is not empty, so the empty line alone would
+  strand the reader. In a wide phone's column the control is a row at the top of the list, because
+  the list can be long; in a sheet it is in the sheet's HEAD beside its title (#s616, `renderFilter`,
+  the row not drawn there), because held sideways the sheet's list is about 97px and the Tasks
+  sheet's opening scroll to what is still moving took a row at the top out of reach, while a row
+  pinned there left no task readable. A phone's Tasks pane shows every state (#319), so it needs no
+  state filter. **A task the session recorded no title for is not listed** in that pane
   at all (#217, the owner: "it is pointless to show those tasks"); the pane says how many it is
   holding, and the classic page's task PANEL still lists it and still opens the card that explains
   the absence (#187/#188), because a board that dropped a task would be lying about what the session

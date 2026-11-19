@@ -5946,3 +5946,51 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(listRules, /\.tree-machine-group\.(?:stale|failed|live|waiting)(?![\w-])/, "and no rule styles a bare state name on it");
   console.log("#s561 group by machine cases passed");
 }
+
+// #s615 (Hong: "the sessions are not sorted by the last active time"): over several machines each
+// agent's projects come in the server's calm order across the machines, not every project of the
+// first machine and then the second's. Active in the last ten minutes first, by name; the rest newest
+// first. Each machine's list is its server's order and keeps it, so Group by machine is unchanged.
+{
+  const { groupAcrossMachines, machineSections } = await import("../../claude-monitor/src/codex-ui/session-list.js");
+  const now = 2_000_000;
+  const row = (id, agent, ago) => ({ id, agent, name: id, family: id, ignoreKey: `s:${id}`, activityTs: now - ago });
+  const group = (machine, label, rows) => ({ kind: "project", label, secondary: `~/code/${label}`, ignoreKey: `p:~/code/${label}`, machine, rows });
+  // Each machine's groups as its server orders them: active by name, then newest first.
+  const groups = [
+    group("a", "zeta", [row("a-zeta", "claude", 60)]),
+    group("a", "old", [row("a-old", "claude", 7 * 86400)]),
+    group("b", "alpha", [row("b-alpha", "claude", 120)]),
+    group("b", "codex-only", [row("b-codex", "codex", 30)]),
+    group("b", "recent", [row("b-recent", "claude", 20 * 60), row("b-recent-2", "claude", 40 * 60)]),
+    group("b", "older", [row("b-older", "claude", 3 * 86400)]),
+  ];
+  const tree = groupAcrossMachines(groups, undefined, now);
+  assert.deepEqual(tree.map(agent => [agent.id, agent.projects.map(project => project.id)]), [
+    ["claude", ["b/p:~/code/alpha", "a/p:~/code/zeta", "b/p:~/code/recent", "b/p:~/code/older", "a/p:~/code/old"]],
+    ["codex", ["b/p:~/code/codex-only"]],
+  ], "the projects active in the last ten minutes first by name, then newest first, across both machines; the agents follow their first projects");
+  const sections = machineSections(tree, [{ machine: "a", label: "a" }, { machine: "b", label: "b" }], now);
+  assert.deepEqual(sections.map(section => [section.machine.machine, section.agents.map(agent => [agent.id, agent.projects.map(project => project.id)])]), [
+    ["a", [["claude", ["a/p:~/code/zeta", "a/p:~/code/old"]]]],
+    ["b", [["claude", ["b/p:~/code/alpha", "b/p:~/code/recent", "b/p:~/code/older"]], ["codex", ["b/p:~/code/codex-only"]]]],
+  ], "grouped by machine, each machine's projects in its own server's order");
+  // A machine's own order is kept even where the clock would put it otherwise (its server's clock
+  // drew the ten minutes a moment earlier): the merge never reorders one machine's projects.
+  const skewed = groupAcrossMachines([group("a", "late", [row("a-late", "claude", 11 * 60)]), group("a", "early", [row("a-early", "claude", 5 * 60)])], undefined, now);
+  assert.deepEqual(skewed[0].projects.map(project => project.id), ["a/p:~/code/late", "a/p:~/code/early"], "one machine's projects in its server's order, whatever the page's clock says");
+  // A folder where Claude and Codex both work is ONE group on its server, dated by its newest row of
+  // either agent, and its machine's list is in that order; each agent's project is dated by the whole
+  // group, or a project Claude left three days ago in a folder Codex is busy in would sink below one
+  // Claude used an hour ago and strand the machine's later projects (the #s615 review).
+  const mixed = groupAcrossMachines([
+    group("a", "shared", [row("a-cx", "codex", 30), row("a-cl", "claude", 3 * 86400)]),
+    group("a", "solo", [row("a-solo", "claude", 3600)]),
+    group("b", "other", [row("b-other", "claude", 2 * 86400)]),
+  ], undefined, now);
+  assert.deepEqual(mixed.map(agent => [agent.id, agent.projects.map(project => project.id)]), [
+    ["codex", ["a/p:~/code/shared"]],
+    ["claude", ["a/p:~/code/shared", "a/p:~/code/solo", "b/p:~/code/other"]],
+  ], "each agent's project is dated by its whole group, as the server dates it");
+  console.log("#s615 merged order cases passed");
+}
