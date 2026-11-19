@@ -14415,9 +14415,13 @@ fn a_narrow_session_column_keeps_a_held_query_whole_and_the_chip_whole_or_its_do
     drop(monitor);
 }
 
+/// The session view's search cluster, its width in the bar (#s624's case).
+const WIDTH: &str = "document.querySelector('.workspace>.topbar>.header-search-cluster').getBoundingClientRect().width";
+
 /// #s624: at a desktop's width, a query held in the search box and / pressed to take it up again, the
-/// right pane shut and open: the box refits once its new size is reported, and the browser raises no
-/// "ResizeObserver loop" notice at the window, where a host page's error handler receives it as an
+/// right pane shut and open: the box is fitted for the search in use and then holds its width,
+/// and the browser raises no "ResizeObserver loop" notice at the window, where a host page's error
+/// handler receives it as an
 /// error (the native app's sheet case found it). Red before #s624 on every such / with the pane open
 /// (at 1400px the shut pane leaves the box its room, and stays here as the other layout's check): the
 /// field's own observer wrote the cluster's floor and the heading's classes, both above the field in
@@ -14513,6 +14517,7 @@ fn a_held_query_taken_up_again_raises_no_resize_observer_loop() {
                     format!("{step}: / with the query held")
                 ),
             );
+            let rest = harness::eval(&tab, WIDTH).as_f64().unwrap_or(-1.0);
             tab.press_key("/").unwrap();
             harness::until(
                 &tab,
@@ -14522,7 +14527,29 @@ fn a_held_query_taken_up_again_raises_no_resize_observer_loop() {
                 "(document.activeElement || {}).id",
             );
             harness::eval(&tab, TWO_FRAMES);
+            let in_use = harness::eval(&tab, WIDTH).as_f64().unwrap_or(-1.0);
             harness::eval(&tab, TWO_FRAMES);
+            let later = harness::eval(&tab, WIDTH).as_f64().unwrap_or(-1.0);
+            // Not vacuous: where the notice came, the pane was open and the box's floor was written
+            // for the held query (the write that resized the cluster inside a size report before
+            // #s624); and the fit, at once or a frame late, settles rather than refitting back and
+            // forth across frames, which no notice would show.
+            if open {
+                let floor = harness::eval(
+                    &tab,
+                    "JSON.stringify({ paneOff: document.getElementById('sessionView').classList.contains('preview-off'), floor: document.querySelector('.workspace>.topbar>.header-search-cluster').style.getPropertyValue('--search-floor') })",
+                );
+                let floor: serde_json::Value =
+                    serde_json::from_str(floor.as_str().unwrap_or("{}")).unwrap_or_default();
+                assert!(
+                    floor["paneOff"] == false && floor["floor"].as_str().is_some_and(|f| !f.is_empty()),
+                    "{step}: the pane open and the box's floor set for the held query in use: {floor}, the box {rest}px at rest, {in_use}px in use"
+                );
+            }
+            assert!(
+                (later - in_use).abs() < 0.5,
+                "{step}: the box holds its width once fitted: {in_use}px, then {later}px two frames later"
+            );
             harness::eval(&tab, "(function(){ var i = document.getElementById('transcriptSearchInput'); i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })); i.blur(); return 'ok'; })()");
             harness::eval(&tab, TWO_FRAMES);
         }

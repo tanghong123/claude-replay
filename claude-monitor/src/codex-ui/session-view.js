@@ -2865,12 +2865,16 @@ addEventListener("resize", () => fitSearchField(), { signal });
 // without the window's too (the pane opening beside the session, its drag), and a floor fitted to
 // the old room would hold the box past the session's column (train2's review), so the bar is watched
 // as well.
-// Above a phone the fit waits for the next frame, as the heading's does (`fitHeadingSoon`; #s624): it
-// writes the cluster's floor and the heading's classes, both above the field in the page, and a write
-// there while the field's new size was being reported resized them inside the same delivery, which
-// the browser answers with a "ResizeObserver loop" error event at the window, where a host page's
-// error handler receives it: every / that opened find beside a pane. A phone's open box sizes only the
-// field's text inside the strip, which does not resize the strip, and follows the keyboard at once.
+// Except in a phone's open box the observer's fit waits for the next frame, as the heading's does
+// (`fitHeadingSoon`; #s624): it writes the cluster's floor and the heading's classes, both above the
+// field in the page, and a write there while the field's new size was being reported resized them
+// inside the same delivery, which the browser answers with a "ResizeObserver loop" error event at the
+// window, where a host page's error handler receives it: each / that took a held query up again with
+// the right pane open, at 1400px. The search coming into use fits at once anyway, from its focus
+// (below), so that bar is drawn fitted in its first frame; a pane opening or dragged has the floor a
+// frame behind it. A phone's open box fits at once, as before: there the fit writes only the field's
+// width and its scroll, inside the strip, which keeps its size as the one growing item in a box of
+// fixed width.
 let searchFitFrame = 0;
 const searchFit = new ResizeObserver(() => {
   if (viewRoot.$(".header-searchbox")?.classList.contains("phone-open")) { fitSearchField(); return; }
@@ -2950,6 +2954,9 @@ for (const type of ["pointerup", "pointercancel", "contextmenu"]) document.addEv
 addEventListener("blur", pressEnded, { signal });
 searchCluster.addEventListener("focusin", event => {
   searchCluster.classList.add("search-held");
+  // The box in use asks for its room now, outside any size report (#s624): by /, ⌘F, a click or Tab,
+  // the observer's own fit would come a frame after the bar was drawn.
+  fitSearchField();
   if (event.relatedTarget && !searchCluster.contains(event.relatedTarget)) searchFrom = event.relatedTarget === transcript ? transcript : null;
 }, { signal });
 searchCluster.addEventListener("focusout", event => { if (event.relatedTarget && !searchCluster.contains(event.relatedTarget)) releaseSearch(); }, { signal });
