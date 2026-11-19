@@ -49,7 +49,7 @@ export const KEYBOARD_MODES = Object.freeze(["engaged", "page"]);
 /** Every option `mountSessionView` takes; any other name is refused, so a misspelt or retired one
  *  (the old `toast`, `keys` or `controls`) fails loudly rather than being dropped. */
 export const MOUNT_OPTIONS = Object.freeze([
-  "theme", "grid", "backend", "show", "keyboard", "write", "frame", "assets", "detachTo",
+  "theme", "grid", "backend", "show", "keyboard", "write", "frame", "assets", "reviewSheet", "detachTo",
   "selectedId", "sessionRow", "sessionWorkers", "selectSession", "renderList", "refreshIndex", "pauseIndex", "resumeIndex",
   "onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast", "onOutline",
   "room", "parentShown", "openList", "openSidebar", "paneLayout", "paneCount",
@@ -71,9 +71,9 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  Options, each named in `MOUNT_OPTIONS`; any other name is refused. Required: `grid`, `selectedId`,
  *  `sessionRow`, `sessionWorkers`, `selectSession`, `renderList`, `refreshIndex`, `pauseIndex` and
  *  `resumeIndex`. The rest are optional: a host may leave out `theme`, `backend`, `show` and
- *  `keyboard` (each has a default), `write` (writes are not offered without it), `frame` (the
- *  native app's), `detachTo` (tabs open at the server's own pages), and every handler of what the
- *  view tells it.
+ *  `keyboard` (each has a default), `write` (writes are not offered without it), `frame`, `assets`
+ *  and `reviewSheet` (the native app's), `detachTo` (tabs open at the server's own pages), and every
+ *  handler of what the view tells it.
  *  - `theme`: "light" (the default) or "dark", carried by the view's element, where its stylesheet
  *    reads it; the handle's `setTheme` changes it.
  *  - `grid`: the box around the view (the app's `#app`). The phone's sheets are measured against it
@@ -146,6 +146,11 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    runtime from `mermaid` rather than the address the page's head names; the head must still name
  *    one, as it says the page draws diagrams (`mountApp` writes it there when it has none). Every
  *    route, mdrev's included, still goes through `backend`.
+ *  - `reviewSheet`: the native app's, which the kit's guide does not list (#s596, Hong on #s555: "The
+ *    phone's Review sheet on an iPad too (native app only)"): `true` offers the pane's Review control
+ *    and its full-screen sheet at every width, where without it only a phone reader is offered them
+ *    (a desktop reviews in the detached tab, the pane's ↗). The app passes it while it opens no window
+ *    of its own. Anything but a boolean is refused.
  *  - `selectedId()`, `sessionRow(id)`, `sessionWorkers(id)`: what the app's session index says —
  *    the session it has selected, a session's row, and the headless workers a session started.
  *  - `selectSession(id, push)`: ask the app to select a session (the parent control, a descent).
@@ -214,6 +219,7 @@ if (!KEYBOARD_MODES.includes(keyboardMode)) throw new Error(`mountSessionView ta
 if (options.write !== undefined && !(typeof options.write?.on === "function" && typeof options.write?.confirm === "function")) throw new Error("mountSessionView takes its write as { on, confirm }, two functions, or none for a host that offers no writes");
 if (options.room !== undefined && typeof options.room !== "function") throw new Error("mountSessionView takes its room as a function answering how many pixels its host could give, or none");
 if (options.frame !== undefined && typeof options.frame !== "function") throw new Error("mountSessionView takes its frame as a function from a page's HTML to the address its frame loads");
+if (options.reviewSheet !== undefined && typeof options.reviewSheet !== "boolean") throw new Error(`mountSessionView offers its review sheet at every width or not by true or false, not ${JSON.stringify(options.reviewSheet)}`);
 checkAssets(options.assets, "mountSessionView");
 if (options.detachTo !== undefined && !((typeof options.detachTo === "string" && options.detachTo) || typeof options.detachTo === "function")) throw new Error("mountSessionView takes its detachTo as the address of the page its tabs open at, or a function answering one, or none");
 /** Whether an optional control is drawn: each is, unless the host switched it off. */
@@ -798,7 +804,7 @@ function openTab(kind, query) {
   const href = tabAddress(kind, query);
   if (href) window.open(href, "_blank");
 }
-const preview = new Preview({ openTab, phone: () => layout.phone(), layoutChanged: () => paneLayoutChanged(), paneToggled: change => (viewMounted ? layout.toggled(change) : (change(), layout.decide())), dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
+const preview = new Preview({ openTab, phone: () => layout.phone(), layoutChanged: () => paneLayoutChanged(), paneToggled: change => (viewMounted ? layout.toggled(change) : (change(), layout.decide())), dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, reviewSheet: options.reviewSheet === true, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
 const attachmentViewer = new AttachmentViewer({ toast });
 // What the compose box asks of the app goes nowhere once the view is unmounted: a dialog's answer
 // still settling, a send still out.

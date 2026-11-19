@@ -387,8 +387,9 @@ export class Preview {
       // #335: not on a phone — the new tab is a page with no way back to the monitor.
       this.newTab.hidden = this.actions.phone();
       this.newTab.setAttribute("aria-label", `Open this ${isMarkdownName(item.name) ? "document" : "file"} in a new tab`);
-      // #s13: shared review is threads on a document's notes, and mdrev files no notes on code.
-      this.reviewBtn.hidden = !this.actions.phone() || handle.held || !isMarkdownName(item.name);
+      // #s13: shared review is threads on a document's notes, and mdrev files no notes on code. A
+      // phone's alone, unless the host offers the sheet at every width (#s596, `reviewSheet`).
+      this.reviewBtn.hidden = !(this.actions.phone() || this.actions.reviewSheet) || handle.held || !isMarkdownName(item.name);
       // #s30: where mdrev's toolbar offers no print of its own — a held reader (mdrev 1.1.24 prints
       // from its own Aa menu on a phone, #s31).
       this.printBtn.hidden = !isMarkdownName(item.name) || !handle.held;
