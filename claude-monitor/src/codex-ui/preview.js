@@ -39,6 +39,68 @@ const tabWeight = tab => 256 + 2 * String(tab.text || "").length + 2 * String(ta
 /** A reason the pane cannot show a file, with the heading that says which kind (#s7). */
 const refusal = (title, message) => Object.assign(new Error(message), { title });
 
+// #s627: what takes an on-screen keyboard, as the session view's keyboard ride reads it.
+const NO_KEYBOARD_INPUTS = new Set(["button", "checkbox", "radio", "range", "color", "file", "image", "reset", "submit", "hidden"]);
+const takesKeyboard = at => at?.localName === "input" ? !NO_KEYBOARD_INPUTS.has(at.type)
+  : at?.localName === "textarea" || at?.localName === "select" || !!at?.isContentEditable;
+/** #s627: the review sheet ends above an on-screen keyboard while a field inside it has the focus.
+ *  iOS covers the layout viewport's foot with its keyboard and never shortens a fixed layer for it,
+ *  and it lifts a focused field by scrolling the page, which the sheet (fixed over the whole app, its
+ *  document scrolling inside it) does not answer. So a note box mdrev opens beside a line low on the
+ *  screen took the focus under the keyboard and stayed there, its Save past the window's foot
+ *  (measured on the iPad Simulator, iPadOS 26.5: the box at 1279pt, the keyboard from 1028pt).
+ *  The sheet's top and foot are kept inside the visual viewport, in the layout viewport's
+ *  coordinates the boxes are read in (`offsetTop` is how far the visible part is panned from it),
+ *  and the scroller holding the field brings into view the field with what belongs to it: its
+ *  largest ancestor under the scroller that fits in what stays visible (mdrev's note card: the
+ *  quote, the field, the share box and Save), or the field's top where nothing does. Without a
+ *  field the sheet is as its rules draw it. Returns the band it fitted to, as a string, so a caller
+ *  reveals again only when the band or the field changed and leaves a reader who scrolled the
+ *  sheet while typing alone. */
+function fitSheetAboveKeyboard(sheet, field, viewport, applied) {
+  // The box as the sheet's rules draw it, from the box drawn now less what was applied, so the sheet
+  // never grows back for a measure (a scroller grown for a moment would clamp the reader's place).
+  const box = sheet.getBoundingClientRect();
+  const drawn = { top: box.top - applied.top, bottom: box.bottom + applied.bottom };
+  let top = drawn.top, bottom = drawn.bottom;
+  if (field && viewport) {
+    top = Math.max(drawn.top, viewport.offsetTop);
+    bottom = Math.min(drawn.bottom, viewport.offsetTop + viewport.height);
+    if (bottom - top < 120) top = drawn.top, bottom = drawn.bottom;
+  }
+  const want = { top: Math.round(top - drawn.top), bottom: Math.round(drawn.bottom - bottom) };
+  for (const side of ["top", "bottom"]) {
+    if (want[side] === applied[side]) continue;
+    if (want[side] > 0) {
+      const ruled = (parseFloat(getComputedStyle(sheet)[side]) || 0) - applied[side];
+      sheet.style[side] = `${ruled + want[side]}px`;
+    } else sheet.style.removeProperty(side);
+    applied[side] = want[side];
+  }
+  return want.top || want.bottom ? `${Math.round(top)}:${Math.round(bottom)}` : "";
+}
+function revealInSheet(sheet, field) {
+  let scroller = field.parentElement;
+  while (scroller && scroller !== sheet) {
+    const overflow = getComputedStyle(scroller).overflowY;
+    if ((overflow === "auto" || overflow === "scroll") && scroller.scrollHeight > scroller.clientHeight) break;
+    scroller = scroller.parentElement;
+  }
+  if (!scroller || scroller === sheet) return;
+  const view = scroller.getBoundingClientRect(), shown = sheet.getBoundingClientRect();
+  const bandTop = Math.max(view.top, shown.top), bandBottom = Math.min(view.bottom, shown.bottom);
+  if (bandBottom - bandTop < 40) return;
+  const margin = 8;
+  let group = field;
+  for (let at = field.parentElement; at && at !== scroller; at = at.parentElement) {
+    if (at.getBoundingClientRect().height > bandBottom - bandTop - 2 * margin) break;
+    group = at;
+  }
+  const rect = group.getBoundingClientRect();
+  if (rect.bottom > bandBottom - margin) scroller.scrollTop += Math.min(rect.bottom - bandBottom + margin, rect.top - bandTop - margin);
+  else if (rect.top < bandTop + margin) scroller.scrollTop -= bandTop + margin - rect.top;
+}
+
 export class Preview {
   /** `uiState` is the view's own store (view-state.js), whose `preview`, `previewTabs` and `previewId`
    *  are the pane's: open or shut, its tabs and the one shown. */
@@ -440,9 +502,28 @@ export class Preview {
     const closeBtn = sheet.querySelector("[data-review-close]");
     const state = { sheet, handle: null, close: null };
     this.reviewSheet = state;
+    // #s627: the sheet keeps above an on-screen keyboard while a field inside it has the focus, and
+    // brings the field (mdrev's note card) into view: again when the visible band or the field moves.
+    const viewport = window.visualViewport;
+    let fitted = "", fittedField = null;
+    const applied = { top: 0, bottom: 0 };
+    const fit = () => {
+      if (this.reviewSheet !== state) return;
+      let at = viewRoot.active();
+      while (at?.shadowRoot?.activeElement) at = at.shadowRoot.activeElement;
+      const field = at && sheet.contains(at) && takesKeyboard(at) ? at : null;
+      const band = fitSheetAboveKeyboard(sheet, field, viewport, applied);
+      if (field && band && (band !== fitted || field !== fittedField)) revealInSheet(sheet, field);
+      fitted = band; fittedField = field;
+    };
+    const fitSoon = () => queueMicrotask(fit);
     const close = () => {
       if (this.reviewSheet !== state) return;
       this.reviewSheet = null;
+      viewport?.removeEventListener("resize", fit);
+      viewport?.removeEventListener("scroll", fit);
+      sheet.removeEventListener("focusin", fitSoon);
+      sheet.removeEventListener("focusout", fitSoon);
       removeEventListener("keydown", onKey, true);
       removeEventListener("focusin", onFocus, true);
       // Read before mdrev goes: its unmount takes the focused control with it, leaving the body.
@@ -469,6 +550,10 @@ export class Preview {
     state.close = close;
     addEventListener("keydown", onKey, true);
     addEventListener("focusin", onFocus, true);
+    viewport?.addEventListener("resize", fit);
+    viewport?.addEventListener("scroll", fit);
+    sheet.addEventListener("focusin", fitSoon);
+    sheet.addEventListener("focusout", fitSoon);
     closeBtn.onclick = close;
     closeBtn.focus({ preventScroll: true });
     mountMarkdown(sheet.querySelector(".review-sheet-body"), item, { review: true }).then(handle => {

@@ -113,6 +113,125 @@ fn open_notes(tab: &headless_chrome::Tab) {
     );
 }
 
+/// #s627: the guide made long enough that a line sits low on any screen, committed.
+fn lengthen_guide(repo: &Path) {
+    let berths: String = (1..=40)
+        .map(|n| {
+            format!(
+                "Berth {n} takes the {}:00 ferry to the outer islands.\n\n",
+                n % 12 + 6
+            )
+        })
+        .collect();
+    std::fs::write(
+        repo.join("docs/guide.md"),
+        format!("# The guide\n\nSome **bold** prose, and [the other guide](other.md).\n\n{berths}"),
+    )
+    .unwrap();
+    for args in [
+        &["add", "docs/guide.md"][..],
+        &["commit", "-qm", "the berths"][..],
+    ] {
+        let ok = Command::new("git")
+            .arg("-C")
+            .arg(repo)
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .output()
+            .unwrap()
+            .status
+            .success();
+        assert!(ok, "git {args:?}");
+    }
+}
+
+/// #s627: a note started on a line low in the open review sheet, then an on-screen keyboard over the
+/// window's foot (the visual viewport shortened, as iOS's keyboard does and as the phone keyboard
+/// cases shadow it): the sheet ends above the keyboard, and the note's field and its Save are in view
+/// and are what a tap there hits. The keyboard put away, the sheet covers the window again. Red on
+/// 54b26c5f, where the field stayed under the keyboard (the iPad Simulator walk saw it at 1279pt
+/// under a keyboard from 1028pt, its Save past the window's foot).
+fn a_note_stays_above_the_keyboard(tab: &headless_chrome::Tab) {
+    let line = eval(
+        tab,
+        "(function(){ var H = innerHeight, ps = [...document.querySelectorAll('.review-sheet .doc p')]; var p = ps.find(function(p){ var r = p.getBoundingClientRect(); return r.top > H * 0.62 && r.bottom < H * 0.9 && /^Berth/.test(p.textContent); }); if (!p) return 'none: ' + ps.map(function(p){ return Math.round(p.getBoundingClientRect().top); }).join(','); var w = document.createTreeWalker(p, NodeFilter.SHOW_TEXT); var n = w.nextNode(); var r = document.createRange(); r.setStart(n, 0); r.setEnd(n, Math.min(n.data.length, 12)); var s = getSelection(); s.removeAllRanges(); s.addRange(r); document.dispatchEvent(new Event('selectionchange')); return p.textContent.slice(0, 12); })()",
+    );
+    let line = line.as_str().unwrap_or("").to_string();
+    assert!(
+        line.starts_with("Berth"),
+        "a line in the lower part of the sheet to note: {line}"
+    );
+    until(
+        tab,
+        "!!document.querySelector('.review-sheet .ann-invite')",
+        "the invitation to note the selection",
+        Duration::from_secs(20),
+        "(document.querySelector('.review-sheet') || {innerText: 'no sheet'}).innerText.slice(0, 200)",
+    );
+    eval(
+        tab,
+        "(function(){ document.querySelector('.review-sheet .ann-invite').click(); return 1; })()",
+    );
+    until(
+        tab,
+        "!!(document.activeElement && document.activeElement.matches('.review-sheet .ann-draft textarea'))",
+        "the note's field, with the focus",
+        Duration::from_secs(20),
+        "(document.activeElement || {}).className || (document.activeElement || {}).tagName",
+    );
+    let geometry = "(function(){ var H = innerHeight, kb = window.__kb || 0, s = document.querySelector('.review-sheet').getBoundingClientRect(), f = document.querySelector('.review-sheet .ann-draft textarea').getBoundingClientRect(), b = document.querySelector('.review-sheet .ann-draft .ann-composer-row button.primary'), br = b.getBoundingClientRect(), hit = document.elementFromPoint(br.left + br.width / 2, br.top + br.height / 2); return JSON.stringify({ inner: H, kb: kb, sheet: [s.top, s.bottom].map(Math.round), field: [f.top, f.bottom].map(Math.round), save: [br.top, br.bottom].map(Math.round), saveHit: !!hit && b.contains(hit), focused: !!document.activeElement && document.activeElement.matches('.review-sheet .ann-draft textarea') }); })()";
+    let read = |tab: &headless_chrome::Tab| -> serde_json::Value {
+        serde_json::from_str(eval(tab, geometry).as_str().unwrap_or("{}")).unwrap()
+    };
+    // The keyboard about to rise: the field and its Save lie under where it will be, or the steps
+    // below would pass without the fix.
+    let kb = eval(
+        tab,
+        "window.__kb = Math.round(innerHeight * 0.45); window.__kb",
+    )
+    .as_i64()
+    .unwrap();
+    let before = read(tab);
+    let inner = before["inner"].as_i64().unwrap();
+    assert!(
+        before["save"][1].as_i64().unwrap_or(0) > inner - kb,
+        "the note's Save lies where the keyboard will be: {before}"
+    );
+    eval(
+        tab,
+        "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - window.__kb; } }); visualViewport.dispatchEvent(new Event('resize')); return true; })()",
+    );
+    let visible = format!(
+        "(function(){{ var g = {geometry}; g = JSON.parse(g); var top = g.sheet[0], bottom = g.inner - g.kb; return g.focused && g.sheet[1] <= bottom + 1 && g.field[0] >= top && g.field[1] <= bottom && g.save[0] >= top && g.save[1] <= bottom && g.saveHit; }})()"
+    );
+    until(
+        tab,
+        &visible,
+        "the sheet ending above the keyboard, the note's field and its Save in view",
+        Duration::from_secs(5),
+        geometry,
+    );
+    // The keyboard put away: the field leaves the focus and the visual viewport is the window again.
+    eval(
+        tab,
+        "(function(){ delete visualViewport.height; window.__kb = 0; document.activeElement.blur(); visualViewport.dispatchEvent(new Event('resize')); return true; })()",
+    );
+    until(
+        tab,
+        "(function(){ var s = document.querySelector('.review-sheet').getBoundingClientRect(); return Math.round(s.top) === 0 && Math.round(s.bottom) === innerHeight; })()",
+        "the sheet covering the window again once the keyboard is down",
+        Duration::from_secs(5),
+        geometry,
+    );
+}
+
 fn open_guide(tab: &headless_chrome::Tab, repo: &Path) {
     let guide = repo.join("docs/guide.md").display().to_string();
     eval(
@@ -1404,6 +1523,47 @@ fn a_phone_pane_leaves_mdrevs_toolbar_its_own_layout() {
     }
 }
 
+/// #s627: on a phone held upright, the review sheet keeps a note started low on the screen above
+/// the keyboard, as the native app's sheet does at a desktop's width (that case's last steps).
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
+fn a_phone_review_sheet_keeps_a_note_above_the_keyboard() {
+    let _serial = serial();
+    let (base, stores, repo, state) = shared_review_world("mdrev-sheet-keyboard");
+    lengthen_guide(&repo);
+    let m = Monitor::spawn_with(
+        Kind::V1,
+        3346,
+        &base,
+        Some(&stores),
+        true,
+        &[("MDREV_STATE_DIR", &state.display().to_string())],
+    );
+    let (_browser, tab) = chrome_tab();
+    harness::phone(&tab, 440, 956);
+    open_shell(&m, &tab);
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1') && (function(){ var b = document.querySelector('.preview-review'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+        "the guide in the pane, with its Review control",
+        Duration::from_secs(30),
+        PANE,
+    );
+    eval(
+        &tab,
+        "document.querySelector('.preview-review').click(); 'ok'",
+    );
+    until(
+        &tab,
+        "!!document.querySelector('.review-sheet .mdrev-host h1') && !!document.querySelector('.review-sheet .doc p')",
+        "the review sheet, its document drawn",
+        Duration::from_secs(30),
+        "(document.querySelector('.review-sheet') || {innerText: 'no sheet'}).innerText.slice(0, 200)",
+    );
+    a_note_stays_above_the_keyboard(&tab);
+}
+
 /// #s12, the owner chose it: on a phone, where a tab of its own has no way back (#335), shared review
 /// is a FULL-SCREEN SHEET over the app. The pane's Markdown shows a Review control there; the sheet
 /// mounts the document on the review prefix (#s10), its guest asking for and fetching the store, and
@@ -1588,6 +1748,7 @@ try {
 fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
     let _serial = serial();
     let (base, stores, repo, state) = shared_review_world("mdrev-native-sheet");
+    lengthen_guide(&repo);
     let m = Monitor::spawn_with(
         Kind::V1,
         3343,
@@ -1738,6 +1899,9 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
             && after["sheet"] == true,
         "with the focus put back, the keys moved nothing under the sheet: {after}"
     );
+    // #s627: a note low on the screen keeps above an on-screen keyboard (the iPad's case).
+    eval(&tab, "window.__step = 'a note above the keyboard'; 'ok'");
+    a_note_stays_above_the_keyboard(&tab);
     // Closed by Escape with the focus inside mdrev's document (its heading made focusable, so the
     // unmount takes the focused element with it, as it takes a note field or one of mdrev's own
     // buttons), the focus still goes back to Review.
