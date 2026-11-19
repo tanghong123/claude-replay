@@ -11,7 +11,7 @@
 // and pane-layout controls; the list's native-mode projects and its placing of its parts in a host's
 // bar; the app's own keymap, which takes every key and calls the parts' key actions) are the
 // components' own and not offered here, and nor is what the backend handle holds for the parts
-// beyond its base and pairing.
+// beyond its base, its pairing and what writing needs.
 
 export type Theme = "light" | "dark";
 
@@ -22,8 +22,15 @@ export interface BackendHandleOptions {
    *  ("/agents/monitor"), or the page's origin with a path. A trailing slash is dropped. */
   base?: string;
   /** Whether the server gates its readers behind pairing (false by default): it decides whether
-   *  writes are offered and whether an agent's HTML page may run in the artifact pane. */
+   *  an agent's HTML page may run in the artifact pane, and, unless `write` says otherwise, whether
+   *  writes are offered. */
   paired?: boolean;
+  /** Whether this reader's writes reach the server's sessions (docs/backend-contract.md, "The
+   *  page's facts"): `"open"`, or what is missing — `"monitor"` (the server is not paired),
+   *  `"browser"` (it is, and this reader holds no token) or `"host"` (the server serves no writes).
+   *  The view offers writes only where it is `"open"`. Left out (or not one of these), it follows
+   *  `paired`: `"open"` when paired, `"monitor"` when not. */
+  write?: WriteGate;
   /** The mdrev release the server pins ("" for none, the default, and Markdown shows as plain
    *  text), or a function that reads it. */
   mdrevVersion?: string | (() => string);
@@ -32,10 +39,17 @@ export interface BackendHandleOptions {
   mdrev?: string;
 }
 
+/** What writing needs for this reader (`BackendHandleOptions.write`). */
+export type WriteGate = "open" | "monitor" | "browser" | "host";
+
 /** A handle on one server. What else it holds is the parts' own. */
 export interface BackendHandle {
   readonly base: string;
   readonly paired: boolean;
+  /** Whether this reader's writes reach the server's sessions: `write` is `"open"`. */
+  readonly writes: boolean;
+  /** What writing still needs (`"monitor"`, `"browser"` or `"host"`), or `""` when it is open. */
+  readonly writeNeed: "" | Exclude<WriteGate, "open">;
 }
 
 /** A handle on one server that answers the backend contract (docs/backend-contract.md). */
