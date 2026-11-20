@@ -473,6 +473,7 @@ class VirtualWindow {
     // one is the browser catching up, not the reader (`echoOf`).
     this.recentWrites = [];
     this.latestHeard = false;
+    this.echoAfterInput = null;
     // The viewport trace (#192): every decision the engine makes, with the geometry it saw, in a
     // ring buffer the reader can copy out of a bug report — `copy(window.__viewportTrace)` — and
     // on the console under one prefix. On by the page's URL or storage; `options.trace` overrides.
@@ -948,18 +949,30 @@ class VirtualWindow {
    *  event's offset, below which a move up from the new end reads as a move down. It counts only
    *  where the engine keeps no position (a follower): `topBelief` reads a kept position first. While
    *  a smooth write travels, it is where the write was last seen on its path, which the input stops.
-   *  While the browser may still report an earlier instant write (#s568: writes within `ECHO_MS` of
-   *  each other, the latest unreported), it is the lowest of them: the echo comes after the input
-   *  made the engine forget its writes, so `echoOf` no longer knows it, and read against the latest
-   *  write it would be a move up the reader never made. */
+   *  And while the browser may still report an earlier instant write (#s568), the writes it may
+   *  report are kept with the time they may come by (`echoAfterInput`): the input made the engine
+   *  forget them, so `echoOf` no longer knows the echo, and read against the latest write it would be
+   *  a move up the reader never made. A later call, with the writes already forgotten, keeps both. */
   keepBelief() {
     const wrote = this.wrote;
-    let belief = wrote && typeof wrote === "object" ? wrote.last : this.topBelief();
-    const writes = this.recentWrites || [];
-    const latest = writes[writes.length - 1];
-    if (belief != null && typeof wrote === "number" && !this.latestHeard && writes.length >= 2 && performance.now() - latest.at <= ECHO_MS)
-      belief = Math.min(belief, ...writes.map(write => Math.round(write.top)));
+    const belief = wrote && typeof wrote === "object" ? wrote.last : this.topBelief();
     if (belief != null) this.topSeen = belief;
+    if (wrote == null) return;
+    const writes = this.recentWrites || [], latest = writes[writes.length - 1];
+    this.echoAfterInput = typeof wrote === "number" && !this.latestHeard && latest && writes.length >= 2
+      && Math.abs(latest.top - wrote) <= 1 && performance.now() - latest.at <= ECHO_MS
+      ? { tops: writes.slice(0, -1).map(write => write.top), until: latest.at + ECHO_MS }
+      : null;
+  }
+
+  /** Is `top`, read after the reader's input made the engine forget its writes, the browser still on
+   *  its way to the latest of them by an earlier one (#s568's echo, kept by `keepBelief`)? As `echoOf`
+   *  asks it: at an earlier write's offset, the event stamped and delivered within `ECHO_MS` of the
+   *  latest write, never in a drag. A move up that lands anywhere else is the reader's. */
+  echoesAfterInput(top, at = performance.now()) {
+    const echo = this.echoAfterInput;
+    if (!echo || this.dragging || at > echo.until || performance.now() > echo.until) return false;
+    return echo.tops.some(t => Math.abs(top - t) <= 1);
   }
 
   /** A position a command set is held — placed again by every later transaction — until the
@@ -1013,7 +1026,7 @@ class VirtualWindow {
       this.trace("follow:unheard", { verdict: "wait", belief, top: Math.round(top), gap: Math.round(gap) });
       return;
     }
-    const verdict = classifyScroll(true, true, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal, top < belief);
+    const verdict = classifyScroll(true, true, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal, top < belief && !this.echoesAfterInput(top));
     this.trace("follow:unheard", { verdict, belief, top: Math.round(top), gap: Math.round(gap) });
     if (verdict !== "unfollow") return;
     this.following = false;
@@ -2217,7 +2230,7 @@ class VirtualWindow {
     this.releaseHold();
     const at = event && event.timeStamp ? event.timeStamp : performance.now();
     const user = this.dragging || at - this.lastInputStamp < this.userIntentMs;
-    const up = before != null && top < before - 0.5;
+    const up = before != null && top < before - 0.5 && !this.echoesAfterInput(top, at);
     const verdict = classifyScroll(this.following, user, this.gapToBottom(), this.slacks.acquire, this.slacks.hold, this.slacks.heal, up);
     this.trace("scroll", { user, up, verdict, gap: Math.round(this.gapToBottom()), lag: Math.round(at - this.lastInputStamp) });
     if (verdict === "follow" || verdict === "unfollow") {
