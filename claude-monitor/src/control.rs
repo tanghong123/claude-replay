@@ -116,11 +116,19 @@ fn read_token_at(path: &std::path::Path, legacy: &std::path::Path) -> Option<Str
     read_one_token(path).or_else(|| read_one_token(legacy))
 }
 
-/// Why the monitor's token file holds no token this can read, when something is there: the
-/// monitor then runs unpaired, and says so as it starts rather than quietly (#s619 re-review).
-pub fn token_file_problem() -> Option<String> {
-    match token_in(&token_path()) {
-        TokenIn::Unreadable(why) => Some(why),
+/// The token file that holds no token this can read, and why, when [`read_token`] found none for
+/// that reason: the state path, else the legacy one under `cache_root`. The monitor then runs
+/// unpaired, and says so as it starts rather than quietly (#s619 re-review).
+pub fn token_file_problem(cache_root: &std::path::Path) -> Option<(std::path::PathBuf, String)> {
+    let state = token_path();
+    match token_in(&state) {
+        TokenIn::Unreadable(why) => return Some((state, why)),
+        TokenIn::Token(_) => return None,
+        TokenIn::None => {}
+    }
+    let legacy = legacy_token_path(cache_root);
+    match token_in(&legacy) {
+        TokenIn::Unreadable(why) => Some((legacy, why)),
         TokenIn::Token(_) | TokenIn::None => None,
     }
 }
@@ -157,14 +165,21 @@ fn token_in(path: &std::path::Path) -> TokenIn {
             TokenIn::Unreadable(e.to_string())
         };
     }
-    // Opened without blocking and judged by the handle itself: a FIFO put there between a look
-    // at the path and the open would otherwise hold up the open (#s619 re-review).
+    // Only what the path names as a regular file is opened (a device may act on an open), and
+    // then without blocking, never as a controlling terminal, and judged again by the handle
+    // itself: a FIFO put there between the look and the open would otherwise hold up the open
+    // (#s619 re-review).
+    match std::fs::metadata(path) {
+        Ok(m) if m.is_file() => {}
+        Ok(_) => return TokenIn::Unreadable("not a regular file".into()),
+        Err(e) => return TokenIn::Unreadable(e.to_string()),
+    }
     let mut open = std::fs::OpenOptions::new();
     open.read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        open.custom_flags(libc::O_NONBLOCK);
+        open.custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY);
     }
     let file = match open.open(path) {
         Ok(f) => f,

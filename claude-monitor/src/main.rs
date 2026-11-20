@@ -255,15 +255,6 @@ fn main() -> Result<()> {
         ensure_token(&root)?;
     }
     let token = read_token(&root);
-    if token.is_none() {
-        if let Some(why) = claude_monitor::control::token_file_problem() {
-            eprintln!(
-                "agent-monitor: {} holds no token this can read ({why}), so the monitor runs \
-                 unpaired; fix or remove it, then run `agent-monitor --pair`",
-                claude_monitor::control::token_path().display()
-            );
-        }
-    }
     let with_token = |base: &str| tokened_url(base, token.as_deref());
     // Before anything is opened: one monitor per root (#160) — and if another one has it, that
     // is where the user wants to go (#166), so open it and stop rather than fail. The hand-off
@@ -308,6 +299,17 @@ fn main() -> Result<()> {
         }
         println!("{}", shown(out_tty));
         return Ok(());
+    }
+    // This process serves: a token file it could not read leaves it unpaired, which it says
+    // rather than run so quietly (#s619 re-review).
+    if token.is_none() {
+        if let Some((path, why)) = claude_monitor::control::token_file_problem(&root) {
+            eprintln!(
+                "agent-monitor: {} holds no token this can read ({why}), so the monitor runs \
+                 unpaired; fix or remove it, then run `agent-monitor --pair`",
+                path.display()
+            );
+        }
     }
     // Scratch lives under the monitor's OWN root (#161), not `$TMPDIR` — everything this tool
     // writes is then in one place a person can find, inspect and delete. It was in

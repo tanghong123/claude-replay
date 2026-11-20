@@ -6410,8 +6410,9 @@ mod tests {
         path: std::path::PathBuf,
         fail: bool,
         turned: std::sync::Mutex<Vec<TurnedOn>>,
-        /// How long `read_or_create` takes after it has written the file.
-        slow_ms: std::sync::atomic::AtomicU64,
+        /// When set, `read_or_create` waits after writing the file until `released` is.
+        hold: std::sync::atomic::AtomicBool,
+        released: std::sync::atomic::AtomicBool,
     }
 
     impl TokenFile for FakeTokenFile {
@@ -6429,8 +6430,14 @@ mod tests {
                 return Ok(t);
             }
             std::fs::write(&self.path, "minted-token")?;
-            let slow = self.slow_ms.load(std::sync::atomic::Ordering::SeqCst);
-            std::thread::sleep(std::time::Duration::from_millis(slow));
+            if self.hold.load(std::sync::atomic::Ordering::SeqCst) {
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+                while !self.released.load(std::sync::atomic::Ordering::SeqCst)
+                    && std::time::Instant::now() < deadline
+                {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
             Ok("minted-token".into())
         }
         fn turned_on(&self, how: TurnedOn) {
@@ -6463,7 +6470,8 @@ mod tests {
             path: dir.join("auth-token"),
             fail,
             turned: Default::default(),
-            slow_ms: Default::default(),
+            hold: Default::default(),
+            released: Default::default(),
         });
         let handler: RouteHandler =
             std::sync::Arc::new(|_: &Request| HttpResponse::html("the monitor".to_string()));
@@ -6486,11 +6494,13 @@ mod tests {
 
     /// #s619 review: the page's pairing writes the token file and sets the latch in one turn. A
     /// request whose take-up of the file comes between the two waits for the turn, and the monitor
-    /// says the page paired it, not its pairing command.
+    /// says the page paired it, not its pairing command. The page is held between the two until
+    /// the request has had its chance, so a slow machine can only make the case miss the race,
+    /// never fail it.
     #[test]
     fn a_request_reading_the_file_mid_pairing_waits_for_the_page_s_turn() {
         let (port, display, file, latch, _dir) = turning_on_gate("turn-on-race", false, false);
-        file.slow_ms.store(600, std::sync::atomic::Ordering::SeqCst);
+        file.hold.store(true, std::sync::atomic::Ordering::SeqCst);
         let here = format!("Host: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\n");
         let ask = send_raw(
             port,
@@ -6514,12 +6524,12 @@ mod tests {
             !latch.is_paired(),
             "between the file's write and the latch's set"
         );
-        let _other = send_raw(
-            port,
-            &format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"),
-            "",
-            true,
-        );
+        let get = format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n");
+        let other = std::thread::spawn(move || send_raw(port, &get, "", true));
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        file.released
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = other.join().unwrap();
         let right = pairing.join().unwrap();
         assert!(right.starts_with("HTTP/1.1 200"), "{right}");
         assert_eq!(*file.turned.lock().unwrap(), vec![TurnedOn::FromThePage]);
