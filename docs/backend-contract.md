@@ -84,7 +84,9 @@ The tiers say what a host must serve:
   part of this contract: a browser on the monitor's own machine asks `/api/pair/ask` for a code,
   which the monitor shows only on that machine (a dialog on a Mac, or `agent-monitor --pair-code`
   in a terminal) and never in a reply, and redeems it at `/api/pair` (#s618,
-  `design/pair-from-the-page.md`). A host puts its own sign-in in front instead. That sign-in must refuse a request
+  `design/pair-from-the-page.md`). On a monitor not yet paired the same code pairs the monitor
+  too, at once (#s619): from then on its listener requires the token, and the page it serves says
+  it is paired. A page loaded before that reads a 401 like any other. A host puts its own sign-in in front instead. That sign-in must refuse a request
   another site started, whatever its method: `/api/ignore` and a stamped `/__reveal` act on a
   GET, and a request another site makes (an image, say) carries no `Origin` for the routes' own
   origin check to see. The monitor's `SameSite=Strict` cookie is what refuses it there.

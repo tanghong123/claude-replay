@@ -148,10 +148,11 @@ pub fn body_limit(route: &str) -> usize {
     }
 }
 
-/// What the app shell's page names: the build, and whether the monitor is paired.
+/// What the app shell's page names: the build, and whether the monitor is paired, read as each
+/// page is drawn, since a monitor started unpaired may be paired while it runs (#s619).
 pub struct Frontend {
     pub version: &'static str,
-    pub paired: bool,
+    pub paired: claude_replay_html::PairLatch,
 }
 
 /// The listener's handler over one backend and one frontend. It also installs the pinned mdrev,
@@ -267,14 +268,14 @@ pub fn dispatch(backend: &Backend, front: &Frontend, req: &Request) -> HttpRespo
         // classic view both get it since that view was retired (#s98).
         "" | "index.html" => HttpResponse::html(ui::app_page(
             front.version,
-            front.paired,
-            write_gate(front.paired, ceiling.writes, req.authenticated),
+            front.paired.is_paired(),
+            write_gate(front.paired.is_paired(), ceiling.writes, req.authenticated),
         )),
         // A tab of its own (#s433, Hong's yes on #s528): a session's transcript, a Markdown document
         // (#271) or an image (#s11), read from the page's own address. `/markdown` and `/image` are
         // the same page, so a tab opened before it still lands.
         "detached" | "markdown" | "image" => {
-            HttpResponse::html(ui::detached_page(front.version, front.paired))
+            HttpResponse::html(ui::detached_page(front.version, front.paired.is_paired()))
         }
         // The session list — the shared index's, so a row's liveness, its counters, its
         // family and its `injectable`/`consented` facts are ONE derivation. The register
@@ -437,7 +438,7 @@ mod tests {
         let _env = crate::index::StateEnv::set(&state);
         let front = Frontend {
             version: "0.0.0-test",
-            paired: false,
+            paired: Default::default(),
         };
         let serve = handler(make_backend("mdrev"), front);
         assert_eq!(claude_replay_html::mdrev_version(), Some(mdrev::VERSION));
@@ -470,7 +471,7 @@ mod tests {
     fn the_detached_tab_is_a_static_page() {
         let front = Frontend {
             version: "0.0.0-test",
-            paired: false,
+            paired: Default::default(),
         };
         let serve = handler(make_backend("detached"), front);
         let hostile =
@@ -536,7 +537,7 @@ mod tests {
         std::fs::write(state.join("ui.json"), r#"{"ui":"classic"}"#).unwrap();
         let front = Frontend {
             version: "0.0.0-test",
-            paired: false,
+            paired: Default::default(),
         };
         let backend = make_backend("table");
         for query in ["", "ui=app", "ui=classic", "ui=classic&session=s1"] {
@@ -760,7 +761,7 @@ mod tests {
         let backend = make_backend_serving("serves", host);
         let front = Frontend {
             version: "0.0.0-test",
-            paired: false,
+            paired: Default::default(),
         };
         let send = Request {
             method: "POST",
@@ -854,7 +855,7 @@ mod tests {
         }
         let front = Frontend {
             version: "0.0.0-test",
-            paired: false,
+            paired: Default::default(),
         };
         let serve = handler(make_backend("contract"), front);
         let ask = |method: &'static str, name: &str| {

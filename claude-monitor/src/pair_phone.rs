@@ -280,7 +280,7 @@ pub fn listed_hosts(value: &str) -> Vec<String> {
 /// Only a check in the first 2 s after this call (`FIRST_WAIT`) waits for the first read, and no
 /// longer; a read that failed or timed out keeps the names read before it (#s170).
 pub fn trusted_hosts(port: u16) -> claude_replay_html::HostCheck {
-    tailnet_checks(port, false).0
+    tailnet_checks(port, None).0
 }
 
 /// [`trusted_hosts`], and from the same background read, whether a relay reaches `port` now
@@ -288,10 +288,11 @@ pub fn trusted_hosts(port: u16) -> claude_replay_html::HostCheck {
 /// The gate asks it before admitting a loopback peer it cannot verify on an unpaired monitor. Until
 /// the first read has finished (bounded by the same first wait) it answers that one does: a
 /// monitor just started refuses an unverified peer for those moments rather than admit one a
-/// relay may have brought.
+/// relay may have brought. With `pairing`, the latch of a monitor started unpaired, the relay
+/// answer is kept fresh on a clock of its own until the running monitor is paired (#s619).
 pub fn tailnet_checks(
     port: u16,
-    unpaired: bool,
+    pairing: Option<&claude_replay_html::PairLatch>,
 ) -> (
     claude_replay_html::HostCheck,
     claude_replay_html::RelayCheck,
@@ -304,7 +305,9 @@ pub fn tailnet_checks(
         std::sync::Arc::new(move || tailnet_read(port)),
         REFRESH_AFTER,
         FIRST_WAIT,
-        unpaired.then_some(RETRY_UNKNOWN),
+        pairing
+            .filter(|latch| !latch.is_paired())
+            .map(|latch| (RETRY_UNKNOWN, latch.clone())),
     )
 }
 
@@ -382,7 +385,7 @@ fn trusted_hosts_from(
     lookup: Lookup,
     refresh_after: std::time::Duration,
     first_wait: std::time::Duration,
-    fresh: Option<std::time::Duration>,
+    fresh: Option<(std::time::Duration, claude_replay_html::PairLatch)>,
 ) -> (
     claude_replay_html::HostCheck,
     claude_replay_html::RelayCheck,
@@ -398,10 +401,14 @@ fn trusted_hosts_from(
     }
     // #s422: an unpaired monitor's relay answer is kept fresh on a clock of its own, so a relay
     // set up while nobody asked is seen within one interval and no reply ever waits on `tailscale`
-    // (#s151). Until a read has said whether a relay is there, it tries again every `retry`.
-    if let Some(retry) = fresh {
+    // (#s151). Until a read has said whether a relay is there, it tries again every `retry`. The
+    // clock stops once the monitor is paired (#s619): a paired gate asks no relay check.
+    if let Some((retry, pairing)) = fresh {
         let (tailnet, lookup) = (tailnet.clone(), lookup.clone());
         std::thread::spawn(move || loop {
+            if pairing.is_paired() {
+                break;
+            }
             let wait = {
                 let state = tailnet.state.lock().unwrap_or_else(|e| e.into_inner());
                 if state.relayed.is_none() {
@@ -411,6 +418,9 @@ fn trusted_hosts_from(
                 }
             };
             std::thread::sleep(wait.max(std::time::Duration::from_millis(10)));
+            if pairing.is_paired() {
+                break;
+            }
             let mut state = tailnet.state.lock().unwrap_or_else(|e| e.into_inner());
             tailnet.refresh(&mut state, &lookup);
         });
@@ -1089,7 +1099,10 @@ mod tests {
             lookup,
             Duration::from_millis(50),
             Duration::from_millis(100),
-            Some(Duration::from_millis(20)),
+            Some((
+                Duration::from_millis(20),
+                claude_replay_html::PairLatch::default(),
+            )),
         );
         send.send(names(&[])).unwrap();
         eventually("the first read is in", || reads.load(Ordering::SeqCst) >= 2);
@@ -1098,6 +1111,39 @@ mod tests {
             reads.load(Ordering::SeqCst) >= 3
         });
         assert!(relayed(), "the relay set up meanwhile is seen");
+    }
+
+    /// #s619: the clock an unpaired monitor reads the tailnet on stops once the running monitor is
+    /// paired: a paired gate asks no relay check.
+    #[test]
+    fn the_unpaired_clock_stops_once_the_monitor_is_paired() {
+        let (lookup, send, reads) = driven_lookup();
+        let pairing = claude_replay_html::PairLatch::default();
+        let _checks = trusted_hosts_from(
+            Vec::new(),
+            lookup,
+            Duration::from_millis(30),
+            Duration::from_millis(100),
+            Some((Duration::from_millis(10), pairing.clone())),
+        );
+        for _ in 0..3 {
+            send.send(names(&[])).unwrap();
+        }
+        eventually("the clock reads on its own", || {
+            reads.load(Ordering::SeqCst) >= 2
+        });
+        assert!(pairing.set("t0k"));
+        for _ in 0..3 {
+            let _ = send.send(names(&[]));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+        let settled = reads.load(Ordering::SeqCst);
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(
+            reads.load(Ordering::SeqCst),
+            settled,
+            "no read after the monitor was paired"
+        );
     }
 
     /// #s422: what one read of the tailnet makes of each answer `tailscale` gives: a failure

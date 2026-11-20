@@ -37,13 +37,14 @@ pub fn body_limit(route: &str) -> usize {
 }
 
 /// Compose inert native support with the unchanged reader routes.
-/// No runtime is activated by construction, assets, status or session reading. `paired` is whether
-/// the monitor requires pairing, which its page says (#s577).
+/// No runtime is activated by construction, assets, status or session reading. `paired` says
+/// whether the monitor requires pairing, which its page says (#s577), read as each page is drawn
+/// (#s619: a monitor started unpaired may be paired while it runs).
 pub fn handler(
     legacy: RouteHandler,
     runtime: Arc<NativeRuntime>,
     index: Arc<Index>,
-    paired: bool,
+    paired: claude_replay_html::PairLatch,
 ) -> StreamingRouteHandler {
     struct Ownership(std::sync::Weak<NativeRuntime>);
     impl crate::index::NativeSessions for Ownership {
@@ -61,7 +62,9 @@ pub fn handler(
     }
     index.require_shared_codex_runtime(Arc::new(Ownership(Arc::downgrade(&runtime))));
     Arc::new(move |request| {
-        if let Some(reply) = workspace_page(request, paired).or_else(|| asset(request.name)) {
+        if let Some(reply) =
+            workspace_page(request, paired.is_paired()).or_else(|| asset(request.name))
+        {
             return reply.into();
         }
         if matches!(
@@ -717,7 +720,12 @@ mod tests {
         let legacy: RouteHandler = Arc::new(move |request: &Request| {
             claude_replay_html::service_routes(None, &fallback, request)
         });
-        let serve = handler(legacy, runtime, index, true);
+        let serve = handler(
+            legacy,
+            runtime,
+            index,
+            claude_replay_html::PairLatch::with_token("t"),
+        );
         let ask = |name: &str| -> Option<HttpResponse> {
             match serve(&Request {
                 method: "GET",

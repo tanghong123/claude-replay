@@ -105,8 +105,9 @@ USAGE:
                     a short code: single-use, for five minutes. The token
                     itself is never shown. --url ADDRESS names the address;
                     --yes skips the question.
-  --pair-code       Print the code that pairs a browser on THIS machine to a
-                    paired monitor: the one its page asked for, or a new one.
+  --pair-code       Print the code that pairs a browser on THIS machine to the
+                    monitor (one not yet paired is paired by it): the one its
+                    page asked for, or a new one.
                     The page's \"Pair this browser\" shows it in a dialog on a
                     Mac; this is the way where no dialog can show (Linux, an
                     ssh tunnel). Prints only to a terminal; single-use, for
@@ -245,7 +246,6 @@ fn main() -> Result<()> {
     if pair_code {
         return claude_monitor::pair_dialog::print_code(
             &index::state_dir(),
-            read_token(&root).is_some(),
             std::io::stdout().is_terminal(),
         );
     }
@@ -300,6 +300,17 @@ fn main() -> Result<()> {
         println!("{}", shown(out_tty));
         return Ok(());
     }
+    // This process serves: a token file it could not read leaves it unpaired, which it says
+    // rather than run so quietly (#s619 re-review).
+    if token.is_none() {
+        if let Some((path, why)) = claude_monitor::control::token_file_problem(&root) {
+            eprintln!(
+                "agent-monitor: {} holds no token this can read ({why}), so the monitor runs \
+                 unpaired; fix or remove it, then run `agent-monitor --pair`",
+                path.display()
+            );
+        }
+    }
     // Scratch lives under the monitor's OWN root (#161), not `$TMPDIR` — everything this tool
     // writes is then in one place a person can find, inspect and delete. It was in
     // `$TMPDIR/claude-monitor`, which on macOS resolves to an opaque `/var/folders/…` path
@@ -343,7 +354,36 @@ fn main() -> Result<()> {
     claude_replay_core::source::keep_tails_in(Some(root.join("decoded-tails")));
     let idx = Arc::new(index::Index::new(root.clone(), state, only));
 
-    let paired = token.is_some();
+    // #196 §4.2: paired ⇒ the token gate (same-user OR the token); unpaired ⇒ D3b same-user. The
+    // gate is made first: its latch is what the page, the relay clock and the gate itself read, so a
+    // monitor started unpaired switches all of them at once when it is paired while it runs
+    // (#s619): by a code confirmed in its page, or by `agent-monitor --pair` writing the token.
+    let gate = match &token {
+        Some(t) => claude_replay_html::AuthGate::with_token(t.as_str()),
+        None => claude_replay_html::AuthGate::same_user().with_turning_on(Arc::new(
+            claude_monitor::control::MonitorTokenFile::of_monitor(&root),
+        )),
+    }
+    .with_pair_codes(index::state_dir().join(claude_monitor::pair_phone::PAIR_CODES_FILE));
+    // #s618: a browser on this machine pairs from the page by a code shown here. A code left from a
+    // run before is cleared, since nothing shows it any more; where it cannot be, there is no page
+    // pairing this run.
+    let gate = match claude_monitor::pair_dialog::page_codes_at_start(&index::state_dir()) {
+        Some(page_codes) => gate.with_page_pairing(
+            page_codes,
+            std::sync::Arc::new(claude_monitor::pair_dialog::PairDialog::from_env()),
+            claude_monitor::pair_dialog::PAIR_CODE_COMMAND,
+        ),
+        None => {
+            eprintln!(
+                "agent-monitor: no pairing from the page this run: the codes in {} could not be \
+                 cleared",
+                index::state_dir().display()
+            );
+            gate
+        }
+    };
+    let pairing = gate.latch();
     // The route table is the library's (claude_monitor::routes, #47).
     let backend = Arc::new(claude_monitor::routes::Backend {
         service: service.clone(),
@@ -360,7 +400,7 @@ fn main() -> Result<()> {
         backend,
         claude_monitor::routes::Frontend {
             version: env!("CARGO_PKG_VERSION"),
-            paired,
+            paired: pairing.clone(),
         },
     );
 
@@ -375,45 +415,20 @@ fn main() -> Result<()> {
         handler,
         native_runtime.clone(),
         idx,
-        token.is_some(),
+        pairing.clone(),
     );
-    // #196 §4.2: paired ⇒ the token gate (same-user OR the token); unpaired ⇒ D3b same-user.
+    // #s422: the relay clock of a monitor started unpaired runs until it is paired (#s619).
     let (tailnet_hosts, tailnet_relay) =
-        claude_monitor::pair_phone::tailnet_checks(port, token.is_none());
-    let gate = match &token {
-        Some(t) => {
-            let gate = claude_replay_html::AuthGate::with_token(t.as_str()).with_pair_codes(
-                index::state_dir().join(claude_monitor::pair_phone::PAIR_CODES_FILE),
-            );
-            // #s618: a browser on this machine pairs from the page by a code shown here. A code
-            // left from a run before is cleared, since nothing shows it any more; where it cannot
-            // be, there is no page pairing this run.
-            match claude_monitor::pair_dialog::page_codes_at_start(&index::state_dir()) {
-                Some(page_codes) => gate.with_page_pairing(
-                    page_codes,
-                    std::sync::Arc::new(claude_monitor::pair_dialog::PairDialog::from_env()),
-                    claude_monitor::pair_dialog::PAIR_CODE_COMMAND,
-                ),
-                None => {
-                    eprintln!(
-                        "agent-monitor: no pairing from the page this run: the codes in {} could \
-                         not be cleared",
-                        index::state_dir().display()
-                    );
-                    gate
-                }
-            }
-        }
-        None => claude_replay_html::AuthGate::same_user(),
-    }
-    // #320: the icons and the manifest, which a phone reads to put the page on its Home Screen.
-    .with_public(public_assets)
-    // #331: the tailnet name `tailscale serve` relays to this port is the monitor's own too; and
-    // while a relay reaches the port, an unpaired monitor admits no peer it cannot verify (#s422).
-    .with_trusted_hosts(tailnet_hosts)
-    .with_relay_check(tailnet_relay)
-    // #s237: a send may carry images.
-    .with_body_limit("api/send", claude_monitor::routes::body_limit("api/send"))?;
+        claude_monitor::pair_phone::tailnet_checks(port, token.is_none().then_some(&pairing));
+    let gate = gate
+        // #320: the icons and the manifest, which a phone reads to put the page on its Home Screen.
+        .with_public(public_assets)
+        // #331: the tailnet name `tailscale serve` relays to this port is the monitor's own too; and
+        // while a relay reaches the port, an unpaired monitor admits no peer it cannot verify (#s422).
+        .with_trusted_hosts(tailnet_hosts)
+        .with_relay_check(tailnet_relay)
+        // #s237: a send may carry images.
+        .with_body_limit("api/send", claude_monitor::routes::body_limit("api/send"))?;
     #[cfg(feature = "codex-native")]
     let bound = claude_replay_html::spawn_streaming_listener_gated(
         port,

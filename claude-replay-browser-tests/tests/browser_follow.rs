@@ -29484,6 +29484,147 @@ fn the_write_switch_says_why_it_is_off_for_this_reader() {
     }
 }
 
+/// #s619: on a monitor not yet paired, a reader at this machine pairs it from Write mode's help. The
+/// help says that pairing this browser pairs the monitor too and offers a button to `/pair`, which
+/// says so again before it asks. The code (read where the monitor keeps it, as `--pair-code` would
+/// print it; the harness raises no dialog) pairs this browser and the monitor at once, with no
+/// restart: the page this browser opens next writes, another browser without the token is refused,
+/// and the monitor's stderr says it is now paired, naming neither the code nor the token.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn an_unpaired_monitor_is_paired_from_write_mode_s_help() {
+    let _serial = serial();
+    let base = harness::base("pair-the-monitor");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        WRITE_SID,
+        &harness::long_session(3, harness::Shape::default()),
+    );
+    // Unpaired; once paired, the token alone admits, on Linux as on macOS (#366).
+    let m = harness::Monitor::spawn_with(
+        harness::Kind::V1,
+        3167,
+        &base,
+        Some(&stores),
+        false,
+        &[("AGENT_MONITOR_TOKEN_ONLY", "1")],
+    );
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1280.0, 900.0);
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={WRITE_SID}"));
+    harness::until(
+        &tab,
+        "document.body.dataset.write === 'monitor' && !!document.querySelector('.transcript .turn.user')",
+        "an unpaired monitor's page to open on the session",
+        Duration::from_secs(20),
+        WRITE_FACTS,
+    );
+    assert!(m.token().is_none(), "the unpaired monitor holds no token");
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "!!document.querySelector('#writeHelp .write-pair button')",
+        "the help to offer pairing this browser",
+        Duration::from_secs(10),
+        WRITE_FACTS,
+    );
+    let help = write_facts(&tab);
+    assert!(
+        help["help"]
+            .as_str()
+            .is_some_and(|h| h.contains("Pairing this browser pairs the monitor too")
+                && h.contains("requires pairing for every browser and tool")
+                && h.contains("agent-monitor --pair")),
+        "the help says what pairing here does before its button: {help}"
+    );
+    tab.find_element("#writeHelp .write-pair button")
+        .unwrap()
+        .click()
+        .unwrap();
+    harness::until(
+        &tab,
+        "location.pathname === '/pair' && !!document.getElementById('ask') && /pairs the monitor too/.test(document.body.innerText) && /requires pairing for every browser and tool/.test(document.body.innerText)",
+        "the pairing page to say it pairs the monitor too",
+        Duration::from_secs(10),
+        "location.href + ' | ' + document.body.innerText.slice(0, 400)",
+    );
+    tab.find_element("#ask").unwrap().click().unwrap();
+    harness::until(
+        &tab,
+        "/agent-monitor --pair-code/.test(document.getElementById('msg').textContent)",
+        "the page to say where the code is",
+        Duration::from_secs(10),
+        "document.getElementById('msg').textContent",
+    );
+    let codes = std::fs::read_to_string(m.state.join("page-codes"))
+        .expect("the ask left a page code waiting");
+    let code = codes
+        .lines()
+        .find_map(|l| l.strip_prefix("code "))
+        .and_then(|l| l.split(' ').next())
+        .expect("a code line")
+        .to_string();
+    assert_eq!(code.len(), 8, "a page code");
+    assert!(m.token().is_none(), "asking for a code pairs nothing");
+    let shown = format!("{}-{}", &code[..4], &code[4..]);
+    tab.find_element("#code")
+        .unwrap()
+        .type_into(&shown.to_lowercase())
+        .unwrap();
+    tab.find_element("#go").unwrap().click().unwrap();
+    harness::until(
+        &tab,
+        "location.pathname === '/'",
+        "the code to pair this browser and the monitor",
+        Duration::from_secs(20),
+        "location.href + ' | ' + document.body.innerText.slice(0, 200)",
+    );
+    let token = m.token().expect("the code made the monitor's token");
+    m.open(&tab, &format!("?ui=app&session={WRITE_SID}"));
+    harness::until(
+        &tab,
+        "document.body.dataset.write === 'open' && document.getElementById('writeReason').hidden && !!document.querySelector('.transcript .turn.user')",
+        "the page this browser opens next to say writing is open",
+        Duration::from_secs(20),
+        WRITE_FACTS,
+    );
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('writeSwitch').getAttribute('aria-checked') === 'true' && document.getElementById('composeFab').classList.contains('show') && !document.getElementById('composeFab').classList.contains('disabled')",
+        "write mode to turn on and the finished session to offer its compose button",
+        Duration::from_secs(10),
+        WRITE_FACTS,
+    );
+
+    // Another browser, which holds no token, is refused now: the monitor requires pairing.
+    let (_other_browser, other) = harness::chrome_tab();
+    other.navigate_to(&m.url("")).unwrap();
+    other.wait_until_navigated().unwrap();
+    let refused = harness::eval(
+        &other,
+        "fetch('/api/sessions', { cache: 'no-store' }).then(function (r) { return r.status; })",
+    );
+    assert_eq!(
+        refused.as_u64(),
+        Some(401),
+        "the newly paired monitor refuses a browser without the token"
+    );
+    let stderr = std::fs::read_to_string(base.join("monitor-3167.stderr")).unwrap_or_default();
+    assert!(
+        stderr.contains(
+            "agent-monitor is now paired: a browser on this machine paired from the page"
+        ),
+        "the monitor says it is now paired: {}",
+        stderr.replace(&token, "<token>").replace(&code, "<code>")
+    );
+    assert!(
+        !stderr.contains(&token) && !stderr.contains(&code),
+        "the monitor's stderr names neither the token nor the code"
+    );
+}
+
 /// #s577 review: a paired browser that opens the page from a link in another app can write. The
 /// pairing cookie is `SameSite=Strict`, so that navigation carries none (a `data:` page here, which is
 /// cross-site); a paired monitor on Linux lets the same-user load read and draws the page as

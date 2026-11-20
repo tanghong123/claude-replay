@@ -323,7 +323,7 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
         backend,
         Frontend {
             version: "0.0.0-host",
-            paired: false,
+            paired: Default::default(),
         },
         OtherTools::NONE,
     );

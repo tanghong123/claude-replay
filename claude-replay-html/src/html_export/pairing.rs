@@ -499,7 +499,7 @@ button.ask{background:var(--soft);color:var(--softink);margin:0 0 16px}
 button:disabled{opacity:.6}#msg{min-height:1.5em;margin:12px 0 0;font-size:14px}#msg.bad{color:var(--bad)}
 </style></head><body><main>
 <h1>Pair this browser</h1>
-<p>Pairing lets this browser read the monitor and write to your sessions. The monitor shows a code on this __HOST__ itself; type it here.</p>
+<p>__LEAD__</p>
 <button id="ask" class="ask" type="button">Show a code on this __HOST__</button>
 <form id="f"><input id="code" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" maxlength="12" placeholder="XXXX-XXXX" aria-label="Pairing code"><button id="go" type="submit">Pair</button></form>
 <p id="msg" role="status"></p>
@@ -540,6 +540,17 @@ button:disabled{opacity:.6}#msg{min-height:1.5em;margin:12px 0 0;font-size:14px}
 </script></body></html>
 "#;
 
+/// What `/pair` says on a paired monitor, before its button (#s618).
+const LEAD_PAIRED: &str = "Pairing lets this browser read the monitor and write to your sessions. \
+     The monitor shows a code on this __HOST__ itself; type it here.";
+
+/// What `/pair` says on a monitor not yet paired, before it asks (#s619,
+/// `design/pair-from-the-page.md` §4.6): pairing this browser pairs the monitor.
+const LEAD_TURNING_ON: &str = "The monitor is not paired yet. Pairing this browser pairs the \
+     monitor too: from then on it requires pairing for every browser and tool that reaches it, as \
+     <code>agent-monitor --pair</code> does. The monitor shows a code on this __HOST__ itself; type \
+     it here.";
+
 /// What a machine is called in the page and the dialog: a Mac on macOS.
 pub const HOST_WORD: &str = if cfg!(target_os = "macos") {
     "Mac"
@@ -550,12 +561,23 @@ pub const HOST_WORD: &str = if cfg!(target_os = "macos") {
 /// The pairing page for a browser on this machine (#s618), naming `code_command`, the host's
 /// command that prints a page code in a terminal.
 pub fn pair_page_here(code_command: &str) -> String {
+    page_here(LEAD_PAIRED, code_command)
+}
+
+/// The pairing page for a browser on this machine when the monitor is not paired yet (#s619): it
+/// says, before its button, that pairing this browser pairs the monitor.
+pub fn pair_page_turning_on(code_command: &str) -> String {
+    page_here(LEAD_TURNING_ON, code_command)
+}
+
+fn page_here(lead: &str, code_command: &str) -> String {
     let command = if plain_command(code_command) {
         code_command
     } else {
         DEFAULT_CODE_COMMAND
     };
     PAIR_HERE_PAGE
+        .replace("__LEAD__", lead)
         .replace("__HOST__", HOST_WORD)
         .replace("__CODE__", command)
 }

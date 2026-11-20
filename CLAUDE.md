@@ -396,7 +396,7 @@ refresh in the background, so asking again after the reply could name the other,
 runs on its connection's thread and `Request` (built by other crates too) gains no field; the line
 is said once the reply is written. A refused read that is not a page load stays quiet.
 **A browser on this machine pairs from the page** (#s618, `design/pair-from-the-page.md`, Hong's
-choice A on #s605, stage 1 of 2: a PAIRED monitor). `/pair` loaded as the machine's own (a loopback
+choice A on #s605, stage 1 of 2: a PAIRED monitor; stage 2 below). `/pair` loaded as the machine's own (a loopback
 peer, its own `Host` present, its own `Origin` or none, no relay's headers, the header section
 whole with no line past the cap: `local_asker` in `serve.rs`) offers "Show a code" and refuses to be
 framed; `POST /api/pair/ask` mints a page code and the
@@ -413,6 +413,33 @@ all. A display started for a code used meanwhile is taken down. A code a link ca
 posted `?from=link`) is a phone code, never judged against a page code. The gate is unchanged without
 `with_page_pairing`. No test raises a real dialog: the harness sets `AGENT_MONITOR_PAIR_DIALOG=0`
 and the cases read the code from the monitor's state dir; the dialog's own tests run a stand-in.
+**On a monitor not yet paired, the code pairs the monitor too** (#s619, stage 2, the design's 4.6).
+An unpaired gate made `with_turning_on(<the host's token file>)` answers `/pair`, `/api/pair/ask`
+and `/api/pair` to this machine's own request only, and for page codes only: no phone code is good
+before the token exists, and a code a link carried is never judged against a page code. `/pair`
+says, before its button, that pairing this browser makes the monitor require pairing for every
+browser and tool. A confirmed code's use is saved first; then the token file is read or created
+(`control::read_or_create_token_at`: 0600, one lock beside it, written whole by a rename, never
+rotated, the one path `--pair` takes too, so two pairings at once end with one token); then the
+gate's `PairLatch` takes THAT token; and only then is the cookie set. A token that cannot be saved
+leaves the monitor unpaired and sets no cookie, and a file at the token path that holds no token it
+can read (not a regular file, over 4 KiB, unreadable, not one word a cookie can carry) is an error,
+never replaced. Each request reads the latch ONCE and is ruled by that answer throughout, so a
+pairing on another thread cannot let it pass the unpaired leg and then skip the relay check; the
+file's write and the latch's set are one turn, which a take-up of the file waits for. The latch is set once and every holder reads it per
+request, so the switch needs no restart: the gate requires the token (with
+`AGENT_MONITOR_TOKEN_ONLY`, read for every gate now, the token alone), the page says paired
+(`routes::Frontend.paired` and native mode's page read the latch), `/pair` answers as a paired
+monitor's, the unpaired relay clock (#s422) stops, and one stderr line says the monitor is now
+paired (`control::now_paired_line`, never the token). An unpaired gate also takes up a token its
+file holds now at the start of each request, so `agent-monitor --pair` against a running unpaired
+monitor takes effect on the request that opens the page with it (#s604's restart note is gone).
+`--pair-code` prints a code for an unpaired monitor too. A request already admitted before the
+switch, a stream included, runs on. Write mode's help offers "Pair this browser" (a button to
+`/pair`) to a reader at the monitor's own machine (`handle.local`), on a monitor not yet paired and
+for a browser without the token alike. The cases are `an_unpaired_monitor_*` in `serve.rs` and in
+`claude-monitor/tests/startup_output.rs` (the real binary, both ways in), and
+`pairings_at_once_end_with_one_token`.
 **The page saves to a Home Screen as itself** (#320): the tab icon's green mark, square and opaque
 (`claude-monitor/src/icons/`, rendered from `app-icon.svg` by `scripts/render-app-icon.sh`), named by
 the app shell's head with a manifest and the label "Agent Monitor"; iOS also asks the root

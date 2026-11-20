@@ -45,9 +45,10 @@ pub fn withheld_token_note() -> String {
 }
 
 /// Whether the monitor already serving at `base` (`http://127.0.0.1:<port>/`) takes `token`
-/// (#s604). A monitor reads its pairing once, as it starts, so `--pair` handed off to one that
-/// started unpaired writes a token the running monitor does not know until it restarts, and a
-/// browser opened with it is not paired. A gate that knows the token answers a tokened `/` with the
+/// (#s604). Since #s619 an unpaired monitor takes up a token its file holds at its next request,
+/// so this one answers yes; a monitor from an earlier release read its pairing once, as it started,
+/// so `--pair` handed off to one that started unpaired writes a token it does not know until it
+/// restarts, and a browser opened with it is not paired. A gate that knows the token answers a tokened `/` with the
 /// 302 that sets its cookie; one that does not answers 200 (it admits the peer anyway) or 401.
 /// `None` when it answers neither way, or not in time.
 pub fn running_takes_token(base: &str, token: &str) -> Option<bool> {
@@ -79,7 +80,8 @@ pub fn running_takes_token(base: &str, token: &str) -> Option<bool> {
     }
 }
 
-/// What the hand-off says when the running monitor does not take the token (#s604).
+/// What the hand-off says when the running monitor does not take the token (#s604): since #s619
+/// only a monitor from an earlier release, which read its pairing once as it started.
 pub fn stale_pairing_note() -> &'static str {
     "  note: the monitor already running was started without this token, so it does not take it, \
      and its page stays unpaired. Restart the monitor (Ctrl-C where it runs, or restart its \
@@ -106,32 +108,266 @@ pub fn legacy_token_path(cache_root: &std::path::Path) -> std::path::PathBuf {
 /// falling back to the old cache path (#197 migration), so a monitor paired before the move
 /// stays paired with no re-pairing.
 pub fn read_token(cache_root: &std::path::Path) -> Option<String> {
-    let read = |p: std::path::PathBuf| {
-        std::fs::read_to_string(p)
-            .ok()
-            .map(|t| t.trim().to_string())
-            .filter(|t| !t.is_empty())
+    read_token_at(&token_path(), &legacy_token_path(cache_root))
+}
+
+/// [`read_token`] from the files named: `path`, else `legacy`.
+fn read_token_at(path: &std::path::Path, legacy: &std::path::Path) -> Option<String> {
+    read_one_token(path).or_else(|| read_one_token(legacy))
+}
+
+/// The token file that holds no token this can read, and why, when [`read_token`] found none for
+/// that reason: the state path, else the legacy one under `cache_root`. The monitor then runs
+/// unpaired, and says so as it starts rather than quietly (#s619 re-review).
+pub fn token_file_problem(cache_root: &std::path::Path) -> Option<(std::path::PathBuf, String)> {
+    let state = token_path();
+    match token_in(&state) {
+        TokenIn::Unreadable(why) => return Some((state, why)),
+        TokenIn::Token(_) => return None,
+        TokenIn::None => {}
+    }
+    let legacy = legacy_token_path(cache_root);
+    match token_in(&legacy) {
+        TokenIn::Unreadable(why) => Some((legacy, why)),
+        TokenIn::Token(_) | TokenIn::None => None,
+    }
+}
+
+/// The token one file holds, trimmed; None for a file absent, unreadable or empty.
+fn read_one_token(path: &std::path::Path) -> Option<String> {
+    match token_in(path) {
+        TokenIn::Token(t) => Some(t),
+        TokenIn::None | TokenIn::Unreadable(_) => None,
+    }
+}
+
+/// What one token file holds (#s619 review).
+enum TokenIn {
+    Token(String),
+    /// No file there, or an empty one: a token may be written.
+    None,
+    /// Something is there that is not a token this can read, and it is left as it is: never
+    /// replaced, which would rotate a token the reader cannot see.
+    Unreadable(String),
+}
+
+/// The most a token file holds: a minted token is 64 characters.
+const TOKEN_FILE_MAX: u64 = 4096;
+
+/// Read the token file at `path`. Only a regular file (a FIFO would hold up every request a gate
+/// reads it on), of at most [`TOKEN_FILE_MAX`] bytes, holding one word a cookie can carry.
+fn token_in(path: &std::path::Path) -> TokenIn {
+    use std::io::Read;
+    if let Err(e) = std::fs::symlink_metadata(path) {
+        return if e.kind() == std::io::ErrorKind::NotFound {
+            TokenIn::None
+        } else {
+            TokenIn::Unreadable(e.to_string())
+        };
+    }
+    // Only what the path names as a regular file is opened (a device may act on an open), and
+    // then without blocking, never as a controlling terminal, and judged again by the handle
+    // itself: a FIFO put there between the look and the open would otherwise hold up the open
+    // (#s619 re-review).
+    match std::fs::metadata(path) {
+        Ok(m) if m.is_file() => {}
+        Ok(_) => return TokenIn::Unreadable("not a regular file".into()),
+        Err(e) => return TokenIn::Unreadable(e.to_string()),
+    }
+    let mut open = std::fs::OpenOptions::new();
+    open.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        open.custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY);
+    }
+    let file = match open.open(path) {
+        Ok(f) => f,
+        Err(e) => return TokenIn::Unreadable(e.to_string()),
     };
-    read(token_path()).or_else(|| read(legacy_token_path(cache_root)))
+    let meta = match file.metadata() {
+        Ok(m) => m,
+        Err(e) => return TokenIn::Unreadable(e.to_string()),
+    };
+    if !meta.is_file() {
+        return TokenIn::Unreadable("not a regular file".into());
+    }
+    if meta.len() > TOKEN_FILE_MAX {
+        return TokenIn::Unreadable(format!("over {TOKEN_FILE_MAX} bytes"));
+    }
+    let mut text = String::new();
+    if let Err(e) = file.take(TOKEN_FILE_MAX + 1).read_to_string(&mut text) {
+        return TokenIn::Unreadable(e.to_string());
+    }
+    let t = text.trim();
+    if t.is_empty() {
+        return TokenIn::None;
+    }
+    if !t
+        .bytes()
+        .all(|b| b.is_ascii_graphic() && b != b';' && b != b',')
+    {
+        return TokenIn::Unreadable("not one word a cookie can carry".into());
+    }
+    TokenIn::Token(t.to_string())
 }
 
 /// Mint-and-persist a token at 0600 if absent (honoring a migrated one); return it either
 /// way. Written to the STATE path, with the mode set AT OPEN (never write-then-chmod — a
 /// world-readable window is exactly the hole this closes).
 pub fn ensure_token(cache_root: &std::path::Path) -> Result<String> {
-    if let Some(t) = read_token(cache_root) {
-        // A token migrated from the cache is re-written to the state path here (`--pair`),
-        // so the state copy becomes authoritative; the cache copy is left for downgrades.
-        let tok = t.clone();
-        let path = token_path();
-        if !path.exists() {
-            let _ = write_token_0600(&path, &tok);
+    read_or_create_token_at(&token_path(), &legacy_token_path(cache_root))
+}
+
+/// The token at `path`, created (0600) only where there is none, under one lock (#s619,
+/// `design/pair-from-the-page.md` §4.6): `--pair` and a code confirmed in the page of a running
+/// unpaired monitor both come here, so two pairings at once end with one token. A token already
+/// there is read with no lock, so a paired monitor's `--pair` needs nothing it may not write. A
+/// file there that holds no token this can read is an error, never replaced. A token found only at
+/// `legacy` (the pre-#197 cache path) is copied to `path` where it can be, and kept either way,
+/// never rotated. A new token goes into a file of its own and is renamed into place, so a reader
+/// never sees half of one.
+pub fn read_or_create_token_at(path: &std::path::Path, legacy: &std::path::Path) -> Result<String> {
+    let held = |path: &std::path::Path| -> Result<Option<String>> {
+        match token_in(path) {
+            TokenIn::Token(t) => Ok(Some(t)),
+            TokenIn::None => Ok(None),
+            TokenIn::Unreadable(why) => anyhow::bail!(
+                "{} holds no token this can read ({why}); it is left as it is",
+                path.display()
+            ),
         }
-        return Ok(tok);
+    };
+    if let Some(t) = held(path)? {
+        return Ok(t);
     }
-    let tok = claude_replay_html::mint_token().context("read /dev/urandom to mint a token")?;
-    write_token_0600(&token_path(), &tok)?;
-    Ok(tok)
+    let old = read_one_token(legacy);
+    let locked = lock_beside(path);
+    let lock = match (locked, &old) {
+        (Ok(lock), _) => lock,
+        // The state dir cannot be written: a legacy token is still the monitor's, as before.
+        (Err(_), Some(t)) => return Ok(t.clone()),
+        (Err(e), None) => return Err(e),
+    };
+    let out = (|| {
+        if let Some(t) = held(path)? {
+            return Ok(t);
+        }
+        // Found only at the legacy path, the state copy becomes authoritative where it can be
+        // written; the legacy token is the monitor's either way.
+        if let Some(t) = old {
+            let _ = write_token_whole(path, &t);
+            return Ok(t);
+        }
+        let tok = claude_replay_html::mint_token().context("read /dev/urandom to mint a token")?;
+        write_token_whole(path, &tok)?;
+        Ok(tok)
+    })();
+    let _ = lock.unlock();
+    out
+}
+
+/// The lock beside the token file at `path`, taken: `<path>.lock`, 0600.
+fn lock_beside(path: &std::path::Path) -> Result<std::fs::File> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let mut lock_path = path.as_os_str().to_owned();
+    lock_path.push(".lock");
+    let mut open = std::fs::OpenOptions::new();
+    open.create(true).truncate(false).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        open.mode(0o600);
+    }
+    let lock = open
+        .open(&lock_path)
+        .with_context(|| format!("open {}", std::path::Path::new(&lock_path).display()))?;
+    lock.lock()
+        .with_context(|| format!("lock {}", std::path::Path::new(&lock_path).display()))?;
+    Ok(lock)
+}
+
+/// Write `tok` to `path` whole or not at all: a new file beside it (0600 at open), then a rename.
+fn write_token_whole(path: &std::path::Path, tok: &str) -> Result<()> {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "auth-token".into());
+    let tmp = path.with_file_name(format!(".{name}.{}.new", std::process::id()));
+    let _ = std::fs::remove_file(&tmp);
+    let written = (|| -> std::io::Result<()> {
+        use std::io::Write;
+        let mut open = std::fs::OpenOptions::new();
+        open.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            open.mode(0o600);
+        }
+        let mut f = open.open(&tmp)?;
+        f.write_all(tok.as_bytes())?;
+        f.sync_all()?;
+        std::fs::rename(&tmp, path)?;
+        // The rename itself, kept across a crash: a browser may hold a cookie for this token.
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::File::open(dir).and_then(|d| d.sync_all());
+        }
+        Ok(())
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written.with_context(|| format!("write token {}", path.display()))
+}
+
+/// The monitor's token file, as its gate reads it while it runs unpaired (#s619): what the gate
+/// may be paired by, from the page or by `agent-monitor --pair`.
+pub struct MonitorTokenFile {
+    path: std::path::PathBuf,
+    legacy: std::path::PathBuf,
+}
+
+impl MonitorTokenFile {
+    /// The monitor's own: [`token_path`], and the legacy path under `cache_root`.
+    pub fn of_monitor(cache_root: &std::path::Path) -> Self {
+        Self::at(token_path(), legacy_token_path(cache_root))
+    }
+
+    /// The token file at `path`, with `legacy` read as [`read_token`] reads it.
+    pub fn at(path: std::path::PathBuf, legacy: std::path::PathBuf) -> Self {
+        Self { path, legacy }
+    }
+}
+
+impl claude_replay_html::TokenFile for MonitorTokenFile {
+    fn read(&self) -> Option<String> {
+        read_token_at(&self.path, &self.legacy)
+    }
+
+    fn read_or_create(&self) -> std::io::Result<String> {
+        read_or_create_token_at(&self.path, &self.legacy).map_err(std::io::Error::other)
+    }
+
+    fn turned_on(&self, how: claude_replay_html::TurnedOn) {
+        eprintln!("{}", now_paired_line(how));
+    }
+}
+
+/// The line that follows the startup banner's unpaired warning once the running monitor is paired
+/// (#s619). It never carries the token.
+pub fn now_paired_line(how: claude_replay_html::TurnedOn) -> &'static str {
+    match how {
+        claude_replay_html::TurnedOn::FromThePage => {
+            "agent-monitor is now paired: a browser on this machine paired from the page, so every \
+             browser and tool needs the token from here on (it is in the state dir's auth-token)"
+        }
+        claude_replay_html::TurnedOn::ByTheFile => {
+            "agent-monitor is now paired: its token file appeared, as `agent-monitor --pair` writes \
+             it, so every browser and tool needs the token from here on"
+        }
+    }
 }
 
 /// Write `tok` to `path` with mode 0600 set at open.
@@ -3038,6 +3274,115 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&state);
         let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    /// #s619: pairings at once (a page's confirmed code and `--pair`, or two browsers) end with ONE
+    /// token, created whole at 0600, and the monitor's token file reads it back.
+    #[test]
+    fn pairings_at_once_end_with_one_token() {
+        let dir = std::env::temp_dir().join(format!("cm-tok-race-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (path, legacy) = (dir.join("state/auth-token"), dir.join("cache/auth-token"));
+        let tokens: Vec<String> = std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| scope.spawn(|| read_or_create_token_at(&path, &legacy).unwrap()))
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        assert_eq!(tokens[0].len(), 64, "32 bytes as hex");
+        assert!(tokens.iter().all(|t| t == &tokens[0]), "{tokens:?}");
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), tokens[0]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600, "owner-only");
+        }
+        let left: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert!(
+            left.iter()
+                .all(|n| n == "auth-token" || n == "auth-token.lock"),
+            "no half-written file left: {left:?}"
+        );
+        use claude_replay_html::TokenFile;
+        let file = MonitorTokenFile::at(path.clone(), legacy.clone());
+        assert_eq!(file.read().as_deref(), Some(tokens[0].as_str()));
+        assert_eq!(file.read_or_create().unwrap(), tokens[0], "never rotated");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #s619 review: a file at the token path that holds no token this can read is never replaced
+    /// (that would rotate a token the reader cannot see), and neither is anything that is not a
+    /// regular file; a token already there is read with no lock, so a state dir this user may no
+    /// longer write still gives `--pair` its token; and a legacy token stays the monitor's where
+    /// the state dir cannot be written.
+    #[cfg(unix)]
+    #[test]
+    fn a_token_file_this_cannot_read_is_left_as_it_is() {
+        use std::os::unix::fs::PermissionsExt;
+        // Modes stop no root: there is nothing to show as root.
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("cm-tok-odd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state = dir.join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let (path, legacy) = (state.join("auth-token"), dir.join("cache/auth-token"));
+
+        // Unreadable: mode 000.
+        std::fs::write(&path, "a-token-nobody-here-can-read").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let refused = read_or_create_token_at(&path, &legacy);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(refused.is_err(), "an unreadable token file is an error");
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "a-token-nobody-here-can-read",
+            "and is left as it is"
+        );
+
+        // Not one word a cookie can carry.
+        std::fs::write(&path, "two words\n").unwrap();
+        assert!(read_or_create_token_at(&path, &legacy).is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "two words\n");
+        assert_eq!(
+            read_token_at(&path, &legacy),
+            None,
+            "and no gate takes it up"
+        );
+
+        // A directory where the file should be.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        assert!(read_or_create_token_at(&path, &legacy).is_err());
+        assert!(path.is_dir(), "left as it is");
+        std::fs::remove_dir(&path).unwrap();
+
+        // A token already there, in a state dir this user may no longer write.
+        std::fs::write(&path, "kept-token\n").unwrap();
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let kept = read_or_create_token_at(&path, &legacy);
+        // A legacy token, with no state token and a state dir that cannot be written.
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700)).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir_all(legacy.parent().unwrap()).unwrap();
+        std::fs::write(&legacy, "legacy-token").unwrap();
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o500)).unwrap();
+        let from_legacy = read_or_create_token_at(&path, &legacy);
+        std::fs::set_permissions(&state, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(kept.unwrap(), "kept-token", "read with no lock");
+        assert_eq!(
+            from_legacy.unwrap(),
+            "legacy-token",
+            "the legacy token is kept"
+        );
+        assert!(!path.exists(), "and nothing was written");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// #133 passcode gate (pure): empty body asks for the passcode; a wrong one is `Bad` and,
