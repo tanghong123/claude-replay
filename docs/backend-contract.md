@@ -80,8 +80,11 @@ The tiers say what a host must serve:
 - **Pairing belongs to the listener, not to the routes.** The monitor's listener checks every
   request before a route sees it. A request it refuses gets 401: an HTML page load gets a page
   that reloads itself once and then says how to pair; anything else gets plain text. The page reads
-  a 401 as "not paired". `/pair` and `/api/pair` are the listener's own and not part of this
-  contract. A host puts its own sign-in in front instead. That sign-in must refuse a request
+  a 401 as "not paired". `/pair`, `/api/pair` and `/api/pair/ask` are the listener's own and not
+  part of this contract: a browser on the monitor's own machine asks `/api/pair/ask` for a code,
+  which the monitor shows only on that machine (a dialog on a Mac, or `agent-monitor --pair-code`
+  in a terminal) and never in a reply, and redeems it at `/api/pair` (#s618,
+  `design/pair-from-the-page.md`). A host puts its own sign-in in front instead. That sign-in must refuse a request
   another site started, whatever its method: `/api/ignore` and a stamped `/__reveal` act on a
   GET, and a request another site makes (an image, say) carries no `Origin` for the routes' own
   origin check to see. The monitor's `SameSite=Strict` cookie is what refuses it there.
@@ -190,10 +193,13 @@ Another app's own arrangement of the same sessions, for the list's Arrange choic
 `claude-app`, `codex-app` or `herdr` (an open set).
 
 - Without `source`: `{sources: [{source, label, available, reason, lastError}]}`.
-- With it: `{source, label, available, reason, note, sections, pending?, stale?}`, where a section
-  is `{id, label, collapsed, entries, groups: [{id, label, collapsed, keep, entries}]}` and an entry
-  is `{id: <session id>, title, pane: "<server>|<pane>" or null, children: Entry[]}`. The first ask
-  may answer `pending: true` with no sections.
+- With it: `{source, label, available, reason, note, summary, sections, pending?, stale?}`, where a
+  section is `{id, label, collapsed, entries, groups: [{id, label, collapsed, keep, entries}]}` and
+  an entry is `{id: <session id>, title, pane: "<server>|<pane>" or null, children: Entry[]}`. The
+  first ask may answer `pending: true` with no sections. `summary` is optional: one plain line, or
+  null, said only when the list differs from the app's in a way the reader would notice. With a
+  line, `note` is its detail, which the page shows on a click; without one (null, or a server from
+  before that sends no `summary`), the page shows `note` as it is.
 - 404 for a source it does not know.
 
 **Without it:** the list offers only its own arrangements.
@@ -523,7 +529,9 @@ back as facts (`shared/tool-head.js`), so a host writing records uses exactly th
 - `exit <n>` and a duration (`42ms`, `2.50s`, `1m 5s`) are the call's exit and time;
 - `<n> lines` is a count;
 - a chip whose `c` is `fail` marks the call failed, and so do the words `failed`, `killed`,
-  `declined` and `cancelled`; an `exit <n>` alone is a fact, not a failure;
+  `declined`, `blocked` (a hook, a permission rule or auto mode stopped it before it ran) and
+  `cancelled`;
+  an `exit <n>` alone is a fact, not a failure;
 - `completed`, `done`, `finished`, `stopped` and `launched` mean it ended;
 - pieces in one chip are joined with ` · `.
 

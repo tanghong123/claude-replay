@@ -79,6 +79,14 @@ pub struct TaskItem {
     /// The worklog: what was decided or found while the task was open.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub log: Vec<TaskLogEntry>,
+    /// A task a person asked for, which follows up no other task: taskq's `top_level` mark
+    /// (#s606). A task filed before taskq had the marks carries neither.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub top_level: bool,
+    /// The task this one follows up, by its queue id as taskq names it (`s431`): taskq's
+    /// `follows_up` mark (#s606).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub follows_up: String,
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -184,6 +192,17 @@ pub enum TaskOp {
     /// the refusal is transcript data rather than a task op — a replay of the log without it
     /// would rebuild the list the client never accepted.
     Retract { tool_use_id: String },
+    /// Where a task stands among the others (#s606): taskq's two marks as a record states them,
+    /// `top_level` (a task a person asked for) and `follows_up` (the task it follows up), both
+    /// at once, so a later record that moves a task from one to the other replaces the first.
+    /// It changes a task already on the list and never stands one up: a mark alone names no
+    /// title.
+    Lineage {
+        task_id: String,
+        top_level: bool,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        follows_up: String,
+    },
 }
 
 /// One entry of a [`TaskOp::Snapshot`] — the neutral shape a `TodoWrite` item maps onto.
@@ -364,6 +383,16 @@ impl TaskFold {
                     }
                 }
             }
+            TaskOp::Lineage {
+                task_id,
+                top_level,
+                follows_up,
+            } => {
+                if let Some(item) = self.list.items.iter_mut().find(|t| &t.id == task_id) {
+                    item.top_level = *top_level;
+                    item.follows_up = follows_up.clone();
+                }
+            }
         }
     }
 
@@ -456,6 +485,10 @@ impl TaskFold {
             }
             if item.blocks.is_empty() {
                 item.blocks = prev.blocks.clone();
+            }
+            if !item.top_level && item.follows_up.is_empty() {
+                item.top_level = prev.top_level;
+                item.follows_up = prev.follows_up.clone();
             }
             // Status is the stub's: a create draft is always `Pending`, and the row may
             // already have moved on (a `done` read before its create, on a resumed view).
@@ -584,6 +617,12 @@ pub fn enrich_from_queue(list: &mut TaskList, queue: &TaskList) {
         item.deferred = disk.deferred;
         item.deferred_reason = disk.deferred_reason.clone();
         item.log = disk.log.clone();
+        // The marks are the queue's too (#s606): a later `--follows-up` edit is written there.
+        // A file from before the marks says nothing of them, and the transcript's stand.
+        if disk.top_level || !disk.follows_up.is_empty() {
+            item.top_level = disk.top_level;
+            item.follows_up = disk.follows_up.clone();
+        }
         if item.blocked_by.is_empty() {
             item.blocked_by = disk.blocked_by.clone();
         }
@@ -627,12 +666,19 @@ pub fn task_from_json(v: &serde_json::Value) -> Option<TaskItem> {
     if id.is_empty() {
         return None;
     }
-    let meta = v.get("meta");
+    // taskq writes a task's `--meta` pairs under `metadata` (measured: every one of 248 files
+    // in a user queue, none under `meta`), and a value it knows the type of as that type
+    // (`"top_level": true`), so a flag reads as the boolean or its word.
+    let meta = v.get("metadata").or_else(|| v.get("meta"));
     let meta_str = |k: &str| {
         meta.and_then(|m| m.get(k))
             .and_then(serde_json::Value::as_str)
             .unwrap_or("")
             .to_string()
+    };
+    let meta_flag = |k: &str| {
+        meta.and_then(|m| m.get(k))
+            .is_some_and(|x| x.as_bool() == Some(true) || x.as_str() == Some("true"))
     };
     let log = v
         .get("log")
@@ -682,9 +728,11 @@ pub fn task_from_json(v: &serde_json::Value) -> Option<TaskItem> {
             .map(|a| a.len())
             .unwrap_or(0),
         // taskq parks a task with `--meta deferred=true` and says why beside it.
-        deferred: meta_str("deferred") == "true",
+        deferred: meta_flag("deferred"),
         deferred_reason: meta_str("deferred_reason"),
         log,
+        top_level: meta_flag("top_level"),
+        follows_up: meta_str("follows_up"),
     })
 }
 

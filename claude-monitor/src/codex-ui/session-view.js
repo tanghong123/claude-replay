@@ -12,7 +12,7 @@
 // and options) are done.
 import { svg } from "./icons.js";
 import { SESSION_VIEW_MARKUP } from "./session-view-markup.js";
-import { backend, useBackend } from "./backend.js";
+import { assets, backend, checkAssets, useAssets, useBackend } from "./backend.js";
 import { AttachmentViewer } from "./attachment-viewer.js";
 import { bindComponentEvents, fleetHtml, pendingHeadText } from "./components.js";
 import { referenceAction } from "./shared/capabilities.js";
@@ -49,7 +49,7 @@ export const KEYBOARD_MODES = Object.freeze(["engaged", "page"]);
 /** Every option `mountSessionView` takes; any other name is refused, so a misspelt or retired one
  *  (the old `toast`, `keys` or `controls`) fails loudly rather than being dropped. */
 export const MOUNT_OPTIONS = Object.freeze([
-  "theme", "grid", "backend", "show", "keyboard", "write", "frame", "detachTo",
+  "theme", "grid", "backend", "show", "keyboard", "write", "frame", "assets", "reviewSheet", "detachTo",
   "selectedId", "sessionRow", "sessionWorkers", "selectSession", "renderList", "refreshIndex", "pauseIndex", "resumeIndex",
   "onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast", "onOutline",
   "room", "parentShown", "openList", "openSidebar", "paneLayout", "paneCount",
@@ -71,9 +71,9 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  Options, each named in `MOUNT_OPTIONS`; any other name is refused. Required: `grid`, `selectedId`,
  *  `sessionRow`, `sessionWorkers`, `selectSession`, `renderList`, `refreshIndex`, `pauseIndex` and
  *  `resumeIndex`. The rest are optional: a host may leave out `theme`, `backend`, `show` and
- *  `keyboard` (each has a default), `write` (writes are not offered without it), `frame` (the
- *  native app's), `detachTo` (tabs open at the server's own pages), and every handler of what the
- *  view tells it.
+ *  `keyboard` (each has a default), `write` (writes are not offered without it), `frame`, `assets`
+ *  and `reviewSheet` (the native app's), `detachTo` (tabs open at the server's own pages), and every
+ *  handler of what the view tells it.
  *  - `theme`: "light" (the default) or "dark", carried by the view's element, where its stylesheet
  *    reads it; the handle's `setTheme` changes it.
  *  - `grid`: the box around the view (the app's `#app`). The phone's sheets are measured against it
@@ -137,6 +137,20 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    needed: the native app keeps every address it gave for the life of the page, unless it decides
  *    otherwise itself. An answer that is not an address, or a refusal,
  *    shows the pane's own error (and is asked again the next time the tab is shown).
+ *  - `assets`: the native app's, which the kit's guide does not list (#s595, design/app-mount.md,
+ *    "Kept for the native app"): where mdrev's bundle and the Mermaid runtime load from when the
+ *    host carries them itself, rather than from the server: `{ mdrev, mdrevVersion, mermaid }`,
+ *    mdrev's base (its bundle at `<mdrev>/mdrev/<mdrevVersion>/mdrev.js` and `mdrev.css`), the release
+ *    that bundle is, and the Mermaid runtime's address. With it the view reads every document with
+ *    that release, never asks a server which one it serves (#s352's fallback is off), and loads the
+ *    runtime from `mermaid` rather than the address the page's head names; the head must still name
+ *    one, as it says the page draws diagrams (`mountApp` writes it there when it has none). Every
+ *    route, mdrev's included, still goes through `backend`.
+ *  - `reviewSheet`: the native app's, which the kit's guide does not list (#s596, Hong on #s555: "The
+ *    phone's Review sheet on an iPad too (native app only)"): `true` offers the pane's Review control
+ *    and its full-screen sheet at every width, where without it only a phone reader is offered them
+ *    (a desktop reviews in the detached tab, the pane's ↗). The app passes it while it opens no window
+ *    of its own. Anything but a boolean is refused.
  *  - `selectedId()`, `sessionRow(id)`, `sessionWorkers(id)`: what the app's session index says —
  *    the session it has selected, a session's row, and the headless workers a session started.
  *  - `selectSession(id, push)`: ask the app to select a session (the parent control, a descent).
@@ -205,6 +219,8 @@ if (!KEYBOARD_MODES.includes(keyboardMode)) throw new Error(`mountSessionView ta
 if (options.write !== undefined && !(typeof options.write?.on === "function" && typeof options.write?.confirm === "function")) throw new Error("mountSessionView takes its write as { on, confirm }, two functions, or none for a host that offers no writes");
 if (options.room !== undefined && typeof options.room !== "function") throw new Error("mountSessionView takes its room as a function answering how many pixels its host could give, or none");
 if (options.frame !== undefined && typeof options.frame !== "function") throw new Error("mountSessionView takes its frame as a function from a page's HTML to the address its frame loads");
+if (options.reviewSheet !== undefined && typeof options.reviewSheet !== "boolean") throw new Error(`mountSessionView offers its review sheet at every width or not by true or false, not ${JSON.stringify(options.reviewSheet)}`);
+checkAssets(options.assets, "mountSessionView");
 if (options.detachTo !== undefined && !((typeof options.detachTo === "string" && options.detachTo) || typeof options.detachTo === "function")) throw new Error("mountSessionView takes its detachTo as the address of the page its tabs open at, or a function answering one, or none");
 /** Whether an optional control is drawn: each is, unless the host switched it off. */
 const shows = name => options.show?.[name] !== false;
@@ -289,6 +305,7 @@ function unwriteStyle(node, name) {
 // drawn, and how the view is laid out and read, with the reader's remembered choices.
 const recordState = createRecordState();
 if (options.backend) useBackend(options.backend);
+useAssets(options.assets);
 // The view builds its three parts inside its element from its own markup (stage 4), so a host's
 // page carries none of the view's markup, and draws the glyphs that markup names.
 if (element.id && element.id !== "sessionView") throw new Error(`mountSessionView draws into an element whose id is sessionView, or that has none; this one is #${element.id}`);
@@ -497,7 +514,7 @@ sessionCopyMenu.className = "session-copy-menu";
 sessionCopyMenu.id = "sessionCopyMenu";
 sessionCopyMenu.setAttribute("role", "menu");
 sessionCopyMenu.setAttribute("aria-label", "Copy session details");
-sessionCopyMenu.innerHTML = `<div class="session-copy-caption">Copy session details</div><button type="button" role="menuitem" data-copy-session="id">${svg("copy")}<span><strong>Session ID</strong><small data-session-copy-value="id">—</small></span></button><button type="button" role="menuitem" data-copy-session="path">${svg("copy")}<span><strong>Transcript path</strong><small data-session-copy-value="path">Loading…</small></span></button>`;
+sessionCopyMenu.innerHTML = `<div class="session-copy-about" id="sessionCopyAbout"></div><div class="session-copy-caption">Copy session details</div><button type="button" role="menuitem" data-copy-session="id">${svg("copy")}<span><strong>Session ID</strong><small data-session-copy-value="id">—</small></span></button><button type="button" role="menuitem" data-copy-session="path">${svg("copy")}<span><strong>Transcript path</strong><small data-session-copy-value="path">Loading…</small></span></button>`;
 sessionTitle.insertAdjacentElement("afterend", sessionCopyMenu);
 sessionTitle.tabIndex = 0;
 sessionTitle.setAttribute("role", "button");
@@ -512,6 +529,16 @@ if (infoRailButton) infoRailButton.title = "Info";
 let sessionCopyCloseTimer = 0;
 function setSessionCopyMenu(open) {
   clearTimeout(sessionCopyCloseTimer);
+  // #s581: the crumb's words (the agent and the project) at the menu's head wherever they are not
+  // drawn whole beside the name: taken off for the name's room (`crumb-off`), cut short, or not drawn
+  // at all (a phone's bar). Read as it opens, so every header (a row's, a sub-agent's, a worker's) is
+  // the one drawn.
+  if (open) {
+    const crumb = byId("sessionCrumb"), words = crumb?.textContent.trim() || "";
+    const whole = !!crumb && crumb.getClientRects().length > 0 && crumb.scrollWidth <= crumb.clientWidth + 1;
+    sessionCopyMenu.querySelector(".session-copy-about").textContent = words;
+    sessionCopyMenu.classList.toggle("names-crumb", !!words && !whole);
+  }
   sessionCopyMenu.classList.toggle("open", open);
   sessionTitle.setAttribute("aria-expanded", String(open));
 }
@@ -526,7 +553,10 @@ function scheduleSessionCopyClose() {
 // nothing gives the title focus, and the lift closed the menu for good. A tap elsewhere, a copy or
 // Escape closes it; a mouse still closes it by leaving.
 const leftByHover = event => event.pointerType === "mouse";
-sessionTitle.addEventListener("pointerenter", () => setSessionCopyMenu(true));
+// At the head of Info's card (the glyphs' bar, #s582) the name opens its menu on a press or a focus
+// only: a mouse on its way into the card crosses the name, and a hover there laid the menu over what
+// the reader came to read.
+sessionTitle.addEventListener("pointerenter", () => { if (!sessionTitle.closest(".info-popover")) setSessionCopyMenu(true); });
 sessionTitle.addEventListener("pointerleave", event => { if (leftByHover(event)) scheduleSessionCopyClose(); });
 sessionTitle.addEventListener("focus", () => setSessionCopyMenu(true));
 sessionTitle.addEventListener("blur", scheduleSessionCopyClose);
@@ -774,7 +804,7 @@ function openTab(kind, query) {
   const href = tabAddress(kind, query);
   if (href) window.open(href, "_blank");
 }
-const preview = new Preview({ openTab, phone: () => layout.phone(), layoutChanged: () => paneLayoutChanged(), paneToggled: change => (viewMounted ? layout.toggled(change) : (change(), layout.decide())), dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
+const preview = new Preview({ openTab, phone: () => layout.phone(), layoutChanged: () => paneLayoutChanged(), paneToggled: change => (viewMounted ? layout.toggled(change) : (change(), layout.decide())), dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, reviewSheet: options.reviewSheet === true, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
 const attachmentViewer = new AttachmentViewer({ toast });
 // What the compose box asks of the app goes nowhere once the view is unmounted: a dialog's answer
 // still settling, a send still out.
@@ -786,8 +816,8 @@ let controls = ordinaryControls;
 // reads a tail-first open's head turn by turn, in the order the view needs it; the desktop reads it
 // whole (stage 1). `?windowed=1|0` picks either path for a case.
 // The Mermaid runtime the page head names loads through the backend handle, as every other
-// request the page makes does (#s423).
-useMermaidRuntime(path => backend().url(path));
+// request the page makes does (#s423), unless the host carries it itself (`assets`, #s595).
+useMermaidRuntime(path => assets()?.mermaid || backend().url(path));
 // …and its diagrams are drawn in the view's theme, which the view's element carries (stage 5b).
 useMermaidTheme(() => sessionView);
 const WINDOWED = (() => { const q = new URLSearchParams(location.search).get("windowed"); return q === "1" ? true : q === "0" ? false : !backend().local; })();
@@ -884,20 +914,25 @@ function renderParent(meta) {
 function renderHeader() {
   paintHeader();
   markTitleWord();
+  fitHeadingSoon();
   sayTitle(sessionTitle.textContent);
 }
 // #s520: off the phone the title keeps at least its first word, whatever else the top bar holds:
 // the bar's rules give it that much room (`--title-word` on the bar, so the search box's floor beside
 // the heading reads it too, production.css) and let
 // the crumb, the status chip and the search box give way first. Measured with the title's own font
-// on a canvas, so nothing is laid out for it, and again only when the text or the font changed (a
-// host's stylesheet may arrive after the first header). `var`: a header can be drawn during module
+// on a canvas, so nothing is laid out for it, at each header drawn and as the name comes back from
+// Info's card, and anew only when the text or the font has changed since (a host's stylesheet that
+// arrives after the first header is read at the next one). `var`: a header can be drawn during module
 // evaluation.
 var titleRuler = null, titleWordKey = "";
 function markTitleWord() {
   const heading = sessionTitle.parentElement, text = sessionTitle.textContent.trim();
   titleRuler ||= document.createElement("canvas").getContext("2d");
   if (!heading || !titleRuler) return;
+  // In Info's card (the glyphs' bar, #s582) the title is not the bar's, and its font is the card's:
+  // measured again once it is back.
+  if (!heading.parentElement?.classList.contains("topbar")) { titleWordKey = ""; return; }
   // From the longhands: Chrome answers "" for the `font` shorthand when a longhand has no place in
   // it.
   const style = getComputedStyle(sessionTitle);
@@ -911,6 +946,46 @@ function markTitleWord() {
   // A new name gives the box held beside it a different room (`fitDeskSearch`); during module
   // evaluation the search is not built yet and this does nothing.
   fitSearchField();
+}
+// #s581 (Hong: "give room to agent name, and show agent type and repo name in the drop down menu"):
+// where the title and the crumb (the agent and the project) do not both fit, the crumb gives way
+// whole, with its divider, and the title takes its room; the title's menu then names the agent and
+// the project at its head (`.session-copy-about`), so nothing is lost. Decided by what the bar draws,
+// never by a window width, so a host's pane gets it too: with the crumb drawn, is the title cut short
+// of what it would show (its text, up to its max-width), or the crumb cut? The class comes off and
+// goes back on in one task, so no frame shows the crumb drawn only to be measured, and the answer
+// never reads the room hiding the crumb made. The glyphs' bar and the phone reader keep rules of
+// their own for the crumb. `var`: a header can be drawn during module evaluation.
+var headingFrame = 0;
+function fitHeading() {
+  const heading = sessionTitle.parentElement, crumb = byId("sessionCrumb"), chip = byId("statusChip");
+  if (!heading?.classList.contains("session-heading") || !crumb) return;
+  heading.classList.remove("crumb-off", "chip-dot");
+  if (sessionView.classList.contains("pl-phone") || sessionView.classList.contains("pl-outline-bar") || !heading.closest(".topbar")) return;
+  const cut = node => node.scrollWidth > node.clientWidth + 1;
+  const cap = parseFloat(getComputedStyle(sessionTitle).maxWidth);
+  const squeezed = cut(sessionTitle) && !(sessionTitle.getBoundingClientRect().width >= cap - 1);
+  // A crumb not drawn is off too, so the heading's least is then the lower one with no crumb in it,
+  // which the search box's floor counts on (#s598's review). Off a phone no width rule hides it today
+  // (its bands read the view's width and 300px more), so this holds for a crumb hidden any other way.
+  const off = squeezed || cut(crumb) || !crumb.getClientRects().length;
+  // The heading keeps the width it had with the crumb (`--heading-room`), so the crumb's room goes to
+  // the name: the bar shares what it lacks out by each part's width, and a heading narrowed by the
+  // crumb's going gave its room to the search box, the name narrower than beside the crumb.
+  if (off) heading.style.setProperty("--heading-room", `${heading.getBoundingClientRect().width}px`);
+  heading.classList.toggle("crumb-off", off);
+  // #s598: then the status chip, with the crumb as just decided: where its words are cut (squeezed
+  // beside the name, or past its max-width), it shows only its dot (`chip-dot`), its words its title.
+  heading.classList.toggle("chip-dot", !!chip?.querySelector(".state-dot") && cut(chip));
+}
+/** At the next frame: the bar, the search box beside the heading and the header's text each change
+ *  what fits, and the answer changes the box's room in turn, so it is read once they have settled. */
+function fitHeadingSoon() {
+  if (!headingFrame) headingFrame = requestAnimationFrame(() => { headingFrame = 0; fitHeading(); });
+}
+{
+  const headingRoom = new ResizeObserver(fitHeadingSoon);
+  for (const node of [viewRoot.$(".workspace>.topbar"), viewRoot.$(".header-search-cluster")]) if (node) headingRoom.observe(node);
 }
 function paintHeader() {
   if (sessionNewTab) sessionNewTab.hidden = !selectedId();
@@ -951,7 +1026,7 @@ function paintHeader() {
     : `${agentName(row.agent)} · ${row._group?.label || ""}`;
   byId("statusChip").className = `status-chip ${state.state} ${state.reason}`;
   byId("statusChip").innerHTML = `<span class="state-dot ${escapeText(state.state)} ${escapeText(state.reason)}" style="margin:0"></span>${escapeText(state.label)}${row.stateConfidence === "inferred" ? " · inferred" : ""}`;
-  // #s520: where the glyphs' bar draws the chip as its dot, its words are its title.
+  // The chip's words are its title too, for a bar that cuts them short.
   byId("statusChip").title = `${row.stateDetail || state.label}${row.stateConfidence === "inferred" ? " · inferred" : ""}`;
   const meta = recordState.session === row.id ? (recordState.meta || {}) : {};
   const sid = meta.sid || row.id || "";
@@ -1862,14 +1937,26 @@ function renderNavigator() {
   // per ROW rather than out of `tasks`, because each row carries its index into that array and
   // `data-task-open` hands the index straight back to the popover.
   const titled = row => !!(row.task.subject || row.task.title);
-  const taskShown = afterFilter
-    .map(group => ({ ...group, rows: group.rows.filter(titled) }))
+  // #s606, Hong: "there is no filter for top level tasks". Top-level only hides a task that follows
+  // another up (taskq's `follows_up`), so what stays is what a person asked for, and what no mark
+  // places (a task filed before taskq had them). On a phone as on a desktop: the phone's way to it is
+  // a row at the top of the list (`phoneTasksFilter`), as its Agents list has; a sheet hides the row
+  // and mirrors it in its head (#s616, `renderFilter`).
+  const topLevelOnly = uiState.taskTopLevel;
+  const asked = row => !topLevelOnly || !row.task.follows_up;
+  const titledRows = afterFilter.map(group => ({ ...group, rows: group.rows.filter(titled) }));
+  const taskShown = titledRows
+    .map(group => ({ ...group, rows: group.rows.filter(asked) }))
     .filter(group => group.rows.length);
-  // The two hidings are counted apart, because only one of them is the reader's to undo: the
+  // The hidings are counted apart, because only the filters' are the reader's to undo: each
   // filter's count is what its control reports, and an untitled task is gone whatever they choose.
-  const liveRows = afterFilter.reduce((n, group) => n + group.rows.length, 0);
+  const count = groups => groups.reduce((n, group) => n + group.rows.length, 0);
+  const liveRows = count(afterFilter);
   const hiddenTasks = tasks.length - liveRows;
-  const untitledTasks = liveRows - taskShown.reduce((n, group) => n + group.rows.length, 0);
+  const untitledTasks = liveRows - count(titledRows);
+  const followUps = count(titledRows) - count(taskShown);
+  // Whether any task carries a mark at all: the menu offers the choice only where it can do something.
+  recordState.tasksMarked = tasks.some(task => task.top_level || task.follows_up);
   // An empty pane must never look like missing data: say that the filter is what emptied it, and
   // how much it is holding, because the reader cannot see what is not there.
   const untitledNote = untitledTasks ? ` · ${untitledTasks} with no recorded title` : "";
@@ -1877,13 +1964,18 @@ function renderNavigator() {
   // there way to show those agents?" The way was the Outline menu's row, which the reader could not
   // find from the pane they were looking at. So the line the filter empties carries the control
   // that undoes it, and says where the setting lives so they can put it back.
+  // Both filters emptying the pane: each has its control, the second named for what it brings back.
+  const followNote = followUps ? ` · ${followUps} ${followUps === 1 ? "follow-up" : "follow-ups"} hidden` : "";
   const noTasks = liveTasksOnly && hiddenTasks
-    ? `<div class="activity-empty"><span>Nothing live — ${hiddenTasks} finished ${hiddenTasks === 1 ? "task" : "tasks"} hidden${escapeText(untitledNote)}</span>${showFilteredControl("tasks", hiddenTasks)}</div>`
-    : untitledTasks
-      ? `<div class="activity-empty">No session tasks${escapeText(untitledNote)}</div>`
-      : '<div class="activity-empty">No session tasks</div>';
-  byId("navigatorWork").innerHTML = taskShown.map(group => `<div class="work-group" data-task-group="${group.key}"><span>${group.label}</span><span class="work-group-count">${group.rows.length}</span></div>${group.rows.map(taskRow).join("")}`).join("") || noTasks;
-  mobileShell?.tasksChanged(); // the phone drop-down's jumps name the groups just drawn (#319)
+    ? `<div class="activity-empty"><span>${followUps ? "Nothing live and top-level" : "Nothing live"} — ${hiddenTasks} finished ${hiddenTasks === 1 ? "task" : "tasks"} hidden${escapeText(followNote + untitledNote)}</span>${showFilteredControl("tasks", hiddenTasks)}${followUps ? showFilteredControl("followups", followUps, "Show follow-ups") : ""}</div>`
+    : followUps
+      ? `<div class="activity-empty"><span>Nothing top-level — ${followUps} ${followUps === 1 ? "follow-up" : "follow-ups"} hidden${escapeText(untitledNote)}</span>${showFilteredControl("followups", followUps)}</div>`
+      : untitledTasks
+        ? `<div class="activity-empty">No session tasks${escapeText(untitledNote)}</div>`
+        : '<div class="activity-empty">No session tasks</div>';
+  const followAll = titledRows.reduce((n, group) => n + group.rows.filter(row => row.task.follows_up).length, 0);
+  const taskRows = taskShown.map(group => `<div class="work-group" data-task-group="${group.key}"><span>${group.label}</span><span class="work-group-count">${group.rows.length}</span></div>${group.rows.map(taskRow).join("")}`).join("");
+  byId("navigatorWork").innerHTML = taskRows ? phoneTasksFilter(topLevelOnly, followUps, followAll) + taskRows : noTasks;
   const agents = directAgents(), workers = sessionWorkers();
   const activeAgents = agents.filter(agent => agent.running).length + workers.filter(workerRunning).length;
   const allAgents = agents.length + workers.length;
@@ -1905,10 +1997,13 @@ function renderNavigator() {
     return `<div class="outline-agent-row"><button class="outline-agent" type="button" data-child-outline="${escapeText(agent.id)}" title="Open the sub-agent's transcript"><span class="agent-state ${agent.running ? "running" : "completed"}"></span><span class="outline-agent-copy"><strong>${escapeText(agent.title || agent.description || agent.id)}</strong><small>${escapeText(agent.type || agent.agent_type || "agent")}</small></span><span class="outline-agent-tail"></span></button>${spawn}</div>`;
   }).concat(shownWorkers.map(workerRow)).join("");
   byId("navigatorAgents").innerHTML = agentRows ? phoneAgentsFilter(liveAgentsOnly, hiddenAgents, allAgents - activeAgents) + agentRows : noAgents;
+  // Once BOTH lists are drawn: the phone drop-down's jumps name the Tasks groups (#319), and its
+  // head mirrors the open list's filter row, Agents' too (#s616), so it never shows the one before.
+  mobileShell?.tasksChanged();
   // What the filter is holding back, for the menu row that controls it to say so (#215). The head
   // reads "25 active · 253/308 done" either way, so without this the reader has no way to tell a
   // pane that is filtered from a pane that is simply short.
-  recordState.hiddenByFilter = { tasks: liveTasksOnly ? hiddenTasks : 0, agents: liveAgentsOnly ? hiddenAgents : 0 };
+  recordState.hiddenByFilter = { tasks: liveTasksOnly ? hiddenTasks : 0, agents: liveAgentsOnly ? hiddenAgents : 0, followups: followUps };
   // How many tasks each state holds, for the menu's rows to show what a box is worth (#218).
   recordState.taskGroupCounts = Object.fromEntries(taskGroups(tasks).map(g => [g.key, g.rows.length]));
   // The rows the pane ACTUALLY rendered, in order, for anything that wants to aim at one (#225).
@@ -1926,20 +2021,38 @@ function renderNavigator() {
  *  menu's row does, so the menu and the pane cannot disagree. The hint names that row so the reader
  *  can put the filter back — on a desktop only: a phone has no Outline menu (its way back is
  *  `phoneAgentsFilter`), and its Tasks pane shows every state already (#319). */
-function showFilteredControl(pane, hidden) {
-  const what = pane === "agents" ? `${hidden} finished ${hidden === 1 ? "agent" : "agents"}` : `${hidden} finished ${hidden === 1 ? "task" : "tasks"}`;
-  const hint = layout.phone()
+function showFilteredControl(pane, hidden, label = "Show them") {
+  const what = pane === "agents"
+    ? `${hidden} finished ${hidden === 1 ? "agent" : "agents"}`
+    : pane === "followups"
+      ? `${hidden} ${hidden === 1 ? "follow-up" : "follow-ups"}`
+      : `${hidden} finished ${hidden === 1 ? "task" : "tasks"}`;
+  // One hint to a line: beside the task states' control, the follow-ups' goes without its own.
+  const hint = layout.phone() || label !== "Show them"
     ? ""
     : pane === "agents"
       ? "Active only, in the Outline menu, hides them again"
-      : "The Outline menu's task states hide them again";
-  return `<button class="activity-empty-show" type="button" data-show-filtered="${pane}" aria-label="Show the ${escapeText(what)}">Show them</button>${hint ? `<small class="activity-empty-hint">${escapeText(hint)}</small>` : ""}`;
+      : pane === "followups"
+        ? "Top-level only, in the Outline menu, hides them again"
+        : "The Outline menu's task states hide them again";
+  return `<button class="activity-empty-show" type="button" data-show-filtered="${pane}" aria-label="Show the ${escapeText(what)}">${escapeText(label)}</button>${hint ? `<small class="activity-empty-hint">${escapeText(hint)}</small>` : ""}`;
+}
+/** A phone's way to Top-level only (#s606), as `phoneAgentsFilter` is to Active only: a row at the
+ *  top of the Tasks list, on the same remembered choice, for whichever end applies. Only where some
+ *  task follows another up, since otherwise the choice changes nothing. A sheet does not draw the
+ *  row; its head mirrors it (#s616, `renderFilter`), and a wide phone's column draws it. */
+function phoneTasksFilter(topLevelOnly, hidden, followUps) {
+  if (!layout.phone()) return "";
+  const what = n => `${n} ${n === 1 ? "follow-up" : "follow-ups"}`;
+  if (topLevelOnly) return hidden ? `<button class="tasks-filter-row" type="button" data-show-filtered="followups">Show ${what(hidden)}</button>` : "";
+  return followUps ? `<button class="tasks-filter-row" type="button" data-hide-follow-ups aria-label="Hide the ${what(followUps)}">Hide follow-ups</button>` : "";
 }
 /** A phone's way to the Agents filter (#s358, Hong's choice on #s357): it has no Outline menu, so
  *  the list carries a row for whichever end applies, on the same remembered filter. Hide finished
  *  while the filter is off; while it is on, Show them, because with an agent still running the list
  *  is not empty and the emptied pane's control is not there. At the TOP of the list, which can run to
- *  149 agents. Every row here is a phone's alone: a desktop keeps the menu. */
+ *  149 agents; a sheet hides the row and mirrors it in its head (#s616, `renderFilter`). Every row
+ *  here is a phone's alone: a desktop keeps the menu. */
 function phoneAgentsFilter(liveOnly, hidden, finished) {
   if (!layout.phone()) return "";
   const what = n => `${n} finished ${n === 1 ? "agent" : "agents"}`;
@@ -2066,11 +2179,22 @@ const navigatorClick = event => {
   const task = event.target.closest("[data-task-record]"); if (task) { closeTaskPopover(); jumpOrFetch(Number(task.dataset.taskRecord), "task"); return; }
   const agent = event.target.closest("[data-agent-record]"); if (agent) { jumpOrFetch(Number(agent.dataset.agentRecord), "agent"); return; }
   // #s356: an emptied pane's "Show them" clears the filter the Outline menu's row holds — Agents'
-  // Active only, or every task state shown — and the menu, if open, redraws to say so.
+  // Active only, every task state shown, or Top-level only (#s606) — and the menu, if open, redraws
+  // to say so.
   const showFiltered = event.target.closest("[data-show-filtered]");
   if (showFiltered) {
-    if (showFiltered.dataset.showFiltered === "agents") uiState.liveOnly.delete("agents");
+    const pane = showFiltered.dataset.showFiltered;
+    if (pane === "agents") uiState.liveOnly.delete("agents");
+    else if (pane === "followups") uiState.taskTopLevel = false;
     else for (const g of TASK_GROUP_ROWS) uiState.taskGroupsShown.add(g.key);
+    persist();
+    renderNavigator();
+    renderPanesMenu();
+    return;
+  }
+  // #s606: a phone's Hide follow-ups (`phoneTasksFilter`).
+  if (event.target.closest("[data-hide-follow-ups]")) {
+    uiState.taskTopLevel = true;
     persist();
     renderNavigator();
     renderPanesMenu();
@@ -2542,8 +2666,9 @@ byId("transcriptSearchInput").oninput = () => {
 byId("transcriptSearchInput").onkeydown = event => {
   // Escape leaves the box as a click outside would (#298, the owner; the classic page's `q.blur()`):
   // the query, its count and its marks stay, and the next key is the page's keymap's again. An open
-  // filter popover closes with it, as the page-wide Escape closes it.
-  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPopover(null); event.currentTarget.blur(); setPhoneSearch(false); releaseSearch(); return; }
+  // filter popover closes with it, as the page-wide Escape closes it. Opened from the transcript, it
+  // gives the keys back to the transcript (`leaveSearch`, #s531).
+  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setPopover(null); leaveSearch(event.currentTarget); setPhoneSearch(false); releaseSearch(); return; }
   // An Enter that commits an input method's composition (pinyin, kana) is the input method's; Safari
   // sends it with `isComposing` false and keyCode 229.
   if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return;
@@ -2681,8 +2806,19 @@ const TITLE_GIVES_TO = 80;
  *  and short on Linux's wider fonts, since the count names the scope too ("2 hits in uo(R)"). Only
  *  the floor's rule reads `--search-floor` (production.css, #s520), so it means nothing on a phone or
  *  in the bar the outline's glyphs join, and it is worked out again from the floor that rule gives
- *  without it, whenever the field, the bar or the title changes. */
+ *  without it, whenever the field, the bar or the title changes.
+ *
+ *  It measures with the crumb shown and the chip's words, as the bar was before #s581 took the crumb
+ *  off a squeezed title and #s598 made a cut chip its dot, then decides both for the floor it set
+ *  (`fitHeading`), so the floor is the same whichever of the two ran last: measured with a crumb the
+ *  last floor had taken off, the next fit gave the box more, and a fit made at once again gave it
+ *  less. */
 function fitDeskSearch(input) {
+  byId("sessionCrumb")?.parentElement?.classList.remove("crumb-off", "chip-dot");
+  fitDeskSearchFloor(input);
+  fitHeading();
+}
+function fitDeskSearchFloor(input) {
   const cluster = viewRoot.$(".header-search-cluster"), searchbox = viewRoot.$(".header-searchbox");
   if (!cluster || !searchbox) return;
   cluster.style.removeProperty("--search-floor");
@@ -2710,14 +2846,19 @@ function fitDeskSearch(input) {
   searchbox.style.maxWidth = "none"; searchbox.style.flexShrink = "0";
   const widest = searchbox.getBoundingClientRect().width + (box - own);
   [searchbox.style.maxWidth, searchbox.style.flexShrink] = held;
-  // What the title can give: down to what it keeps, and no more than its heading can, which keeps a
-  // floor of its own (the first word and what else it draws at its least): a title above its keep in
-  // a heading at that floor has nothing to give, and a floor counted on it pushed the bar's last
-  // controls out of the session's column (train2's measure, a long first word at 1100px).
+  // What the heading can give: all it draws down to what the title keeps and the least the heading
+  // draws beside it, the crumb gone and the chip its dot (`--heading-rest`), which is what the bar
+  // shows once the box has the room (#s598; `fitHeading` takes the crumb off a squeezed title or one
+  // not drawn, and makes a cut chip its dot); a chip with no dot (a sub-agent's, "None selected") is
+  // counted whole, since it has no short form. Counted from the heading's least beside a shown crumb
+  // (the name's first word and 65px), it left a held "lorem" 14px of its 37 at a 601px session
+  // column; and never past the least it has: a floor counted on more pushed the bar's last controls
+  // out of the session's column (train2's measure, a long first word at 1100px).
   const title = byId("sessionTitle"), heading = title?.parentElement;
   const keep = title ? Math.max(parseFloat(getComputedStyle(title).minWidth) || 0, Math.min(TITLE_GIVES_TO, title.scrollWidth)) : 0;
-  const headingGives = heading ? heading.getBoundingClientRect().width - (parseFloat(getComputedStyle(heading).minWidth) || 0) : Infinity;
-  const give = title ? Math.max(0, Math.min(title.getBoundingClientRect().width - keep, headingGives)) : 0;
+  const chip = byId("statusChip"), whole = chip?.getClientRects().length && !chip.querySelector(".state-dot") ? chip.scrollWidth : 0;
+  const rest = (heading ? parseFloat(getComputedStyle(heading).getPropertyValue("--heading-rest")) || 0 : 0) + whole;
+  const give = title && heading ? Math.max(0, heading.getBoundingClientRect().width - keep - rest) : 0;
   const floor = Math.floor(Math.min(box + short + 2, box + give, widest));
   if (floor > box) cluster.style.setProperty("--search-floor", `${floor}px`);
 }
@@ -2729,7 +2870,25 @@ addEventListener("resize", () => fitSearchField(), { signal });
 // without the window's too (the pane opening beside the session, its drag), and a floor fitted to
 // the old room would hold the box past the session's column (train2's review), so the bar is watched
 // as well.
-const searchFit = new ResizeObserver(() => fitSearchField());
+// Except in a phone's open box the observer's fit waits for the next frame, as the heading's does
+// (`fitHeadingSoon`; #s624): it writes the cluster's floor and the heading's classes, both above the
+// field in the page, and a write there while the field's new size was being reported resized them
+// inside the same delivery, which the browser answers with a "ResizeObserver loop" error event at the
+// window, where a host page's error handler receives it (measured: a held query emptied with the focus
+// taken from the field in one go, beside the open pane at 1400px: the input handler's fit ran before
+// the blur, and the observer's, told of the strip's new size, took the cluster from 252px to 246px).
+// So a change the fit did not make itself (a blur, a script, the pane opening or dragged) has the box
+// settle a frame after it (measured there: one frame). The search coming into use fits at once anyway, from
+// its focus (below), so a bar that draws differently in use is drawn fitted in its first frame (read,
+// not measured: in the case the box in use draws as at rest). A phone's open box
+// fits at once, as before: there the fit writes the field's width, its scroll, its placeholder and a
+// measuring span placed absolutely, all inside the strip, which keeps its size as the one growing
+// item in a box of fixed width (read, not measured: no phone case counts the notice).
+let searchFitFrame = 0;
+const searchFit = new ResizeObserver(() => {
+  if (viewRoot.$(".header-searchbox")?.classList.contains("phone-open")) { fitSearchField(); return; }
+  if (!searchFitFrame) searchFitFrame = requestAnimationFrame(() => { searchFitFrame = 0; fitSearchField(); });
+});
 searchFit.observe(searchField);
 const searchBar = viewRoot.$(".workspace>.topbar");
 if (searchBar) searchFit.observe(searchBar);
@@ -2777,16 +2936,53 @@ document.addEventListener("pointerdown", event => {
 // iOS leaves the focus in the field when a button is tapped. Leaving also closes the filter there,
 // so the box folds with it: a press outside closes it anyway (#s546), a Tab out or a press into the
 // pane's page does not.
+// #s531: where the search took the focus from. A mouse's press on the transcript focuses it (#s488),
+// so its keys reach a scroller no redraw replaces; a blur on leaving the search put them on the body
+// again, where in Safari Page Up after a live redraw scrolled nothing until the next click. So
+// leaving the search by Escape gives the focus back to the transcript when the search took it from
+// there (by ⌘F or /, a click on the field, or the phone's open, all one focus), and otherwise
+// blurs, as before: from nothing focused the focus goes nowhere still. Only a focus that comes from
+// an element says where: one from nothing (back from a press on a step or the funnel, which Safari
+// leaves unfocused, or from another app) is the same search going on. Cleared whenever the search
+// is released, since what the reader did then is where they are.
+let searchFrom = null;
 const searchCluster = viewRoot.$(".header-search-cluster");
-searchCluster.addEventListener("pointerdown", event => { if (event.pointerType === "mouse") searchCluster.classList.add("search-held"); }, { signal });
-searchCluster.addEventListener("focusin", () => searchCluster.classList.add("search-held"), { signal });
+// Where the outline's glyphs give the box their room as it comes into use (#s582), a mouse's press on
+// the field keeps them drawn until it lifts (`search-pressing`): the press places the caret and starts
+// a selection by the layout under the pointer, which the glyphs going would move by their width, or the
+// count and the steps coming would narrow (the reviews of #s582; production.css keeps both as at rest
+// while it holds). A box already in use stays as it is. The main button only, and a context menu
+// ends it (a Ctrl-click on a Mac is the main button): the menu may keep the release from the page.
+searchCluster.addEventListener("pointerdown", event => {
+  if (event.pointerType !== "mouse") return;
+  if (event.button === 0 && event.target === byId("transcriptSearchInput") && !searchCluster.matches(":focus-within, .search-held")) searchCluster.classList.add("search-pressing");
+  searchCluster.classList.add("search-held");
+}, { signal });
+const pressEnded = () => searchCluster.classList.remove("search-pressing");
+for (const type of ["pointerup", "pointercancel", "contextmenu"]) document.addEventListener(type, pressEnded, { capture: true, signal });
+addEventListener("blur", pressEnded, { signal });
+searchCluster.addEventListener("focusin", event => {
+  searchCluster.classList.add("search-held");
+  // The box in use asks for its room now, from the focus (#s624): by /, ⌘F, a click or Tab, the
+  // observer's own fit would come a frame after the bar was drawn. No size report of the view's
+  // focuses the box (read, not measured).
+  fitSearchField();
+  if (event.relatedTarget && !searchCluster.contains(event.relatedTarget)) searchFrom = event.relatedTarget === transcript ? transcript : null;
+}, { signal });
 searchCluster.addEventListener("focusout", event => { if (event.relatedTarget && !searchCluster.contains(event.relatedTarget)) releaseSearch(); }, { signal });
 document.addEventListener("pointerdown", event => {
   if (searchCluster.classList.contains("search-held") && !searchCluster.contains(event.target)) releaseSearch();
 }, { capture: true, signal });
 addEventListener("blur", () => { if (viewRoot.active()?.tagName === "IFRAME") releaseSearch(); }, { signal });
+function leaveSearch(active) {
+  const from = searchFrom;
+  searchFrom = null;
+  if (from?.isConnected) from.focus({ preventScroll: true });
+  if (viewRoot.active() !== from) active?.blur();
+}
 /** The search is no longer in use: the box may fold, and in the glyphs' bar its filter shuts. */
 function releaseSearch() {
+  searchFrom = null;
   const cluster = viewRoot.$(".header-search-cluster");
   if (!cluster?.classList.contains("search-held")) return;
   cluster.classList.remove("search-held");
@@ -3630,11 +3826,20 @@ function renderPanesMenu() {
     // the reader can see what each box is worth before unchecking it.
     if (key === "tasks") {
       const counts = recordState.taskGroupCounts || {};
-      return row + TASK_GROUP_ROWS.map(g => {
+      const states = TASK_GROUP_ROWS.map(g => {
         const shown = uiState.taskGroupsShown.has(g.key);
         const n = counts[g.key] || 0;
         return `<button class="pane-option pane-suboption ${shown ? "on" : ""}" type="button" role="menuitemcheckbox" aria-checked="${shown}" data-task-group="${escapeText(g.key)}" title="${shown ? `Showing the ${g.label.toLowerCase()} tasks` : `Show the ${g.label.toLowerCase()} tasks`}"><span class="pane-check" aria-hidden="true"></span><span>${escapeText(g.label)}</span>${n ? `<small>${n}</small>` : ""}</button>`;
       }).join("");
+      // #s606: below the states, offered where some task carries taskq's marks (or the choice is
+      // already on, so it can be taken off), with what it holds back beside it as Active only does.
+      const top = uiState.taskTopLevel;
+      if (!recordState.tasksMarked && !top) return row + states;
+      const hidden = (recordState.hiddenByFilter || {}).followups || 0;
+      const title = top
+        ? `Showing only the tasks a person asked for${hidden ? ` — ${hidden} ${hidden === 1 ? "follow-up" : "follow-ups"} hidden` : ""}`
+        : "Show only the tasks a person asked for, hiding the ones that follow another up";
+      return `${row}${states}<button class="pane-option pane-suboption ${top ? "on" : ""}" type="button" role="menuitemcheckbox" aria-checked="${top}" data-top-level-only title="${escapeText(title)}"><span class="pane-check" aria-hidden="true"></span><span>Top-level only</span>${top && hidden ? `<small>${hidden} hidden</small>` : ""}</button>`;
     }
     if (!LIVE_ONLY_PANES[key]) return row;
     const live = uiState.liveOnly.has(key);
@@ -3664,6 +3869,14 @@ panesMenu.onclick = event => {
   // A task state, first: the Tasks pane's rows are one per state (#218). Never all three off — an
   // empty set is a pane that looks broken, and the way back would be a control the reader cannot
   // see the effect of; unchecking the last one puts every state back, as the session filter does.
+  // #s606: Top-level only, beside the states.
+  if (event.target.closest("[data-top-level-only]")) {
+    uiState.taskTopLevel = !uiState.taskTopLevel;
+    persist();
+    renderNavigator();
+    renderPanesMenu();
+    return;
+  }
   const group = event.target.closest("[data-task-group]");
   if (group) {
     const key = group.dataset.taskGroup;
@@ -3796,8 +4009,18 @@ panesMenu.onclick = event => {
   // 140 ms close is a peek's.
   const pin = event => { from(event); clearTimeout(closeTimer); pinned = !pinned; show(pinned); if (pinned) sayInfo(); };
   trigger.addEventListener("click", pin);
-  // The phone's "i" in the top bar (#313) is this same control: a tap pins or unpins.
+  // The phone's "i" in the top bar (#313), which is also the glyphs' bar's Info (#s582), is this same
+  // control: a press pins or unpins. It is one of the card's triggers, so the card says on it whether
+  // it is open, a press on it is no press outside, and Escape gives a focus inside the card back to it
+  // (the review of #s582: in the glyphs' bar the footer's Info and the rail's are not drawn, and the
+  // focus was left on a hidden control).
   infoPopoverToggle = pin;
+  addInfoTrigger = node => {
+    if (triggers.includes(node)) return;
+    triggers.push(node);
+    node.setAttribute("aria-haspopup", "dialog");
+    node.setAttribute("aria-expanded", String(popover.classList.contains("open")));
+  };
   addEventListener("pointerdown", event => {
     if (pinned && !popover.contains(event.target) && !trigger.contains(event.target) && !event.target.closest?.("[data-info-trigger]")) { pinned = false; show(false); }
   }, { capture: true, signal });
@@ -3812,6 +4035,9 @@ panesMenu.onclick = event => {
   // on it or on an Info that opens it.
   addEventListener("keydown", event => {
     if (event.key !== "Escape" || !popover.classList.contains("open")) return;
+    // The menu of the session name, open inside the card (#s582), closes alone on this Escape, the
+    // card on the next.
+    if (popover.contains(sessionCopyMenu) && sessionCopyMenu.classList.contains("open")) return;
     if (!viewEscape(event) && (pinned || !hovered(popover, ...triggers))) return;
     pinned = false;
     if (popover.contains(viewRoot.active())) {
@@ -4399,7 +4625,10 @@ addEventListener("keydown", event => {
   if (viewEscape(event)) {
     setSessionCopyMenu(false); setPopover(null);
     const active = viewRoot.active(), cluster = viewRoot.$(".header-search-cluster");
-    if (active && cluster?.contains(active)) active.blur();
+    // Out of the box but still in the search (Safari gives a pressed button no focus, so the blur of
+    // the field left it on nothing), Escape leaves it the same way (#s531).
+    if (active && cluster?.contains(active)) leaveSearch(active);
+    else if (cluster?.classList.contains("search-held") && (!active || active.tagName === "BODY")) leaveSearch(null);
     releaseSearch();
   }
   else if (event.key === "Escape" && hovered(sessionTitle, sessionCopyMenu)) setSessionCopyMenu(false);
@@ -4462,7 +4691,7 @@ var sessionLoading;
 //    `--phone-bottom`, the dock's top, the sheets that rise from the pill.
 // The drawer and a wide phone's column are the app's (app-mount.js); the rest of the shell is the view's.
 var mobileShell;
-var infoPopoverToggle;
+var infoPopoverToggle, addInfoTrigger;
 var phoneDock;
 {
   const PHONE = layout.query("phone");
@@ -4478,7 +4707,8 @@ var phoneDock;
   info.title = "Session details";
   info.setAttribute("aria-label", "Session details");
   info.innerHTML = svg("info");
-  info.onclick = () => infoPopoverToggle?.();
+  info.onclick = event => infoPopoverToggle?.(event);
+  addInfoTrigger?.(info);
   const panes = PHONE_PANES.map(([key, label, body]) => {
     const button = document.createElement("button");
     button.type = "button";
@@ -4492,7 +4722,8 @@ var phoneDock;
     button.innerHTML = `${svg(key)}<span class="phone-pane-count" hidden></span>`;
     return { key, label, body, button };
   });
-  byId("previewBtn").before(info);
+  // Info right after Aa, before a host's ↗ (#s582: "search box, Aa, i, and the right-drawer toggle").
+  (sessionNewTab || byId("previewBtn")).before(info);
 
   // #s37 (design/phone-landscape.md §3.5a, the owner's idea): the toolbar floats at the bottom in a
   // PILL above the home indicator — Turns, Tasks, Agents and Aa — with search its own control beside
@@ -4654,7 +4885,7 @@ var phoneDock;
   menu.id = "phonePaneMenu";
   menu.hidden = true;
   menu.setAttribute("role", "dialog");
-  menu.innerHTML = '<div class="phone-pane-head"><strong></strong><button type="button" class="phone-pane-close" aria-label="Close">✕</button></div><div class="phone-pane-jumps" role="toolbar" aria-label="Jump to a state" hidden></div><div class="phone-pane-body"></div>';
+  menu.innerHTML = '<div class="phone-pane-head"><strong></strong><button type="button" class="phone-pane-filter" hidden></button><button type="button" class="phone-pane-close" aria-label="Close">✕</button></div><div class="phone-pane-jumps" role="toolbar" aria-label="Jump to a state" hidden></div><div class="phone-pane-body"></div>';
   // #s55: the session dims behind an open sheet; a tap there closes it (the outside tap below).
   const paneScrim = document.createElement("div");
   paneScrim.className = "pane-scrim";
@@ -4662,11 +4893,27 @@ var phoneDock;
   sessionView.append(paneScrim, menu);
   const menuBody = menu.querySelector(".phone-pane-body");
   const jumps = menu.querySelector(".phone-pane-jumps");
+  const headFilter = menu.querySelector(".phone-pane-filter");
   let openPane = null, home = null;
   // #319: the Tasks drop-down lists every state (a phone cannot reach the outline's state filter),
   // so its head jumps between them — each named and counted as the state's own head in the list,
   // which stays pinned at the top while its rows scroll under it (production.css).
+  // #s616: the list's filter (#s606's Hide follow-ups, #s358's Hide finished agents, and the Show N
+  // that undoes each) is drawn in the sheet's HEAD, beside its title, where it costs the list nothing.
+  // Held sideways the list is about 97px, and the opening scroll to what is still moving took the row
+  // at the list's top out of reach; pinned there, the row and a state's head left no task readable.
+  // The list keeps its row (not drawn in the sheet, production.css; a wide phone's column shows it),
+  // and the head's control carries the row's data, so a press goes through `navigatorClick` as the
+  // row's did, and the redraw it makes calls this again (`tasksChanged`).
+  const renderFilter = () => {
+    const row = openPane ? menuBody.querySelector(".tasks-filter-row, .agents-filter-row") : null;
+    for (const name of headFilter.getAttributeNames()) if (name.startsWith("data-") || name === "aria-label") headFilter.removeAttribute(name);
+    headFilter.hidden = !row;
+    headFilter.textContent = row ? row.textContent : "";
+    if (row) for (const name of row.getAttributeNames()) if (name.startsWith("data-") || name === "aria-label") headFilter.setAttribute(name, row.getAttribute(name));
+  };
   const renderJumps = () => {
+    renderFilter();
     const heads = openPane?.key === "tasks" ? [...menuBody.querySelectorAll(".work-group[data-task-group]")] : [];
     jumps.hidden = !heads.length;
     jumps.innerHTML = heads.map(head => {
@@ -4681,7 +4928,8 @@ var phoneDock;
     const head = menuBody.querySelector(`.work-group[data-task-group="${CSS.escape(key)}"]`);
     if (!head) return;
     const first = head.nextElementSibling;
-    if (!head.previousElementSibling || !first) { menuBody.scrollTop = 0; return; }
+    const above = head.previousElementSibling;
+    if (!above || above.matches(".tasks-filter-row") || !first) { menuBody.scrollTop = 0; return; }
     menuBody.scrollTop += first.getBoundingClientRect().top - menuBody.getBoundingClientRect().top - head.offsetHeight;
   };
   const closePane = () => {
@@ -4766,7 +5014,7 @@ var phoneDock;
   addEventListener("keydown", event => { if (viewEscape(event)) closePane(); }, { signal });
   // #s431 stage 3 (design/pane-layout.md, "The glyphs in the top bar"): off the phone reader, where the
   // owner's order leaves the outline's glyphs no column of their own, the same three glyphs join the
-  // session's top bar, after the title and its tools and before Info and the pane's control; each
+  // session's top bar, at its start (#s582), Info and the pane's control at its end; each
   // opens its list as a panel over the transcript's right edge, 290px wide, one at a time (this sheet,
   // drawn as a panel there), and a click elsewhere or Esc closes it. A glyph in the column opens the
   // same panel where the outline cannot open. The panel borrows the outline's own list, so it closes
@@ -4778,24 +5026,54 @@ var phoneDock;
     const panelHome = arrangement && !arrangement.phone ? viewRoot.$(".workspace") : sessionView;
     if (panelHome && menu.parentElement !== panelHome) { closePane(); panelHome.append(menu); }
     const inBar = !!arrangement && !arrangement.phone && arrangement.outline === "bar";
-    if (inBar && panes[0].button.parentElement !== topbar) for (const pane of panes) info.before(pane.button);
+    // #s582 (Hong: "when the session view pane is really tight, I'd like to have the head row to show
+    // from left to right: the three glyphs for the outline panes; search box, Aa, i, and the
+    // right-drawer toggle"): the glyphs lead the bar, after its first controls (the app's own, shown
+    // only while its list is folded away), and a sub-agent's way back to its parent before them.
+    if (inBar && panes[0].button.parentElement !== topbar) byId("sidebarReopen").after(...panes.map(pane => pane.button));
     if (!inBar && panes[0].button.parentElement !== dockPill) dockPill.prepend(...panes.map(pane => pane.button));
-    // What the column held besides the glyphs comes with them: the outline's expand control (pressed
-    // while the reader wants the outline the width holds back, so they can fold it for good), and the
-    // session's Info, from the top bar's own Info control, its card hanging under the bar.
-    const expand = byId("navigatorRailExpand"), card = viewRoot.$("#infoPopover");
-    for (const [node, into, before] of [[expand, topbar, info], [card, viewRoot.$(".workspace"), null]]) {
+    // What the column held besides the glyphs comes with them: the session's Info, from the top bar's
+    // own Info control, its card hanging under the bar, right after it in the page so a Tab from Info
+    // reaches it. The outline's expand control joins them, before Info, only where it can open the
+    // outline (a host giving its room, `outlineCanOpen`); elsewhere it stays in the column ("get rid
+    // of the useless |> sign"). And the session's name leaves the bar for the head of Info's card
+    // ("hide the agent name under i's drop down menu"), with the agent, the project and the state
+    // beside it, its menu still opening from it.
+    const card = viewRoot.$("#infoPopover"), heading = sessionTitle.parentElement;
+    const headingHeld = !!heading && heading.contains(viewRoot.active());
+    const wasInCard = columnHomes.has(heading);
+    const moves = [
+      [byId("sessionParent"), inBar, node => byId("sidebarReopen").after(node)],
+      [byId("navigatorRailExpand"), inBar && !!arrangement.outlineCanOpen, node => info.before(node)],
+      [card, inBar, node => topbar.after(node)],
+      [heading, inBar && !!card, node => card.prepend(node)],
+    ];
+    for (const [node, wanted, place] of moves) {
       if (!node) continue;
-      if (inBar && node.parentElement !== into) {
-        if (!columnHomes.has(node)) columnHomes.set(node, { parent: node.parentNode, next: node.nextSibling });
-        if (before) before.before(node); else into.append(node);
-      } else if (!inBar && columnHomes.has(node)) {
+      if (wanted && !columnHomes.has(node)) {
+        columnHomes.set(node, { parent: node.parentNode, next: node.nextSibling });
+        place(node);
+      } else if (!wanted && columnHomes.has(node)) {
         const home = columnHomes.get(node);
         columnHomes.delete(node);
         home.parent.insertBefore(node, home.next && home.next.parentNode === home.parent ? home.next : null);
       }
     }
     sessionView.classList.toggle("outline-in-bar", inBar);
+    // The name's menu is closed as it moves, and the bar's crumb fit does not go into the card; a focus
+    // on the name goes on where the name is now: to it in the bar (where its focus opens its menu
+    // again, as any focus on the name does), to Info (the way to it) in the bar of glyphs, where the
+    // card is shut.
+    if (wasInCard !== columnHomes.has(heading)) {
+      setSessionCopyMenu(false);
+      heading.classList.remove("crumb-off", "chip-dot");
+      if (headingHeld) (columnHomes.has(heading) ? info : sessionTitle).focus({ preventScroll: true });
+    }
+    // Back in the bar from the card, the title's least room is measured again in the bar's font; only
+    // then, since a measure on every arrangement wrote over a first word measured or held before it.
+    // Out of the bar of glyphs the crumb is decided for the bar's room as it is now.
+    if (wasInCard && !columnHomes.has(heading)) markTitleWord();
+    if (!inBar) fitHeadingSoon();
     if (arrangement?.outline === "open") closePane();
   };
   openOutlinePanel = key => {

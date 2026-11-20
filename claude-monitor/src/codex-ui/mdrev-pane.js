@@ -20,7 +20,7 @@
 // internals the released bundle does not export (the design says why). Either goes to a tab of its
 // own (#271): `/markdown` serves the viewer as the whole page, at the reader's document and range.
 
-import { backend } from "./backend.js";
+import { assets, backend } from "./backend.js";
 import { viewRoot } from "./view-root.js";
 
 const CONTRACT = "/api/mdrev";
@@ -35,8 +35,12 @@ const MARKDOWN = /\.(md|markdown|mdown|mkd)$/i;
  *  same test as mdrev's own; any other text it shows as source code (#s13). */
 export const isMarkdownName = name => MARKDOWN.test(String(name || ""));
 
-/** The pinned mdrev release's version, or "" from a server that carries none. */
-export const mdrevVersion = () => backend().mdrevVersion();
+/** The pinned mdrev release's version, or "" from a server that carries none; the host's own bundle's
+ *  where it carries one (`assets`, #s595), whatever release each server pins. */
+export const mdrevVersion = () => assets()?.mdrevVersion || backend().mdrevVersion();
+
+/** Where a path of the bundle loads from: the host's own copy (`assets`), else the server's. */
+const bundleUrl = (path, handle) => (assets() ? assets().mdrevUrl(path) : handle.mdrevUrl(path));
 
 let loading = null;
 /** The version this page found the monitor serving in place of the one it was loaded with (#s352),
@@ -45,19 +49,19 @@ let updatedTo = "";
 
 /** One release's bundle: its stylesheet (scoped under `.mdrev-host` by mdrev's build, so nothing in
  *  it reaches the shell) and its entry module. */
-function importBundle(version) {
+function importBundle(version, handle) {
   const link = document.createElement("link");
   link.rel = "stylesheet";
-  link.href = backend().mdrevUrl(`/mdrev/${version}/mdrev.css`);
+  link.href = bundleUrl(`/mdrev/${version}/mdrev.css`, handle);
   viewRoot.sheets().appendChild(link);
-  return import(backend().mdrevUrl(`/mdrev/${version}/mdrev.js`)).catch(error => { link.remove(); throw error; });
+  return import(bundleUrl(`/mdrev/${version}/mdrev.js`, handle)).catch(error => { link.remove(); throw error; });
 }
 
 /** The mdrev version the monitor serves NOW, read off its smallest page (`/markdown`, the detached
  *  page, under 2 KiB, which carries `data-mdrev` as this page does); "" when it cannot be read. */
-async function servedVersion() {
+async function servedVersion(handle) {
   try {
-    const response = await backend().mdrevFetch("/markdown", { cache: "no-store" });
+    const response = await handle.mdrevFetch("/markdown", { cache: "no-store" });
     if (!response.ok) return "";
     return /data-mdrev="([^"]*)"/.exec(await response.text())?.[1] || "";
   } catch { return ""; }
@@ -72,14 +76,16 @@ async function servedVersion() {
  *  plain text: Hong saw a Markdown file as raw source. So a failed load asks the monitor which
  *  version it serves and, when that is another, loads that one. An older shell with a newer bundle
  *  is the safe way round: what the host passes is mdrev's embedding contract, and the bundle then
- *  talks to the routes of the monitor that shipped it. */
-function loadMdrev(version) {
+ *  talks to the routes of the monitor that shipped it. A host that carries its own bundle (`assets`,
+ *  #s595) asks no server: its release is the one it pins, whatever each server serves. */
+function loadMdrev(version, handle) {
   if (!loading) {
-    loading = importBundle(version).catch(async error => {
-      const now = await servedVersion();
+    loading = importBundle(version, handle).catch(async error => {
+      if (assets()) throw error;
+      const now = await servedVersion(handle);
       if (!now || now === version) throw error;
-      const module = await importBundle(now);
-      backend().mdrevMoved(now);
+      const module = await importBundle(now, handle);
+      handle.mdrevMoved(now);
       updatedTo = now;
       return module;
     }).catch(error => { loading = null; throw error; });
@@ -107,8 +113,8 @@ async function answer(response) {
 
 /** Hand the monitor text to hold for mdrev's contract: content-addressed, so the same text always
  *  comes back under the same path and capability. */
-async function hold(name, text) {
-  return answer(await backend().mdrevFetch(`${CONTRACT}/hold`, {
+async function hold(name, text, handle) {
+  return answer(await handle.mdrevFetch(`${CONTRACT}/hold`, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ name: name || "document.md", text }),
@@ -120,8 +126,8 @@ async function hold(name, text) {
 const reader = held => ({ root: held.root, path: held.path, cap: held.cap, isGit: false, review: false, annotate: false, toolbar: "none" });
 
 /** The mount's facts for a file on this machine, from the file's own `/file` stamp. */
-async function opened(path, sig) {
-  const open = await answer(await backend().mdrevFetch(`${CONTRACT}/open?path=${encodeURIComponent(path)}&sig=${encodeURIComponent(sig || "")}`, { cache: "no-store" }));
+async function opened(path, sig, handle) {
+  const open = await answer(await handle.mdrevFetch(`${CONTRACT}/open?path=${encodeURIComponent(path)}&sig=${encodeURIComponent(sig || "")}`, { cache: "no-store" }));
   // The leave is the monitor's to give: history always (from git), notes only where it has a node
   // to run mdrev's CLI — mdrev's own format is written through nothing else.
   return { root: open.root, path: open.path, cap: open.cap, isGit: open.isGit, review: open.review, annotate: open.annotate, name: open.name };
@@ -134,21 +140,24 @@ async function opened(path, sig) {
  *  text the agent had in context) opens as ITSELF while it is still on disk with a stamp — mdrev's
  *  whole viewer, its history and display menu, as a Read target opens — where it used to open the
  *  carried text in the bare reader, which on a phone did not read as mdrev at all. The carried text
- *  is what shows when the file is gone. */
-async function factsFor(item) {
+ *  is what shows when the file is gone.
+ *
+ *  Every step asks `handle`, the server the mount began on (#s595): the view may be mounted on
+ *  another machine's while the open is out, and the carried text belongs to the first. */
+async function factsFor(item, handle) {
   if (item.path && item.fsig) {
-    try { return { ...(await opened(item.path, item.fsig)), held: false }; }
+    try { return { ...(await opened(item.path, item.fsig, handle)), held: false }; }
     catch (error) { if (item.text == null) throw error; }
   }
-  if (item.text != null) return { ...reader(await hold(item.name, item.text)), held: true };
-  return { ...(await opened(item.path || "", item.fsig)), held: false };
+  if (item.text != null) return { ...reader(await hold(item.name, item.text, handle)), held: true };
+  return { ...(await opened(item.path || "", item.fsig, handle)), held: false };
 }
 
 /** The capability for another document of the collection the reader moved to — the one `resolve`
  *  mints for a link, asked in the name of the document the mount was given. "" when refused. */
-async function capFor(root, origin, target) {
+async function capFor(root, origin, target, handle) {
   try {
-    const caps = await answer(await backend().mdrevFetch(`${CONTRACT}/resolve?root=${encodeURIComponent(root)}`, {
+    const caps = await answer(await handle.mdrevFetch(`${CONTRACT}/resolve?root=${encodeURIComponent(root)}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ from: origin, targets: [target] }),
@@ -161,9 +170,10 @@ async function capFor(root, origin, target) {
  * Mount mdrev on `el` and keep up with the reader: `place` is where they are — the document, the
  * capability that opens it, the range they chose — and the mount element names it (the dataset
  * mdrev's guide shapes, §10). A theme toggle remounts at that place, since mdrev cannot re-theme a
- * live mount; `moved` hears every move.
+ * live mount; `moved` hears every move. `handle` is the server the mount began on, and `contract`
+ * the prefix of its routes the guest is given.
  */
-function mountAt(mountMdrev, el, facts, moved, contract = backend().mdrevUrl(CONTRACT)) {
+function mountAt(mountMdrev, el, facts, moved, handle, contract) {
   const origin = { path: facts.path, cap: facts.cap || "" };
   const place = { root: facts.root, path: facts.path, cap: origin.cap, range: facts.range || null };
   // A key pressed while the reader is engaged with it is mdrev's (shared/keymap.js tracks the same
@@ -183,7 +193,7 @@ function mountAt(mountMdrev, el, facts, moved, contract = backend().mdrevUrl(CON
     if (path && path !== place.path) {
       place.path = path;
       place.cap = path === origin.path ? origin.cap : "";
-      if (!place.cap) capFor(place.root, origin, path).then(cap => { if (place.path === path) { place.cap = cap; show(); } });
+      if (!place.cap) capFor(place.root, origin, path, handle).then(cap => { if (place.path === path) { place.cap = cap; show(); } });
     }
     show();
   };
@@ -212,12 +222,14 @@ function mountAt(mountMdrev, el, facts, moved, contract = backend().mdrevUrl(CON
  * did before mdrev.
  */
 export async function mountMarkdown(el, item, { review = false } = {}) {
-  const version = mdrevVersion();
+  // The server the reader opened the document on, for every request of this mount (#s595).
+  const handle = backend();
+  const version = assets()?.mdrevVersion || handle.mdrevVersion();
   if (!version) return null;
-  const [{ mountMdrev }, facts] = await Promise.all([loadMdrev(version), factsFor(item)]);
+  const [{ mountMdrev }, facts] = await Promise.all([loadMdrev(version, handle), factsFor(item, handle)]);
   // #s12: the phone's review sheet mounts on the review prefix (#s10); the pane never does.
   const { held, ...mount } = facts; // `held` is the pane's to know, not an option of mdrev's
-  const { place, unmount, print } = mountAt(mountMdrev, el, mount, undefined, backend().mdrevUrl(review ? REVIEW_CONTRACT : CONTRACT));
+  const { place, unmount, print } = mountAt(mountMdrev, el, mount, undefined, handle, handle.mdrevUrl(review ? REVIEW_CONTRACT : CONTRACT));
   const carried = held ? { name: item.name || "", text: item.text } : null;
   return {
     place,
@@ -284,21 +296,21 @@ export class Unavailable extends Error {}
  *  copy when it has one — content-addressed, so it returns under the same path and capability — and
  *  otherwise must still be in the monitor's store; a file goes through `open`, the pane's own
  *  guards, with the stamp the address carries. */
-async function standaloneMount(want) {
+async function standaloneMount(want, handle) {
   if (want.root === HELD) {
     const copy = carried(want.path);
     if (copy?.text != null) {
-      const held = await hold(copy.name, copy.text);
+      const held = await hold(copy.name, copy.text, handle);
       return { ...reader(held), name: copy.name || held.name };
     }
-    const probe = await backend().mdrevFetch(`${CONTRACT}/text?root=${HELD}&path=${encodeURIComponent(want.path)}&cap=${encodeURIComponent(want.cap)}`, { cache: "no-store" });
+    const probe = await handle.mdrevFetch(`${CONTRACT}/text?root=${HELD}&path=${encodeURIComponent(want.path)}&cap=${encodeURIComponent(want.cap)}`, { cache: "no-store" });
     if (probe.status === 404) throw new Unavailable("This text is no longer held — the monitor has restarted or let it go. Open it again from its session.");
     if (!probe.ok) throw new Unavailable(`This document cannot be opened here (HTTP ${probe.status}).`);
     return { ...reader(want), name: want.path.split("/").pop() };
   }
   const abs = want.root === "/" ? `/${want.path}` : `${want.root.replace(/\/+$/, "")}/${want.path}`;
   try {
-    return await opened(abs, want.cap);
+    return await opened(abs, want.cap, handle);
   } catch (error) {
     if (/HTTP 401/.test(error.message)) throw new Unavailable("Reading local files requires pairing — run `agent-monitor --pair`.");
     throw new Unavailable(`This document cannot be opened here (${error.message}).`);
@@ -314,10 +326,11 @@ async function standaloneMount(want) {
  */
 export async function mountStandalone(el, search = location.search, moved = () => {}) {
   const want = standaloneFacts(search);
-  const version = mdrevVersion();
+  const handle = backend();
+  const version = assets()?.mdrevVersion || handle.mdrevVersion();
   if (!version) throw new Unavailable("This server carries no Markdown viewer.");
   if (!want.root || !want.path) throw new Unavailable("This address names no document.");
-  const [{ mountMdrev }, facts] = await Promise.all([loadMdrev(version), standaloneMount(want)]);
+  const [{ mountMdrev }, facts] = await Promise.all([loadMdrev(version, handle), standaloneMount(want, handle)]);
   const name = facts.name || want.path;
-  return mountAt(mountMdrev, el, { ...facts, range: want.range }, place => moved({ title: place.path.split("/").pop() || name, query: standaloneQuery(place) }), backend().mdrevUrl(REVIEW_CONTRACT));
+  return mountAt(mountMdrev, el, { ...facts, range: want.range }, place => moved({ title: place.path.split("/").pop() || name, query: standaloneQuery(place) }), handle, handle.mdrevUrl(REVIEW_CONTRACT));
 }

@@ -287,7 +287,7 @@ export const APP_CHROME = Object.freeze([
 export const LIST_CHROME = Object.freeze([
   "#sessionList", ".session-list", ".session-list-head", ".pl-max-w-231",
   ".agent-label", ".agent-monogram",
-  ".arrange-strip", ".arrange-strip-box", ".arrange-strip-close", ".arrange-strip-text",
+  ".arrange-strip", ".arrange-strip-box", ".arrange-strip-close", ".arrange-strip-detail", ".arrange-strip-more", ".arrange-strip-text",
   ".arranged-empty", ".arranged-group", ".arranged-head", ".arranged-label", ".arranged-rest", ".arranged-view",
   ".no-results",
   ".machine-stale",
@@ -367,7 +367,7 @@ export const ROOT_CLASSES = Object.freeze([
  *  A name that is one of these, or starts with one and a hyphen. */
 export const OUTSIDE = Object.freeze([
   "#navigatorTurns", "#navigatorWork", "#navigatorAgents", ".navigator-list",
-  ".activity-empty", ".agent-state", ".agents-filter-row", ".outline-agent", ".outline-epoch", ".outline-label", ".outline-number", ".outline-peer",
+  ".activity-empty", ".agent-state", ".agents-filter-row", ".tasks-filter-row", ".outline-agent", ".outline-epoch", ".outline-label", ".outline-number", ".outline-peer",
   ".outline-quote-marker", ".outline-quoted", ".outline-reply-count", ".outline-turn-pending", ".outline-turn-row",
   ".task-state", ".work-copy", ".work-group", ".work-tail", ".work-task",
 ]);

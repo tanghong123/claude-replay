@@ -109,6 +109,43 @@ export function pageHandle() {
   });
 }
 
+/** The members `assets` takes (#s595), each a string: mdrev's base, its release, the Mermaid runtime. */
+const ASSET_MEMBERS = Object.freeze(["mdrev", "mdrevVersion", "mermaid"]);
+
+/** Refuse `assets` that are not `{ mdrev, mdrevVersion, mermaid }`, three strings, the last two not
+ *  empty (`who` names the caller in the refusal); none at all is fine. */
+export function checkAssets(given, who) {
+  if (given === undefined) return;
+  if (given === null || typeof given !== "object" || Array.isArray(given)) throw new Error(`${who} takes its assets as { mdrev, mdrevVersion, mermaid }, or none`);
+  for (const name of Object.keys(given)) if (!ASSET_MEMBERS.includes(name)) throw new Error(`${who} takes no asset named ${name}; its assets are ${ASSET_MEMBERS.join(", ")}`);
+  for (const name of ASSET_MEMBERS) {
+    if (typeof given[name] !== "string" || (name !== "mdrev" && !given[name])) throw new Error(`${who} takes its assets' ${name} as ${name === "mdrev" ? "a base, \"\" for the page's root" : "a string that is not empty"}`);
+  }
+}
+
+// What the host carries itself rather than reading from the server (#s595, design/app-mount.md, "Kept
+// for the native app"): mdrev's bundle and the Mermaid runtime, which the native app bundles at the
+// releases the kit pins, so no code from a machine runs in its page. Null where the server serves both.
+let pinnedAssets = null;
+
+/** The assets the view loads from now, or null for none: `mdrevUrl(path)` (a path of mdrev's bundle,
+ *  `/mdrev/<version>/…`), `mdrevVersion` and `mermaid`. */
+export const assets = () => pinnedAssets;
+
+/** The view says what its host carries as it mounts (`checkAssets` has refused anything else). */
+export function useAssets(given) {
+  if (!given) { pinnedAssets = null; return; }
+  const root = given.mdrev.replace(/\/+$/, "");
+  pinnedAssets = Object.freeze({
+    mdrevUrl: path => {
+      if (typeof path !== "string" || !path.startsWith("/")) throw new TypeError(`not a bundle path: ${path}`);
+      return root + path;
+    },
+    mdrevVersion: given.mdrevVersion,
+    mermaid: given.mermaid,
+  });
+}
+
 let current = pageHandle();
 
 /** The handle the page's components use now. */

@@ -5,7 +5,7 @@
 .mdrev-host [contenteditable="false"] { -webkit-user-modify: read-only; }
 .mdrev-host.is-contained { contain: layout; }
 .mdrev-host:not(.is-contained) { height: auto; overflow: visible; }
-.mdrev-host .doc {--read-body:1rem;--read-line:1.5;--read-measure:44rem;--read-rhythm:1.25em;--read-serif:ui-serif, "New York", "Iowan Old Style", "Palatino Linotype", Georgia, serif;--read-sans:-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;--read-face:var(--read-sans);--read-head:var(--read-serif);font-family:var(--read-face);font-size:var(--read-body);line-height:var(--read-line);color:var(--ink);font-kerning:normal;text-rendering:optimizelegibility;hanging-punctuation:first last;text-autospace:normal}
+.mdrev-host .doc {--read-body:1rem;--read-line:1.5;--read-measure:44rem;--read-rhythm:1.25em;--read-serif:ui-serif, "New York", "Iowan Old Style", "Palatino Linotype", Georgia, serif;--read-sans:-apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;--read-face:var(--read-sans);--read-head:var(--read-serif);font-family:var(--read-face);font-size:var(--read-body);line-height:var(--read-line);color:var(--ink);font-kerning:normal;text-rendering:optimizelegibility;hanging-punctuation:first last;text-autospace:normal;overflow-wrap:break-word}
 .mdrev-host .doc.face-serif {--read-face:var(--read-serif);--read-head:var(--read-serif)}
 .mdrev-host .doc.face-sans {--read-face:var(--read-sans);--read-head:var(--read-sans)}
 .mdrev-host .doc.density-compact {--read-line:1.42;--read-rhythm:1.02em}
@@ -1323,7 +1323,13 @@
 .mdrev-host .mdv-auto-commit-knob:after {transition:none}
 }
 .mdrev-host .app.is-phone .mdv-mode-switch, .mdrev-host .app.is-phone .mdv-auto-commit, .mdrev-host .app.is-phone .mdv-edit-tab {margin-left:0}
-.mdrev-host .app.is-phone .mdv-mode-option {padding:1px 6px}
+.mdrev-host .app.is-phone .mdv-mode-option {padding:1px 6px;position:relative}
+.mdrev-host .app.is-phone .mdv-mode-switch {overflow:visible}
+.mdrev-host .app.is-phone .mdv-mode-option:first-child {border-radius:5px 0 0 5px}
+.mdrev-host .app.is-phone .mdv-mode-option:last-child {border-radius:0 5px 5px 0}
+.mdrev-host .app.is-phone .mdv-mode-option:after {content:"";width:44px;min-width:100%;height:44px;margin-top:-22px;position:absolute;top:50%}
+.mdrev-host .app.is-phone .mdv-mode-option:first-child:after {right:0}
+.mdrev-host .app.is-phone .mdv-mode-option:last-child:after {left:0}
 .mdrev-host .app.is-phone .mdv-auto-commit {gap:0;padding:1px 4px}
 .mdrev-host .app.is-phone .mdv-auto-commit-words {display:none}
 .mdrev-host .mdv-edit-card-diff {gap:6px;display:grid}
@@ -1370,7 +1376,8 @@
 .mdrev-host .mdv-edit-card-actions button, .mdrev-host .mdv-edit-card-show, .mdrev-host .mdv-table-card button, .mdrev-host .mdv-source-readonly button {min-height:44px}
 }
 .mdrev-host .doc li.mdv-src-li {list-style:none}
-.mdrev-host .doc .mdv-src-cell, .mdrev-host .doc .mdv-src-line {overflow-wrap:normal}
+.mdrev-host .doc .mdv-src-cell {overflow-wrap:normal}
+.mdrev-host .doc .mdv-src-line {overflow-wrap:break-word}
 .mdrev-host .doc .mdv-src-item {white-space:pre-wrap;overflow-wrap:anywhere}
 .mdrev-host .doc[data-discuss-live] .mdv-discuss {margin:.5em 0 1.2em;padding-left:32px;list-style:none}
 .mdrev-host .doc .mdv-discuss-item {padding:.12em 0;transition:color .12s}

@@ -8162,10 +8162,12 @@ fn a_follower_the_browser_moves_with_no_input_keeps_following() {
     // In one task: the transcript's scroll events held from the engine (delivered late, as WebKit's
     // was); the last three units gone and the layout read, so the browser clamps the offset to the
     // shorter content; the units back; and a mounted unit a few pixels taller, so the engine measures
-    // in the next frame, before the held event.
+    // in the next frame, before the held event. Taller by its own padding and 7px: a fixed padding was no change
+    // to a first unit already padded so (a process card's 14px, once #s580's user turns shifted the
+    // window), and the engine had nothing to measure.
     let moved = harness::probe(
         &tab,
-        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__held = 0; window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__held++; window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); units[0].style.paddingBottom = '7px'; return { top: Math.round(top), clamped: Math.round(clamped), gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
+        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__held = 0; window.__heldEvents = []; window.__hold = function (e) { if (e.target === s) { e.stopImmediatePropagation(); window.__held++; window.__heldEvents.push(e); } }; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); units[0].style.paddingBottom = (parseFloat(getComputedStyle(units[0]).paddingBottom) + 7) + 'px'; return { top: Math.round(top), clamped: Math.round(clamped), gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
     );
     // Read once the engine has transacted, well inside the two seconds the tail waits for the event.
     harness::until(
@@ -8189,7 +8191,7 @@ fn a_follower_the_browser_moves_with_no_input_keeps_following() {
     // again, every two seconds, for as long as no event came (the review of 68a629b3).
     let moved_again = harness::probe(
         &tab,
-        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__held = 0; window.__heldEvents = []; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); units[0].style.paddingBottom = '14px'; return { top: Math.round(top), clamped: Math.round(clamped), gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
+        "(function(){ var s = document.querySelector('.transcript'); window.__t0 = performance.now(); window.__held = 0; window.__heldEvents = []; window.addEventListener('scroll', window.__hold, true); var units = [...s.querySelectorAll('.virtual-window > [data-unit-index]')]; var gone = units.slice(-3); var top = s.scrollTop; gone.forEach(function (e) { e.style.display = 'none'; }); var clamped = s.scrollTop; gone.forEach(function (e) { e.style.display = ''; }); units[0].style.paddingBottom = (parseFloat(getComputedStyle(units[0]).paddingBottom) + 7) + 'px'; return { top: Math.round(top), clamped: Math.round(clamped), gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop) }; })()",
     );
     harness::until(
         &tab,
@@ -13059,8 +13061,9 @@ fn the_app_shell_resizes_the_pane_with_the_pointer() {
 /// the window, the session view lays out its parts by the owner's order from its own width: the
 /// session at M (480px), then the right pane beside it at M, then the outline's glyphs in their
 /// column, then the outline; what is left goes to the session and the pane, equally until the reader
-/// drags. Where the glyphs have no column they join the top bar, with the outline's control and Info,
-/// and each opens its list as a 290px panel over the transcript's right edge. The outline's control
+/// drags. Where the glyphs have no column they join the top bar, with Info (the outline's expand
+/// control stays in its column, #s582), and each opens its list as a 290px panel over the
+/// transcript's right edge. The outline's control
 /// keeps the reader's choice apart from what the width forces, and the host hears only the choice
 /// (`onOutline`): once as the mount returns, and on each press that changes it.
 #[test]
@@ -13186,7 +13189,8 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
     near(&glyphs, "transcript", "width", 510.0);
     footer_under_glyphs(&glyphs);
     near(&glyphs, "preview", "width", 511.0);
-    // 1000px: the glyphs leave their column for the top bar (971px), with the outline's control and Info.
+    // 1000px: the glyphs leave their column for the top bar (971px), with Info; the outline's expand
+    // control stays in the column, out of the bar (#s582).
     let bar = at(1000.0, true);
     assert!(
         has(&bar, "pl-pane-column") && has(&bar, "pl-outline-bar"),
@@ -13201,7 +13205,7 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
         (
             serde_json::json!(3),
             serde_json::json!(true),
-            serde_json::json!(true)
+            serde_json::json!(false)
         ),
         "{bar}"
     );
@@ -13447,20 +13451,104 @@ fn the_session_view_in_a_host_arranges_its_parts_by_the_owners_order() {
     );
 }
 
-/// #s520: with a mouse, where the outline's glyphs join the session's top bar (a session column of
-/// 480–547px: a 554–621px window beside the rail, a 490–553px one under the drawer's handle, a
-/// 1035–1102px one with the right pane open beside the session, a host's pane of the same), the bar
-/// holds its title, the search box, Aa, Turns, Tasks, Agents, the outline's control, Info and the
-/// pane's control. It used to lay them out at their widest: the search box kept 180 or 286px, so
-/// the title was squeezed to one letter and Info and the pane's control went past the window or
-/// under the open pane's tabs. Every control the bar shows lies inside the session's column, never
-/// under the pane, and a pointer at its centre reaches it; the title shows at least its first word;
-/// and the search box, folded to its glyph there, opens to its width on a click and folds back. A
-/// finger's press on it opens nothing as it lands; the tap's click opens it, with its field focused
-/// (#s547).
+/// Info's card in the glyphs' bar (#s582): pinned from the bar's Info, it heads with the session's
+/// name, whole and inside the card, its agent and project and its state beside it; a press on the
+/// name opens its menu (a hover does not: a mouse on its way into the card crosses the name), which
+/// lies inside the card where a pointer reaches each of its rows. The card follows the bar in the
+/// page, so a Tab from Info reaches the name, and Info says whether the card is open; Escape closes
+/// the menu alone, and the next the card, the focus back on Info.
+fn card_heads_with_the_session(tab: &headless_chrome::Tab, what: &str) {
+    harness::click_when_settled(tab, "#phoneInfo", "Info in the bar");
+    let card = "(function(){ var c = document.getElementById('infoPopover'), h = c && c.querySelector(':scope>.session-heading'), t = document.getElementById('sessionTitle'), k = document.getElementById('sessionCrumb'); if (!c || !c.classList.contains('open') || !h) return { open: !!c && c.classList.contains('open'), head: !!h }; var C = c.getBoundingClientRect(), T = t.getBoundingClientRect(), K = k.getBoundingClientRect(); var inside = function (b) { return b.width > 0 && b.left >= C.left - 0.5 && b.right <= C.right + 0.5 && b.top >= C.top - 0.5; }; var hit = document.elementFromPoint(T.left + Math.min(20, T.width / 2), T.top + T.height / 2); var bar = document.querySelector('#sessionView .workspace>.topbar'); var tabbable = c.querySelector('button, [href], input, [tabindex]:not([tabindex=\"-1\"])'); return { open: true, head: true, first: c.firstElementChild === h, whole: t.scrollWidth <= t.clientWidth + 1, title: inside(T), crumb: inside(K) && k.textContent.trim().length > 0, hits: !!hit && t.contains(hit), hitWhat: hit ? hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') + (typeof hit.className === 'string' && hit.className ? '.' + hit.className.trim().split(/\\s+/).join('.') : '') + (hit.closest('#infoPopover') ? ' in the card' : '') : null, afterBar: bar.nextElementSibling === c, nameFirst: tabbable === t, expanded: document.getElementById('phoneInfo').getAttribute('aria-expanded') }; })()";
+    harness::until(
+        tab,
+        &format!("(function(){{ var s = {card}; return s.open && s.head && document.getElementById('infoPopover').getAnimations({{ subtree: true }}).length === 0; }})()"),
+        &format!("{what}: Info's card pinned, with the session at its head"),
+        Duration::from_secs(5),
+        &format!("JSON.stringify({card})"),
+    );
+    let seen = harness::probe(tab, card);
+    let mut core = seen.clone();
+    if let Some(fields) = core.as_object_mut() {
+        fields.remove("hitWhat");
+    }
+    assert_eq!(
+        core,
+        serde_json::json!({ "open": true, "head": true, "first": true, "whole": true, "title": true, "crumb": true, "hits": true, "afterBar": true, "nameFirst": true, "expanded": "true" }),
+        "{what}: the card heads with the session's name, whole, and its agent and project, right after the bar (a Tab from Info reaches the name), and Info says it is open: {seen}"
+    );
+    // A mouse resting on the name opens nothing there.
+    let over = harness::probe(
+        tab,
+        "(function(){ var r = document.getElementById('sessionTitle').getBoundingClientRect(); return { x: Math.round(r.left + Math.min(20, r.width / 2)), y: Math.round(r.top + r.height / 2) }; })()",
+    );
+    tab.move_mouse_to_point(headless_chrome::browser::tab::point::Point {
+        x: over["x"].as_f64().unwrap_or(0.0),
+        y: over["y"].as_f64().unwrap_or(0.0),
+    })
+    .expect("the mouse over the session's name");
+    std::thread::sleep(Duration::from_millis(400));
+    assert_eq!(
+        harness::eval(
+            tab,
+            "document.getElementById('sessionCopyMenu').classList.contains('open')"
+        ),
+        serde_json::json!(false),
+        "{what}: a hover on the name in Info's card opens no menu"
+    );
+    harness::click_when_settled(tab, "#sessionTitle", "the session's name in Info's card");
+    let menu = "(function(){ var m = document.getElementById('sessionCopyMenu'), c = document.getElementById('infoPopover'); if (!m || !m.classList.contains('open')) return { open: false }; var M = m.getBoundingClientRect(), C = c.getBoundingClientRect(); var reach = function (b) { var B = b.getBoundingClientRect(), hit = document.elementFromPoint(B.left + B.width / 2, B.top + B.height / 2); return !!hit && b.contains(hit); }; var rows = m.querySelectorAll('button'); return { open: true, inside: M.left >= C.left - 0.5 && M.right <= C.right + 0.5 && M.bottom <= C.bottom + 0.5, reached: rows.length > 1 && reach(rows[0]) && reach(rows[rows.length - 1]), card: c.classList.contains('open') }; })()";
+    harness::until(
+        tab,
+        &format!("{menu}.open"),
+        &format!("{what}: a press on the name to open its menu"),
+        Duration::from_secs(5),
+        &format!("JSON.stringify({menu})"),
+    );
+    let opened = harness::probe(tab, menu);
+    assert_eq!(
+        opened,
+        serde_json::json!({ "open": true, "inside": true, "reached": true, "card": true }),
+        "{what}: the name's menu opens inside the card, where a pointer reaches it: {opened}"
+    );
+    // Escape closes the menu alone, the card still open; the next closes the card and gives the focus
+    // inside it back to the bar's Info.
+    let escape = "(function(){ (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); return 1; })()";
+    let layers = "JSON.stringify({ card: document.getElementById('infoPopover').className, menu: document.getElementById('sessionCopyMenu').className, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName) })";
+    harness::eval(tab, escape);
+    harness::until(
+        tab,
+        "!document.getElementById('sessionCopyMenu').classList.contains('open') && document.getElementById('infoPopover').classList.contains('open')",
+        &format!("{what}: Escape to close the name's menu and leave the card open"),
+        Duration::from_secs(5),
+        layers,
+    );
+    harness::eval(tab, escape);
+    harness::until(
+        tab,
+        "!document.getElementById('infoPopover').classList.contains('open') && document.activeElement === document.getElementById('phoneInfo') && document.getElementById('phoneInfo').getAttribute('aria-expanded') === 'false'",
+        &format!("{what}: the next Escape to close the card, the focus back on the bar's Info"),
+        Duration::from_secs(5),
+        layers,
+    );
+}
+
+/// #s520, then #s582 (Hong: "when the session view pane is really tight, I'd like to have the head
+/// row to show from left to right: the three glyphs for the outline panes; search box, Aa, i, and the
+/// right-drawer toggle"): with a mouse, where the outline's glyphs join the session's top bar (a
+/// session column of 480–547px: a 554–621px window beside the rail, a 490–553px one under the drawer's
+/// handle, a 1035–1102px one with the right pane open beside the session, a host's pane of the same),
+/// the bar reads, left to right, Turns, Tasks, Agents, the search box, Aa, Info and the pane's control
+/// (a host's ↗ before the last), and nothing else: the session's name, its agent and project and its
+/// state are at the head of Info's card, the name whole and still opening its menu; fold-all is in Aa's
+/// menu; the outline's expand control is not in the bar. Every control the bar shows lies inside the
+/// session's column, never under the pane, and a pointer at its centre reaches it. The search box is a
+/// box at rest; in use it takes the glyphs' room too, and gives it back as it rests. A finger's press on
+/// it holds nothing as it lands; the tap's click opens it, with its field focused (#s547). Out of that
+/// band the name is back in the bar, keeping its first word, and the card has no heading.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
-fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
+fn the_tight_session_top_bar_reads_glyphs_search_aa_info_and_pane() {
     let _serial = serial();
     let base = base("topbar-band");
     let stores = Stores::new(&base);
@@ -13472,10 +13560,11 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
     // What the bar shows, read where a reader would: each shown control's box against the session's
-    // column (`.workspace`) and the open pane, and what a pointer at its centre reaches; the
-    // title's room against its first word (a Range over the word, and the ellipsis a longer title
-    // draws).
-    let probe = "(function(){ var v = document.getElementById('sessionView'); var ws = v.querySelector('.workspace'), bar = ws.querySelector(':scope>.topbar'); var pv = v.classList.contains('preview-off') ? null : v.querySelector('.preview'); var W = ws.getBoundingClientRect(), P = pv ? pv.getBoundingClientRect() : null; var r4 = function (b) { return [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)]; }; var name = function (e) { return !e ? 'nothing' : e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + String(e.getAttribute('class') || '').split(' ')[0]; }; var bad = []; var shown = [].filter.call(bar.querySelectorAll('button, .header-searchbox'), function (e) { var b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && getComputedStyle(e).visibility !== 'hidden'; }); ['phoneInfo', 'previewBtn'].forEach(function (id) { if (shown.indexOf(document.getElementById(id)) < 0) bad.push('#' + id + ' is not shown'); }); shown.forEach(function (e) { var b = e.getBoundingClientRect(), hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2), why = []; if (b.left < W.left - 0.5 || b.right > W.right + 0.5) why.push('outside the session column ' + r4(W)); if (P && b.right > P.left + 0.5) why.push('under the pane from ' + Math.round(P.left)); if (!hit || !(hit === e || e.contains(hit))) why.push('its centre reaches ' + name(hit)); if (why.length) bad.push(name(e) + ' ' + r4(e.getBoundingClientRect()) + ': ' + why.join(', ')); }); var t = document.getElementById('sessionTitle'), text = t.textContent.trim(), word = text.split(/\\s+/)[0], node = t.firstChild, at = t.textContent.indexOf(word); var range = document.createRange(); range.setStart(node, at); range.setEnd(node, at + word.length); var cs = getComputedStyle(t), room = t.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); var ctx = document.createElement('canvas').getContext('2d'); ctx.font = cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily; var need = range.getBoundingClientRect().width + (text.length > word.length ? ctx.measureText('\\u2026').width : 0); var tb = t.getBoundingClientRect(); if (room + 0.5 < need) bad.push('the title has ' + Math.round(room) + 'px of the ' + Math.ceil(need) + 'px its first word \"' + word + '\" needs'); if (tb.left < W.left - 0.5 || tb.right > W.right + 0.5) bad.push('the title ' + r4(tb) + ' is outside the session column'); var box = bar.querySelector('.header-searchbox'); return { width: innerWidth, classes: v.className, workspace: r4(W), pane: P ? r4(P) : null, title: text, search: Math.round(box.getBoundingClientRect().width), focused: document.activeElement ? document.activeElement.id : '', bar: shown.map(function (e) { return name(e) + ' ' + r4(e.getBoundingClientRect()); }), bad: bad }; })()";
+    // column (`.workspace`) and the open pane, and what a pointer at its centre reaches; the bar's
+    // controls in the order they are drawn (its own children, the app's back and list controls set
+    // apart); and where the title is, with its room against its first word when the bar draws it (a
+    // Range over the word, and the ellipsis a longer title draws).
+    let probe = "(function(){ var v = document.getElementById('sessionView'); var ws = v.querySelector('.workspace'), bar = ws.querySelector(':scope>.topbar'); var pv = v.classList.contains('preview-off') ? null : v.querySelector('.preview'); var W = ws.getBoundingClientRect(), P = pv ? pv.getBoundingClientRect() : null; var r4 = function (b) { return [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)]; }; var name = function (e) { return !e ? 'nothing' : e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + String(e.getAttribute('class') || '').split(' ')[0]; }; var drawn = function (e) { var b = e.getBoundingClientRect(); return b.width > 0 && b.height > 0 && getComputedStyle(e).visibility !== 'hidden'; }; var bad = []; var shown = [].filter.call(bar.querySelectorAll('button, .header-searchbox'), drawn); (v.classList.contains('pl-outline-bar') ? ['phoneInfo', 'previewBtn'] : ['previewBtn']).forEach(function (id) { if (shown.indexOf(document.getElementById(id)) < 0) bad.push('#' + id + ' is not shown'); }); shown.forEach(function (e) { var b = e.getBoundingClientRect(), hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2), why = []; if (b.left < W.left - 0.5 || b.right > W.right + 0.5) why.push('outside the session column ' + r4(W)); if (P && b.right > P.left + 0.5) why.push('under the pane from ' + Math.round(P.left)); if (!hit || !(hit === e || e.contains(hit))) why.push('its centre reaches ' + name(hit)); if (why.length) bad.push(name(e) + ' ' + r4(e.getBoundingClientRect()) + ': ' + why.join(', ')); }); var kids = [].filter.call(bar.children, drawn).sort(function (x, y) { return x.getBoundingClientRect().left - y.getBoundingClientRect().left; }).map(function (e) { return e.classList.contains('header-search-cluster') ? 'search' : e.classList.contains('reading-cluster') ? 'aa' : e.classList.contains('session-heading') ? 'title' : name(e); }); var lead = kids.filter(function (k) { return k === '#mobileBack' || k === '#sidebarReopen'; }); var order = kids.filter(function (k) { return lead.indexOf(k) < 0; }); if (kids.slice(0, lead.length).join() !== lead.join()) bad.push('the app\\'s own controls ' + lead.join() + ' do not lead the bar: ' + kids.join()); var t = document.getElementById('sessionTitle'), text = t.textContent.trim(), where = bar.contains(t) ? 'bar' : t.closest('#infoPopover') ? 'card' : 'elsewhere'; if (where === 'bar') { var word = text.split(/\\s+/)[0], node = t.firstChild, at = t.textContent.indexOf(word); var range = document.createRange(); range.setStart(node, at); range.setEnd(node, at + word.length); var cs = getComputedStyle(t), room = t.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); var ctx = document.createElement('canvas').getContext('2d'); ctx.font = cs.fontStyle + ' ' + cs.fontWeight + ' ' + cs.fontSize + ' ' + cs.fontFamily; var need = range.getBoundingClientRect().width + (text.length > word.length ? ctx.measureText('\\u2026').width : 0); var tb = t.getBoundingClientRect(); if (room + 0.5 < need) bad.push('the title has ' + Math.round(room) + 'px of the ' + Math.ceil(need) + 'px its first word \\\"' + word + '\\\" needs'); if (tb.left < W.left - 0.5 || tb.right > W.right + 0.5) bad.push('the title ' + r4(tb) + ' is outside the session column'); } var box = bar.querySelector('.header-searchbox'); return { width: innerWidth, classes: v.className, workspace: r4(W), pane: P ? r4(P) : null, title: text, where: where, cardHeads: !!document.querySelector('#infoPopover>.session-heading'), search: Math.round(box.getBoundingClientRect().width), field: Math.round(document.getElementById('transcriptSearchInput').getBoundingClientRect().width), focused: document.activeElement ? document.activeElement.id : '', order: order, bar: shown.map(function (e) { return name(e) + ' ' + r4(e.getBoundingClientRect()); }), bad: bad }; })()";
     let settled = |width: u32, open: bool| {
         format!("innerWidth === {width} && {VIEW_CAUGHT_UP} && document.getElementById('sessionView').classList.contains('preview-off') === {} && document.getElementById('sessionView').getAnimations({{ subtree: true }}).filter(function (a) {{ return a instanceof CSSTransition; }}).length === 0 && document.getElementById('sessionTitle').textContent === 'Harbour tide table notes'", !open)
     };
@@ -13502,7 +13591,35 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         harness::until_preview_parked(tab);
         harness::probe(tab, probe)
     };
-    let fits = |seen: &serde_json::Value, what: &str| {
+    // The bar's order at rest, and while the search is in use; a host's ↗ stands before the pane's
+    // control where the host shows it.
+    const REST: [&str; 7] = [
+        "#phonePane-turns",
+        "#phonePane-tasks",
+        "#phonePane-agents",
+        "search",
+        "aa",
+        "#phoneInfo",
+        "#previewBtn",
+    ];
+    const IN_USE: [&str; 4] = ["search", "aa", "#phoneInfo", "#previewBtn"];
+    let ordered = |seen: &serde_json::Value, want: &[&str]| -> bool {
+        let got: Vec<&str> = seen["order"]
+            .as_array()
+            .map(|o| o.iter().filter_map(|x| x.as_str()).collect())
+            .unwrap_or_default();
+        let without: Vec<&str> = got
+            .iter()
+            .copied()
+            .filter(|x| *x != "#sessionNewTab")
+            .collect();
+        let tab_in_place = got
+            .iter()
+            .position(|x| *x == "#sessionNewTab")
+            .is_none_or(|i| got.get(i + 1) == Some(&"#previewBtn"));
+        without == want && tab_in_place
+    };
+    let fits_as = |seen: &serde_json::Value, want: &[&str], what: &str| {
         assert!(
             seen["classes"]
                 .as_str()
@@ -13512,9 +13629,19 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         assert_eq!(
             seen["bad"],
             serde_json::json!([]),
-            "{what}: the top bar keeps its title and every control inside the session's column: {seen}"
+            "{what}: the top bar keeps every control inside the session's column: {seen}"
+        );
+        assert!(
+            ordered(seen, want),
+            "{what}: the bar reads {want:?} and nothing else: {seen}"
+        );
+        assert_eq!(
+            (seen["where"].as_str(), seen["cardHeads"].as_bool()),
+            (Some("card"), Some(true)),
+            "{what}: the session's name heads Info's card, not the bar: {seen}"
         );
     };
+    let fits = |seen: &serde_json::Value, what: &str| fits_as(seen, &REST, what);
 
     // The app shell.
     let url = monitor.url(&format!("?ui=app&session={sid}"));
@@ -13531,35 +13658,25 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     // 540px: the drawer's handle at the bar's left, the session 520px.
     let narrow = at(&tab, 540, false, "the app");
     fits(&narrow, "the app at 540px");
-    // A click on the folded search box opens it to its width, for typing, and still inside the
-    // column.
-    harness::click_when_settled(
-        &tab,
-        ".workspace>.topbar .header-searchbox",
-        "the search box",
+    // At rest the search box is a box with the bar's room, its field shown.
+    assert!(
+        narrow["search"].as_i64().unwrap_or(0) >= 150
+            && narrow["field"].as_i64().unwrap_or(0) >= 40,
+        "at rest the search box is a box, its field shown: {narrow}"
     );
+    // A click on it puts it in use, for typing: the glyphs give it their room, and everything stays
+    // inside the column.
+    harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
     harness::until(
         &tab,
-        "document.activeElement && document.activeElement.id === 'transcriptSearchInput' && document.querySelector('.workspace>.topbar .header-searchbox').getBoundingClientRect().width >= 200 && document.getElementById('sessionView').getAnimations({ subtree: true }).filter(function (a) { return a instanceof CSSTransition; }).length === 0",
-        "the search box to open for typing",
+        "document.activeElement && document.activeElement.id === 'transcriptSearchInput' && document.querySelector('.workspace>.topbar .header-searchbox').getBoundingClientRect().width >= 200 && document.getElementById('phonePane-turns').getBoundingClientRect().width === 0 && document.getElementById('sessionView').getAnimations({ subtree: true }).filter(function (a) { return a instanceof CSSTransition; }).length === 0",
+        "the search box to take the glyphs' room for typing",
         Duration::from_secs(5),
         "({ focused: document.activeElement && document.activeElement.id, width: document.querySelector('.workspace>.topbar .header-searchbox').getBoundingClientRect().width })",
     );
     let typing = harness::probe(&tab, probe);
-    let typed_bad: Vec<_> = typing["bad"]
-        .as_array()
-        .map(|b| {
-            b.iter()
-                .filter(|x| !x.as_str().unwrap_or("").starts_with("the title"))
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
-    assert!(
-        typed_bad.is_empty(),
-        "the open search box and the controls beside it stay inside the column: {typing}"
-    );
-    // A press outside the search folds it back to its glyph.
+    fits_as(&typing, &IN_USE, "the app at 540px, the search in use");
+    // A press outside the search lets it rest: the glyphs come back.
     let box_width = "document.querySelector('.workspace>.topbar .header-searchbox').getBoundingClientRect().width";
     let press_outside = || {
         let at = harness::probe(
@@ -13572,12 +13689,12 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         })
         .expect("a press on the transcript");
     };
-    let folded = format!("{box_width} < 60 && document.getElementById('sessionTitle').getBoundingClientRect().width > 0 && document.getElementById('navigatorRailExpand').getBoundingClientRect().width > 0 && !document.getElementById('navigatorOptions').classList.contains('open')");
+    let folded = format!("(function(){{ var c = document.querySelector('.workspace>.topbar>.header-search-cluster'); return !c.matches(':focus-within') && !c.classList.contains('search-held') && {box_width} >= 150 && document.getElementById('phonePane-turns').getBoundingClientRect().width > 0 && !document.getElementById('navigatorOptions').classList.contains('open'); }})()");
     press_outside();
     harness::until(
         &tab,
         &folded,
-        "the search box to fold back to its glyph at a press outside",
+        "the search box to rest at a press outside, the glyphs back",
         Duration::from_secs(5),
         box_width,
     );
@@ -13594,22 +13711,23 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     harness::until(
         &tab,
         &folded,
-        "the search box to fold back",
+        "the search box to rest again",
         Duration::from_secs(5),
         box_width,
     );
-    // A finger's press on the glyph changes nothing as it lands (#s547's iPad walk): WebKit spends
+    // A finger's press on the box at rest changes nothing as it lands (#s547's iPad walk): WebKit spends
     // a tap whose press shows content as a hover and sends no click, so a box held open at the
     // press left its field without the focus, and nothing could be typed. The press is the page's
-    // own pointerdown as a finger gives it; the tap's click then opens the box with the field
-    // focused.
+    // own pointerdown as a finger gives it; the tap then gives the field its focus, as a touch
+    // browser does a tapped field (a script's click on a field focuses nothing), and the box takes
+    // the glyphs' room.
     let finger = harness::probe(
         &tab,
-        "(function(){ var box = document.querySelector('.workspace>.topbar .header-searchbox'); var r = box.getBoundingClientRect(); var at = { pointerType: 'touch', isPrimary: true, bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }; box.dispatchEvent(new PointerEvent('pointerdown', at)); var held = document.querySelector('.header-search-cluster').classList.contains('search-held'); box.dispatchEvent(new PointerEvent('pointerup', at)); box.click(); return { held: held }; })()",
+        "(function(){ var box = document.getElementById('transcriptSearchInput'); var r = box.getBoundingClientRect(); var at = { pointerType: 'touch', isPrimary: true, bubbles: true, cancelable: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 }; box.dispatchEvent(new PointerEvent('pointerdown', at)); var held = document.querySelector('.header-search-cluster').classList.contains('search-held'); box.dispatchEvent(new PointerEvent('pointerup', at)); box.focus(); box.click(); return { held: held }; })()",
     );
     assert_eq!(
         finger["held"], false,
-        "a finger's press on the folded search box opens nothing as it lands: {finger}"
+        "a finger's press on the search box at rest holds nothing as it lands: {finger}"
     );
     harness::until(
         &tab,
@@ -13622,22 +13740,18 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     harness::until(
         &tab,
         &folded,
-        "the search box to fold back after the finger's tap",
+        "the search box to rest after the finger's tap",
         Duration::from_secs(5),
         box_width,
     );
     // As Safari and Firefox on a Mac press a button: no focus for it, so the field loses its focus
     // at the press. The open box's step and filter still take their click, and a press outside then
-    // shuts the filter and folds the box, the heading and the outline's control back in the bar.
+    // shuts the filter and lets the box rest, the glyphs back in the bar.
     harness::eval(
         &tab,
         "window.__noButtonFocus = function (e) { if (!e.target.closest || !e.target.closest('button')) return; e.preventDefault(); var a = document.activeElement; if (a && a !== document.body && a.blur) a.blur(); }; document.addEventListener('mousedown', window.__noButtonFocus, true); 1",
     );
-    harness::click_when_settled(
-        &tab,
-        ".workspace>.topbar .header-searchbox",
-        "the search box",
-    );
+    harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
     harness::eval(
         &tab,
         "(function(){ var i = document.getElementById('transcriptSearchInput'); i.value = 'lorem'; i.dispatchEvent(new Event('input', { bubbles: true })); if (/⏎/.test(document.getElementById('transcriptSearchCount').textContent)) i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return 1; })()",
@@ -13668,16 +13782,12 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     harness::until(
         &tab,
         &folded,
-        "Escape after a press on ↓ with no focus for the button to fold the box",
+        "Escape after a press on ↓ with no focus for the button to let the box rest",
         Duration::from_secs(5),
         &format!("JSON.stringify({{ width: {box_width}, held: document.querySelector('.header-search-cluster').className, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName) }})"),
     );
-    let reopened = format!("{box_width} >= 200 && document.getElementById('findNext').getBoundingClientRect().width > 0");
-    harness::click_when_settled(
-        &tab,
-        ".workspace>.topbar .header-searchbox",
-        "the search box",
-    );
+    let reopened = format!("{box_width} >= 200 && document.getElementById('phonePane-turns').getBoundingClientRect().width === 0 && document.getElementById('findNext').getBoundingClientRect().width > 0");
+    harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
     harness::until(
         &tab,
         &reopened,
@@ -13697,7 +13807,7 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     harness::until(
         &tab,
         &folded,
-        "a press outside to shut the filter and fold the box, the heading and the outline's control back",
+        "a press outside to shut the filter and let the box rest, the glyphs back",
         Duration::from_secs(5),
         &format!("JSON.stringify({{ width: {box_width}, menu: document.getElementById('navigatorOptions').className, title: document.getElementById('sessionTitle').getBoundingClientRect().width }})"),
     );
@@ -13705,13 +13815,152 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         &tab,
         "document.removeEventListener('mousedown', window.__noButtonFocus, true); 1",
     );
-    // As Chrome presses a button, which takes the focus: a Tab out of the open filter's rows shuts
-    // the filter and folds the box, and Escape with the focus on ↓ folds it too.
-    harness::click_when_settled(
+    // A mouse's press on the resting field, its query held, keeps the glyphs drawn and the count and the
+    // steps away until it lifts, so the text does not move under the caret the press places (the
+    // reviews of #s582): pressed near its end, where a field narrowed by the count would move the text
+    // under the pointer. As it lifts the box takes their room.
+    {
+        use headless_chrome::protocol::cdp::Input::{
+            DispatchMouseEvent, DispatchMouseEventTypeOption, MouseButton,
+        };
+        let field = harness::probe(
+            &tab,
+            "(function(){ var r = document.getElementById('transcriptSearchInput').getBoundingClientRect(); return { x: r.right - Math.min(12, r.width / 4), y: r.top + r.height / 2, left: r.left, width: r.width }; })()",
+        );
+        let (x, y) = (
+            field["x"].as_f64().expect("the field's x"),
+            field["y"].as_f64().expect("the field's y"),
+        );
+        let mouse = |kind: DispatchMouseEventTypeOption, buttons: u32| {
+            tab.call_method(DispatchMouseEvent {
+                Type: kind,
+                x,
+                y,
+                modifiers: None,
+                timestamp: None,
+                button: Some(MouseButton::Left),
+                buttons: Some(buttons),
+                click_count: Some(1),
+                force: None,
+                tangential_pressure: None,
+                tilt_x: None,
+                tilt_y: None,
+                twist: None,
+                delta_x: None,
+                delta_y: None,
+                pointer_Type: None,
+            })
+            .unwrap();
+        };
+        mouse(DispatchMouseEventTypeOption::MouseMoved, 0);
+        mouse(DispatchMouseEventTypeOption::MousePressed, 1);
+        harness::eval(&tab, TWO_FRAMES);
+        let held = harness::probe(
+            &tab,
+            "({ left: document.getElementById('transcriptSearchInput').getBoundingClientRect().left, width: document.getElementById('transcriptSearchInput').getBoundingClientRect().width, next: document.getElementById('findNext').getClientRects().length, turns: document.getElementById('phonePane-turns').getBoundingClientRect().width, focused: document.activeElement && document.activeElement.id, pressing: document.querySelector('.header-search-cluster').classList.contains('search-pressing') })",
+        );
+        mouse(DispatchMouseEventTypeOption::MouseReleased, 0);
+        assert!(
+            held["turns"].as_f64().unwrap_or(0.0) > 0.0
+                && (held["left"].as_f64().unwrap_or(f64::NAN) - field["left"].as_f64().unwrap_or(0.0)).abs() < 0.5
+                && (held["width"].as_f64().unwrap_or(f64::NAN) - field["width"].as_f64().unwrap_or(0.0)).abs() < 0.5
+                && held["next"].as_u64() == Some(0)
+                && held["focused"] == "transcriptSearchInput"
+                && held["pressing"] == true,
+            "while the press on the resting field lasts the glyphs stay and the field does not move ({field}): {held}"
+        );
+    }
+    harness::until(
         &tab,
-        ".workspace>.topbar .header-searchbox",
-        "the search box",
+        &reopened,
+        "the press on the field lifting to let the box take the glyphs' room",
+        Duration::from_secs(5),
+        &format!("JSON.stringify({{ width: {box_width}, held: document.querySelector('.header-search-cluster').className }})"),
     );
+    press_outside();
+    harness::until(
+        &tab,
+        &folded,
+        "a press outside to let the box rest again",
+        Duration::from_secs(5),
+        box_width,
+    );
+    // A press that ends without a lift the page hears ends the hold too (1f316742's review): a context
+    // menu (a Ctrl-click on a Mac is the main button, and the menu may keep the release from the page)
+    // and the window losing the focus. Each is dispatched with the button still down, so the class
+    // must go on that event alone; a real Ctrl-click opens no menu on Linux, hence the script.
+    for (what, ends) in [
+        (
+            "a context menu",
+            "document.getElementById('transcriptSearchInput').dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); 1",
+        ),
+        ("the window blurring", "window.dispatchEvent(new Event('blur')); 1"),
+    ] {
+        use headless_chrome::protocol::cdp::Input::{
+            DispatchMouseEvent, DispatchMouseEventTypeOption, MouseButton,
+        };
+        let field = harness::probe(
+            &tab,
+            "(function(){ var r = document.getElementById('transcriptSearchInput').getBoundingClientRect(); return { x: r.right - Math.min(12, r.width / 4), y: r.top + r.height / 2 }; })()",
+        );
+        let (x, y) = (
+            field["x"].as_f64().expect("the field's x"),
+            field["y"].as_f64().expect("the field's y"),
+        );
+        let mouse = |kind: DispatchMouseEventTypeOption, buttons: u32| {
+            tab.call_method(DispatchMouseEvent {
+                Type: kind,
+                x,
+                y,
+                modifiers: None,
+                timestamp: None,
+                button: Some(MouseButton::Left),
+                buttons: Some(buttons),
+                click_count: Some(1),
+                force: None,
+                tangential_pressure: None,
+                tilt_x: None,
+                tilt_y: None,
+                twist: None,
+                delta_x: None,
+                delta_y: None,
+                pointer_Type: None,
+            })
+            .unwrap();
+        };
+        let state = "({ pressing: document.querySelector('.header-search-cluster').classList.contains('search-pressing'), next: document.getElementById('findNext').getClientRects().length })";
+        mouse(DispatchMouseEventTypeOption::MouseMoved, 0);
+        mouse(DispatchMouseEventTypeOption::MousePressed, 1);
+        let down = harness::probe(&tab, state);
+        harness::eval(&tab, ends);
+        let ended = harness::probe(&tab, state);
+        mouse(DispatchMouseEventTypeOption::MouseReleased, 0);
+        assert!(
+            down["pressing"] == true
+                && down["next"].as_u64() == Some(0)
+                && ended["pressing"] == false
+                && ended["next"].as_u64().unwrap_or(0) > 0,
+            "{what} with the button still down ends the press's hold and the box takes the glyphs' room: down {down}, after {ended}"
+        );
+        harness::until(
+            &tab,
+            &reopened,
+            &format!("the box in use after {what}"),
+            Duration::from_secs(5),
+            &format!("JSON.stringify({{ width: {box_width}, held: document.querySelector('.header-search-cluster').className }})"),
+        );
+        press_outside();
+        harness::until(
+            &tab,
+            &folded,
+            &format!("a press outside to let the box rest after {what}"),
+            Duration::from_secs(5),
+            box_width,
+        );
+    }
+    // As Chrome presses a button, which takes the focus: a Tab out of the open filter's rows shuts
+    // the filter and lets the box rest, and Escape with the focus on ↓ does too.
+    harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
     harness::until(
         &tab,
         &reopened,
@@ -13736,15 +13985,11 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     harness::until(
         &tab,
         &folded,
-        "a Tab out of the open filter to shut it and fold the box",
+        "a Tab out of the open filter to shut it and let the box rest",
         Duration::from_secs(5),
         &format!("JSON.stringify({{ width: {box_width}, menu: document.getElementById('navigatorOptions').className, held: document.querySelector('.header-search-cluster').className, focused: document.activeElement && document.activeElement.id }})"),
     );
-    harness::click_when_settled(
-        &tab,
-        ".workspace>.topbar .header-searchbox",
-        "the search box",
-    );
+    harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
     harness::until(
         &tab,
         &reopened,
@@ -13764,17 +14009,13 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     harness::until(
         &tab,
         &folded,
-        "Escape with the focus on ↓ to fold the box",
+        "Escape with the focus on ↓ to let the box rest",
         Duration::from_secs(5),
         &format!("JSON.stringify({{ width: {box_width}, held: document.querySelector('.header-search-cluster').className, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName) }})"),
     );
     // A press inside a frame (the pane's page is one) sends this page no press; the focus going
     // into the frame leaves the search all the same.
-    harness::click_when_settled(
-        &tab,
-        ".workspace>.topbar .header-searchbox",
-        "the search box",
-    );
+    harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
     harness::until(
         &tab,
         &reopened,
@@ -13805,7 +14046,7 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     harness::until(
         &tab,
         &folded,
-        "a press inside a frame to fold the box",
+        "a press inside a frame to let the box rest",
         Duration::from_secs(5),
         &format!("JSON.stringify({{ width: {box_width}, held: document.querySelector('.header-search-cluster').className, focused: document.activeElement && (document.activeElement.id || document.activeElement.tagName), hasFocus: document.hasFocus() }})"),
     );
@@ -13846,6 +14087,63 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     fits(&at(&tab, 500, false, "the app"), "the app at 500px");
     // 600px: beside the rail, the session 526px.
     fits(&at(&tab, 600, false, "the app"), "the app at 600px");
+    // Info's card heads with the session: its name whole, the agent and project beside its state,
+    // and a press on the name opens its menu inside the card.
+    card_heads_with_the_session(&tab, "the app at 600px");
+    // Out of the band the name is back in the bar, keeping its first word, and the card has no head.
+    let wide = at(&tab, 1300, false, "the app");
+    assert_eq!(
+        (wide["where"].as_str(), wide["cardHeads"].as_bool(), &wide["bad"]),
+        (Some("bar"), Some(false), &serde_json::json!([])),
+        "the app at 1300px: the name is back in the bar, whole controls, and the card has no head: {wide}"
+    );
+    // There a hover on the name opens its menu, as it always has: the card's refusal is the card's.
+    let over = harness::probe(
+        &tab,
+        "(function(){ var r = document.getElementById('sessionTitle').getBoundingClientRect(); return { x: Math.round(r.left + Math.min(20, r.width / 2)), y: Math.round(r.top + r.height / 2) }; })()",
+    );
+    tab.move_mouse_to_point(headless_chrome::browser::tab::point::Point {
+        x: over["x"].as_f64().unwrap_or(0.0),
+        y: over["y"].as_f64().unwrap_or(0.0),
+    })
+    .expect("the mouse over the session's name");
+    harness::until(
+        &tab,
+        "document.getElementById('sessionCopyMenu').classList.contains('open')",
+        "a hover on the name in the bar to open its menu",
+        Duration::from_secs(5),
+        "document.getElementById('sessionCopyMenu').className",
+    );
+    tab.move_mouse_to_point(headless_chrome::browser::tab::point::Point { x: 5.0, y: 600.0 })
+        .expect("the mouse away from the name");
+    harness::until(
+        &tab,
+        "!document.getElementById('sessionCopyMenu').classList.contains('open')",
+        "the menu to close as the mouse leaves",
+        Duration::from_secs(5),
+        "document.getElementById('sessionCopyMenu').className",
+    );
+    // The name focused in the bar, its menu open, and the window narrowed to the glyphs' bar: the
+    // name goes into the shut card with its menu closed, and the focus goes to the bar's Info.
+    harness::eval(&tab, "document.getElementById('sessionTitle').focus(); 1");
+    harness::until(
+        &tab,
+        "document.getElementById('sessionCopyMenu').classList.contains('open')",
+        "a focus on the name in the bar to open its menu",
+        Duration::from_secs(5),
+        "document.getElementById('sessionCopyMenu').className",
+    );
+    let moved = at(&tab, 600, false, "the app, the name's menu open");
+    fits(&moved, "the app at 600px after the move");
+    let after = harness::probe(
+        &tab,
+        "({ menu: document.getElementById('sessionCopyMenu').classList.contains('open'), expanded: document.getElementById('sessionTitle').getAttribute('aria-expanded'), card: document.getElementById('infoPopover').classList.contains('open'), focused: document.activeElement && document.activeElement.id })",
+    );
+    assert_eq!(
+        after,
+        serde_json::json!({ "menu": false, "expanded": "false", "card": false, "focused": "phoneInfo" }),
+        "a move into the glyphs' bar closes the name's menu and hands the focus to Info: {after}"
+    );
     // 1100px, the pane open beside the session: the session 512px, its bar beside the pane's tabs.
     fits(
         &at(&tab, 1100, true, "the app"),
@@ -13857,11 +14155,7 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         &tab,
         "document.addEventListener('mousedown', window.__noButtonFocus, true); 1",
     );
-    harness::click_when_settled(
-        &tab,
-        ".workspace>.topbar .header-searchbox",
-        "the search box",
-    );
+    harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
     harness::until(
         &tab,
         &reopened,
@@ -13882,7 +14176,7 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     harness::until(
         &tab,
         &folded,
-        "a press outside to fold the box beside the pane",
+        "a press outside to let the box rest beside the pane",
         Duration::from_secs(5),
         box_width,
     );
@@ -13917,6 +14211,7 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
         "a host's 1000px pane, the pane open",
     );
     fits(&at(&tab, 490, false, "the host"), "a host's 490px pane");
+    card_heads_with_the_session(&tab, "a host's 490px pane");
     // A host that switched Aa off keeps fold-all in the bar, in Aa's room (a browser of its own too).
     drop(tab);
     drop(_browser);
@@ -13924,12 +14219,591 @@ fn the_session_top_bar_keeps_its_title_and_controls_inside_the_column() {
     harness::resize(&tab, 1000.0, 900.0);
     harness::open_host_page(&tab, &monitor, &format!("session={sid}&hide=reading"));
     let no_aa = at(&tab, 1000, true, "the host without Aa");
-    fits(&no_aa, "a host's 1000px pane without Aa");
+    fits_as(
+        &no_aa,
+        &[
+            "#phonePane-turns",
+            "#phonePane-tasks",
+            "#phonePane-agents",
+            "search",
+            "#sessionFoldAll",
+            "#phoneInfo",
+            "#previewBtn",
+        ],
+        "a host's 1000px pane without Aa",
+    );
     assert!(
         no_aa["bar"].as_array().is_some_and(|b| b
             .iter()
             .any(|x| x.as_str().unwrap_or("").starts_with("#sessionFoldAll "))),
         "without Aa, fold-all stays in the bar: {no_aa}"
+    );
+    harness::clear_metrics(&tab);
+    drop(monitor);
+}
+
+/// #s598 (hd-replay's iPad walk of #s581: sideways, the pane open, a 601px session column, a query held
+/// at rest; the field read "ridg" of "ridge" and the status chip "● D"): in a session column this
+/// narrow the bar has too little for every part's words, and what gives way is a deliberate short
+/// form, never a cut word. The query held in the search box shows whole, and the status chip shows its
+/// words whole or only its dot (its tooltip and Info say the state). Every control stays inside the
+/// column, and the name keeps its first word. Measured at 601px and 650px, bare and with a query held
+/// at rest, for a long name and for a name of a single word, which is never cut. A first word near the
+/// name's 160px cap leaves a 601px column no room for a held query beside it: the name keeps its first
+/// word first (#s520).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_narrow_session_column_keeps_a_held_query_whole_and_the_chip_whole_or_its_dot() {
+    let _serial = serial();
+    let base = base("narrow-bar");
+    let stores = Stores::new(&base);
+    // A long name, always cut at these widths, and a name of one word, never cut (its least is the
+    // word itself), whose crumb is taken off only where the crumb itself is cut.
+    let sessions = [
+        (
+            "a long name",
+            "cccccccc-0000-4000-8000-0000000005a2",
+            "Harbour tide table notes for the spring survey of every station",
+        ),
+        (
+            "a one-word name",
+            "cccccccc-0000-4000-8000-0000000005a3",
+            "hd-replay",
+        ),
+    ];
+    for (_, sid, title) in sessions {
+        let mut jsonl = harness::long_session(6, harness::Shape::default());
+        jsonl.push_str(&format!(
+            "{{\"type\":\"custom-title\",\"customTitle\":\"{title}\"}}\n"
+        ));
+        stores.claude_session(sid, &jsonl);
+    }
+    let monitor = Monitor::spawn(Kind::V1, 3161, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let column = "document.querySelector('#sessionView .workspace>.topbar').parentElement.getBoundingClientRect().width";
+    let probe = "(function(){ var bar = document.querySelector('#sessionView .workspace>.topbar'), col = bar.parentElement.getBoundingClientRect(); var t = document.getElementById('sessionTitle'), h = t.parentElement, chip = document.getElementById('statusChip'), i = document.getElementById('transcriptSearchInput'), cluster = document.querySelector('.workspace>.topbar>.header-search-cluster'); var drawn = function (e) { return !!e && e.getClientRects().length > 0 && e.getBoundingClientRect().width > 0; }; var cs = getComputedStyle(i), ctx = document.createElement('canvas').getContext('2d'); ctx.font = cs.font; var text = i.value ? ctx.measureText(i.value).width : 0; var inner = i.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight); var cr = chip.getBoundingClientRect(), dot = chip.querySelector('.state-dot'), dr = dot ? dot.getBoundingClientRect() : null; var parts = [].slice.call(bar.children).filter(drawn).map(function (e) { var r = e.getBoundingClientRect(); return (e.id ? '#' + e.id : '.' + String(e.className).split(' ')[0]) + ' ' + Math.round(r.left) + '..' + Math.round(r.right); }); var out = [].slice.call(bar.querySelectorAll('button, input, .status-chip, #sessionTitle')).filter(function (e) { var r = e.getBoundingClientRect(); return drawn(e) && (r.left < col.left - 1 || r.right > col.right + 1); }).map(function (e) { return e.id || String(e.className); }); return { col: Math.round(col.width), view: Math.round(document.getElementById('sessionView').getBoundingClientRect().width), layout: document.getElementById('sessionView').className, heading: h.className, cluster: cluster.className, query: i.value, text: Math.ceil(text), inner: Math.floor(inner), fieldScroll: i.scrollWidth, fieldClient: i.clientWidth, chipText: chip.textContent.trim(), chipShown: drawn(chip), chipWhole: drawn(chip) && chip.scrollWidth <= chip.clientWidth + 1, chipW: Math.round(cr.width), chipScroll: chip.scrollWidth, dotShown: !!dr && dr.width >= 4 && dr.left >= cr.left - 0.5 && dr.right <= cr.right + 0.5, dotW: dr ? Math.round(dr.width * 10) / 10 : 0, chipWf: Math.round(cr.width * 10) / 10, chipFont: getComputedStyle(chip).fontSize, box: [].slice.call(document.querySelectorAll('.workspace>.topbar>.header-search-cluster *')).filter(function (e) { return drawn(e) && e.children.length === 0 || e.id === 'transcriptSearchCount'; }).map(function (e) { var r = e.getBoundingClientRect(); return (e.id || String(e.className).split(' ')[0] || e.tagName) + ' ' + Math.round(r.left) + '..' + Math.round(r.right) + (e.id === 'transcriptSearchCount' ? ' ' + JSON.stringify(e.textContent) : ''); }), head: [].slice.call(h.children).filter(drawn).map(function (e) { var r = e.getBoundingClientRect(); return (e.id || String(e.className).split(' ')[0]) + ' ' + Math.round(r.left) + '..' + Math.round(r.right); }).concat(['min ' + getComputedStyle(h).minWidth, 'flex ' + getComputedStyle(h).flex]), title: Math.round(t.getBoundingClientRect().width), titleWord: parseFloat(bar.style.getPropertyValue('--title-word')) || 0, parts: parts, out: out }; })()";
+    // The window narrowed until the session's column is `want` wide (the list and the outline take what
+    // the layout gives them at each width), then the bar's fits settled.
+    let at = |want: f64, what: &str| -> serde_json::Value {
+        let mut width = want + 300.0;
+        for _ in 0..6 {
+            harness::clear_metrics(&tab);
+            harness::resize(&tab, width.round(), 900.0);
+            harness::until(
+                &tab,
+                &format!(
+                    "innerWidth === {} && {VIEW_CAUGHT_UP}",
+                    width.round() as i64
+                ),
+                &format!("{what}: the window at {}px", width.round()),
+                Duration::from_secs(15),
+                "innerWidth",
+            );
+            harness::until_preview_parked(&tab);
+            harness::eval(&tab, TWO_FRAMES);
+            let now = harness::eval(&tab, column).as_f64().unwrap_or(0.0);
+            if (now - want).abs() < 0.5 {
+                break;
+            }
+            width += want - now;
+        }
+        harness::eval(&tab, TWO_FRAMES);
+        harness::eval(&tab, TWO_FRAMES);
+        harness::probe(&tab, probe)
+    };
+    let check = |seen: &serde_json::Value, want: f64, what: &str| {
+        assert_eq!(
+            seen["col"].as_f64(),
+            Some(want),
+            "{what}: the session's column: {seen}"
+        );
+        let short = seen["heading"]
+            .as_str()
+            .unwrap_or("")
+            .split(' ')
+            .any(|c| c == "chip-dot");
+        assert!(
+            seen["chipWhole"] == true || (short && seen["dotShown"] == true),
+            "{what}: the status chip shows its words whole, or only its dot, never a cut word: {seen}"
+        );
+        if short {
+            assert!(
+                seen["chipWf"].as_f64().unwrap_or(f64::MAX)
+                    <= seen["dotW"].as_f64().unwrap_or(0.0) + 1.0
+                    && seen["chipFont"] == "0px",
+                "{what}: the chip in its short form is its dot alone, its words taking no room: {seen}"
+            );
+        }
+        if !seen["query"].as_str().unwrap_or("").is_empty() {
+            assert!(
+                seen["text"].as_f64().unwrap_or(f64::MAX)
+                    <= seen["inner"].as_f64().unwrap_or(0.0) + 0.5
+                    && seen["fieldScroll"].as_f64().unwrap_or(f64::MAX)
+                        <= seen["fieldClient"].as_f64().unwrap_or(0.0) + 1.0,
+                "{what}: the held query shows whole in its field: {seen}"
+            );
+        }
+        assert_eq!(
+            seen["out"].as_array().map(|a| a.len()),
+            Some(0),
+            "{what}: every control stays inside the session's column: {seen}"
+        );
+        assert!(
+            seen["title"].as_f64().unwrap_or(0.0)
+                >= seen["titleWord"].as_f64().unwrap_or(f64::MAX).min(160.0) - 1.0,
+            "{what}: the name keeps its first word: {seen}"
+        );
+    };
+    for (name, sid, title) in sessions {
+        let url = monitor.url(&format!("?ui=app&session={sid}"));
+        harness::resize(&tab, 1440.0, 900.0);
+        tab.navigate_to(&url).unwrap();
+        tab.wait_until_navigated().unwrap();
+        harness::until(
+            &tab,
+            &format!("!!document.querySelector('.virtual-window .turn.user') && document.getElementById('sessionTitle').textContent === {title:?}"),
+            "the app shell to mount the fixture",
+            Duration::from_secs(30),
+            "document.body.innerText.slice(0, 200)",
+        );
+        for want in [650.0, 601.0] {
+            let what = format!("{name}, {want}px bare");
+            let seen = at(want, &what);
+            eprintln!("#s598 {what}: {seen}");
+            check(&seen, want, &what);
+        }
+        // A five-letter query, counted, then left: a press on the transcript lets the box rest
+        // with it held.
+        harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
+        harness::eval(
+            &tab,
+            "(function(){ var i = document.getElementById('transcriptSearchInput'); i.value = 'lorem'; i.dispatchEvent(new Event('input', { bubbles: true })); if (/⏎/.test(document.getElementById('transcriptSearchCount').textContent)) i.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); return 1; })()",
+        );
+        let count = "document.getElementById('transcriptSearchCount').textContent";
+        harness::until(
+            &tab,
+            &format!("/\\d/.test({count}) && !/⏎/.test({count})"),
+            "the query's matches counted",
+            Duration::from_secs(10),
+            count,
+        );
+        let away = harness::probe(
+            &tab,
+            "(function(){ var r = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height * 0.6) }; })()",
+        );
+        tab.click_point(headless_chrome::browser::tab::point::Point {
+            x: away["x"].as_f64().unwrap_or(0.0),
+            y: away["y"].as_f64().unwrap_or(0.0),
+        })
+        .expect("a press on the transcript");
+        harness::until(
+            &tab,
+            "(function(){ var c = document.querySelector('.workspace>.topbar>.header-search-cluster'); return !c.matches(':focus-within') && !c.classList.contains('search-held') && document.getElementById('transcriptSearchInput').value === 'lorem'; })()",
+            "the search box to rest with the query held",
+            Duration::from_secs(5),
+            "document.querySelector('.workspace>.topbar>.header-search-cluster').className",
+        );
+        for want in [601.0, 650.0] {
+            let what = format!("{name}, {want}px with a query held");
+            let seen = at(want, &what);
+            eprintln!("#s598 {what}: {seen}");
+            check(&seen, want, &what);
+        }
+    }
+    harness::clear_metrics(&tab);
+    drop(monitor);
+}
+
+/// What #s624's case records of the search box. Installed before the page's scripts, beside the
+/// notice counter (`window.__loops`, each notice by the step the case set, `window.__step`):
+/// - `window.__reports`: every size report a page's ResizeObserver delivers, as the step, its
+///   target's id (or first class) and width (the constructor is wrapped; the observers work as
+///   before);
+/// - `window.__frames`, from `window.__record()` or a `/` keydown once `window.__arm` is set (seen
+///   first, at the window in the capture phase): six entries, one a frame, of the strip the fit's
+///   observer watches (`#searchField`, its width), the cluster's floor, the cluster's width and the
+///   heading's two classes the fit decides, `|`-joined. Each is read at the start of a frame, before
+///   the frame callbacks the page asked for since the one before (the fit's, `fitHeadingSoon`'s), so
+///   it is what the frame before it painted, unless a task between the two frames changed the page
+///   (none in this case's steps): the first is the first frame drawn after the key or the change.
+const HELD_QUERY_SCRIPT: &str = "window.__loops = []; addEventListener('error', function (e) { if (!e.error && /^ResizeObserver loop/.test(String(e.message))) window.__loops.push(window.__step || null); }); window.__reports = []; (function () { var RO = window.ResizeObserver; window.ResizeObserver = function (callback) { return new RO(function (entries, observer) { entries.forEach(function (e) { var t = e.target; window.__reports.push(String(window.__step) + ' ' + (t.id ? '#' + t.id : '.' + String(t.className).split(' ')[0]) + ':' + Math.round(e.contentRect.width)); }); return callback.call(this, entries, observer); }); }; window.ResizeObserver.prototype = RO.prototype; })(); window.__sig = function () { var c = document.querySelector('.workspace>.topbar>.header-search-cluster'), f = document.getElementById('searchField'), crumb = document.getElementById('sessionCrumb'), h = crumb && crumb.parentElement; return [f ? Math.round(f.getBoundingClientRect().width) : -1, c ? c.style.getPropertyValue('--search-floor') : '?', c ? Math.round(c.getBoundingClientRect().width) : -1, h ? ['crumb-off', 'chip-dot'].filter(function (k) { return h.classList.contains(k); }).join(' ') : '?'].join('|'); }; window.__record = function () { var out = window.__frames = []; requestAnimationFrame(function () { (function next() { requestAnimationFrame(function () { out.push(window.__sig()); if (out.length < 6) next(); }); })(); }); }; addEventListener('keydown', function (e) { if (e.key !== '/' || !window.__arm) return; window.__arm = false; window.__record(); }, true);";
+
+/// #s624: at a desktop's width, the right pane shut and open, a query held in the search box, taken
+/// up again by /, then emptied with the focus taken from the field in one go, as a host's script may:
+/// the browser raises no "ResizeObserver loop" notice at the window, where a host page's error handler
+/// receives it as an error (the native app's sheet case found one). Red before #s624 on each such
+/// emptying with the pane open (at 1400px the shut pane leaves the box its room, and stays here as the
+/// other layout's check): the strip's new size went to the field's own observer, whose fit wrote the
+/// cluster's floor and the heading's classes, both above the field in the page, inside that delivery
+/// (measured: the cluster 252px then 246px within the frame), so the browser put the cluster's report
+/// off a frame with that notice. The fit now waits for the next frame, so the box settles one frame
+/// after such a change (measured: the strip 172px and the cluster 252px in the first frame drawn, 166px
+/// and 246px from the next on); the case holds that it then holds still, and the reports show the
+/// move. And / on the held query draws the box as at rest from the first frame after the key and
+/// holds it (measured: it gives the observers no size report at all here).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_held_query_emptied_beside_the_open_pane_raises_no_resize_observer_loop() {
+    let _serial = serial();
+    let base = base("held-query-loop");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000624".to_string();
+    let mut jsonl = harness::long_session(6, harness::Shape::default());
+    jsonl.push_str("{\"type\":\"custom-title\",\"customTitle\":\"Harbour tide table notes\"}\n");
+    stores.claude_session(&sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3624, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    {
+        use headless_chrome::protocol::cdp::Page;
+        tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+            source: HELD_QUERY_SCRIPT.to_string(),
+            world_name: None,
+            include_command_line_api: None,
+            run_immediately: None,
+        })
+        .expect("the notice counter and the recorders are installed");
+    }
+    harness::resize(&tab, 1400.0, 900.0);
+    tab.navigate_to(&monitor.url(&format!("?ui=app&session={sid}")))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window .turn.user') && document.getElementById('sessionTitle').textContent === 'Harbour tide table notes'",
+        "the app shell to mount the fixture",
+        Duration::from_secs(30),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let field = "(document.activeElement || {}).id === 'transcriptSearchInput'";
+    // Escape releases the search and keeps its query in the field: the box at rest with a held query.
+    let held = "(function(){ var c = document.querySelector('.workspace>.topbar>.header-search-cluster'); return !c.matches(':focus-within') && !c.classList.contains('search-held') && document.getElementById('transcriptSearchInput').value.indexOf('needle') >= 0; })()";
+    let frames_of = |tab: &headless_chrome::Tab, what: &str| -> Vec<String> {
+        harness::until(
+            tab,
+            "!!window.__frames && window.__frames.length >= 6",
+            &format!("six frames recorded after {what}"),
+            Duration::from_secs(10),
+            "JSON.stringify(window.__frames)",
+        );
+        let frames = harness::eval(tab, "JSON.stringify(window.__frames)");
+        serde_json::from_str(frames.as_str().unwrap_or("[]")).unwrap_or_default()
+    };
+    let strip = |sig: &str| {
+        sig.split('|')
+            .next()
+            .unwrap_or("")
+            .parse::<f64>()
+            .unwrap_or(-1.0)
+    };
+    let set_step = |tab: &headless_chrome::Tab, step: &str| {
+        harness::eval(tab, &format!("window.__step = {step:?}; 'ok'"));
+    };
+    for open in [false, true] {
+        let toggle = format!("(function(){{ var v = document.getElementById('sessionView'); if (v.classList.contains('preview-off') === {open}) document.getElementById('previewBtn').click(); return true; }})()");
+        harness::eval(&tab, &toggle);
+        harness::until(
+            &tab,
+            &format!(
+                "document.getElementById('sessionView').classList.contains('preview-off') === {}",
+                !open
+            ),
+            "the pane as the round wants it",
+            Duration::from_secs(10),
+            "document.getElementById('sessionView').className",
+        );
+        harness::until_preview_parked(&tab);
+        for round in 0..2 {
+            let step = format!("{} pane, round {round}", if open { "open" } else { "shut" });
+            set_step(&tab, &format!("{step}: find"));
+            tab.press_key("/").unwrap();
+            harness::until(
+                &tab,
+                field,
+                "/ to open find",
+                Duration::from_secs(5),
+                "(document.activeElement || {}).id",
+            );
+            tab.type_str("needle").unwrap();
+            harness::until(
+                &tab,
+                "document.getElementById('transcriptSearchInput').value.indexOf('needle') >= 0",
+                "the query typed",
+                Duration::from_secs(5),
+                "document.getElementById('transcriptSearchInput').value",
+            );
+            harness::eval(&tab, TWO_FRAMES);
+            tab.press_key("Escape").unwrap();
+            harness::until(
+                &tab,
+                held,
+                "Escape to hold the query",
+                Duration::from_secs(5),
+                "document.querySelector('.header-search-cluster').className",
+            );
+            harness::eval(&tab, TWO_FRAMES);
+
+            // / takes the held query up again: drawn as at rest from the first frame after the key.
+            let taken = format!("{step}: / with the query held");
+            set_step(&tab, &taken);
+            let rest = harness::eval(
+                &tab,
+                "window.__arm = true; window.__frames = null; window.__sig()",
+            );
+            let rest = rest.as_str().unwrap_or("").to_string();
+            tab.press_key("/").unwrap();
+            harness::until(
+                &tab,
+                field,
+                "/ to take the held query up again",
+                Duration::from_secs(5),
+                "(document.activeElement || {}).id",
+            );
+            let frames = frames_of(&tab, "/");
+            assert!(
+                frames.len() == 6 && strip(&rest) > 0.0 && frames.iter().all(|f| *f == rest),
+                "{taken}: the box in use drawn as at rest from the first frame after / (strip|floor|cluster|heading): {rest} at rest, then {frames:?}"
+            );
+
+            // The query emptied and the focus taken from the field in one go: the strip's new size
+            // goes to the fit's observer, which raised the notice before #s624 with the pane open.
+            let emptied = format!("{step}: the query emptied and the field left");
+            set_step(&tab, &emptied);
+            let before = harness::eval(&tab, "(function(){ var b = window.__sig(); window.__record(); var i = document.getElementById('transcriptSearchInput'); i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })); i.blur(); return b; })()");
+            let before = before.as_str().unwrap_or("").to_string();
+            let frames = frames_of(&tab, "the emptying");
+            // It settles in the frame after the first: the first frame drawn is the one before the
+            // observer's fit, which waits for the next. A fit going back and forth from frame to
+            // frame raises no notice, and would show here.
+            assert!(
+                frames.len() == 6 && strip(&frames[5]) > 0.0 && frames[1..].iter().all(|f| *f == frames[5]),
+                "{emptied}: the box settles one frame after the emptying and holds (strip|floor|cluster|heading): {before} before, then {frames:?}"
+            );
+            if open {
+                // Not vacuous: where the notice came, the pane was open, the emptying gave the search
+                // fit's observer the strip's new size, and after that report the cluster above the
+                // strip was resized again: before #s624 by the search fit inside that delivery (the
+                // write that raised the notice), now by the next frame's fits (the heading's and the
+                // search's, both through `fitHeading`; which fit moves it is read from the code).
+                // Measured order, before: cluster 252, strip 172, strip 166, cluster 246; now:
+                // cluster 252, strip 172, cluster 246, strip 166. Read from the reports, which hold
+                // either way, where the frames differ (before #s624 the fit was drawn in the first
+                // frame). With the pane shut the strip is reported too, and nothing after it
+                // (measured now: cluster 400, strip 206).
+                assert_eq!(
+                    harness::eval(
+                        &tab,
+                        "document.getElementById('sessionView').classList.contains('preview-off')"
+                    ),
+                    false,
+                    "{emptied}: the pane open"
+                );
+                let reports = harness::eval(
+                    &tab,
+                    &format!("JSON.stringify(window.__reports.filter(function (r) {{ return r.indexOf({emptied:?} + ' ') === 0; }}))"),
+                );
+                let reports = reports.as_str().unwrap_or("").to_string();
+                assert!(
+                    reports.contains(" #searchField:"),
+                    "{emptied}: the strip's new size reported to the fit's observer: {reports}"
+                );
+                let list: Vec<String> = serde_json::from_str(&reports).unwrap_or_default();
+                let strip_at = list.iter().position(|r| r.contains(" #searchField:"));
+                let cluster_of = |r: &String| {
+                    r.split(" .header-search-cluster:")
+                        .nth(1)
+                        .map(str::to_string)
+                };
+                // A report of the cluster before the strip's, so the one after it is a new width,
+                // not a change of height alone.
+                let resized_after = strip_at.is_some_and(|at| {
+                    let Some(last) = list[..at].iter().rev().find_map(cluster_of) else {
+                        return false;
+                    };
+                    list[at + 1..]
+                        .iter()
+                        .filter_map(cluster_of)
+                        .any(|w| w != last)
+                });
+                assert!(
+                    resized_after,
+                    "{emptied}: after the strip's report, the cluster above it resized to a new width: {reports}"
+                );
+            }
+        }
+    }
+    let loops = harness::eval(&tab, "JSON.stringify(window.__loops)");
+    assert_eq!(
+        loops.as_str().unwrap_or(""),
+        "[]",
+        "no ResizeObserver loop notice as a held query is taken up and emptied, by step"
+    );
+}
+
+/// #s581 (Hong: "when the pane is too narrow to hold all of the agent name, agent type, and repo
+/// name, give room to agent name, and show agent type and repo name in the drop down menu when user
+/// clicks the agent name"): where the bar holds the session's name beside its crumb (the agent and the
+/// project), both are drawn and the name's menu says nothing of them; where the name would be cut short
+/// of its whole text or its widest beside the crumb, the crumb and its divider go, the name takes their
+/// room, and the menu the name opens names the agent and the project at its head. With the room back
+/// the crumb comes back.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_squeezed_session_name_takes_the_crumbs_room_and_its_menu_names_them() {
+    let _serial = serial();
+    let base = base("title-room");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-0000000005a1".to_string();
+    let title = "Harbour tide table notes for the spring survey of every station";
+    let mut jsonl = harness::long_session(6, harness::Shape::default());
+    jsonl.push_str(&format!(
+        "{{\"type\":\"custom-title\",\"customTitle\":\"{title}\"}}\n"
+    ));
+    stores.claude_session(&sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3160, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    // The heading as drawn, and the name's width with the crumb drawn and without it, read in one
+    // task (the class taken off and put back), so the room the crumb takes is measured, not assumed.
+    let probe = "(function(){ var t = document.getElementById('sessionTitle'), h = t.parentElement, k = document.getElementById('sessionCrumb'), a = document.getElementById('sessionCopyAbout'), d = k.nextElementSibling; var drawn = function (e) { return !!e && e.getClientRects().length > 0 && e.getBoundingClientRect().width > 0; }; var off = h.classList.contains('crumb-off'); var now = t.getBoundingClientRect().width; h.classList.remove('crumb-off'); var withCrumb = t.getBoundingClientRect().width; h.classList.add('crumb-off'); var without = t.getBoundingClientRect().width; h.classList.toggle('crumb-off', off); return { off: off, crumb: drawn(k), divider: drawn(d), crumbText: k.textContent.trim(), crumbCut: k.scrollWidth > k.clientWidth + 1, title: Math.round(now), withCrumb: Math.round(withCrumb), without: Math.round(without), cap: parseFloat(getComputedStyle(t).maxWidth), menu: document.getElementById('sessionCopyMenu').classList.contains('open'), about: drawn(a), aboutText: a.textContent.trim(), layout: document.getElementById('sessionView').className, hc: h.className, room: h.style.getPropertyValue('--heading-room'), hw: Math.round(h.getBoundingClientRect().width * 10) / 10, kids: [].slice.call(h.children).filter(drawn).map(function (e) { var r = e.getBoundingClientRect(); return (e.id || String(e.className).split(' ')[0]) + ' ' + Math.round(r.left * 10) / 10 + '..' + Math.round(r.right * 10) / 10; }) }; })()";
+    let at = |width: u32, off: Option<bool>| -> serde_json::Value {
+        if width < 500 {
+            harness::mouse_window(&tab, width, 900);
+        } else {
+            harness::clear_metrics(&tab);
+            harness::resize(&tab, width as f64, 900.0);
+        }
+        harness::until(
+            &tab,
+            &format!("innerWidth === {width} && {VIEW_CAUGHT_UP} && document.getElementById('sessionView').getAnimations({{ subtree: true }}).filter(function (a) {{ return a instanceof CSSTransition; }}).length === 0"),
+            &format!("the window at {width}px"),
+            Duration::from_secs(15),
+            "innerWidth",
+        );
+        harness::until_preview_parked(&tab);
+        // The fit runs a frame after the bar's size changes: wait for its verdict where one is expected.
+        if let Some(off) = off {
+            harness::until(
+                &tab,
+                &format!("document.getElementById('sessionTitle').parentElement.classList.contains('crumb-off') === {off}"),
+                &format!("the crumb's fit at {width}px"),
+                Duration::from_secs(5),
+                probe,
+            );
+        }
+        harness::eval(&tab, TWO_FRAMES);
+        harness::probe(&tab, probe)
+    };
+    let open_menu = |what: &str| -> serde_json::Value {
+        harness::click_when_settled(&tab, "#sessionTitle", "the session's name");
+        harness::until(
+            &tab,
+            "document.getElementById('sessionCopyMenu').classList.contains('open')",
+            &format!("{what}: the name's menu to open"),
+            Duration::from_secs(5),
+            "document.getElementById('sessionCopyMenu').className",
+        );
+        let seen = harness::probe(&tab, probe);
+        let away = harness::probe(
+            &tab,
+            "(function(){ var r = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(); return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height * 0.6) }; })()",
+        );
+        tab.click_point(headless_chrome::browser::tab::point::Point {
+            x: away["x"].as_f64().unwrap_or(0.0),
+            y: away["y"].as_f64().unwrap_or(0.0),
+        })
+        .expect("a press on the transcript");
+        harness::until(
+            &tab,
+            "!document.getElementById('sessionCopyMenu').classList.contains('open')",
+            &format!("{what}: the menu to close at a press outside"),
+            Duration::from_secs(5),
+            "document.getElementById('sessionCopyMenu').className",
+        );
+        seen
+    };
+    let url = monitor.url(&format!("?ui=app&session={sid}"));
+    harness::resize(&tab, 1440.0, 900.0);
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.virtual-window .turn.user') && document.getElementById('sessionTitle').textContent === {title:?}"),
+        "the app shell to mount the fixture",
+        Duration::from_secs(30),
+        "document.body.innerText.slice(0, 200)",
+    );
+    // 1440px, the outline open: whichever way the fit decides for this long name, the crumb is never
+    // drawn cut, and the menu names the agent and the project exactly when the bar does not draw them
+    // whole, both read with the menu open, in one probe (the delta reviews of #s581).
+    at(1440, None);
+    let menu = open_menu("at 1440px");
+    assert!(
+        !(menu["crumb"] == true && menu["crumbCut"] == true),
+        "at 1440px the crumb is whole or gone, never cut: {menu}"
+    );
+    assert_eq!(
+        menu["about"],
+        serde_json::Value::Bool(menu["crumb"] != true),
+        "at 1440px the menu names the crumb exactly when the bar does not draw it: {menu}"
+    );
+    // 1800px: the name at its widest beside the whole crumb; the menu says nothing of them.
+    let wide = at(1800, Some(false));
+    assert!(
+        !wide["off"].as_bool().unwrap_or(true)
+            && wide["crumb"] == true
+            && wide["divider"] == true
+            && wide["crumbCut"] == false
+            && !wide["crumbText"].as_str().unwrap_or("").is_empty()
+            && wide["title"].as_f64().unwrap_or(0.0) >= wide["cap"].as_f64().unwrap_or(0.0) - 1.0,
+        "at 1800px the name is at its widest beside the whole crumb: {wide}"
+    );
+    let menu = open_menu("at 1800px");
+    assert_eq!(
+        menu["about"], false,
+        "at 1800px the menu does not repeat the crumb the bar draws: {menu}"
+    );
+    // 1000px: beside the crumb the name would be cut short of its widest, so the crumb and its divider
+    // go, and the name takes their room.
+    let narrow = at(1000, Some(true));
+    assert!(
+        narrow["off"] == true
+            && narrow["crumb"] == false
+            && narrow["divider"] == false
+            && narrow["without"].as_f64().unwrap_or(0.0)
+                > narrow["withCrumb"].as_f64().unwrap_or(0.0)
+            && narrow["without"].as_f64().unwrap_or(0.0)
+                >= narrow["cap"].as_f64().unwrap_or(f64::INFINITY) - 1.0
+            && narrow["withCrumb"].as_f64().unwrap_or(0.0)
+                < narrow["cap"].as_f64().unwrap_or(0.0) - 1.0
+            && !narrow["layout"]
+                .as_str()
+                .unwrap_or("")
+                .contains("pl-outline-bar"),
+        "at 1000px the crumb gives the name its room, the name (longer than its cap) reaching its cap: {narrow}"
+    );
+    let menu = open_menu("at 1000px");
+    assert!(
+        menu["about"] == true && menu["aboutText"] == wide["crumbText"],
+        "at 1000px the name's menu names the agent and the project at its head: {menu}"
+    );
+    // The room back, the crumb back.
+    let again = at(1800, Some(false));
+    assert!(
+        again["off"] == false && again["crumb"] == true && again["divider"] == true,
+        "at 1800px again the crumb is back beside the name: {again}"
+    );
+    // The phone reader's bar draws no crumb at all: the menu names them there too.
+    let phone = at(480, None);
+    assert!(
+        phone["layout"].as_str().unwrap_or("").contains("pl-phone") && phone["crumb"] == false,
+        "at 480px the phone reader's bar draws no crumb: {phone}"
+    );
+    let menu = open_menu("the phone reader at 480px");
+    assert!(
+        menu["about"] == true && menu["aboutText"] == wide["crumbText"],
+        "the phone reader's menu names the agent and the project at its head: {menu}"
     );
     harness::clear_metrics(&tab);
     drop(monitor);
@@ -14067,12 +14941,13 @@ fn the_app_shell_lays_out_its_list_by_the_owners_order() {
         serde_json::json!({ "drawer": false, "rail": true, "view": 536, "outline": "bar", "phone": false }),
         "600px: the rail and the glyphs in the top bar, a desktop's view",
     );
-    // In the bar the outline's expand control stands after the title and before Info.
-    let order = harness::probe(&tab, "(function(){ var t = document.getElementById('sessionTitle').getBoundingClientRect(), e = document.getElementById('navigatorRailExpand').getBoundingClientRect(), i = document.getElementById('phoneInfo').getBoundingClientRect(); return { afterTitle: e.left >= t.right - 0.5, beforeInfo: e.right <= i.left + 0.5, shown: e.width > 0 }; })()");
+    // In the bar the outline's glyphs lead, before the search box (#s582), and neither the outline's
+    // expand control nor the session's name is in it.
+    let order = harness::probe(&tab, "(function(){ var bar = document.querySelector('#sessionView .workspace>.topbar'), g = document.getElementById('phonePane-turns').getBoundingClientRect(), s = bar.querySelector('.header-search-cluster').getBoundingClientRect(), i = document.getElementById('phoneInfo').getBoundingClientRect(); return { glyphsLead: g.width > 0 && g.right <= s.left + 0.5, infoAfter: i.left >= s.right - 0.5, expandOut: !bar.contains(document.getElementById('navigatorRailExpand')), titleOut: !bar.contains(document.getElementById('sessionTitle')) }; })()");
     assert_eq!(
         order,
-        serde_json::json!({ "afterTitle": true, "beforeInfo": true, "shown": true }),
-        "the expand control's place in the top bar"
+        serde_json::json!({ "glyphsLead": true, "infoAfter": true, "expandOut": true, "titleOut": true }),
+        "the glyphs lead the top bar, and the expand control and the name are out of it"
     );
     want(
         &at(520.0),
@@ -14897,7 +15772,7 @@ fn shell_with_a_session(
     port: u16,
 ) -> (
     Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     shell_with_a_session_in(name, port, |_| {})
@@ -14910,7 +15785,7 @@ fn shell_with_a_session_in(
     prepare: impl FnOnce(&headless_chrome::Tab),
 ) -> (
     Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     let base = base(name);
@@ -16680,7 +17555,7 @@ fn emptied_panes_world(
     running: bool,
 ) -> (
     Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     &'static str,
 ) {
@@ -16967,8 +17842,9 @@ const AGENTS_FILTER_ON: &str =
     "JSON.parse(localStorage.getItem('am-prod-live-only') || '[]').includes('agents')";
 
 /// #s358, Hong's choice on #s357: a phone has no Outline menu, so its Agents sheet carries both ends
-/// of the same remembered filter. With every agent finished: Show them lists them, the row at the
-/// top hides them again, and the sheet stays open. Red before #s358: Show them was one way.
+/// of the same remembered filter. With every agent finished: Show them lists them, the control in the
+/// sheet's head (#s616; the list's own row is not drawn in the sheet) hides them again, and the sheet
+/// stays open. Red before #s358: Show them was one way.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_hides_finished_agents_again_from_its_agents_sheet() {
@@ -16993,21 +17869,21 @@ fn a_phone_hides_finished_agents_again_from_its_agents_sheet() {
     finger_on_filter(&tab, "#phonePaneMenu [data-show-filtered=\"agents\"]");
     harness::until(
         &tab,
-        &format!("{sheet} && document.querySelectorAll('#phonePaneMenu .outline-agent-copy').length === 2 && !!document.querySelector('#phonePaneMenu [data-hide-finished]')"),
-        "the finished agents listed, under a row that hides them",
+        &format!("{sheet} && document.querySelectorAll('#phonePaneMenu .outline-agent-copy').length === 2 && !!document.querySelector('#phonePaneMenu .phone-pane-head .phone-pane-filter[data-hide-finished]:not([hidden])')"),
+        "the finished agents listed, the sheet's head offering to hide them",
         Duration::from_secs(10),
         "document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
     );
     assert_eq!(
-        harness::eval(&tab, "(function(){ var r = document.querySelector('#phonePaneMenu [data-hide-finished]'), a = document.querySelector('#phonePaneMenu .outline-agent'); return r.getBoundingClientRect().bottom <= a.getBoundingClientRect().top + 1; })()"),
+        harness::eval(&tab, "(function(){ var r = document.querySelector('#phonePaneMenu .phone-pane-filter'), a = document.querySelector('#phonePaneMenu .outline-agent'); var row = document.querySelector('#phonePaneMenu .agents-filter-row'); return r.textContent === 'Hide finished agents' && r.getBoundingClientRect().bottom <= a.getBoundingClientRect().top + 1 && !!row && !row.getClientRects().length; })()"),
         serde_json::json!(true),
-        "the row is above the agents, where a long list cannot hide it"
+        "the control is in the head, above the agents, where a long list cannot hide it, and the list draws no row of its own"
     );
-    finger_on_filter(&tab, "#phonePaneMenu [data-hide-finished]");
+    finger_on_filter(&tab, "#phonePaneMenu .phone-pane-filter");
     harness::until(
         &tab,
-        &format!("{sheet} && document.querySelectorAll('#phonePaneMenu .outline-agent-copy').length === 0 && !!document.querySelector('#phonePaneMenu [data-show-filtered=\"agents\"]')"),
-        "the agents hidden again, the sheet open, Show them back",
+        &format!("{sheet} && document.querySelectorAll('#phonePaneMenu .outline-agent-copy').length === 0 && !!document.querySelector('#phonePaneMenu [data-show-filtered=\"agents\"]') && document.querySelector('#phonePaneMenu .phone-pane-filter').hidden"),
+        "the agents hidden again, the sheet open, Show them back, and the head's control gone with the row (#s616: the head once read the list before this press)",
         Duration::from_secs(10),
         "document.getElementById('phonePaneMenu').hidden + ' ' + document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
     );
@@ -17016,6 +17892,60 @@ fn a_phone_hides_finished_agents_again_from_its_agents_sheet() {
         serde_json::json!(true),
         "the same remembered filter the desktop's menu row reads"
     );
+    drop(m);
+}
+
+/// #s616: a sheet's head mirrors the open list's filter row, so it must read the list as each press
+/// leaves it. The head was once mirrored before the Agents list was redrawn, and so read the list as
+/// the press before left it: with an agent running, every press left the head a step behind. Upright,
+/// a sheet, one agent running and two finished: the head names each end in turn, press by press.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_agents_sheet_head_follows_each_press_with_one_running() {
+    let _serial = serial();
+    let (m, _b, tab, _sid) =
+        emptied_panes_world(3166, "phone-sheet-head-running", Some((440, 956)), true);
+    phone_tap(&tab, "#phonePane-agents");
+    let sheet = "!document.getElementById('phonePaneMenu').hidden";
+    let rows = "document.querySelectorAll('#phonePaneMenu .outline-agent-copy').length";
+    let head = "(function(){ var b = document.querySelector('#phonePaneMenu .phone-pane-head .phone-pane-filter'); return b && !b.hidden ? b.textContent : ''; })()";
+    let show = format!("{sheet} && {rows} === 1 && {head} === 'Show 2 finished agents'");
+    harness::until(
+        &tab,
+        &show,
+        "the running agent, the head offering the two finished ones",
+        Duration::from_secs(20),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
+    );
+    for press in 0..2 {
+        finger_on_filter(&tab, "#phonePaneMenu .phone-pane-filter");
+        harness::until(
+            &tab,
+            &format!("{sheet} && {rows} === 3 && {head} === 'Hide finished agents' && !!document.querySelector('#phonePaneMenu .phone-pane-filter[data-hide-finished]')"),
+            &format!("press {}: all three listed, the head offering to hide the finished ones", 2 * press + 1),
+            Duration::from_secs(10),
+            "document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
+        );
+        assert_eq!(
+            harness::eval(&tab, AGENTS_FILTER_ON),
+            serde_json::json!(false)
+        );
+        finger_on_filter(&tab, "#phonePaneMenu .phone-pane-filter");
+        harness::until(
+            &tab,
+            &show,
+            &format!(
+                "press {}: the running agent alone, the head offering the finished ones again",
+                2 * press + 2
+            ),
+            Duration::from_secs(10),
+            "document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
+        );
+        assert_eq!(
+            harness::eval(&tab, AGENTS_FILTER_ON),
+            serde_json::json!(true)
+        );
+    }
     drop(m);
 }
 
@@ -17063,6 +17993,458 @@ fn a_wide_phone_column_shows_and_hides_finished_agents_with_one_running() {
     assert_eq!(
         harness::eval(&tab, AGENTS_FILTER_ON),
         serde_json::json!(true)
+    );
+    drop(m);
+}
+
+/// #s606: a world of three sessions whose tasks carry taskq's marks, or none. The first holds a
+/// top-level task, three follow-ups of it (one running, one completed) and one filed before taskq
+/// had the marks; the second only follow-ups; the third native tasks with no marks at all. Served
+/// on `port`, the first open with its Tasks drawer open (on a desktop). Returns the monitor, the
+/// browser, the tab and the three ids.
+fn top_level_world(
+    port: u16,
+    case: &str,
+    phone: Option<(u32, u32)>,
+) -> (
+    Monitor,
+    harness::Chrome,
+    std::sync::Arc<headless_chrome::Tab>,
+    [&'static str; 3],
+) {
+    let sids = [
+        "eeeeeeee-0000-4000-8000-000000006061",
+        "eeeeeeee-0000-4000-8000-000000006062",
+        "eeeeeeee-0000-4000-8000-000000006063",
+    ];
+    let base = base(case);
+    let stores = Stores::new(&base);
+    let mut first = harness::long_session(6, harness::Shape::default());
+    first += &harness::taskq_create("call_t10", "s10", "Ship the filter", "top_level", 10);
+    first += &harness::taskq_create(
+        "call_t11",
+        "s11",
+        "Fix what the filter found",
+        "follows_up:s10",
+        11,
+    );
+    first += &harness::taskq_create(
+        "call_t12",
+        "s12",
+        "Write the filter's case",
+        "follows_up:s10",
+        12,
+    );
+    first += &harness::taskq_state("call_c12", "s12", "claim", "pending", "in_progress", 13);
+    first += &harness::taskq_create("call_t13", "s13", "A task from before the marks", "", 14);
+    first += &harness::taskq_create(
+        "call_t14",
+        "s14",
+        "Tidy what the case left",
+        "follows_up:s10",
+        15,
+    );
+    first += &harness::taskq_state("call_d14", "s14", "done", "pending", "completed", 16);
+    first += &harness::long_session(3, harness::Shape::default());
+    stores.claude_session(sids[0], &first);
+    let mut second = harness::long_session(4, harness::Shape::default());
+    second += &harness::taskq_create(
+        "call_t20",
+        "s20",
+        "A follow-up filed here",
+        "follows_up:s10",
+        10,
+    );
+    second += &harness::taskq_create("call_t21", "s21", "Another follow-up", "follows_up:s10", 11);
+    stores.claude_session(sids[1], &second);
+    stores.claude_session(
+        sids[2],
+        &harness::long_session(4, harness::Shape::default()),
+    );
+    stores.claude_tasks(sids[2], &[("1", "a native task", "pending")]);
+    let m = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
+    let (browser, tab) = harness::chrome_tab();
+    match phone {
+        Some((w, h)) => harness::phone(&tab, w, h),
+        None => harness::resize(&tab, 1400.0, 1300.0),
+    }
+    m.pair(&tab);
+    open_top_level_session(&tab, &m, sids[0], phone.is_none());
+    (m, browser, tab, sids)
+}
+
+/// Open `sid` in the app shell and, on a desktop, its Tasks drawer.
+fn open_top_level_session(tab: &headless_chrome::Tab, m: &Monitor, sid: &str, desktop: bool) {
+    m.open(tab, &format!("?ui=app&session={sid}"));
+    harness::until(tab, "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0", "the app shell to mount the fixture", Duration::from_secs(30), "document.body.innerText.slice(0, 120)");
+    if desktop {
+        harness::eval(tab, "(function(){ var c = document.querySelector('[data-nav-card=\"tasks\"]'); if (c && !c.classList.contains('open')) document.querySelector('[data-nav-card-toggle=\"tasks\"]').click(); return 'ok'; })()");
+        harness::until_drawers_settle(tab);
+    }
+}
+
+/// The Tasks pane as it reads: its groups with their task titles, its empty line and its controls.
+const TOP_LEVEL_PANE: &str = "(function(){ var w = document.getElementById('navigatorWork'); var groups = [...w.querySelectorAll('.work-group')].map(function (g) { var rows = []; for (var n = g.nextElementSibling; n && n.classList.contains('work-task'); n = n.nextElementSibling) rows.push(n.querySelector('strong').textContent.trim()); return g.dataset.taskGroup + ': ' + rows.join(' | '); }); var empty = w.querySelector('.activity-empty'); var filter = w.querySelector('.tasks-filter-row'); return { groups: groups, empty: empty ? empty.querySelector('span') ? empty.querySelector('span').textContent : empty.textContent : '', shows: [...w.querySelectorAll('[data-show-filtered]')].map(function (b) { return b.dataset.showFiltered + ':' + b.textContent; }), hint: [...w.querySelectorAll('.activity-empty-hint')].map(function (h) { return h.textContent; }), filterRow: filter ? filter.textContent : '', filterFirst: !!filter && w.firstElementChild === filter, stored: localStorage.getItem('am-prod-task-top-level') }; })()";
+
+/// The panes menu's Top-level only row, opened by hovering its trigger as a reader does: whether it
+/// is there, where (right after the task states), checked or not, what it holds back, and whether
+/// its centre is what a pointer meets.
+fn top_level_menu_row(tab: &headless_chrome::Tab) -> serde_json::Value {
+    harness::eval(
+        tab,
+        "document.getElementById('navigatorPanesTrigger').dispatchEvent(new PointerEvent('pointerenter', { bubbles: true })); 'ok'",
+    );
+    // The menu fades in: a hit test during its opening meets what lies under it.
+    harness::until(
+        tab,
+        "(function(){ var m = document.getElementById('navigatorPanesMenu'); if (!m) return false; var c = getComputedStyle(m); return c.visibility === 'visible' && c.opacity === '1'; })()",
+        "the outline's drop-down to finish opening",
+        Duration::from_secs(5),
+        "(function(){ var m = document.getElementById('navigatorPanesMenu'); var c = getComputedStyle(m); return JSON.stringify({ open: m.classList.contains('open'), visibility: c.visibility, opacity: c.opacity }); })()",
+    );
+    harness::probe(
+        tab,
+        "(function(){ var m = document.getElementById('navigatorPanesMenu'); var r = m.querySelector('[data-top-level-only]'); var out = { open: m.classList.contains('open'), there: !!r }; if (r) { var b = r.getBoundingClientRect(); var hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); out.checked = r.getAttribute('aria-checked'); out.label = r.querySelector('span:nth-of-type(2)').textContent; out.hidden = (r.querySelector('small') || {}).textContent || ''; out.afterStates = !!(r.previousElementSibling && r.previousElementSibling.dataset.taskGroup === 'completed'); out.hit = !!(hit && (hit === r || r.contains(hit))); out.hitTag = hit ? hit.tagName + '.' + String(hit.className || '').split(' ')[0] : null; out.box = [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)]; } return out; })()",
+    )
+}
+
+fn close_panes_menu(tab: &headless_chrome::Tab) {
+    harness::eval(
+        tab,
+        "(function(){ var t = document.getElementById('navigatorPanesTrigger'); t.dispatchEvent(new PointerEvent('pointerleave', { bubbles: true })); document.getElementById('navigatorPanesMenu').dispatchEvent(new PointerEvent('pointerleave', { bubbles: true })); return 'ok'; })()",
+    );
+    std::thread::sleep(Duration::from_millis(300));
+}
+
+/// The details card of the task titled `title`, as its chips read.
+fn top_level_card_chips(tab: &headless_chrome::Tab, title: &str) -> String {
+    harness::eval(
+        tab,
+        &format!("(function(){{ var row = [...document.querySelectorAll('#navigatorWork .work-task')].find(function (r) {{ return r.querySelector('strong').textContent.trim() === {title:?}; }}); row.querySelector('[data-task-open]').click(); return 'ok'; }})()"),
+    );
+    harness::until(
+        tab,
+        "!document.getElementById('taskPopover').hidden",
+        "the task's details card",
+        Duration::from_secs(5),
+        "document.getElementById('taskPopover').hidden",
+    );
+    let chips = harness::eval(
+        tab,
+        "[...document.querySelectorAll('#taskPopover [class*=\"chip\"]')].map(function (c) { return c.textContent.trim(); }).filter(Boolean).join(' · ')",
+    );
+    harness::eval(
+        tab,
+        "document.querySelector('#taskPopover .task-popover-close').click(); 'ok'",
+    );
+    harness::until(
+        tab,
+        "document.getElementById('taskPopover').hidden",
+        "the details card closed",
+        Duration::from_secs(5),
+        "document.getElementById('taskPopover').hidden",
+    );
+    chips.as_str().unwrap_or_default().to_string()
+}
+
+/// #s606, Hong: "there is no filter for top level tasks for agent-monitor". taskq marks a task a
+/// person asked for `top_level` and one filed on the way `follows_up` another, and its records carry
+/// both. The Tasks pane's row in the Outline menu, Top-level only, under the task states, hides the
+/// follow-ups (a task with neither mark stays), says how many it holds back, is remembered, and is
+/// offered only where some task carries a mark. A pane it empties says so with the way back, and a
+/// task's details card names its mark. Red before #s606: no such row, and no mark reached the page.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_tasks_pane_narrows_to_top_level_tasks_from_the_outline_menu() {
+    let _serial = serial();
+    let (m, _b, tab, sids) = top_level_world(3162, "top-level-desktop", None);
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 4",
+        "the four live tasks",
+        Duration::from_secs(20),
+        "document.getElementById('navigatorWork').innerText.slice(0, 300)",
+    );
+    let pane = harness::probe(&tab, TOP_LEVEL_PANE);
+    assert_eq!(
+        pane["groups"],
+        serde_json::json!([
+            "in_progress: Write the filter's case",
+            "pending: Ship the filter | Fix what the filter found | A task from before the marks"
+        ]),
+        "every live task, the filter off by default: {pane}"
+    );
+    // Each card names its mark; the one from before the marks names none.
+    assert!(top_level_card_chips(&tab, "Ship the filter").contains("top level"));
+    assert!(top_level_card_chips(&tab, "Fix what the filter found").contains("follows up #s10"));
+    let old = top_level_card_chips(&tab, "A task from before the marks");
+    assert!(
+        !old.contains("top level") && !old.contains("follows up"),
+        "no mark on record, none named: {old}"
+    );
+
+    let row = top_level_menu_row(&tab);
+    assert_eq!(
+        (
+            row["open"].clone(),
+            row["there"].clone(),
+            row["checked"].clone(),
+            row["label"].clone()
+        ),
+        (
+            serde_json::json!(true),
+            serde_json::json!(true),
+            serde_json::json!("false"),
+            serde_json::json!("Top-level only")
+        ),
+        "the menu offers Top-level only, unchecked: {row}"
+    );
+    assert_eq!(
+        row["afterStates"], true,
+        "right after the task states: {row}"
+    );
+    assert_eq!(
+        row["hit"], true,
+        "its centre is what a pointer meets: {row}"
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('#navigatorPanesMenu [data-top-level-only]').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 2",
+        "the follow-ups hidden",
+        Duration::from_secs(5),
+        "document.getElementById('navigatorWork').innerText.slice(0, 300)",
+    );
+    let pane = harness::probe(&tab, TOP_LEVEL_PANE);
+    assert_eq!(
+        pane["groups"],
+        serde_json::json!(["pending: Ship the filter | A task from before the marks"]),
+        "what a person asked for, and the task no mark places: {pane}"
+    );
+    assert_eq!(pane["stored"], "true", "the choice is remembered: {pane}");
+    let row = top_level_menu_row(&tab);
+    assert_eq!(
+        (row["checked"].clone(), row["hidden"].clone()),
+        (serde_json::json!("true"), serde_json::json!("2 hidden")),
+        "checked, saying what it holds back (the completed follow-up is the states' to hide): {row}"
+    );
+    close_panes_menu(&tab);
+
+    // Remembered across a reload.
+    open_top_level_session(&tab, &m, sids[0], true);
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 2",
+        "the follow-ups still hidden after a reload",
+        Duration::from_secs(20),
+        "document.getElementById('navigatorWork').innerText.slice(0, 300)",
+    );
+
+    // A session of follow-ups alone: the pane says what emptied it and offers the way back.
+    open_top_level_session(&tab, &m, sids[1], true);
+    harness::until(
+        &tab,
+        "/Nothing top-level/.test(document.getElementById('navigatorWork').textContent)",
+        "the emptied pane's line",
+        Duration::from_secs(20),
+        "document.getElementById('navigatorWork').innerText.slice(0, 300)",
+    );
+    let pane = harness::probe(&tab, TOP_LEVEL_PANE);
+    assert_eq!(
+        (
+            pane["empty"].clone(),
+            pane["shows"].clone(),
+            pane["hint"].clone()
+        ),
+        (
+            serde_json::json!("Nothing top-level — 2 follow-ups hidden"),
+            serde_json::json!(["followups:Show them"]),
+            serde_json::json!(["Top-level only, in the Outline menu, hides them again"])
+        ),
+        "the line, its control and where the setting lives: {pane}"
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('#navigatorWork [data-show-filtered=\"followups\"]').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 2",
+        "the follow-ups shown again",
+        Duration::from_secs(5),
+        "document.getElementById('navigatorWork').innerText.slice(0, 300)",
+    );
+    let pane = harness::probe(&tab, TOP_LEVEL_PANE);
+    assert_eq!(
+        pane["stored"], "false",
+        "Show them took the choice off: {pane}"
+    );
+    let row = top_level_menu_row(&tab);
+    assert_eq!(row["checked"], "false", "and the menu says so: {row}");
+    close_panes_menu(&tab);
+
+    // A session no mark reaches: the menu does not offer a choice that would change nothing.
+    open_top_level_session(&tab, &m, sids[2], true);
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#navigatorWork .work-task').length === 1",
+        "the native task",
+        Duration::from_secs(20),
+        "document.getElementById('navigatorWork').innerText.slice(0, 300)",
+    );
+    let row = top_level_menu_row(&tab);
+    assert_eq!(
+        (row["open"].clone(), row["there"].clone()),
+        (serde_json::json!(true), serde_json::json!(false)),
+        "no Top-level only where no task carries a mark: {row}"
+    );
+    close_panes_menu(&tab);
+    drop(m);
+}
+
+/// #s606: a phone has no Outline menu, so its Tasks sheet carries Top-level only, as its Agents sheet
+/// carries Active only (#s358): Hide follow-ups, then Show N follow-ups, on the same remembered
+/// choice. Since #s616 the control is the sheet head's, beside its title; the list keeps its row (the
+/// first, above every state) for a wide phone's column, and does not draw it in the sheet. The phone
+/// shows every task state (#319), so the completed follow-up is counted too.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_hides_follow_ups_from_its_tasks_sheet() {
+    let _serial = serial();
+    let (m, _b, tab, _sids) = top_level_world(3163, "top-level-phone", Some((440, 956)));
+    phone_tap(&tab, "#phonePane-tasks");
+    let sheet = "!document.getElementById('phonePaneMenu').hidden";
+    let rows = "document.querySelectorAll('#phonePaneMenu .work-task').length";
+    harness::until(
+        &tab,
+        &format!("{sheet} && {rows} === 5 && !!document.querySelector('#phonePaneMenu .phone-pane-filter[data-hide-follow-ups]:not([hidden])')"),
+        "the Tasks sheet, every task, its head offering to hide the follow-ups",
+        Duration::from_secs(20),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 300)",
+    );
+    let pane = harness::probe(&tab, TOP_LEVEL_PANE);
+    assert_eq!(
+        (pane["filterRow"].clone(), pane["filterFirst"].clone()),
+        (
+            serde_json::json!("Hide follow-ups"),
+            serde_json::json!(true)
+        ),
+        "the list's row is its first, above every state: {pane}"
+    );
+    let head = harness::probe(&tab, SHEET_FILTER);
+    assert_eq!(
+        (
+            head["text"].clone(),
+            head["inHead"].clone(),
+            head["rowDrawn"].clone()
+        ),
+        (
+            serde_json::json!("Hide follow-ups"),
+            serde_json::json!(true),
+            serde_json::json!(false)
+        ),
+        "the sheet's head carries the control; the list's own row is not drawn there: {head}"
+    );
+    finger_on_filter(&tab, "#phonePaneMenu .phone-pane-filter");
+    harness::until(
+        &tab,
+        &format!("{sheet} && {rows} === 2 && /Show 3 follow-ups/.test((document.querySelector('#phonePaneMenu .phone-pane-filter') || {{}}).textContent || '')"),
+        "what a person asked for, the head offering the three follow-ups",
+        Duration::from_secs(10),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 300)",
+    );
+    let pane = harness::probe(&tab, TOP_LEVEL_PANE);
+    assert_eq!(
+        pane["groups"],
+        serde_json::json!(["pending: Ship the filter | A task from before the marks"]),
+        "{pane}"
+    );
+    assert_eq!(
+        pane["stored"], "true",
+        "the same remembered choice the menu row reads: {pane}"
+    );
+    finger_on_filter(&tab, "#phonePaneMenu .phone-pane-filter");
+    harness::until(
+        &tab,
+        &format!("{sheet} && {rows} === 5 && !!document.querySelector('#phonePaneMenu .phone-pane-filter[data-hide-follow-ups]')"),
+        "every task again, the sheet still open",
+        Duration::from_secs(10),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 300)",
+    );
+    assert_eq!(harness::probe(&tab, TOP_LEVEL_PANE)["stored"], "false");
+    drop(m);
+}
+
+/// What the phone sheet's filter is (#s616): the head's control, its text, whether it sits in the head and
+/// is what a finger meets at its centre, and whether the list's own row is drawn in the sheet.
+const SHEET_FILTER: &str = "(function(){ var m = document.getElementById('phonePaneMenu'); var c = m.querySelector('.phone-pane-filter'); var row = m.querySelector('.phone-pane-body .tasks-filter-row, .phone-pane-body .agents-filter-row'); var out = { text: c && !c.hidden ? c.textContent : null, inHead: !!c && !!c.closest('.phone-pane-head'), rowDrawn: !!row && row.getClientRects().length > 0 }; if (c && !c.hidden) { var b = c.getBoundingClientRect(), e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); out.hit = !!e && (e === c || c.contains(e)); out.box = [Math.round(b.left), Math.round(b.top), Math.round(b.right), Math.round(b.bottom)]; var x = m.querySelector('.phone-pane-close').getBoundingClientRect(); out.clearOfClose = b.right <= x.left + 1; } return out; })()";
+
+/// #s616: held sideways the Tasks sheet's list is short (about 97px on an iPhone 17 Pro in Safari),
+/// and the sheet opens on what is still moving, past the completed state. Its filter, Hide follow-ups,
+/// is the sheet head's, so the opening scroll cannot take it out of reach and it costs the list
+/// nothing: the running state's head and its first task are whole in the list's view. Before, the row
+/// at the list's top sat above the window (box top −35); pinned there instead, the row and the state's
+/// head left about 20px for the tasks, which a review caught. (Upright the list fits and the opening
+/// scroll comes to nothing, which is why #s606's case never saw the row go.)
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_held_sideways_opens_its_tasks_sheet_with_its_filter_and_a_running_task_in_view() {
+    let _serial = serial();
+    let (m, _b, tab, _sids) = top_level_world(3165, "top-level-phone-side", Some((874, 292)));
+    phone_tap(&tab, "#phonePane-tasks");
+    let sheet = "!document.getElementById('phonePaneMenu').hidden";
+    let rows = "document.querySelectorAll('#phonePaneMenu .work-task').length";
+    harness::until(
+        &tab,
+        &format!("{sheet} && {rows} === 5 && !!document.querySelector('#phonePaneMenu .phone-pane-filter[data-hide-follow-ups]:not([hidden])')"),
+        "the Tasks sheet held sideways, every task, its head offering to hide the follow-ups",
+        Duration::from_secs(20),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 300)",
+    );
+    let head = harness::probe(&tab, SHEET_FILTER);
+    assert!(
+        head["text"] == "Hide follow-ups"
+            && head["inHead"] == true
+            && head["hit"] == true
+            && head["clearOfClose"] == true
+            && head["rowDrawn"] == false,
+        "the control is the head's, a finger meets it, ✕ stays its own, and the list draws no row: {head}"
+    );
+    let view = harness::probe(
+        &tab,
+        "(function(){ var body = document.querySelector('#phonePaneMenu .phone-pane-body'); var R = function (x) { return [Math.round(x.left), Math.round(x.top), Math.round(x.right), Math.round(x.bottom)]; }; var head = body.querySelector('.work-group[data-task-group=\"in_progress\"]'); var task = head && head.nextElementSibling; var b = body.getBoundingClientRect(), h = head.getBoundingClientRect(), t = task.getBoundingClientRect(); var e = document.elementFromPoint(t.left + t.width / 2, t.top + t.height / 2); return { scrollTop: Math.round(body.scrollTop), list: R(b), head: R(h), task: R(t), taskIs: task.classList.contains('work-task'), taskHit: !!e && (e === task || task.contains(e)) }; })()",
+    );
+    let n = |k: &str, i: usize| view[k][i].as_i64().unwrap_or(i64::MIN);
+    assert!(
+        view["scrollTop"].as_i64().unwrap_or(0) > 0,
+        "the list opened scrolled to what is still moving (else this case tests nothing): {view}"
+    );
+    assert!(
+        n("head", 1) >= n("list", 1) - 1
+            && view["taskIs"] == true
+            && n("task", 1) >= n("head", 3) - 1
+            && n("task", 3) <= n("list", 3) + 1
+            && view["taskHit"] == true,
+        "the running state's head and its first task are whole in the list's view: {view}"
+    );
+    finger_on_filter(&tab, "#phonePaneMenu .phone-pane-filter");
+    harness::until(
+        &tab,
+        &format!("{sheet} && {rows} === 2 && /Show 3 follow-ups/.test((document.querySelector('#phonePaneMenu .phone-pane-filter') || {{}}).textContent || '')"),
+        "the follow-ups hidden from the head, which now offers them back",
+        Duration::from_secs(10),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 300)",
+    );
+    finger_on_filter(&tab, "#phonePaneMenu .phone-pane-filter");
+    harness::until(
+        &tab,
+        &format!("{sheet} && {rows} === 5"),
+        "every task again",
+        Duration::from_secs(10),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 300)",
     );
     drop(m);
 }
@@ -17985,6 +19367,150 @@ fn a_phone_pairs_by_a_one_time_code() {
     drop(m);
 }
 
+/// #s618: a browser on this machine pairs from the page. Refused, it follows the refusal page's
+/// pairing link to `/pair`, asks for a code, and (the harness turns the dialog off, so no case
+/// raises one) is told to run `agent-monitor --pair-code`. The case reads the code where the
+/// monitor keeps it, as that command would; typed in, it pairs this browser. The code is in no
+/// reply the page saw and in no line of the monitor's stderr, and it works once.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_browser_on_this_machine_pairs_from_the_page() {
+    let _serial = serial();
+    let base = harness::base("pair-from-the-page");
+    let stores = harness::Stores::new(&base);
+    let m = Monitor::spawn(Kind::V1, 2741, &base, Some(&stores), true);
+    let port = m.port;
+    let (_browser, tab) = harness::chrome_tab();
+    tab.navigate_to(&format!("http://127.0.0.1:{port}/"))
+        .unwrap();
+    harness::until(
+        &tab,
+        "!document.documentElement.hidden && !!document.querySelector('a[href=\"/pair\"]')",
+        "the refusal page to offer pairing",
+        Duration::from_secs(20),
+        "document.body.innerText",
+    );
+    tab.find_element("a[href=\"/pair\"]")
+        .unwrap()
+        .click()
+        .unwrap();
+    harness::until(
+        &tab,
+        "location.pathname === '/pair' && !!document.getElementById('ask') && /Pair this browser/.test(document.body.innerText)",
+        "the pairing page for a browser on this machine",
+        Duration::from_secs(10),
+        "location.href + ' | ' + document.body.innerText.slice(0, 300)",
+    );
+    // Record every reply the page reads, to show the code is in none of them.
+    eval(
+        &tab,
+        r#"(() => { window.__replies = []; const f = window.fetch;
+            window.fetch = (...a) => f(...a).then(r => { r.clone().text().then(t => window.__replies.push(t)); return r; });
+            return 1; })()"#,
+        false,
+    );
+    tab.find_element("#ask").unwrap().click().unwrap();
+    harness::until(
+        &tab,
+        "/agent-monitor --pair-code/.test(document.getElementById('msg').textContent)",
+        "the page to say where the code is",
+        Duration::from_secs(10),
+        "document.getElementById('msg').textContent",
+    );
+    let codes = std::fs::read_to_string(m.state.join("page-codes"))
+        .expect("the ask left a page code waiting");
+    let code = codes
+        .lines()
+        .find_map(|l| l.strip_prefix("code "))
+        .and_then(|l| l.split(' ').next())
+        .expect("a code line")
+        .to_string();
+    assert_eq!(code.len(), 8, "{codes}");
+    let shown = format!("{}-{}", &code[..4], &code[4..]);
+    let replies = eval(&tab, "JSON.stringify(window.__replies)", false);
+    let replies = replies.as_str().unwrap_or_default().to_string();
+    assert!(
+        replies.contains("terminal") && !replies.contains(&code) && !replies.contains(&shown),
+        "the reply says where, never the code: {replies}"
+    );
+    // A code a link carries is a phone code (#s618 review): another browser that opens
+    // `/pair#code=…` with the page code waiting is refused, and the page code keeps every guess.
+    let (_linked, tab3) = harness::chrome_tab();
+    tab3.navigate_to(&format!("http://127.0.0.1:{port}/pair#code={code}"))
+        .unwrap();
+    harness::until(
+        &tab3,
+        "/wrong, used or expired/.test((document.getElementById('msg') || {}).textContent || '')",
+        "a code a link carried to be refused as a phone code",
+        Duration::from_secs(10),
+        "location.href + ' | ' + document.body.innerText.slice(0, 200)",
+    );
+    let after = std::fs::read_to_string(m.state.join("page-codes")).unwrap();
+    assert!(
+        after.contains(&format!("code {code} ")) && after.lines().any(|l| l == "fails 0"),
+        "the page code still waits, with no miss counted: {}",
+        after.replace(&code, "<code>")
+    );
+    tab.find_element("#code")
+        .unwrap()
+        .type_into(&shown.to_lowercase())
+        .unwrap();
+    tab.find_element("#go").unwrap().click().unwrap();
+    harness::until(
+        &tab,
+        "location.pathname === '/' && !!document.querySelector('#tree, .rail, .session-row, [data-session]')",
+        "the code to pair this browser and the monitor to load",
+        Duration::from_secs(20),
+        "location.href + ' | ' + document.body.innerText.slice(0, 200)",
+    );
+    // The same code in another fresh browser is refused.
+    let (_other, tab2) = harness::chrome_tab();
+    tab2.navigate_to(&format!("http://127.0.0.1:{port}/pair"))
+        .unwrap();
+    harness::until(
+        &tab2,
+        "!!document.getElementById('code')",
+        "the pairing page in a second browser",
+        Duration::from_secs(10),
+        "document.body.innerText.slice(0, 200)",
+    );
+    tab2.find_element("#code")
+        .unwrap()
+        .type_into(&shown)
+        .unwrap();
+    tab2.find_element("#go").unwrap().click().unwrap();
+    harness::until(
+        &tab2,
+        "/wrong, used or expired/.test(document.getElementById('msg').textContent)",
+        "a used code to be refused",
+        Duration::from_secs(10),
+        "document.getElementById('msg').textContent",
+    );
+    let stderr = std::fs::read_to_string(base.join(format!("monitor-{}.stderr", m.key)))
+        .expect("the monitor's stderr is kept in the case's root");
+    assert!(!stderr.is_empty(), "the monitor's stderr has its lines");
+    assert!(
+        !stderr.contains(&code) && !stderr.contains(&shown),
+        "the code is in no line of the monitor's stderr"
+    );
+    // A restart clears a code a run before left, since nothing shows it any more (#s618 review: a
+    // start that skipped the clear passed every other case).
+    let codes_path = m.state.join("page-codes");
+    let exp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 300;
+    std::fs::write(&codes_path, format!("code QRSTUVWX {exp}\nfails 0\n")).unwrap();
+    let m = Monitor::respawn(m, &base, Some(&stores), true);
+    let left = std::fs::read_to_string(&codes_path).expect("the page codes' file is still there");
+    assert!(
+        !left.lines().any(|l| l.starts_with("code ")),
+        "a restart clears the waiting code: {left}"
+    );
+    drop(m);
+}
+
 /// An unpaired browser gets two distinct, readable touch targets in either system theme.
 /// Exercise the actual refusal route and follow its pairing link, not a copied HTML fixture.
 #[test]
@@ -18127,7 +19653,7 @@ fn phone_world(
     h: u32,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     let (m, b, tab, _) = phone_world_at(port, case, w, h, "");
@@ -18144,7 +19670,7 @@ fn phone_world_at(
     extra: &str,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     std::path::PathBuf,
 ) {
@@ -18181,12 +19707,7 @@ fn phone_world_at(
 
 /// A desktop browser (1280×900, no phone emulation) on `m`, open on the phone's session in the app
 /// shell — the width a phone-only rule must leave as it was.
-fn desktop_tab(
-    m: &harness::Monitor,
-) -> (
-    headless_chrome::Browser,
-    std::sync::Arc<headless_chrome::Tab>,
-) {
+fn desktop_tab(m: &harness::Monitor) -> (harness::Chrome, std::sync::Arc<headless_chrome::Tab>) {
     let (browser, tab) = harness::chrome_tab();
     harness::resize(&tab, 1280.0, 900.0);
     m.pair(&tab);
@@ -18206,10 +19727,7 @@ fn phone_tab(
     m: &harness::Monitor,
     w: u32,
     h: u32,
-) -> (
-    headless_chrome::Browser,
-    std::sync::Arc<headless_chrome::Tab>,
-) {
+) -> (harness::Chrome, std::sync::Arc<headless_chrome::Tab>) {
     let (browser, tab) = harness::chrome_tab();
     harness::phone(&tab, w, h);
     m.pair(&tab);
@@ -18274,6 +19792,31 @@ fn phone_outside_point(tab: &headless_chrome::Tab) -> (f64, f64) {
 fn phone_tap_outside(tab: &headless_chrome::Tab) {
     let (x, y) = phone_outside_point(tab);
     phone_tap_at(tab, x, y);
+}
+
+/// #s581: the point a reader taps to dismiss the session's menu, which hangs from the top bar into
+/// the band `phone_outside_point` taps (40px under the bar, halfway across): the transcript 40px
+/// under the menu, halfway across. Since #s581 the menu names the agent and the project at its head
+/// on a phone, which made it taller, so at 390px that band's point fell inside the menu, on one of its
+/// rows, and the tap closed nothing (Linux CI on PR #65). The point is checked: on the page, outside
+/// the menu and above the dock.
+fn phone_point_below_session_menu(tab: &headless_chrome::Tab) -> (f64, f64) {
+    let at = harness::eval(
+        tab,
+        "JSON.stringify((function () { var m = document.getElementById('sessionCopyMenu').getBoundingClientRect(); var d = document.getElementById('phoneDock').getBoundingClientRect(); var x = innerWidth / 2, y = m.bottom + 40; var hit = document.elementFromPoint(x, y); return { x: x, y: y, menuBottom: m.bottom, dockTop: d.top, onMenu: !!(hit && hit.closest('#sessionCopyMenu')), onDock: !!(hit && hit.closest('#phoneDock')) }; })())",
+    );
+    let at: serde_json::Value =
+        serde_json::from_str(at.as_str().unwrap_or("{}")).unwrap_or_default();
+    let (x, y) = (at["x"].as_f64(), at["y"].as_f64());
+    assert!(
+        x.is_some()
+            && y.is_some()
+            && at["onMenu"] == false
+            && at["onDock"] == false
+            && y < at["dockTop"].as_f64(),
+        "a point under the session's menu, off the menu and above the dock: {at}"
+    );
+    (x.unwrap_or(0.0), y.unwrap_or(0.0))
 }
 
 /// True when the element `sel` names is where a finger lands: its centre hit-tests to it.
@@ -18517,7 +20060,8 @@ fn a_phone_header_is_one_row_and_its_tools_float_in_a_pill() {
             Duration::from_secs(5),
             "document.getElementById('sessionCopyMenu').className",
         );
-        phone_tap_outside(&tab);
+        let (ox, oy) = phone_point_below_session_menu(&tab);
+        phone_tap_at(&tab, ox, oy);
         harness::until(
             &tab,
             "!document.getElementById('sessionCopyMenu').classList.contains('open')",
@@ -18865,7 +20409,7 @@ fn pinched_image_in_the_pane(
     case: &str,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     &'static str,
     (f64, f64),
@@ -19485,7 +21029,7 @@ fn a_phone_taps_the_title_and_copies_the_session_id() {
         true,
         "a second tap opens it again"
     );
-    let (ox, oy) = phone_outside_point(&tab);
+    let (ox, oy) = phone_point_below_session_menu(&tab);
     harness::finger_tap(&tab, ox, oy);
     harness::until(
         &tab,
@@ -19575,7 +21119,7 @@ fn phone_tasks_world(
     case: &str,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     let base = harness::base(case);
@@ -20020,7 +21564,7 @@ fn tail_first_world(
     case: &str,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     let base = harness::base(case);
@@ -20929,7 +22473,7 @@ fn phone_files_world(
     artifact: bool,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     Vec<String>,
 ) {
@@ -20983,10 +22527,7 @@ fn remote_phone_tab(
     m: &harness::Monitor,
     w: u32,
     h: u32,
-) -> (
-    headless_chrome::Browser,
-    std::sync::Arc<headless_chrome::Tab>,
-) {
+) -> (harness::Chrome, std::sync::Arc<headless_chrome::Tab>) {
     let (browser, tab) = harness::remote_phone(w, h);
     m.open_remote(&tab, &format!("?ui=app&session={PHONE_SID}"));
     harness::until(
@@ -21407,7 +22948,7 @@ fn tail_first_phone(
     index: bool,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     let base = harness::base(case);
@@ -22940,7 +24481,7 @@ fn landscape_world(
     phone: bool,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     String,
 ) {
@@ -23047,6 +24588,147 @@ fn a_phone_held_sideways_gets_the_phone_layout_in_one_row() {
     );
 }
 
+/// Where the session's menu sits against the top bar's title row, opened from the title: the menu's
+/// box, the title's, the turn subtitle's (null where it is not drawn) and the bar's, rounded, with
+/// the window's height.
+const SESSION_MENU_PLACE: &str = "(function(){ var m = document.getElementById('sessionCopyMenu'); if (!m || !m.classList.contains('open') || getComputedStyle(m).opacity !== '1' || getComputedStyle(m).transform !== 'none') return null; var box = function(e){ if (!e || e.hidden || !e.getClientRects().length) return null; var r = e.getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom), left: Math.round(r.left), right: Math.round(r.right) }; }; return JSON.stringify({ menu: box(m), title: box(document.getElementById('sessionTitle')), subtitle: box(document.getElementById('turnSubtitle')), heading: box(document.querySelector('#sessionView .workspace>.topbar>.session-heading')), chip: box(document.querySelector('#sessionView .workspace>.topbar>.session-heading>.status-chip')), bar: box(document.querySelector('#sessionView .workspace>.topbar')), titleText: document.getElementById('sessionTitle').textContent, titleScroll: document.getElementById('sessionTitle').scrollWidth, phoneTop: getComputedStyle(document.getElementById('sessionCopyMenu')).getPropertyValue('--phone-top'), menuPosition: getComputedStyle(m).position, height: innerHeight, width: innerWidth }); })()";
+
+/// #s602 (hd-replay's walk of #s581, an iPhone 17 Pro Max held sideways in Safari, 956×330): the
+/// session's menu opened from the title hung with its top at 51px, across the turn subtitle under
+/// the title (45 to 61px), so half the subtitle showed above the menu and the menu cut through the
+/// title row. Wherever the view is 700px wide or less (upright, and a wide phone's view beside its
+/// list column) the menu was pinned 51px down, the bar's bottom only while nothing moves the bar's
+/// row down. A top safe-area inset does: the walk's row sat 14px lower than this page draws it with
+/// no inset, which a 14px top inset reproduces here (the walk did not record which inset it was),
+/// and the Home Screen app upright has the status bar's 62px. On a phone it now hangs from the
+/// bar's measured bottom (`--phone-top`), as Info does: clear of the title row held sideways at both
+/// sizes the walk saw, and upright in the Home Screen app; upright in Safari, with no top inset, it
+/// is exactly where it was. On the old CSS the 956x330 leg and the Home Screen app's fail; the
+/// 852x393 view is wider than 700px, so its menu hangs from the heading and passes either way.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_held_sideways_hangs_the_session_menu_below_the_title_row() {
+    let _serial = serial();
+    let mut seen = Vec::new();
+    let sideways_row_down = (14, 62, 20, 62);
+    // Each leg: the window, its safe-area insets, what it stands for, and whether the view is 700px
+    // wide or less, where the menu is the pinned one this case is about (852x393 has no list column,
+    // so its view is wider than 700px and its menu hangs from the heading).
+    let cases = [
+        (
+            956,
+            330,
+            sideways_row_down,
+            "sideways in Safari, the list column shown",
+            true,
+        ),
+        (852, 393, sideways_row_down, "sideways in Safari", false),
+        (
+            402,
+            874,
+            harness::PORTRAIT_INSETS,
+            "upright in the Home Screen app",
+            true,
+        ),
+        (402, 874, (0, 0, 0, 0), "upright in Safari", true),
+    ];
+    for (n, (w, h, insets, label, pinned)) in cases.into_iter().enumerate() {
+        let base = harness::base(&format!("s602-menu-{n}"));
+        let stores = harness::Stores::new(&base);
+        // One turn, which the subtitle under the title names.
+        let t = [
+            harness::user_at(
+                "Please read the release notes for the last three versions and tell me which of the phone fixes are still waiting on a walk",
+                &harness::rfc3339_secs_ago(120),
+            ),
+            harness::assistant_at(
+                "Three of them are: the drawer's handle, the dock's search and the reply box held sideways.",
+                &harness::rfc3339_secs_ago(110),
+            ),
+        ]
+        .concat();
+        stores.claude_session(PHONE_SID, &t);
+        let m = harness::Monitor::spawn(harness::Kind::V1, 3602, &base, Some(&stores), true);
+        let (_b, tab) = harness::chrome_tab();
+        harness::phone(&tab, w, h);
+        harness::safe_area(&tab, insets);
+        m.pair(&tab);
+        m.open(&tab, &format!("?ui=app&session={PHONE_SID}"));
+        harness::until(
+            &tab,
+            &format!("!!document.querySelector('.transcript .turn.user') && innerWidth === {w}"),
+            "the session at its size",
+            Duration::from_secs(20),
+            "innerWidth + 'x' + innerHeight + ' ' + document.getElementById('app').className",
+        );
+        harness::until(
+            &tab,
+            "(function(){ var s = document.getElementById('turnSubtitle'); return !!s && !s.hidden && s.getClientRects().length > 0 && s.textContent.trim().length > 0; })()",
+            "the turn subtitle under the title",
+            Duration::from_secs(15),
+            "(document.getElementById('turnSubtitle') || {}).outerHTML",
+        );
+        harness::eval(
+            &tab,
+            "document.getElementById('sessionTitle').click(); 'ok'",
+        );
+        harness::until(
+            &tab,
+            &format!("!!{SESSION_MENU_PLACE}"),
+            "the session's menu open and settled",
+            Duration::from_secs(10),
+            "document.getElementById('sessionCopyMenu').className",
+        );
+        let place = harness::eval(&tab, SESSION_MENU_PLACE);
+        let place: serde_json::Value =
+            serde_json::from_str(place.as_str().unwrap_or("{}")).unwrap_or_default();
+        eprintln!("#s602 {label}, {w}x{h}: {place}");
+        seen.push((label, pinned, place));
+    }
+    for (label, pinned, place) in &seen {
+        let top = place["menu"]["top"].as_i64().unwrap_or(-1);
+        let row = [&place["title"]["bottom"], &place["subtitle"]["bottom"]]
+            .iter()
+            .filter_map(|v| v.as_i64())
+            .max()
+            .unwrap_or(i64::MAX);
+        assert!(
+            place["subtitle"].is_object(),
+            "{label}: the subtitle is drawn under the title, so the case reads the row the menu must clear: {place}"
+        );
+        assert!(
+            top >= row,
+            "{label}: the session's menu starts at or below the title row's bottom (title and subtitle), so no part of the row shows above it: {place}"
+        );
+        assert!(
+            place["menu"]["bottom"].as_i64().unwrap_or(i64::MAX)
+                <= place["height"].as_i64().unwrap_or(0),
+            "{label}: the whole menu is on the screen: {place}"
+        );
+        // A pinned leg's menu is the one this case is about, hung from the bar's measured bottom: a
+        // view wider than 700px (the list column hidden) would hang it from the heading, and the leg
+        // would pass on the old CSS too.
+        if *pinned {
+            let phone_top = place["phoneTop"]
+                .as_str()
+                .and_then(|v| v.trim().strip_suffix("px"))
+                .and_then(|v| v.parse::<f64>().ok());
+            assert_eq!(
+                (&place["menuPosition"], phone_top.map(|v| v.round() as i64)),
+                (&serde_json::json!("fixed"), Some(top)),
+                "{label}: the menu is pinned (the view is 700px wide or less) and hangs from the bar's measured bottom: {place}"
+            );
+        }
+        if *label == "upright in Safari" {
+            assert_eq!(
+                (&place["menu"]["top"], &place["menu"]["left"]),
+                (&serde_json::json!(51), &serde_json::json!(10)),
+                "{label}: the menu is where it always was, 51px down and 10px in: {place}"
+            );
+        }
+    }
+}
+
 /// #s32, part 2: between the phone and 1180px the preview is an overlay; it covered 72vw of a
 /// session still laid out at full width and left a sliver no one could read. An open preview now
 /// covers the whole session area beside the sidebar. Since #s431 stage 3 the owner's order decides
@@ -23115,7 +24797,7 @@ fn drawer_world(
     insets: Option<(u32, u32, u32, u32)>,
 ) -> (
     harness::Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
 ) {
     let base = harness::base(case);
@@ -23259,6 +24941,175 @@ fn the_list_scrolls(tab: &headless_chrome::Tab, at: &str) {
         drawer_facts(tab)["wsTop"].as_i64(),
         Some(0),
         "{at}: the session view stays where it was, under the drawer"
+    );
+}
+
+/// #s583, Hong at the narrowest desktop window: with the session list a drawer, opened from its ☰
+/// handle, the brand's first letters sat under the handle, and the session's turn strip drew
+/// across the drawer. A list the window had narrowed below 272px (the reader's own 240px here)
+/// kept its `sidebar-tight` into the drawer, whose 10px head padding beat the drawer's room for
+/// the handle; and the view, which fills such a window and is no box of its own there, stacked its
+/// layers (the strip at 26) against the drawer (20). Here, at 500px with a mouse and the strip
+/// showing, the open drawer's brand starts clear of the handle, and the drawer is what a point
+/// anywhere along the strip's row inside it hits; once it closes, the strip is back on top.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_desktop_drawer_keeps_its_brand_clear_of_the_handle_and_lies_over_the_whole_view() {
+    let _serial = serial();
+    let base = harness::base("desktop-drawer");
+    let stores = harness::Stores::new(&base);
+    let t: String = (0..24)
+        .map(|i| {
+            [
+                harness::user_at(
+                    &format!("question {i}: the open session"),
+                    &format!("2026-09-01T05:{i:02}:00.000Z"),
+                ),
+                harness::assistant_at(
+                    &format!("answer {i}: {}", "a long enough answer to fill a line of the transcript, so the column has text in it. ".repeat(8)),
+                    &format!("2026-09-01T05:{i:02}:01.000Z"),
+                ),
+            ]
+            .concat()
+        })
+        .collect();
+    stores.claude_session(PHONE_SID, &t);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3063, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1100.0, 860.0);
+    m.pair(&tab);
+    // The reader's list dragged narrow, below the 272px where its head is squeezed.
+    harness::eval(
+        &tab,
+        "(function(){ localStorage.setItem('am-sidebar-width', '240'); return 'ok'; })()",
+    );
+    harness::show_every_session(&tab, &m.url(&format!("?ui=app&session={PHONE_SID}")));
+    let classes = "innerWidth + 'x' + innerHeight + ' ' + document.getElementById('app').className";
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user') && innerWidth === 1100 && document.getElementById('app').classList.contains('sidebar-tight')",
+        "the premise: the session open beside a list narrow enough to be tight",
+        Duration::from_secs(20),
+        classes,
+    );
+    harness::resize(&tab, 500.0, 860.0);
+    harness::until(
+        &tab,
+        "innerWidth === 500 && document.getElementById('app').classList.contains('app-drawer') && document.getElementById('app').classList.contains('mobile-detail')",
+        "a 500px window: the list a drawer, shut",
+        Duration::from_secs(10),
+        classes,
+    );
+    harness::wheel_scroll(
+        &tab,
+        harness::APP_SCROLLER,
+        "s.scrollTop = Math.round(s.scrollHeight / 2)",
+    );
+    let strip_on = "(function(){ var b = document.getElementById('turnStickyBar'); if (!b || !b.classList.contains('on')) return false; var r = b.getBoundingClientRect(); var e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return r.height > 0 && !!e && b.contains(e); })()";
+    harness::until(
+        &tab,
+        strip_on,
+        "the premise: the turn strip shows, on top, in the middle of the session",
+        Duration::from_secs(10),
+        "document.getElementById('turnStickyBar').className",
+    );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('drawerHandle').click(); return 'ok'; })()",
+    );
+    let facts = "(function(){ var app = document.getElementById('app'), sb = document.querySelector('#app>.sidebar'), s = sb.getBoundingClientRect(); \
+        var brand = sb.querySelector('.side-head .brand'), b = brand.getBoundingClientRect(), h = document.getElementById('drawerHandle').getBoundingClientRect(); \
+        var at = document.elementFromPoint(b.left + 3, b.top + b.height / 2); \
+        var strip = document.getElementById('turnStickyBar').getBoundingClientRect(), y = strip.top + strip.height / 2, over = []; \
+        for (var x = s.left + 8; x < s.right - 4; x += 24) { var e = document.elementFromPoint(x, y); if (!e || !sb.contains(e)) over.push([Math.round(x), e ? (e.id || e.className || e.tagName) : null]); } \
+        return JSON.stringify({ open: !app.classList.contains('mobile-detail'), sbLeft: Math.round(s.left), tight: app.classList.contains('sidebar-tight'), strip: document.getElementById('turnStickyBar').classList.contains('on') && strip.height > 0, \
+          brandLeft: Math.round(b.left), handleRight: Math.round(h.right), brandHit: !!at && brand.contains(at), notInDrawer: over }); })()";
+    harness::until(
+        &tab,
+        &format!("(function(){{ var f = JSON.parse({facts}); return f.open && Math.abs(f.sbLeft) < 1; }})()"),
+        "the drawer open and in place",
+        Duration::from_secs(10),
+        facts,
+    );
+    let open: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default();
+    assert!(
+        open["brandHit"] == true
+            && open["brandLeft"].as_i64().unwrap_or(0)
+                >= open["handleRight"].as_i64().unwrap_or(i64::MAX)
+            && open["tight"] == false,
+        "the open drawer's brand starts clear of the handle, its own first letter on top: {open}"
+    );
+    assert!(
+        open["strip"] == true && open["notInDrawer"] == serde_json::json!([]),
+        "the strip still drawn beneath, and along its row the open drawer on top everywhere inside it: {open}"
+    );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('drawerHandle').click(); return 'ok'; })()",
+    );
+    harness::until(
+        &tab,
+        strip_on,
+        "the drawer shut: the strip on top again",
+        Duration::from_secs(10),
+        facts,
+    );
+}
+
+/// #s583's review: a wide phone held sideways shows the list as a column under the same `app-drawer`,
+/// and its handle hides the column without touching `mobile-detail`, so the drawer's open flag can
+/// stand where no drawer is drawn (here: opened upright, then turned sideways). With the column
+/// hidden the view fills the window and is no box of its own, and isolating it there would sink
+/// its layers under the handle (the review sheet's close sits right under it). So there the view
+/// stays level with the handle's layer.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_wide_phone_s_hidden_column_leaves_the_view_s_layers_where_they_were() {
+    let _serial = serial();
+    let (_m, _b, tab) = drawer_world(3065, "wide-hidden-column", 390, 844, false, 8, None);
+    let classes = "innerWidth + 'x' + innerHeight + ' ' + document.getElementById('app').className + ' view ' + document.getElementById('sessionView').className + ' isolation ' + getComputedStyle(document.getElementById('sessionView')).isolation";
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('drawerHandle').click(); return 'ok'; })()",
+    );
+    harness::until(
+        &tab,
+        "!document.getElementById('app').classList.contains('mobile-detail')",
+        "upright, the drawer open",
+        Duration::from_secs(10),
+        classes,
+    );
+    harness::phone(&tab, 956, 440);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    harness::until(
+        &tab,
+        "innerWidth === 956 && document.getElementById('app').classList.contains('app-drawer') && !document.getElementById('app').classList.contains('mobile-detail') && getComputedStyle(document.querySelector('#app>.sidebar')).position !== 'fixed'",
+        "the premise: turned sideways, the list a column, the drawer's open flag still standing",
+        Duration::from_secs(10),
+        classes,
+    );
+    harness::eval(
+        &tab,
+        "(function(){ document.getElementById('drawerHandle').click(); return 'ok'; })()",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('phone-column-off') && !document.getElementById('app').classList.contains('mobile-detail') && !document.getElementById('sessionView').classList.contains('pl-boxed')",
+        "the premise: the column hidden, the view filling the window unboxed",
+        Duration::from_secs(10),
+        classes,
+    );
+    let isolation = harness::eval(
+        &tab,
+        "getComputedStyle(document.getElementById('sessionView')).isolation",
+    );
+    assert_eq!(
+        isolation.as_str(),
+        Some("auto"),
+        "no drawer lies over the view, so it is no stacking context of its own: {}",
+        harness::eval(&tab, classes)
     );
 }
 
@@ -26092,7 +27943,7 @@ fn workers_world(
     phone: Option<(u32, u32)>,
 ) -> (
     Monitor,
-    headless_chrome::Browser,
+    harness::Chrome,
     std::sync::Arc<headless_chrome::Tab>,
     [&'static str; 3],
 ) {
@@ -28179,6 +30030,203 @@ fn a_click_in_a_growing_transcript_leaves_its_keys_a_scroller_no_redraw_takes() 
         (after["on"].as_str(), after["outline"].as_bool()),
         (Some("the transcript"), Some(false)),
         "after Page Up the focus stays on the transcript and no outline is drawn ({after})"
+    );
+}
+
+/// #s531, from #s488's review: leaving the session's search by Escape gives the keys back to the
+/// transcript the search took them from. After a click on its text the transcript holds the focus
+/// (#s488), so in Safari a key after a live redraw still scrolls; a blur on leaving the search put
+/// the focus on nothing again, and Page Up after the next redraw scrolled nothing until another
+/// click. Chrome scrolls either way, so this case reads the focus a key depends on, as #s488's does:
+/// ⌘F (Ctrl+F off a Mac) from the clicked transcript opens the search and a second press is the
+/// browser's; Escape puts the focus back on the transcript, where a redraw leaves it; so does Escape
+/// after a click on the field, and after the field lost the focus to nothing (Safari gives a pressed
+/// button none) and came back from it; from nothing focused, Escape leaves the focus on nothing as
+/// before. A real Page Up moves the transcript, last.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn escape_from_the_search_gives_the_keys_back_to_the_transcript_it_took_them_from() {
+    let _serial = serial();
+    let base = harness::base("search-escape-focus");
+    let stores = harness::Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000053100";
+    let path = stores.claude_session(sid, &harness::long_session(30, harness::Shape::default()));
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3069, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1366.0, 1024.0);
+    m.pair(&tab);
+    harness::track_idle(&tab);
+    m.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#transcript .virtual-window .turn.assistant p').length >= 2 && document.getElementById('transcript').scrollTop > 0",
+        "the session drawn at its tail",
+        Duration::from_secs(30),
+        "JSON.stringify({ ps: document.querySelectorAll('#transcript .virtual-window p').length, top: (document.getElementById('transcript') || {}).scrollTop })",
+    );
+    // The last reply's paragraph the mouse can reach, kept on the page as `__clicked`: at the tail
+    // it is the one the next turn's commit draws again.
+    let click_paragraph = |what: &str| {
+        let at = harness::eval(&tab, "(function(){ var s = document.getElementById('transcript'), v = s.getBoundingClientRect(); var ps = [].slice.call(s.querySelectorAll('.virtual-window .turn.assistant p')); for (var i = ps.length - 1; i >= 0; i--) { var r = ps[i].getBoundingClientRect(); if (r.height < 4 || r.top < v.top + 60 || r.bottom > v.bottom - 8) continue; var x = r.left + Math.min(40, r.width / 2), y = r.top + r.height / 2, hit = document.elementFromPoint(x, y); if (hit && ps[i].contains(hit)) { window.__clicked = ps[i]; return JSON.stringify([x, y]); } } return '[]'; })()");
+        let at: Vec<f64> = serde_json::from_str(at.as_str().unwrap_or("[]")).unwrap_or_default();
+        assert_eq!(at.len(), 2, "a paragraph to click {what}");
+        tab.click_point(headless_chrome::browser::tab::point::Point { x: at[0], y: at[1] })
+            .expect("a click on a paragraph");
+    };
+    let on = "(function(){ var a = document.activeElement, s = document.getElementById('transcript'), cs = getComputedStyle(a); return JSON.stringify({ on: a === s ? 'the transcript' : a === document.body ? 'nothing' : (a.id || a.tagName.toLowerCase()), connected: a.isConnected, outline: cs.outlineStyle !== 'none' && parseFloat(cs.outlineWidth) > 0, clicked: !!(window.__clicked && window.__clicked.isConnected) }); })()";
+    let read = |what: &str| -> serde_json::Value {
+        let v: serde_json::Value =
+            serde_json::from_str(harness::eval(&tab, on).as_str().unwrap_or("{}")).unwrap();
+        eprintln!("#s531 {what}: {v}");
+        v
+    };
+    let focus_on = |what: &str, expect: &str| {
+        let v = read(what);
+        assert_eq!(
+            (
+                v["on"].as_str(),
+                v["connected"].as_bool(),
+                v["outline"].as_bool()
+            ),
+            (Some(expect), Some(true), Some(false)),
+            "{what}: the focus on {expect}, connected, no outline ({v})"
+        );
+    };
+    // ⌘F (Ctrl+F off a Mac), dispatched on what has the focus: whether the page took it, and whether
+    // the field has the focus after it. A dispatched press cannot become a stuck key (#270).
+    let command_f = |what: &str| -> (bool, bool) {
+        let v = harness::eval(&tab, "(function(){ var t = document.activeElement || document.body, command = /Mac|iPhone|iPad|iPod/.test(navigator.platform) ? 'metaKey' : 'ctrlKey', init = {key: 'f', bubbles: true, cancelable: true}; init[command] = true; var e = new KeyboardEvent('keydown', init); t.dispatchEvent(e); return JSON.stringify([e.defaultPrevented, document.activeElement === document.getElementById('transcriptSearchInput')]); })()");
+        let v: Vec<bool> = serde_json::from_str(v.as_str().unwrap_or("[]")).unwrap_or_default();
+        eprintln!("#s531 {what}: prevented, in the field: {v:?}");
+        (
+            v.first().copied().unwrap_or(false),
+            v.get(1).copied().unwrap_or(false),
+        )
+    };
+    let escape = || {
+        harness::eval(&tab, "(function(){ (document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', {key: 'Escape', bubbles: true, cancelable: true})); return 'ok'; })()");
+    };
+
+    click_paragraph("to start");
+    focus_on("a click on the text", "the transcript");
+    assert_eq!(
+        command_f("⌘F from the transcript"),
+        (true, true),
+        "⌘F with the transcript focused opens the session's search"
+    );
+    assert_eq!(
+        command_f("⌘F in the field"),
+        (false, true),
+        "a second ⌘F, from the field, is the browser's"
+    );
+    escape();
+    focus_on("Escape from the field", "the transcript");
+    // A turn every second: the commit draws the clicked reply again.
+    let script = (0..4)
+        .flat_map(|i| {
+            [
+                harness::user_at(
+                    &format!("question {}: a late question", 900 + i),
+                    &harness::now_minus(60),
+                ),
+                harness::assistant_at(
+                    &format!(
+                        "answer {}: a late answer, a paragraph a reader could click",
+                        900 + i
+                    ),
+                    &harness::now_minus(55),
+                ),
+            ]
+        })
+        .collect::<Vec<_>>();
+    let growth = harness::LiveGrowth::start(path.clone(), script, Duration::from_millis(1000));
+    let deadline = Instant::now() + Duration::from_secs(6);
+    while Instant::now() < deadline
+        && harness::eval(&tab, "!!(window.__clicked && window.__clicked.isConnected)")
+            == serde_json::json!(true)
+    {
+        harness::pause("the growth", Duration::from_millis(100));
+    }
+    growth.finish(Duration::from_secs(20));
+    let after = read("after the growth");
+    assert_eq!(
+        after["clicked"], false,
+        "the growth drew the clicked reply again ({after})"
+    );
+    focus_on("after the growth", "the transcript");
+
+    click_paragraph("before a click on the field");
+    harness::click_when_settled(&tab, "#transcriptSearchInput", "the search field");
+    focus_on("a click on the field", "transcriptSearchInput");
+    escape();
+    focus_on("Escape after a click on the field", "the transcript");
+
+    assert_eq!(
+        command_f("⌘F again"),
+        (true, true),
+        "⌘F opens the search again"
+    );
+    harness::eval(
+        &tab,
+        "document.getElementById('transcriptSearchInput').blur(); 'ok'",
+    );
+    focus_on("the field's focus lost to nothing", "nothing");
+    escape();
+    focus_on(
+        "Escape with the focus on nothing, the search still held",
+        "the transcript",
+    );
+
+    // The field's focus lost to nothing and back (Safari after a press on a step, or another app and
+    // back): the same search, still from the transcript.
+    assert_eq!(
+        command_f("⌘F, once more"),
+        (true, true),
+        "⌘F opens the search"
+    );
+    harness::eval(&tab, "(function(){ var f = document.getElementById('transcriptSearchInput'); f.blur(); f.focus(); return 'ok'; })()");
+    focus_on(
+        "the field's focus lost to nothing and back",
+        "transcriptSearchInput",
+    );
+    escape();
+    focus_on(
+        "Escape after the focus came back from nothing",
+        "the transcript",
+    );
+
+    harness::eval(&tab, "document.activeElement.blur(); 'ok'");
+    focus_on("nothing focused", "nothing");
+    assert_eq!(
+        command_f("⌘F from nothing"),
+        (true, true),
+        "⌘F from nothing focused opens the search"
+    );
+    escape();
+    focus_on(
+        "Escape from a search opened with nothing focused",
+        "nothing",
+    );
+
+    // A real Page Up after a click and the search moves the transcript (last: Chrome's CDP key a page
+    // does not prevent is never released, so nothing is typed after it).
+    click_paragraph("before Page Up");
+    assert_eq!(
+        command_f("⌘F before Page Up"),
+        (true, true),
+        "⌘F opens the search"
+    );
+    escape();
+    focus_on("before Page Up", "the transcript");
+    let top = "Math.round(document.getElementById('transcript').scrollTop)";
+    let before = harness::eval(&tab, top).as_i64().unwrap_or(0);
+    tab.press_key("PageUp").unwrap();
+    harness::until(
+        &tab,
+        &format!("{top} < {before} - 100"),
+        "Page Up to move the transcript",
+        Duration::from_secs(5),
+        top,
     );
 }
 

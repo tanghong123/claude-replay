@@ -46,6 +46,10 @@ pub enum ToolStatus {
     Completed,
     Failed,
     Declined,
+    /// Stopped before it ran by a hook, a permission rule or auto mode (#s600; Claude Code's
+    /// `toolDenialKind` "permission-rule" or an `automode-*` kind): it never ran, and no person
+    /// said no.
+    Blocked,
     Cancelled,
     Unknown,
 }

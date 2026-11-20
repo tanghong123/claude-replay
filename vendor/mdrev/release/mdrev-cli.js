@@ -37277,6 +37277,18 @@ async function stamped(root5, store, p2) {
   return { ...p2, source };
 }
 var PROBE_KEPT = { root: 36e5, absent: 3e5, unreachable: 6e4 };
+function gitHasNoCredential() {
+  if (linkedCredential())
+    return false;
+  const n = Number(process.env.GIT_CONFIG_COUNT ?? 0);
+  let cleared = false;
+  for (let i = 0; Number.isInteger(n) && i < n; i++) {
+    if ((process.env[`GIT_CONFIG_KEY_${i}`] ?? "").toLowerCase() !== "credential.helper")
+      continue;
+    cleared = (process.env[`GIT_CONFIG_VALUE_${i}`] ?? "") === "";
+  }
+  return cleared;
+}
 async function probeKept(p2, fresh) {
   const file = join8(stateHome(), "review", ".probes.json");
   let memo = {};
@@ -37289,6 +37301,8 @@ async function probeKept(p2, fresh) {
   if (!fresh && seen && Date.now() - Date.parse(seen.at) < (PROBE_KEPT[seen.kind] ?? 0))
     return seen;
   const now = await probeStore(p2);
+  if (now.kind === "unreachable" && gitHasNoCredential())
+    return now;
   memo[key2] = { ...now, at: (/* @__PURE__ */ new Date()).toISOString() };
   try {
     writeAtomic(file, JSON.stringify(memo));

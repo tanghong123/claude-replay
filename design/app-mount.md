@@ -1,6 +1,8 @@
 # The web app as one mount, for the native app
 
-> **DRAFT 5** (#s551, 2026-11-17). Stage 2 (the mount for one server) is built; the rest is not.
+> **DRAFT 5** (#s551, 2026-11-17). Stage 2 (the mount for one server) is built, stage 3 (machines in
+> the mount, #s595) and stage 4 (the native app's own options, #s596); stage 5 is the app's
+> (agent-monitor-app #s13).
 > Reviewed on #s551. It carries Hong's rulings of the
 > same day: #s553 (a Machines row), #s554 (shared review in the app) and #s555 (Review on an iPad).
 >
@@ -121,8 +123,9 @@ The mount takes either `backend`, one handle (the monitor's page), or `machines`
   machine's own id (`forView`), and every id it gives back is mapped to the list's merged one
   (`<machine>/<id>`, `forView`'s `listId`, or `splitMachineId` the other way). That covers
   `selectSession` (with `push`), `parentShown`, `session()` against the list's selection, and
-  `selectedId`. The address holds the merged id; the view's own storage keys stay on the machine's
-  id (`am-view:<id>`), as `design/monitor-hub.md` D3 already has them.
+  `selectedId`. The address holds the merged id. The view's remembered place is kept per machine
+  (#s597): its key is the handle's base and the machine's id (`am-view:<base>|<id>`), and the page's
+  own server, base "", keeps `am-view:<id>`.
 - **The keymap** looks up each of the view's keys on the view mounted now, at the moment of the key,
   never a copy taken at the first mount. The wide phone's column gives back the pane list it
   borrowed from the view, and shows the Sessions tab, before the view is unmounted.
@@ -182,7 +185,10 @@ kit's files under `/kit/` today.
   routes through one base (`mdrevUrl`, in `mdrev-pane.js`), and the Mermaid runtime through `url`
   from the page's `mermaid-runtime` meta (`session-view.js`), so the app wraps each handle to send
   those few paths to its bundle. `assets` is an option of the view, withheld from hosts
-  (`VIEW_WITHHELD`), which the mount passes on: the view loads mdrev's bundle and the Mermaid
+  (`VIEW_WITHHELD`), which the mount passes on (#s595 gave it its shape: `{ mdrev, mdrevVersion,
+  mermaid }`, the base the bundle is under as `/mdrev/<mdrevVersion>/mdrev.js` and `mdrev.css`, the
+  release that bundle is, and the runtime's address; the mount writes the runtime's meta into a page
+  that names none): the view loads mdrev's bundle and the Mermaid
   runtime from it, and every route, mdrev's included, still goes through the row's handle, whose
   `mdrev` base names the routes alone. The wrapped `url` and `mdrevUrl` members go. A machine whose
   monitor pins a newer mdrev than the bundled one reads with the older guest, the direction #s352
@@ -348,7 +354,15 @@ signal to free agent pages, `paneLayout` and the keyboard mode):
    rail glyph (`onMachines`, #s553), and `reviewSheet` passed on to the view (#s555). Contract
    cases: the start theme yields to a stored one, the Machines row is drawn only where the app
    passes `onMachines`, and Review is drawn at a desktop width only where the app passes
-   `reviewSheet`. A kit page case under the app's policy. Released.
+   `reviewSheet`. A kit page case under the app's policy. Released. Built as `theme`, `show`,
+   `onMachines`, `reviewSheet` and `frame` (the last passed on to the view as before): a stored
+   "dark" wins, a stored "light" is the page's own, nothing stored opens in `theme`; `show` is split
+   between the view's and the list's optional controls by name; the Machines row (`#machinesBtn`)
+   sits after Search in the nav and its glyph (`#sidebarMiniMachines`) after the rail's filter;
+   and the sheet a wide view opens reaches the window's edges as a phone's does. The browser cases
+   are `the_native_app_s_own_options_from_the_kit_under_its_policy`,
+   `the_native_app_s_machines_row_is_reached_on_a_phone` and
+   `the_native_app_reviews_at_a_desktops_width_in_the_sheet`.
 5. **agent-monitor-app #s13** mounts it and drops its own chrome.
 
 Each stage lands on its own, with the monitor's page working at every step.

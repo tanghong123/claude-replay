@@ -59,8 +59,8 @@ pub use mdrev::{
 pub use serve::{
     existing_server, finish_reply, get_request, handoff_url, mint_token, query_get, serve,
     service_body_limit, service_routes, spawn_listener, spawn_listener_gated,
-    spawn_streaming_listener_gated, start_server, AuthGate, EventStream, HostCheck, HttpReply,
-    HttpResponse, LiveServer, RelayCheck, ReplyClient, Request, RootLock, RouteHandler,
+    spawn_streaming_listener_gated, start_server, AuthGate, CodeDisplay, EventStream, HostCheck,
+    HttpReply, HttpResponse, LiveServer, RelayCheck, ReplyClient, Request, RootLock, RouteHandler,
     ServiceConfig, SessionService, StaleEpoch, StreamingRouteHandler,
 };
 
@@ -1762,7 +1762,12 @@ impl Emitter<'_> {
                     let handed = name == "SendUserFile"
                         && !matches!(
                             execution.as_ref().and_then(|e| e.status),
-                            Some(ToolStatus::Failed | ToolStatus::Declined | ToolStatus::Cancelled)
+                            Some(
+                                ToolStatus::Failed
+                                    | ToolStatus::Declined
+                                    | ToolStatus::Blocked
+                                    | ToolStatus::Cancelled
+                            )
                         );
                     if let Some(abs) = resolve_abs(base, target) {
                         head.extend(offered_path(&abs, handed));
@@ -5922,6 +5927,19 @@ mod tests {
                 ("diff".to_string(), String::new()),
             ]
         );
+        // #s600: a hook or a rule stopped it: its word, and the client's reason as it wrote it.
+        let (chips, body) = parts(with(
+            ToolStatus::Blocked,
+            Some("PreToolUse:Edit hook error: [guard] generated file"),
+        ));
+        assert_eq!(chips, ["blocked"]);
+        assert_eq!(
+            body,
+            [(
+                "pre".to_string(),
+                "PreToolUse:Edit hook error: [guard] generated file".to_string()
+            )]
+        );
     }
 
     #[test]
@@ -6646,6 +6664,7 @@ mod tests {
         for status in [
             ToolStatus::Failed,
             ToolStatus::Declined,
+            ToolStatus::Blocked,
             ToolStatus::Cancelled,
         ] {
             for (path, fsig) in stamps(send(Some(status))) {

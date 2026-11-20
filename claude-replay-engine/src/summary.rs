@@ -153,6 +153,11 @@ fn classify_bash(cmd: &str, output: Option<&str>) -> BashClass {
 /// Files count UNIQUE paths (a bash `cat` of a file dedupes against a `Read` of it);
 /// searches/listings/plain shells count occurrences; git-phrased commands aren't
 /// double-counted as "ran". CC names no shell programs, so neither do we.
+///
+/// A call stopped before it ran (#s620: Blocked by a hook, a rule or auto mode, #s600; Declined
+/// by the person, #s594) did none of those things, so it is counted apart, in its pill's word:
+/// `1 call blocked, 2 calls declined`, after everything that happened and beside an edit's own
+/// `not applied`.
 pub fn activities(tools: &[Block]) -> String {
     let s = |n: usize| if n == 1 { "" } else { "s" };
     let (mut pat, mut dir, mut ran) = (0usize, 0usize, 0usize);
@@ -166,6 +171,7 @@ pub fn activities(tools: &[Block]) -> String {
     // #s23: the changes a run made, by distinct file, and the edits that changed nothing.
     let (mut edited, mut created) = (Vec::<&str>::new(), Vec::<&str>::new());
     let mut failed_edits = 0usize;
+    let (mut blocked, mut declined) = (0usize, 0usize);
     let mut push_file = |f: String, seen: &mut std::collections::HashSet<String>| {
         if seen.insert(f.clone()) {
             files.push(f);
@@ -186,6 +192,7 @@ pub fn activities(tools: &[Block]) -> String {
                     s,
                     crate::model::ToolStatus::Failed
                         | crate::model::ToolStatus::Declined
+                        | crate::model::ToolStatus::Blocked
                         | crate::model::ToolStatus::Cancelled
                 )
             });
@@ -199,6 +206,17 @@ pub fn activities(tools: &[Block]) -> String {
                     list.push(target.as_str());
                 }
                 continue;
+            }
+            match execution.as_ref().and_then(|e| e.status) {
+                Some(crate::model::ToolStatus::Blocked) => {
+                    blocked += 1;
+                    continue;
+                }
+                Some(crate::model::ToolStatus::Declined) => {
+                    declined += 1;
+                    continue;
+                }
+                _ => {}
             }
             match name.as_str() {
                 "Bash" => match classify_bash(target, output.as_deref()) {
@@ -269,6 +287,12 @@ pub fn activities(tools: &[Block]) -> String {
     if !created.is_empty() {
         let n = created.len();
         parts.push(format!("created {n} file{}", s(n)));
+    }
+    if blocked > 0 {
+        parts.push(format!("{blocked} call{} blocked", s(blocked)));
+    }
+    if declined > 0 {
+        parts.push(format!("{declined} call{} declined", s(declined)));
     }
     if failed_edits > 0 {
         parts.push(format!(
@@ -344,6 +368,48 @@ mod tests {
             activities(&run),
             "ran 1 shell command, edited 2 files, created 1 file, 1 edit not applied"
         );
+    }
+
+    /// #s620: a call stopped before it ran never ran: a hook's or a rule's block and the person's
+    /// no are said apart, in the pill's words, and a call that ran and failed still ran. A blocked
+    /// search or read is not a search or a read either.
+    #[test]
+    fn a_call_stopped_before_it_ran_is_not_counted_as_run() {
+        use crate::model::{ToolExecution, ToolStatus};
+        let with = |mut b: Block, st: ToolStatus| {
+            if let Block::ToolUse { execution, .. } = &mut b {
+                *execution = Some(ToolExecution {
+                    status: Some(st),
+                    exit_code: None,
+                    duration: None,
+                    outside_sandbox: false,
+                });
+            }
+            b
+        };
+        let run = [
+            with(tool("Bash", "echo b-hook", None), ToolStatus::Blocked),
+            with(tool("Bash", "echo b-decl", None), ToolStatus::Declined),
+            with(tool("Bash", "echo b-fail", None), ToolStatus::Failed),
+        ];
+        assert_eq!(
+            activities(&run),
+            "ran 1 shell command, 1 call blocked, 1 call declined"
+        );
+        let stopped = [
+            with(tool("Bash", "grep -n x a.rs", None), ToolStatus::Blocked),
+            with(tool("Read", "a.rs", None), ToolStatus::Blocked),
+            with(
+                tool("mcp__okr__authenticate", "", None),
+                ToolStatus::Declined,
+            ),
+            with(tool("Edit", "a.rs", None), ToolStatus::Blocked),
+        ];
+        assert_eq!(
+            activities(&stopped),
+            "2 calls blocked, 1 call declined, 1 edit not applied"
+        );
+        assert_eq!(thinking_summary("", None, &stopped[..1]), "1 call blocked");
     }
 
     /// The CC bash classes (#57, `design/cc-activity-coalescing.md`): single-segment

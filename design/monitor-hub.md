@@ -385,10 +385,14 @@ that has never answered counts).
 Ticked, the list is an outer head per machine, in the host's order of machines, saying how the
 machine answers while it does not (D6's heads over the list give way to it), each holding that
 machine's own sessions arranged as the reader chose for the rest of the list (by agent and project,
-or by activity); its rows do not repeat the machine. Unticked, the list is one merged list, each
-project's head and each row of the list by activity wearing its machine as a small label: the first
-label of the machine's host name (Hong: "limit to the first dot component maybe"). The choice is
-remembered like the filter's others.
+or by activity); its rows do not repeat the machine, and its projects are in its own server's order.
+Unticked, the list is one merged list, each project's head and each row of the list by activity
+wearing its machine as a small label: the first label of the machine's host name (Hong: "limit to
+the first dot component maybe"). There each agent's projects are in the server's own order across
+the machines (#s615, Hong: "the sessions are not sorted by the last active time"): those active in
+the last ten minutes first, by name, then the rest newest first, each project dated by its folder's
+newest session of any agent, against the reader's clock; each machine's lists are merged without
+reordering any one machine's projects. The choice is remembered like the filter's others.
 
 Not built yet: an app arrangement (like the Claude app, the Codex app, Herdr) under Group by machine.
 It would be read per machine from that machine's `/api/layout` (D6), since each machine has its own

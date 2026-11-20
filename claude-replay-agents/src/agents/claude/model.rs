@@ -1392,6 +1392,22 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // the owner.
             "summarizedTurnPromptUuids",
             "toolDenialKind",
+            // #s594 (client 2.1.326; in 2.1.326–2.1.328, not in 2.1.325): a boolean on the user
+            // record carrying a call's result, written only when true, beside `toolDenialKind`
+            // "user-rejected": the turn was stopped (by the person, or a remote cancel) before the
+            // call started, so it never ran. Met on 1 record on hong-devserver, 2026-11-19, a Bash
+            // call in a sub-agent (client 2.1.327). READ (`declined_before_run`): the call reads
+            // Declined, as the client reads it refused, not Failed. REVISIT: (1) the flag on a
+            // result whose `toolDenialKind` is not "user-rejected"; (2) the edit path: `refused()`
+            // reads an EDIT stopped while running as Declined from its text, which opens with the
+            // same refusal sentence though the client says it may have run in part — when one is
+            // met (the sentence, then "Correction to the text above"), read it as not refused; (3)
+            // its siblings in the same 2.1.328 writer, in no transcript yet and left out of this
+            // list so each reports as its own row: `toolDenialAfterRun`, `toolDenialFromHost`,
+            // `toolDenialEndsTurn`, `toolDenialMonitorBlocked`, `toolDenialUnanswered`,
+            // `toolResultRemedy`, `toolResultTypedCommand`, `hostClassifierContext`,
+            // `connectorFileLines`, `interruptedByShutdown`.
+            "toolDenialBeforeRun",
             "interruptedMessageId",
             "sourceToolUseID",
             "classifierBoundary",
@@ -1429,6 +1445,16 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // REVISIT: the first `source` other than "config" — a person in the prompt, a hook, a
             // classifier — is a RENDER question for the owner (a quiet "who allowed this" on the
             // tool card); queue it with the record count and client version, never decide it here.
+            // FIRED (#s594, 2026-11-19, hong-devserver): `source: "user_reject"` on 2 records
+            // (clients 2.1.311 and 2.1.314, both `toolDenialKind` "user-rejected"), which the
+            // client reads as refused at its permission prompt and #s594 reads Declined, the
+            // person's `userFeedback` on the card; and `source: "hook"` (reasonType "hook",
+            // `toolDenialKind` "permission-rule", which the client reads as blocked, never ran) on
+            // 596 records in 337 transcripts. Hong ruled on #s599 ("New word: blocked, reason
+            // kept"), and #s600 reads every lone result whose `toolDenialKind` is
+            // "permission-rule" as Blocked, whatever its `source` (`blocked_before_run`), the
+            // client's text, which names the hook or the rule, kept as its output; and auto
+            // mode's kinds the same (Hong on #s610).
             "permissionDecision",
             // #s215 (client 2.1.308): a boolean on the user record carrying a Bash tool_result —
             // whether the command ran inside Claude Code's sandbox. Every Bash result since 2.1.308
@@ -4649,6 +4675,9 @@ pub(crate) fn decode_line_known(
                             for op in taskq_ops(tid, &txt) {
                                 msgs.push(Message::TaskOp(op));
                             }
+                            // #s594: read before the text moves into the result.
+                            let declined = declined_before_run(&v, &txt, tool_results(arr));
+                            let blocked = blocked_before_run(&v, &txt, &tur, tool_results(arr));
                             msgs.push(Message::ToolResult {
                                 tool_use_id: tid.to_string(),
                                 text: txt,
@@ -4675,6 +4704,21 @@ pub(crate) fn decode_line_known(
                                 msgs.push(Message::SandboxRun {
                                     tool_use_id: tid.to_string(),
                                     inside,
+                                });
+                            }
+                            // #s594: a call the client refused before it ran reads Declined.
+                            if let Some(words) = declined {
+                                msgs.push(Message::ToolDeclined {
+                                    tool_use_id: tid.to_string(),
+                                    words,
+                                });
+                            }
+                            // #s600: one a hook, a rule or auto mode stopped before it ran reads
+                            // Blocked, its output the client's reason.
+                            if let Some(reason) = blocked {
+                                msgs.push(Message::ToolBlocked {
+                                    tool_use_id: tid.to_string(),
+                                    reason,
                                 });
                             }
                             if let Some(items) = blk.get("content").and_then(|c| c.as_array()) {
@@ -4761,7 +4805,11 @@ pub(crate) fn decode_line_known(
             .then(|| a.and_then(|a| a.get("paths")).and_then(|p| p.as_array()))
             .flatten();
             if is_prompt {
-                if let Some(p) = a.and_then(|a| a.get("prompt")).and_then(|p| p.as_str()) {
+                if let Some(prompt) = a.and_then(|a| a.get("prompt")) {
+                    note_queued_prompt_shape(&v, prompt);
+                }
+                if let Some((p, images)) = a.and_then(|a| a.get("prompt")).map(queued_prompt) {
+                    let p: &str = &p;
                     if !p.trim().is_empty() {
                         let meta =
                             a.and_then(|a| a.get("isMeta")).and_then(Value::as_bool) == Some(true);
@@ -4784,6 +4832,12 @@ pub(crate) fn decode_line_known(
                             msgs.push(Message::AttachmentPrompt {
                                 text: fence_pasted(p).into_owned(),
                             });
+                        }
+                    }
+                    // #s607: the prompt's pasted images, after its words as a prompt's are.
+                    for blk in images {
+                        if let Some(att) = image_attachment(blk) {
+                            msgs.push(Message::Attachment(att));
                         }
                     }
                 }
@@ -5218,6 +5272,99 @@ fn refused(txt: &str, tur: &Value) -> bool {
     const REFUSALS: [&str; 2] = ["doesn't want to proceed", "rejected tool use"];
     let hit = |s: &str| REFUSALS.iter().any(|r| s.contains(r));
     hit(txt) || tur.as_str().is_some_and(hit)
+}
+
+/// #s594: whether the record carrying a call's result says the client REFUSED the call before it
+/// ran, by the client's own reading (Claude Code 2.1.328): `toolDenialKind` "user-rejected" with
+/// `toolDenialBeforeRun` true (a turn stopped before the call started, 2.1.326+) or with
+/// `permissionDecision.source` "user_reject" (the person's no at the permission prompt, 2.1.311+),
+/// and neither `toolDenialAfterRun` nor `toolDenialFromHost` true. Never read from the text: a call
+/// stopped WHILE running carries the same opening sentence, a correction after it, and no flag.
+/// Only a record holding one result says it of that one (`results`, the record's count).
+///
+/// `Some(words)` when refused: the person's own reason, from the record's `userFeedback` (when not
+/// empty), else from the text after the client's "the user said:" (its two wordings); `None` inside
+/// when they gave none, so the client's sentence to the model is not shown. An edit or a write card
+/// draws only its "rejected" note today, so there the reason is kept on the block but not shown.
+fn declined_before_run(v: &Value, txt: &str, results: usize) -> Option<Option<String>> {
+    let flag = |key: &str| v.get(key).and_then(Value::as_bool) == Some(true);
+    let refused = results == 1
+        && v.get("toolDenialKind").and_then(Value::as_str) == Some("user-rejected")
+        && (flag("toolDenialBeforeRun")
+            || v.pointer("/permissionDecision/source")
+                .and_then(Value::as_str)
+                == Some("user_reject"))
+        && !flag("toolDenialAfterRun")
+        && !flag("toolDenialFromHost");
+    if !refused {
+        return None;
+    }
+    const SAID: [&str; 2] = [
+        "To tell you how to proceed, the user said:",
+        "The user said:",
+    ];
+    let said = || {
+        SAID.iter()
+            .find_map(|marker| txt.split_once(marker).map(|(_, rest)| rest))
+    };
+    Some(
+        v.get("userFeedback")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|w| !w.is_empty())
+            .or_else(|| said().map(str::trim).filter(|w| !w.is_empty()))
+            .map(str::to_string),
+    )
+}
+
+/// #s600: whether the record carrying a call's result says something stopped the call before it
+/// ran other than the person, by the client's own reading (Claude Code 2.1.328), and if so the
+/// reason to show. `toolDenialKind` "permission-rule", which the client words blocked-by-
+/// permissions: a PreToolUse hook's refusal (`permissionDecision` source "hook", 2.1.299+), a
+/// settings or safety rule's (source "config"), or an older client's that does not tell them apart
+/// (no `permissionDecision`, 2.1.215+). And auto mode's three (Hong on #s610: "Yes: auto mode
+/// refusals read blocked as well"): its check said block (`automode-blocked`), gave no verdict
+/// (`automode-parsing-error`) or could not be reached (`automode-unavailable`), each a deny the
+/// client counts as a refusal. Neither `toolDenialAfterRun` nor `toolDenialFromHost` true, as for
+/// a decline. Only a record holding one result says it of that one (`results`).
+///
+/// `Some(reason)` when blocked: the result's own text (`txt`, out of its `<tool_use_error>`
+/// wrapper), which names what stopped it and why; else the `toolUseResult` string less the
+/// client's "Error: ", which an edit's join prefers and which is no error of the call's; `None`
+/// inside when both are empty.
+fn blocked_before_run(v: &Value, txt: &str, tur: &Value, results: usize) -> Option<Option<String>> {
+    const KINDS: [&str; 4] = [
+        "permission-rule",
+        "automode-blocked",
+        "automode-parsing-error",
+        "automode-unavailable",
+    ];
+    let flag = |key: &str| v.get(key).and_then(Value::as_bool) == Some(true);
+    let kind = v.get("toolDenialKind").and_then(Value::as_str);
+    if results != 1
+        || !kind.is_some_and(|k| KINDS.contains(&k))
+        || flag("toolDenialAfterRun")
+        || flag("toolDenialFromHost")
+    {
+        return None;
+    }
+    let reason = Some(tool_error_text(txt, &Value::Null))
+        .filter(|r| !r.is_empty())
+        .or_else(|| {
+            tur.as_str()
+                .map(|s| s.trim().trim_start_matches("Error:").trim().to_string())
+                .filter(|r| !r.is_empty())
+        });
+    Some(reason)
+}
+
+/// How many results a user record's content holds: a record-level key speaks of its result only
+/// when there is one.
+fn tool_results(content: &[Value]) -> usize {
+    content
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+        .count()
 }
 
 /// The calls that change a file by name.
@@ -6041,6 +6188,18 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                             .unwrap_or(false),
                                     );
                                     apply_result(&mut out[idx], &txt, &tur, is_error);
+                                    // #s594 mirror: a call refused before it ran.
+                                    if let Some(words) =
+                                        declined_before_run(&v, &txt, tool_results(arr))
+                                    {
+                                        decline(&mut out[idx], words.as_deref());
+                                    }
+                                    // #s600 mirror: a call a hook, a rule or auto mode stopped.
+                                    if let Some(reason) =
+                                        blocked_before_run(&v, &txt, &tur, tool_results(arr))
+                                    {
+                                        mark_blocked(&mut out[idx], reason.as_deref());
+                                    }
                                     // #s381 mirror: where the command ran.
                                     if sandbox_on
                                         && v.get("sandboxed").and_then(Value::as_bool)
@@ -6131,6 +6290,13 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                 content: c.trim().to_string(),
                                 marker_idx,
                             });
+                        } else {
+                            // #s608 mirror: an enqueue with no content (an image-only message)
+                            // holds its place, so its own content-less pop takes it.
+                            queue.push(QueueItem {
+                                content: String::new(),
+                                marker_idx: None,
+                            });
                         }
                     }
                     Some("remove") | Some("dequeue") => {
@@ -6184,7 +6350,8 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                         .and_then(|m| m.as_str())
                         == Some("prompt");
                 if is_prompt {
-                    if let Some(p) = a.and_then(|a| a.get("prompt")).and_then(|p| p.as_str()) {
+                    if let Some((p, images)) = a.and_then(|a| a.get("prompt")).map(queued_prompt) {
+                        let p: &str = &p;
                         if !p.trim().is_empty() {
                             let raw = p;
                             // #52 op-less delivery, attachment form (see above). The pickup
@@ -6216,6 +6383,12 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     Some(m) => push_inbox(m, &mut out, None, &mut inbox_ids),
                                     None => out.push(Block::UserText(p.into_owned())),
                                 },
+                            }
+                        }
+                        // #s607 mirror: the prompt's pasted images.
+                        for blk in images {
+                            if let Some(att) = image_attachment(blk) {
+                                out.push(Block::Attachment(att));
                             }
                         }
                     }
@@ -6616,6 +6789,65 @@ fn load_attachment_from_event(a: &Value) -> Option<LoadedAttachment> {
     }
 }
 
+/// Report a `queued_command` prompt of a shape [`queued_prompt`] does not read (#s608): a content
+/// block that is neither text nor an image (dropped there), or a prompt that is neither a string
+/// nor a list of blocks (read as empty). Measured 2026-11-19 over 4,208 transcripts: every prompt
+/// was a string or a list of text and image blocks, so silence is the expected answer and a row
+/// is the next format change. Named under `content.type`, the prompt's place first.
+fn note_queued_prompt_shape(v: &Value, prompt: &Value) {
+    let name = match prompt {
+        Value::String(_) => return,
+        Value::Array(blocks) => {
+            for blk in blocks {
+                let kind = blk.get("type").and_then(Value::as_str);
+                if !matches!(kind, Some("text" | "image")) {
+                    note_unknown_shape(
+                        v,
+                        UnknownAt::ContentType,
+                        Some(&format!(
+                            "queued_command.prompt[].{}",
+                            kind.unwrap_or("(absent)")
+                        )),
+                        &[],
+                    );
+                }
+            }
+            return;
+        }
+        Value::Object(_) => "queued_command.prompt:object",
+        Value::Number(_) => "queued_command.prompt:number",
+        Value::Bool(_) => "queued_command.prompt:bool",
+        Value::Null => "queued_command.prompt:null",
+    };
+    note_unknown_shape(v, UnknownAt::ContentType, Some(name), &[]);
+}
+
+/// A `queued_command`'s prompt: its text and its image blocks. The client writes it as a string,
+/// or, for a prompt carrying pasted images, as the prompt's own content blocks (#s607, measured from
+/// client 2.1.251 to 2.1.327: a text block and the images, or the images alone). Read only as a
+/// string, every mid-turn message with an image in it was dropped: 104 on one machine, in 18 sessions.
+fn queued_prompt(prompt: &Value) -> (std::borrow::Cow<'_, str>, Vec<&Value>) {
+    if let Some(s) = prompt.as_str() {
+        return (std::borrow::Cow::Borrowed(s), Vec::new());
+    }
+    let (mut text, mut images) = (String::new(), Vec::new());
+    for blk in prompt.as_array().into_iter().flatten() {
+        match blk.get("type").and_then(Value::as_str) {
+            Some("text") => {
+                if let Some(t) = blk.get("text").and_then(Value::as_str) {
+                    if !text.is_empty() {
+                        text.push('\n');
+                    }
+                    text.push_str(t);
+                }
+            }
+            Some("image") => images.push(blk),
+            _ => {}
+        }
+    }
+    (std::borrow::Cow::Owned(text), images)
+}
+
 /// Build an image [`Attachment`] from an `{type:"image", source:{type:"base64",…}}`
 /// content block (a pasted image, or a tool result that returned one). Images are not
 /// `attachment` events — they ride inside message/tool-result content — so this is a
@@ -6664,7 +6896,13 @@ fn image_source(blk: &Value) -> Option<&Value> {
         return None;
     }
     let src = blk.get("source")?;
-    (src.get("type").and_then(|t| t.as_str()) == Some("base64")).then_some(src)
+    // Its bytes must be there (#s608): an image with `data` missing or not a string is no
+    // attachment on either side, or the loader, which needs the bytes, counts one fewer than the
+    // metadata walk and every later image on the line loads one slot off. An elided body is still
+    // a string (its marker).
+    (src.get("type").and_then(|t| t.as_str()) == Some("base64")
+        && src.get("data").and_then(Value::as_str).is_some())
+    .then_some(src)
 }
 
 fn image_mime(src: &Value) -> String {
@@ -6739,10 +6977,24 @@ pub(crate) fn nth_loaded_attachment(line: &str, index: usize) -> Option<LoadedAt
             }
             None
         }
-        Some("attachment") => v
-            .get("attachment")
-            .and_then(load_attachment_from_event)
-            .filter(|_| index == 0),
+        Some("attachment") => {
+            let a = v.get("attachment")?;
+            // #s607: a mid-turn prompt's pasted images, in the order both parse paths emit them
+            // (`queued_prompt`'s). Without this arm a small one, which the reader does not elide
+            // and the span path never sees, was drawn by name and could never be loaded.
+            if a.get("type").and_then(Value::as_str) == Some("queued_command")
+                && a.get("commandMode").and_then(Value::as_str) == Some("prompt")
+            {
+                let (_, images) = queued_prompt(a.get("prompt")?);
+                for blk in images {
+                    if let Some(hit) = take(load_image_attachment(blk)) {
+                        return hit;
+                    }
+                }
+                return None;
+            }
+            load_attachment_from_event(a).filter(|_| index == 0)
+        }
         // #16: an assistant line's ExitPlanMode call carries the plan body inline.
         Some("assistant") => {
             let content = v.pointer("/message/content").and_then(|c| c.as_array())?;
@@ -7681,6 +7933,197 @@ mod tests {
             users,
             vec!["first turn", "mid-turn interjection", "last turn"],
             "{blocks:?}"
+        );
+    }
+
+    /// #s607: a mid-turn message carrying pasted images is recorded as a `queued_command` whose
+    /// prompt is the prompt's own content blocks, a text block and the images (client 2.1.251 to
+    /// 2.1.327), not a string. It is the person's turn, its words and then its images, and its
+    /// queued marker is popped at pickup as a string prompt's is; a prompt of images alone shows its
+    /// images. A string prompt is unchanged. Both parse paths agree. The second message with an image
+    /// has an enqueue and no remove, so only its pickup's words can pop its marker.
+    #[test]
+    fn a_mid_turn_message_with_pasted_images_is_the_persons_turn() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-11-19T09:00:00.000Z","message":{"content":"first turn"}}
+{"type":"assistant","timestamp":"2026-11-19T09:00:01.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-19T09:00:01.500Z","content":"[Image #1] [Image #2] - the dialog over a dialog"}
+{"type":"queue-operation","operation":"remove","timestamp":"2026-11-19T09:00:02.000Z","content":"[Image #1] [Image #2] - the dialog over a dialog","reason":"absorbed_mid_turn"}
+{"type":"attachment","timestamp":"2026-11-19T09:00:02.000Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"humanTurn":true,"imagePasteIds":[1,2],"prompt":[{"type":"text","text":"[Image #1] [Image #2] - the dialog over a dialog"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"YmFy"}}]}}
+{"type":"user","timestamp":"2026-11-19T09:00:02.100Z","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]}}
+{"type":"assistant","timestamp":"2026-11-19T09:00:03.000Z","message":{"content":[{"type":"tool_use","id":"b2","name":"Bash","input":{"command":"pwd"}}]}}
+{"type":"attachment","timestamp":"2026-11-19T09:00:04.000Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"humanTurn":true,"imagePasteIds":[3],"prompt":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"YmF6"}}]}}
+{"type":"user","timestamp":"2026-11-19T09:00:04.100Z","message":{"content":[{"type":"tool_result","tool_use_id":"b2","content":"/w"}]}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-19T09:00:04.200Z","content":"[Image #4] one more"}
+{"type":"attachment","timestamp":"2026-11-19T09:00:04.500Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"humanTurn":true,"imagePasteIds":[4],"prompt":[{"type":"text","text":"[Image #4] one more"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"cXV4"}}]}}
+{"type":"attachment","timestamp":"2026-11-19T09:00:05.000Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"prompt":"words alone"}}
+{"type":"assistant","timestamp":"2026-11-19T09:00:06.000Z","message":{"content":[{"type":"text","text":"seen"}]}}
+{"type":"user","timestamp":"2026-11-19T09:00:07.000Z","message":{"content":"last turn"}}
+"##;
+        let streamed = parse(jsonl);
+        let reference = parse_main(
+            jsonl.lines().filter(|l| !l.trim().is_empty()),
+            &mut Vec::new(),
+        );
+        assert_eq!(streamed, reference, "the two parse paths agree");
+        // The person's turns and each image, in the order they were drawn.
+        let seen: Vec<String> = streamed
+            .iter()
+            .filter_map(|b| match b {
+                Block::UserText(t) => Some(format!("user {t}")),
+                Block::Attachment(a) if a.kind == AttachmentKind::Image => Some("image".into()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                "user first turn",
+                "user [Image #1] [Image #2] - the dialog over a dialog",
+                "image",
+                "image",
+                "image",
+                "user [Image #4] one more",
+                "image",
+                "user words alone",
+                "user last turn",
+            ],
+            "{streamed:#?}"
+        );
+        assert!(
+            !streamed
+                .iter()
+                .any(|b| matches!(b, Block::QueueEvent { .. })),
+            "the queued marker is popped at pickup: {streamed:#?}"
+        );
+        // And each image's bytes load from its line, in the order the parse paths drew them: a
+        // small image is not elided, so this walk is the only way its picture is ever shown.
+        let line = |needle: &str| jsonl.lines().find(|l| l.contains(needle)).unwrap();
+        let b64 = |l: &str, i: usize| match nth_loaded_attachment(l, i) {
+            Some(LoadedAttachment::Base64 { b64, .. }) => Some(b64),
+            _ => None,
+        };
+        let two = line("\"imagePasteIds\":[1,2]");
+        assert_eq!(b64(two, 0).as_deref(), Some("Zm9v"));
+        assert_eq!(b64(two, 1).as_deref(), Some("YmFy"));
+        assert_eq!(b64(two, 2), None);
+        assert_eq!(
+            b64(line("\"imagePasteIds\":[3]"), 0).as_deref(),
+            Some("YmF6")
+        );
+        assert_eq!(b64(line("\"prompt\":\"words alone\""), 0), None);
+    }
+
+    /// #s608: Claude Code writes an image-only mid-turn message as an `enqueue` with NO content,
+    /// then a content-less `dequeue` or `remove` for it (93 such enqueues on one machine). The
+    /// queue is first in, first out, so the enqueue holds its place: its own pop takes it, and a
+    /// prompt typed after it keeps its marker until ITS pop. Without the slot the image's pop took
+    /// the prompt queued behind it (69 pops on that machine), its marker went early, and the pops
+    /// after it were one off. Both parse paths agree.
+    #[test]
+    fn an_image_only_enqueue_holds_its_place_in_the_queue() {
+        let head = r##"
+{"type":"user","timestamp":"2026-11-19T09:00:00.000Z","message":{"content":"first turn"}}
+{"type":"assistant","timestamp":"2026-11-19T09:00:01.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-19T09:00:01.200Z"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-19T09:00:01.500Z","content":"typed while it worked"}
+{"type":"queue-operation","operation":"dequeue","timestamp":"2026-11-19T09:00:02.000Z"}
+{"type":"attachment","timestamp":"2026-11-19T09:00:02.000Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"humanTurn":true,"imagePasteIds":[1],"prompt":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}}]}}
+{"type":"user","timestamp":"2026-11-19T09:00:02.100Z","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]}}
+"##;
+        let tail = r##"{"type":"queue-operation","operation":"dequeue","timestamp":"2026-11-19T09:00:03.000Z"}
+{"type":"attachment","timestamp":"2026-11-19T09:00:03.000Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"prompt":"typed while it worked"}}
+"##;
+        let markers = |blocks: &[Block]| -> Vec<String> {
+            blocks
+                .iter()
+                .filter_map(|b| match b {
+                    Block::QueueEvent { text } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect()
+        };
+        for jsonl in [head.to_string(), format!("{head}{tail}")] {
+            let streamed = parse(&jsonl);
+            let reference = parse_main(
+                jsonl.lines().filter(|l| !l.trim().is_empty()),
+                &mut Vec::new(),
+            );
+            assert_eq!(streamed, reference, "the two parse paths agree");
+            let images = streamed
+                .iter()
+                .filter(|b| matches!(b, Block::Attachment(a) if a.kind == AttachmentKind::Image))
+                .count();
+            assert_eq!(images, 1, "{streamed:#?}");
+            if jsonl.len() == head.len() {
+                assert_eq!(
+                    markers(&streamed),
+                    vec!["typed while it worked"],
+                    "the image's own pop leaves the typed prompt waiting: {streamed:#?}"
+                );
+            } else {
+                assert!(
+                    markers(&streamed).is_empty(),
+                    "the typed prompt's own pop takes its marker: {streamed:#?}"
+                );
+            }
+        }
+    }
+
+    /// #s608: an image block whose bytes are missing, or not a string, is no attachment, on the
+    /// metadata walk and on the loader alike, so the images after it on the line still load their
+    /// own bytes. It used to be an attachment the loader could not count, and the next image on
+    /// the line loaded one slot off.
+    #[test]
+    fn an_image_without_bytes_is_no_attachment_and_the_next_loads_its_own() {
+        let jsonl = r##"{"type":"user","timestamp":"2026-11-19T09:00:00.000Z","message":{"content":[{"type":"text","text":"two pictures"},{"type":"image","source":{"type":"base64","media_type":"image/png"}},{"type":"image","source":{"type":"base64","media_type":"image/png","data":7}},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}}]}}"##;
+        let streamed = parse(jsonl);
+        let reference = parse_main(jsonl.lines(), &mut Vec::new());
+        assert_eq!(streamed, reference, "the two parse paths agree");
+        let images = streamed
+            .iter()
+            .filter(|b| matches!(b, Block::Attachment(a) if a.kind == AttachmentKind::Image))
+            .count();
+        assert_eq!(images, 1, "{streamed:#?}");
+        match nth_loaded_attachment(jsonl, 0) {
+            Some(LoadedAttachment::Base64 { b64, .. }) => assert_eq!(b64, "Zm9v"),
+            other => panic!("the one image loads its own bytes: {other:?}"),
+        }
+        assert!(nth_loaded_attachment(jsonl, 1).is_none());
+    }
+
+    /// #s608: a mid-turn prompt of a shape `queued_prompt` does not read is reported for
+    /// `agent-replay --unknown`: a block that is neither text nor an image, and a prompt that is
+    /// neither a string nor a list. A string prompt and a list of text and images report nothing.
+    #[test]
+    fn a_queued_prompt_of_an_unread_shape_is_reported() {
+        let jsonl = r##"
+{"type":"attachment","version":"9.9.608","sessionId":"s608-shapes","timestamp":"2026-11-19T09:00:00.000Z","attachment":{"type":"queued_command","commandMode":"prompt","prompt":[{"type":"text","text":"a"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}},{"type":"s608_block"}]}}
+{"type":"attachment","version":"9.9.608","sessionId":"s608-shapes","timestamp":"2026-11-19T09:00:01.000Z","attachment":{"type":"queued_command","commandMode":"prompt","prompt":{"s608":true}}}
+{"type":"attachment","version":"9.9.608","sessionId":"s608-shapes","timestamp":"2026-11-19T09:00:02.000Z","attachment":{"type":"queued_command","commandMode":"prompt","prompt":"words"}}
+"##;
+        let _ = parse(jsonl);
+        let seen: Vec<(String, String)> = unknown_shapes()
+            .into_iter()
+            .filter(|x| x.example.as_deref() == Some("s608-shapes"))
+            .map(|x| (x.at.as_str().to_string(), x.name))
+            .collect();
+        assert!(
+            seen.contains(&(
+                "content.type".into(),
+                "queued_command.prompt[].s608_block".into()
+            )),
+            "{seen:?}"
+        );
+        assert!(
+            seen.contains(&("content.type".into(), "queued_command.prompt:object".into())),
+            "{seen:?}"
+        );
+        assert!(
+            seen.iter().all(|(_, name)| !name.ends_with(".text")
+                && !name.ends_with(".image")
+                && !name.ends_with(":string")),
+            "{seen:?}"
         );
     }
 
@@ -11764,6 +12207,365 @@ mod tests {
                 ),
                 ("Edit".to_string(), None, Some(ToolStatus::Declined)),
             ]
+        );
+    }
+
+    /// #s594: a call the client REFUSED before it ran reads Declined on any tool, keyed on the
+    /// client's own fields, never the text: `toolDenialBeforeRun` (a turn stopped before the call
+    /// started), or the person's no at the permission prompt (`permissionDecision.source`
+    /// "user_reject"), keeping their reason when they gave one (`userFeedback`, else the text after
+    /// the client's "the user said:"). A config denial, a call stopped WHILE running (the same
+    /// sentence, a correction after it, no flag) and one the client marks after-run stay Failed;
+    /// an older client's refused edit still reads Declined by its text (#s22). Both parse paths.
+    #[test]
+    fn a_call_refused_before_it_ran_is_declined_and_keeps_the_persons_words() {
+        const REFUSAL: &str = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.";
+        const DENIED: &str = "Permission for this tool use was denied. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file).";
+        let call = |id: &str, name: &str| {
+            let input = if name == "Bash" {
+                serde_json::json!({"command": "make deploy"})
+            } else {
+                serde_json::json!({"file_path": "/w/x.rs", "old_string": "alpha", "new_string": "beta"})
+            };
+            serde_json::json!({"type": "assistant", "message": {"content": [{"type": "tool_use",
+                "id": id, "name": name, "input": input}]}})
+            .to_string()
+        };
+        let result = |id: &str, text: &str, tur: Value, keys: Value| {
+            let mut record = serde_json::json!({"type": "user", "toolUseResult": tur, "message": {
+                "content": [{"type": "tool_result", "tool_use_id": id, "is_error": true,
+                "content": text}]}});
+            for (k, v) in keys.as_object().unwrap() {
+                record[k] = v.clone();
+            }
+            record.to_string()
+        };
+        let rejected = serde_json::json!("User rejected tool use");
+        let jsonl = [
+            // Stopped before it started (2.1.327's shape).
+            call("b1", "Bash"),
+            result("b1", REFUSAL, rejected.clone(),
+                serde_json::json!({"toolDenialKind": "user-rejected", "toolDenialBeforeRun": true})),
+            // The person's no at the prompt, with the reason they typed (2.1.314's shape).
+            call("b2", "Bash"),
+            result("b2", &format!("{DENIED} The user said: use the staging host instead"),
+                serde_json::json!(format!("Error: {DENIED} The user said: use the staging host instead")),
+                serde_json::json!({"toolDenialKind": "user-rejected", "userFeedback": "use the staging host instead",
+                    "permissionDecision": {"decision": "reject", "source": "user_reject"}})),
+            // A reason only in the text.
+            call("b3", "Bash"),
+            result("b3", &format!("{} To tell you how to proceed, the user said:\nnot on main", &REFUSAL[..REFUSAL.find(" STOP").unwrap()]),
+                rejected.clone(),
+                serde_json::json!({"toolDenialKind": "user-rejected", "toolDenialBeforeRun": true})),
+            // A headless denial by config: the client's block message, Failed.
+            call("b4", "Bash"),
+            result("b4", "Permission to use Bash with command make deploy has been denied.",
+                serde_json::json!("Error: Permission to use Bash with command make deploy has been denied."),
+                serde_json::json!({"toolDenialKind": "user-rejected",
+                    "permissionDecision": {"decision": "reject", "source": "config"}})),
+            // Stopped while running: the sentence, the correction, no flag.
+            call("b5", "Bash"),
+            result("b5", &format!("{REFUSAL}\n\nCorrection to the text above: this call was stopped while running, not refused before it ran. It may have run in part or in full."),
+                rejected.clone(),
+                serde_json::json!({"toolDenialKind": "user-rejected"})),
+            // The client's own exclusion: marked after-run too.
+            call("b6", "Bash"),
+            result("b6", REFUSAL, rejected.clone(),
+                serde_json::json!({"toolDenialKind": "user-rejected", "toolDenialBeforeRun": true, "toolDenialAfterRun": true})),
+            // An older client's refused edit: no flag, Declined by its text.
+            call("e1", "Edit"),
+            result("e1", REFUSAL, rejected.clone(), serde_json::json!({})),
+            // A hook's refusal (permission-rule, source hook): not declined, Blocked (#s600).
+            call("h1", "Bash"),
+            result("h1", "PreToolUse:Bash hook error: [guard] blocked: deploys need a ticket",
+                serde_json::json!("Error: PreToolUse:Bash hook error: [guard] blocked: deploys need a ticket"),
+                serde_json::json!({"toolDenialKind": "permission-rule",
+                    "permissionDecision": {"decision": "reject", "source": "hook", "reasonType": "hook"}})),
+            // The flag on a refusal that is not the person's (a rule's): not declined here.
+            call("k1", "Bash"),
+            result("k1", "Permission to use Bash has been denied by a rule.",
+                serde_json::json!("Error: Permission to use Bash has been denied by a rule."),
+                serde_json::json!({"toolDenialKind": "permission-rule", "toolDenialBeforeRun": true})),
+            // The client's other exclusion: refused by the host.
+            call("x1", "Bash"),
+            result("x1", REFUSAL, rejected.clone(),
+                serde_json::json!({"toolDenialKind": "user-rejected", "toolDenialBeforeRun": true, "toolDenialFromHost": true})),
+            // An empty userFeedback beside a reason in the text: the text's reason.
+            call("b7", "Bash"),
+            result("b7", &format!("{DENIED} The user said: wait for the freeze to lift"),
+                rejected.clone(),
+                serde_json::json!({"toolDenialKind": "user-rejected", "userFeedback": "",
+                    "permissionDecision": {"decision": "reject", "source": "user_reject"}})),
+            // Two results in one record: the record-level keys name neither, both stay Failed.
+            serde_json::json!({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "make one"}},
+                {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "make two"}}]}})
+            .to_string(),
+            serde_json::json!({"type": "user", "toolDenialKind": "user-rejected", "toolDenialBeforeRun": true,
+                "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "t1", "is_error": true, "content": REFUSAL},
+                {"type": "tool_result", "tool_use_id": "t2", "is_error": true, "content": REFUSAL}]}})
+            .to_string(),
+        ]
+        .join("\n");
+        let streamed = parse(&jsonl);
+        let reference = parse_main(jsonl.lines(), &mut Vec::new());
+        assert_eq!(streamed, reference, "the two parse paths agree");
+        // The calls in the order written.
+        const IDS: [&str; 13] = [
+            "b1", "b2", "b3", "b4", "b5", "b6", "e1", "h1", "k1", "x1", "b7", "t1", "t2",
+        ];
+        // Consecutive calls sit under one thinking block: read inside it too.
+        let calls: Vec<Block> = streamed
+            .into_iter()
+            .flat_map(|b| match b {
+                Block::Thinking { tools, .. } => tools,
+                other => vec![other],
+            })
+            .collect();
+        let seen: Vec<(&str, Option<String>, Option<ToolStatus>)> = calls
+            .into_iter()
+            .filter_map(|b| match b {
+                Block::ToolUse {
+                    output, execution, ..
+                } => Some((output, execution.and_then(|e| e.status))),
+                _ => None,
+            })
+            .zip(IDS)
+            .map(|((output, status), id)| (id, output, status))
+            .collect();
+        assert_eq!(seen.len(), IDS.len(), "every call is drawn: {seen:?}");
+        let status = |id: &str| seen.iter().find(|s| s.0 == id).map(|s| s.2);
+        let output = |id: &str| seen.iter().find(|s| s.0 == id).and_then(|s| s.1.clone());
+        assert_eq!(
+            (status("b1"), output("b1")),
+            (Some(Some(ToolStatus::Declined)), None),
+            "refused before it ran: Declined, the client's sentence to the model not shown: {seen:?}"
+        );
+        assert_eq!(
+            (status("b2"), output("b2").as_deref()),
+            (
+                Some(Some(ToolStatus::Declined)),
+                Some("use the staging host instead")
+            ),
+            "refused at the prompt: Declined with the person's reason: {seen:?}"
+        );
+        assert_eq!(
+            (status("b3"), output("b3").as_deref()),
+            (Some(Some(ToolStatus::Declined)), Some("not on main")),
+            "a reason only in the text is still the person's: {seen:?}"
+        );
+        assert_eq!(
+            (status("b7"), output("b7").as_deref()),
+            (
+                Some(Some(ToolStatus::Declined)),
+                Some("wait for the freeze to lift")
+            ),
+            "an empty userFeedback leaves the reason in the text: {seen:?}"
+        );
+        for id in ["b4", "b5", "b6", "x1", "t1", "t2"] {
+            assert_eq!(
+                status(id),
+                Some(Some(ToolStatus::Failed)),
+                "{id} is not refused before it ran: {seen:?}"
+            );
+            assert!(output(id).is_some(), "{id} keeps its text: {seen:?}");
+        }
+        // A hook's or a rule's refusal is no person's: Blocked (#s600), never Declined.
+        for id in ["h1", "k1"] {
+            assert_eq!(
+                status(id),
+                Some(Some(ToolStatus::Blocked)),
+                "{id}: {seen:?}"
+            );
+        }
+        assert_eq!(
+            (status("e1"), output("e1")),
+            (Some(Some(ToolStatus::Declined)), None),
+            "an older client's refused edit reads Declined by its text: {seen:?}"
+        );
+    }
+
+    /// #s600, Hong's ruling on #s599 ("New word: blocked, reason kept") and on #s610 (auto mode's
+    /// refusals too): a call a hook, a permission rule or auto mode stopped before it ran reads
+    /// Blocked, keyed on the client's own field, `toolDenialKind`, never the text: a PreToolUse
+    /// hook's refusal (source "hook"), a settings or safety rule's (source "config"), an older
+    /// client's with no `permissionDecision`, auto mode's three kinds, on any tool, an edit and a
+    /// write included. Its output is exactly the client's text, which names what stopped it and
+    /// why: no "Error: " from the `toolUseResult` string an edit's join prefers, and kept when a
+    /// hook's words happen to match a refusal's. One the client marks after-run or from the host,
+    /// two results in one record and the headless config denial (`user-rejected`, #s594's) stay
+    /// Failed; a question keeps its own reading (#281). Both parse paths.
+    #[test]
+    fn a_call_a_hook_or_rule_stopped_before_it_ran_is_blocked_and_keeps_the_reason() {
+        const HOOK: &str = "PreToolUse:Bash hook error: [guard] blocked: deploys need a ticket";
+        const RULE: &str = "Permission to use Bash with command rm -rf build has been denied.";
+        const EDIT: &str = "PreToolUse:Edit hook error: [guard] blocked: generated file";
+        const SAYS_NO: &str = "PreToolUse:Edit hook error: [guard] the owner doesn't want to proceed with generated files";
+        const AUTO: &str = "Auto mode blocked this command: it deletes outside the project.";
+        let call = |id: &str, name: &str| {
+            let input = match name {
+                "Bash" => serde_json::json!({"command": "make deploy"}),
+                "AskUserQuestion" => serde_json::json!({"questions": [{"question": "Which host?",
+                    "header": "Host", "multiSelect": false, "options": [{"label": "staging",
+                    "description": "the staging host"}, {"label": "prod", "description": "prod"}]}]}),
+                _ => {
+                    serde_json::json!({"file_path": "/w/x.rs", "old_string": "alpha", "new_string": "beta"})
+                }
+            };
+            serde_json::json!({"type": "assistant", "message": {"content": [{"type": "tool_use",
+                "id": id, "name": name, "input": input}]}})
+            .to_string()
+        };
+        let result = |id: &str, text: &str, keys: Value| {
+            let mut record = serde_json::json!({"type": "user", "toolUseResult": format!("Error: {text}"),
+                "message": {"content": [{"type": "tool_result", "tool_use_id": id, "is_error": true,
+                "content": text}]}});
+            for (k, v) in keys.as_object().unwrap() {
+                record[k] = v.clone();
+            }
+            record.to_string()
+        };
+        let by = |source: &str, reason: &str| {
+            serde_json::json!({"toolDenialKind": "permission-rule",
+                "permissionDecision": {"decision": "reject", "source": source, "reasonType": reason}})
+        };
+        let jsonl = [
+            // A PreToolUse hook's refusal (2.1.299+).
+            call("h1", "Bash"),
+            result("h1", HOOK, by("hook", "hook")),
+            // A safety rule's (source config).
+            call("r1", "Bash"),
+            result("r1", RULE, by("config", "safetyCheck")),
+            // An older client's: the kind alone, hook and rule not told apart (2.1.215–2.1.289).
+            call("o1", "Bash"),
+            result("o1", RULE, serde_json::json!({"toolDenialKind": "permission-rule"})),
+            // An edit and a write a hook stopped: Blocked too, the reason without the "Error: "
+            // their joins take from the `toolUseResult` string.
+            call("e1", "Edit"),
+            result("e1", EDIT, by("hook", "hook")),
+            call("w1", "Write"),
+            result("w1", EDIT, by("hook", "hook")),
+            // A hook whose words happen to match a refusal's: still its reason, never cleared.
+            call("e2", "Edit"),
+            result("e2", SAYS_NO, by("hook", "hook")),
+            // The client's exclusions: after-run, from the host.
+            call("a1", "Bash"),
+            result("a1", HOOK, serde_json::json!({"toolDenialKind": "permission-rule", "toolDenialAfterRun": true})),
+            call("f1", "Bash"),
+            result("f1", HOOK, serde_json::json!({"toolDenialKind": "permission-rule", "toolDenialFromHost": true})),
+            // Auto mode's three: its check said block, gave no verdict, could not be reached.
+            call("m1", "Bash"),
+            result("m1", AUTO, serde_json::json!({"toolDenialKind": "automode-blocked"})),
+            call("m2", "Bash"),
+            result("m2", AUTO, serde_json::json!({"toolDenialKind": "automode-parsing-error"})),
+            call("m3", "Bash"),
+            result("m3", AUTO, serde_json::json!({"toolDenialKind": "automode-unavailable"})),
+            // The headless config denial is #s594's user-rejected: Failed, as it was.
+            call("c1", "Bash"),
+            result("c1", RULE, serde_json::json!({"toolDenialKind": "user-rejected",
+                "permissionDecision": {"decision": "reject", "source": "config"}})),
+            // Two results in one record: the record-level keys name neither.
+            serde_json::json!({"type": "assistant", "message": {"content": [
+                {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "make one"}},
+                {"type": "tool_use", "id": "t2", "name": "Bash", "input": {"command": "make two"}}]}})
+            .to_string(),
+            serde_json::json!({"type": "user", "toolDenialKind": "permission-rule",
+                "message": {"content": [
+                {"type": "tool_result", "tool_use_id": "t1", "is_error": true, "content": HOOK},
+                {"type": "tool_result", "tool_use_id": "t2", "is_error": true, "content": HOOK}]}})
+            .to_string(),
+        ]
+        .join("\n");
+        let streamed = parse(&jsonl);
+        let reference = parse_main(jsonl.lines(), &mut Vec::new());
+        assert_eq!(streamed, reference, "the two parse paths agree");
+        let calls: Vec<Block> = streamed
+            .into_iter()
+            .flat_map(|b| match b {
+                Block::Thinking { tools, .. } => tools,
+                other => vec![other],
+            })
+            .collect();
+        // The calls in the order written.
+        const IDS: [&str; 14] = [
+            "h1", "r1", "o1", "e1", "w1", "e2", "a1", "f1", "m1", "m2", "m3", "c1", "t1", "t2",
+        ];
+        let seen: Vec<(&str, Option<String>, Option<ToolStatus>, bool)> = calls
+            .into_iter()
+            .filter_map(|b| match b {
+                Block::ToolUse {
+                    output,
+                    execution,
+                    asked,
+                    ..
+                } => Some((output, execution.and_then(|e| e.status), asked.is_some())),
+                _ => None,
+            })
+            .zip(IDS)
+            .map(|((output, status, asked), id)| (id, output, status, asked))
+            .collect();
+        assert_eq!(seen.len(), IDS.len(), "every call is drawn: {seen:?}");
+        let get = |id: &str| {
+            seen.iter()
+                .find(|s| s.0 == id)
+                .unwrap_or_else(|| panic!("{id}: {seen:?}"))
+        };
+        for (id, reason) in [
+            ("h1", HOOK),
+            ("r1", RULE),
+            ("o1", RULE),
+            ("e1", EDIT),
+            ("w1", EDIT),
+            ("e2", SAYS_NO),
+            ("m1", AUTO),
+            ("m2", AUTO),
+            ("m3", AUTO),
+        ] {
+            let (_, output, status, _) = get(id);
+            assert_eq!(
+                *status,
+                Some(ToolStatus::Blocked),
+                "{id} never ran: {seen:?}"
+            );
+            assert_eq!(
+                output.as_deref(),
+                Some(reason),
+                "{id}'s output is the client's reason as it wrote it: {seen:?}"
+            );
+        }
+        for id in ["a1", "f1", "c1", "t1", "t2"] {
+            let (_, output, status, _) = get(id);
+            assert_eq!(
+                *status,
+                Some(ToolStatus::Failed),
+                "{id} stays Failed: {seen:?}"
+            );
+            assert!(output.is_some(), "{id} keeps its text: {seen:?}");
+        }
+        // A question a hook stopped keeps its own reading (#281). The frozen reference parse
+        // builds no questions, so this is the streaming path's alone.
+        let question = [
+            call("q1", "AskUserQuestion"),
+            result(
+                "q1",
+                "PreToolUse:AskUserQuestion hook error: [guard] no questions now",
+                by("hook", "hook"),
+            ),
+        ]
+        .join("\n");
+        let read = parse(&question).into_iter().find_map(|b| match b {
+            Block::ToolUse {
+                asked: Some(a),
+                execution,
+                ..
+            } => Some((a.unanswered, execution.and_then(|e| e.status))),
+            _ => None,
+        });
+        assert_eq!(
+            read,
+            Some((Some(Unanswered::Failed), Some(ToolStatus::Failed))),
+            "a question keeps its own reading"
         );
     }
 

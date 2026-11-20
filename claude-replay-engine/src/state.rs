@@ -480,10 +480,32 @@ fn pulse_within(adapter: &dyn TranscriptAdapter, path: &Path, window: u64) -> Op
             PreprocessedLine::Include => adapter.decode_line(body, &mut cwd, &mut msgs),
         }
     }
-    let mut queue_len: i64 = 0;
+    // The client's queue, kept as the fold keeps it (#s608): FIFO, an enqueue with no content (an
+    // image-only message) holding its place, a pop with content taking its match and one without
+    // taking the front, and a prompt delivered with no pop recorded taking its match (#52). Each
+    // item says whether it is a prompt the person typed. A count fell out of step with the
+    // client: a content-less pop took a typed prompt queued behind an image-only message, and a
+    // pop matching nothing still took one away, so the count went below zero and a later prompt
+    // read as none.
+    let mut queue: Vec<(String, bool)> = Vec::new();
     let mut last_user = false;
     let mut saw_conversation = false;
     for m in &msgs {
+        let delivered = match m {
+            Message::UserText { text }
+            | Message::UserReply { text, .. }
+            | Message::UserInbox { text, .. }
+            | Message::AttachmentPrompt { text } => Some(text),
+            Message::PeerText {
+                queued: Some(raw), ..
+            } => Some(raw),
+            _ => None,
+        };
+        if let Some(t) = delivered {
+            if let Some(i) = queue.iter().position(|(q, _)| q == t.trim()) {
+                queue.remove(i);
+            }
+        }
         match m {
             Message::UserText { .. }
             | Message::UserReply { .. }
@@ -525,19 +547,31 @@ fn pulse_within(adapter: &dyn TranscriptAdapter, path: &Path, window: u64) -> Op
             Message::ToolResult { is_error, .. } => {
                 pulse.last_tool_error = *is_error == Some(true);
             }
-            Message::QueueOp { op, prose, .. } => match op {
-                QueueOpKind::Enqueue if *prose => queue_len += 1,
-                QueueOpKind::Dequeue | QueueOpKind::Remove => queue_len -= 1,
+            Message::QueueOp {
+                op, content, prose, ..
+            } => match op {
+                QueueOpKind::Enqueue => queue.push(match content {
+                    Some(c) => (c.trim().to_string(), *prose),
+                    None => (String::new(), false),
+                }),
+                QueueOpKind::Dequeue | QueueOpKind::Remove => {
+                    let at = match content.as_deref().map(str::trim) {
+                        Some(c) => queue.iter().position(|(q, _)| q == c),
+                        None => (!queue.is_empty()).then_some(0),
+                    };
+                    if let Some(i) = at {
+                        queue.remove(i);
+                    }
+                }
                 // #242: `popAll` EMPTIES the queue — nothing is pending, not one fewer item.
                 // Left to the `_` arm this reads as "still queued" for the rest of the session,
                 // and the session reports as waiting on a prompt it no longer holds.
-                QueueOpKind::PopAll => queue_len = 0,
-                _ => {}
+                QueueOpKind::PopAll => queue.clear(),
             },
             _ => {}
         }
     }
-    pulse.queued_prompt = queue_len > 0;
+    pulse.queued_prompt = queue.iter().any(|(_, typed)| *typed);
     pulse.last = if !saw_conversation {
         TailLast::Unknown
     } else if last_user {

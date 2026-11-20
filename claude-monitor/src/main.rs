@@ -10,8 +10,8 @@
 mod shutdown;
 
 use claude_monitor::control::{
-    ensure_token, printed_url, read_token, set_passcode_interactive, tokened_url,
-    withheld_token_note, Attempts,
+    ensure_token, printed_url, read_token, running_takes_token, set_passcode_interactive,
+    stale_pairing_note, tokened_url, withheld_token_note, Attempts,
 };
 use claude_monitor::index;
 
@@ -77,6 +77,7 @@ USAGE:
   agent-monitor [--pair] [--port N] [--agents LIST] [--no-open]
   agent-monitor --set-passcode
   agent-monitor --pair-phone [--port N] [--url ADDRESS] [--yes]
+  agent-monitor --pair-code
   agent-monitor --version
   agent-monitor --codex-server-url URL --codex-allowed-root PATH [--no-open]
 
@@ -104,6 +105,12 @@ USAGE:
                     a short code: single-use, for five minutes. The token
                     itself is never shown. --url ADDRESS names the address;
                     --yes skips the question.
+  --pair-code       Print the code that pairs a browser on THIS machine to a
+                    paired monitor: the one its page asked for, or a new one.
+                    The page's \"Pair this browser\" shows it in a dialog on a
+                    Mac; this is the way where no dialog can show (Linux, an
+                    ssh tunnel). Prints only to a terminal; single-use, for
+                    five minutes.
   --set-passcode    Set (or clear) the passcode that granting injection into a
                     live session requires — a speed bump for an unlocked,
                     unattended machine. Terminal-only on purpose, so an open
@@ -150,6 +157,7 @@ fn main() -> Result<()> {
     let mut codex_allowed_roots: Vec<std::path::PathBuf> = Vec::new();
     let mut codex_state_file: Option<std::path::PathBuf> = None;
     let mut pair_phone: Option<(Option<String>, bool)> = None;
+    let mut pair_code = false;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -165,6 +173,8 @@ fn main() -> Result<()> {
             // #11: pair a phone through `tailscale serve` by a one-time code, and EXIT. Runs
             // after the loop, since `--port` says which serve entry is this monitor's.
             "--pair-phone" | "pair-phone" => pair_phone = Some(pair_phone.unwrap_or((None, false))),
+            // #s618: print the page code a browser on this machine types, and EXIT.
+            "--pair-code" | "pair-code" => pair_code = true,
             "--url" => {
                 let u = args
                     .next()
@@ -232,6 +242,13 @@ fn main() -> Result<()> {
     if let Some((url, yes)) = pair_phone {
         return claude_monitor::pair_phone::run(read_token(&root).as_deref(), port, url, yes);
     }
+    if pair_code {
+        return claude_monitor::pair_dialog::print_code(
+            &index::state_dir(),
+            read_token(&root).is_some(),
+            std::io::stdout().is_terminal(),
+        );
+    }
     // `pair` mints the token before anything else, so both a fresh start and a hand-off to
     // an already-running monitor below can print the tokened URL.
     if do_pair {
@@ -257,16 +274,28 @@ fn main() -> Result<()> {
             std::io::stdout().is_terminal(),
             std::io::stderr().is_terminal(),
         );
-        let shown = |terminal| printed_url(&url, token.as_deref(), terminal);
+        // #s604: the running monitor read its pairing when it started, so one started without this
+        // token does not take it. It is asked once, on the loopback: at most about 7 s for a monitor
+        // that has stalled, which then says nothing. Where it does not take the token, the address is
+        // opened and printed bare: such a gate answers a tokened `/` with its page, not the 302 that
+        // strips the token, so the token would stay in the browser's address bar and history.
+        let stale = token
+            .as_deref()
+            .is_some_and(|t| running_takes_token(&url, t) == Some(false));
+        let handed = if stale { None } else { token.as_deref() };
+        let shown = |terminal| printed_url(&url, handed, terminal);
         eprintln!(
             "agent-monitor is already running — opening {}",
             shown(err_tty)
         );
-        if token.is_some() && !err_tty {
+        if handed.is_some() && !err_tty {
             eprintln!("{}", withheld_token_note());
         }
+        if stale {
+            eprintln!("{}", stale_pairing_note());
+        }
         if open_browser {
-            open_url(&with_token(&url));
+            open_url(&tokened_url(&url, handed));
         }
         println!("{}", shown(out_tty));
         return Ok(());
@@ -352,8 +381,29 @@ fn main() -> Result<()> {
     let (tailnet_hosts, tailnet_relay) =
         claude_monitor::pair_phone::tailnet_checks(port, token.is_none());
     let gate = match &token {
-        Some(t) => claude_replay_html::AuthGate::with_token(t.as_str())
-            .with_pair_codes(index::state_dir().join(claude_monitor::pair_phone::PAIR_CODES_FILE)),
+        Some(t) => {
+            let gate = claude_replay_html::AuthGate::with_token(t.as_str()).with_pair_codes(
+                index::state_dir().join(claude_monitor::pair_phone::PAIR_CODES_FILE),
+            );
+            // #s618: a browser on this machine pairs from the page by a code shown here. A code
+            // left from a run before is cleared, since nothing shows it any more; where it cannot
+            // be, there is no page pairing this run.
+            match claude_monitor::pair_dialog::page_codes_at_start(&index::state_dir()) {
+                Some(page_codes) => gate.with_page_pairing(
+                    page_codes,
+                    std::sync::Arc::new(claude_monitor::pair_dialog::PairDialog::from_env()),
+                    claude_monitor::pair_dialog::PAIR_CODE_COMMAND,
+                ),
+                None => {
+                    eprintln!(
+                        "agent-monitor: no pairing from the page this run: the codes in {} could \
+                         not be cleared",
+                        index::state_dir().display()
+                    );
+                    gate
+                }
+            }
+        }
         None => claude_replay_html::AuthGate::same_user(),
     }
     // #320: the icons and the manifest, which a phone reads to put the page on its Home Screen.

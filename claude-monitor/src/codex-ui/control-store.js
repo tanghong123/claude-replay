@@ -59,7 +59,10 @@ const readDataUrl = file => new Promise((resolve, reject) => {
   reader.readAsDataURL(file);
 });
 const json = response => response.json().catch(() => ({ ok: false, error: `HTTP ${response.status}` }));
-const post = (path, body) => backend().fetch(path, { method: "POST", body, cache: "no-store" }).then(json);
+// A request's server is taken where the reader's action starts and kept for every step of it
+// (#s595): over several machines the view is mounted again on another machine's handle when the
+// reader opens a row there, so a send whose grant was still out would have sent its prompt there.
+const poster = handle => (path, body) => handle.fetch(path, { method: "POST", body, cache: "no-store" }).then(json);
 
 export class ControlStore {
   /** `actions`: the view's handlers (`toast`, `refreshIndex`, …), the app's selection
@@ -300,6 +303,7 @@ export class ControlStore {
   }
   async grant(passcode, then) {
     if (!this.compose.row) return;
+    const post = poster(backend());
     let outcome;
     try { outcome = grantOutcome(await post(consentQuery(this.compose.row.id), passcode || "")); } catch (_) { outcome = { kind: "error", message: "could not reach the monitor" }; }
     if (this.ended) return;
@@ -318,7 +322,7 @@ export class ControlStore {
   }
   async revoke() {
     if (!this.compose.row || this.compose.mode !== "tmux") return;
-    const outcome = await runRevoke({ target: this.compose.row.id, post });
+    const outcome = await runRevoke({ target: this.compose.row.id, post: poster(backend()) });
     if (this.ended) return;
     if (outcome.kind !== "revoked") { this.actions.toast(outcome.kind === "unreachable" ? outcome.message : "Revoking the grant failed"); return; }
     this.compose.consented = false;
@@ -332,6 +336,7 @@ export class ControlStore {
   }
   async send(text, passcode = "") {
     const target = this.compose.row.id, mode = this.compose.mode, consented = this.compose.consented;
+    const post = poster(backend());
     this.pendingSends ||= new Map();
     if (this.pendingSends.has(target)) return;
     const pending = {};

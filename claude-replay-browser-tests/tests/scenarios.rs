@@ -268,7 +268,7 @@ fn fixture_input_requests(name: &str, turns: u32) -> Fixture {
 /// root), a paired v2 monitor for the app shell. Returns the tab and what keeps the page alive.
 struct Opened {
     tab: std::sync::Arc<headless_chrome::Tab>,
-    _browser: headless_chrome::Browser,
+    _browser: harness::Chrome,
     _server: Option<claude_replay_html::LiveServer>,
     monitor: Option<Monitor>,
 }
@@ -2556,6 +2556,107 @@ fn app_shell_keeps_a_turn_steps_hold_through_a_wheel_over_its_session_list() {
     let fx = fixture_short_last_turns("scenario-turnhold-wheel-app");
     let page = open(Surface::AppShell, &fx, 3190);
     scenario_a_wheel_beside_the_transcript_keeps_a_turn_steps_hold(&page.tab, Surface::AppShell);
+}
+
+/// #s526: on the classic page the full-size image view's own input zooms and pans the image and
+/// leaves the reader where a turn step put them, so the turn the step landed stays the current one:
+/// from the end, where turn N-1 is in view and `[` moves nothing, `[`, an image opened full size, a
+/// real wheel over it, `1` (its actual size, past its box), ArrowDown (which pans it), Escape, and
+/// `[` again go to N-1 and then N-2. The page ended the hold on that wheel, and then on that arrow
+/// key, so its second `[` counted from N again and landed N-1 a second time. The image is opened
+/// through the page's own opener (a click on an `.aimg` anywhere opens it), on an image drawn
+/// nowhere: an image in the last turns brings its attachment row, the turns no longer fit, the step
+/// moves the view, and the hold no longer decides anything. The app shell's image opens in its pane,
+/// outside the transcript, and already kept the hold.
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_keeps_a_turn_steps_hold_through_zooming_and_panning_the_full_size_image() {
+    let _serial = serial();
+    let fx = fixture_short_last_turns("scenario-turnhold-lightbox-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    let (tab, surface) = (&page.tab, Surface::Classic);
+    let at_bottom = |tab: &headless_chrome::Tab| {
+        eval(
+            tab,
+            "(function(){ var s = document.scrollingElement; return s.scrollHeight - innerHeight - s.scrollTop <= 1; })()",
+        )
+        .as_bool()
+    };
+    let stage = |tab: &headless_chrome::Tab| {
+        eval(
+            tab,
+            "(function(){ var s = document.querySelector('.lightbox .lb-stage'), i = s && s.querySelector('img'); return s ? JSON.stringify([s.dataset.zoom || '', s.dataset.pannable || '', i ? i.style.transform : '']) : '[]'; })()",
+        )
+        .as_str()
+        .unwrap_or("[]")
+        .to_string()
+    };
+    let mut readings = Vec::new();
+    step_back_from_the_end(tab, surface, &mut readings);
+    assert_eq!(
+        at_bottom(tab),
+        Some(true),
+        "the premise: the step moved nothing, so only the hold names turn 29: {readings:?}"
+    );
+    // A picture far larger than the window, so its actual size is past its box and the arrows pan it.
+    let opened = eval(
+        tab,
+        "(function(){ var c = document.createElement('canvas'); c.width = 3000; c.height = 3000; var i = document.createElement('img'); i.className = 'aimg'; i.alt = 'a screenshot'; i.src = c.toDataURL('image/png'); i.style.display = 'none'; document.body.appendChild(i); i.click(); i.remove(); return !!document.querySelector('.lightbox .lb-stage'); })()",
+    );
+    assert_eq!(
+        opened.as_bool(),
+        Some(true),
+        "the premise: the image opens full size: {readings:?}"
+    );
+    settle();
+    let fitted = stage(tab);
+    wheel_over(
+        tab,
+        "document.querySelector('.lightbox .lb-stage')",
+        &readings,
+    );
+    settle();
+    let wheeled = stage(tab);
+    key(tab, "1", false);
+    settle();
+    let actual = stage(tab);
+    key(tab, "ArrowDown", false);
+    settle();
+    let panned = stage(tab);
+    let zoom = |s: &str| serde_json::from_str::<Vec<String>>(s).unwrap_or_default();
+    let (f, w, a, p) = (zoom(&fitted), zoom(&wheeled), zoom(&actual), zoom(&panned));
+    assert!(
+        f.len() == 3
+            && w.len() == 3
+            && f[0] != w[0]
+            && a.get(..2) == Some(&["100".to_string(), "yes".to_string()][..])
+            && p.len() == 3
+            && p[2] != a[2],
+        "the premise: the wheel zoomed the image, `1` put it at its actual size past its box, and ArrowDown panned it: fitted {fitted}, wheeled {wheeled}, actual {actual}, panned {panned}: {readings:?}"
+    );
+    until_engine_quiet(tab);
+    key(tab, "Escape", false);
+    settle();
+    until_engine_quiet(tab);
+    let closed = eval(tab, "!document.querySelector('.lightbox')");
+    let after = named_turn(tab, surface);
+    readings.push(after.clone());
+    assert_eq!(
+        (
+            closed.as_bool(),
+            at_bottom(tab),
+            after["bar"].as_i64(),
+            after["pane"].as_i64()
+        ),
+        (Some(true), Some(true), Some(29), Some(29)),
+        "the full-size view closes, the view has not moved, and turn 29 is still the current one: {readings:?}"
+    );
+    let (first, later) = press_and_name(tab, surface, "[", &mut readings);
+    assert_eq!(
+        names_both(&first, &later),
+        [Some(28); 4],
+        "…so the next `[` goes to turn 28, and stays: {readings:?}"
+    );
 }
 
 /// Twenty-eight long turns, then two short ones.
@@ -5539,7 +5640,7 @@ fn fixture_task_life(name: &str) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
     let path = stores.claude_session(SID, &long_session(14, Shape::default()));
-    stores.claude_task_file(SID, 1, r#"{"id":"125","subject":"Render tasks the way the board does","description":"the prose the queue kept","activeForm":"Rendering the task card","status":"completed","blockedBy":[],"blocks":[],"accept":["the glyph and the chips","the worklog"],"owner":"claude-code/hong@aries-black","created_at":"2026-09-04T18:23:00Z","claimed_at":"2026-09-04T22:14:00Z","completed_at":"2026-09-04T22:53:00Z","updated_at":"2026-09-04T22:53:00Z","outcome":"shipped as v1.200.0","checks":["node tests/ui_contract.mjs"],"log":[{"ts":"2026-09-04T22:49:00Z","by":"claude-code","msg":"found the seam"},{"ts":"2026-09-04T22:51:00Z","by":"claude-code","msg":"both pages render it"}]}"#);
+    stores.claude_task_file(SID, 1, r#"{"id":"125","metadata":{"top_level":true},"subject":"Render tasks the way the board does","description":"the prose the queue kept","activeForm":"Rendering the task card","status":"completed","blockedBy":[],"blocks":[],"accept":["the glyph and the chips","the worklog"],"owner":"claude-code/hong@aries-black","created_at":"2026-09-04T18:23:00Z","claimed_at":"2026-09-04T22:14:00Z","completed_at":"2026-09-04T22:53:00Z","updated_at":"2026-09-04T22:53:00Z","outcome":"shipped as v1.200.0","checks":["node tests/ui_contract.mjs"],"log":[{"ts":"2026-09-04T22:49:00Z","by":"claude-code","msg":"found the seam"},{"ts":"2026-09-04T22:51:00Z","by":"claude-code","msg":"both pages render it"}]}"#);
     stores.claude_task_file(SID, 2, r#"{"id":"126","subject":"The blocked one","description":"waits on 125","status":"pending","blockedBy":["125"],"blocks":[],"owner":"claude-code/hong@aries-black","created_at":"2026-09-04T19:00:00Z","updated_at":"2026-09-04T19:00:00Z"}"#);
     Fixture {
         base,
@@ -5595,6 +5696,11 @@ fn scenario_a_task_reads_like_the_board(
                 .collect()
         })
         .unwrap_or_default();
+    // #s606: taskq's mark, on both pages (the classic page's card passed no mark before review).
+    assert!(
+        chips.iter().any(|c| c == "top level"),
+        "the card names the task's mark: {seen:?}"
+    );
     assert!(
         chips.iter().any(|c| c.contains("completed")),
         "a status chip: {chips:?}"
@@ -7157,6 +7263,219 @@ fn app_shell_tool_heads_carry_state_exit_and_duration() {
     let fx = fixture_codex("scenario-toolhead-app", 12);
     let page = open(Surface::AppShell, &fx, 2896);
     scenario_tool_heads_carry_state_exit_and_duration(&page.tab, Surface::AppShell, &fx);
+}
+
+// ── scenario: a call stopped before it ran says why: blocked or declined (#s600, #s594) ──────
+
+/// A Claude session whose last turn holds a call a PreToolUse hook stopped before it ran, as
+/// Claude Code records it (`toolDenialKind: permission-rule` on the record carrying its lone
+/// result), one the person refused before it ran (#s594: `user-rejected` with
+/// `toolDenialBeforeRun`), and a call that ran and failed, for contrast.
+fn fixture_blocked(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(8, Shape::default());
+    t += &harness::user_at("Deploy it, then check the logs.", &harness::at("59:01"));
+    t += &tool_open_at("b-hook", &harness::at("59:02"));
+    t += &format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"b-hook\",\"is_error\":true,\"content\":\"PreToolUse:Bash hook error: [guard] deploys need a person\"}}]}},\"toolDenialKind\":\"permission-rule\",\"timestamp\":\"{}\"}}\n",
+        harness::at("59:03")
+    );
+    t += &tool_open_at("b-decl", &harness::at("59:03"));
+    t += &format!(
+        "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"b-decl\",\"is_error\":true,\"content\":\"The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file). STOP what you are doing and wait for the user to tell you how to proceed.\"}}]}},\"toolDenialKind\":\"user-rejected\",\"toolDenialBeforeRun\":true,\"timestamp\":\"{}\"}}\n",
+        harness::at("59:03")
+    );
+    t += &tool_open_at("b-fail", &harness::at("59:04"));
+    t += &harness::error_result_at("b-fail", "exit 1: no such file", &harness::at("59:05"));
+    t += &assistant_at("The deploy needs you.", &harness::at("59:06"));
+    let path = stores.claude_session(SID, &t);
+    Fixture {
+        base,
+        path,
+        turns: 9,
+    }
+}
+
+/// #s600 (Hong's ruling on #s599, "New word: blocked, reason kept"): a call a hook or a rule
+/// stopped before it ran says `blocked` where a failed call says it failed, with failure
+/// presentation, and its body is the client's reason as it wrote it. #s594: one the person refused
+/// before it ran says `declined`, with failure presentation too.
+fn scenario_a_call_stopped_before_it_ran_says_why(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    _fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    if surface == Surface::AppShell {
+        eval(
+            tab,
+            "document.querySelectorAll('[data-process-more][aria-expanded=\"false\"]').forEach(b => b.click())",
+        );
+        settle();
+    }
+    let heads = probe(
+        tab,
+        match surface {
+            Surface::Classic => "[...document.querySelectorAll('#stream .fold')].map(f => { var h = f.querySelector('.fold-h'); return { target: (h.querySelector('.tool-target,.tool-path') || {}).textContent || '', chips: [...h.querySelectorAll('.chip')].map(c => ({ c: c.className.replace('chip', '').trim(), x: c.textContent })), body: (f.querySelector('.fold-b') || {}).textContent || '' }; })",
+            Surface::AppShell => "[...document.querySelectorAll('.renderer[data-renderer-kind]')].map(r => ({ target: (r.querySelector('.renderer-target') || {}).textContent || '', state: r.dataset.state || '', pill: (r.querySelector('.renderer-state') || {}).textContent || '', body: r.textContent || '' }))",
+        },
+    );
+    let heads = heads.as_array().cloned().unwrap_or_default();
+    let find = |target: &str| {
+        heads
+            .iter()
+            .find(|h| h["target"] == target)
+            .cloned()
+            .unwrap_or_else(|| panic!("no {target} head among {heads:?}"))
+    };
+    let blocked = find("echo b-hook");
+    let declined = find("echo b-decl");
+    let failed = find("echo b-fail");
+    match surface {
+        Surface::Classic => {
+            let last = |h: &serde_json::Value| {
+                h["chips"]
+                    .as_array()
+                    .and_then(|c| c.last().cloned())
+                    .unwrap_or_default()
+            };
+            assert_eq!(
+                last(&blocked),
+                serde_json::json!({ "c": "fail", "x": "blocked" }),
+                "a call a hook stopped says blocked, as a failure: {blocked:?}"
+            );
+            assert_eq!(
+                last(&declined),
+                serde_json::json!({ "c": "fail", "x": "declined" }),
+                "a call the person refused before it ran says declined: {declined:?}"
+            );
+            assert_eq!(
+                last(&failed),
+                serde_json::json!({ "c": "fail", "x": "failed" }),
+                "a call that ran and failed still says failed: {failed:?}"
+            );
+        }
+        Surface::AppShell => {
+            // The pill carries every chip (a line count first), the word already among them, so
+            // it is not said twice.
+            let pill = blocked["pill"].as_str().unwrap_or("");
+            assert_eq!(
+                blocked["state"].as_str(),
+                Some("failed"),
+                "a call a hook stopped is a failure: {blocked:?}"
+            );
+            assert!(
+                pill.ends_with("blocked") && !pill.contains("failed"),
+                "…that says blocked, once: {blocked:?}"
+            );
+            let said = declined["pill"].as_str().unwrap_or("");
+            assert!(
+                declined["state"] == "failed"
+                    && said.ends_with("declined")
+                    && !said.contains("failed"),
+                "a call the person refused before it ran says declined: {declined:?}"
+            );
+            assert_eq!(
+                failed["state"].as_str(),
+                Some("failed"),
+                "a call that ran and failed is a failure: {failed:?}"
+            );
+            assert!(
+                !failed["pill"].as_str().unwrap_or("").contains("blocked"),
+                "…and never says blocked: {failed:?}"
+            );
+        }
+    }
+    // The reason is kept, as the call's output: the shell's renderer draws it; the classic
+    // page draws a fold's body once its head is clicked.
+    let reason = match surface {
+        Surface::Classic => {
+            eval(
+                tab,
+                "(function(){ var f = [...document.querySelectorAll('#stream .fold')].find(f => ((f.querySelector('.fold-h .tool-target,.fold-h .tool-path') || {}).textContent || '') === 'echo b-hook'); if (f) f.querySelector('.fold-h').click(); })()",
+            );
+            settle();
+            probe(
+                tab,
+                "(function(){ var f = [...document.querySelectorAll('#stream .fold')].find(f => ((f.querySelector('.fold-h .tool-target,.fold-h .tool-path') || {}).textContent || '') === 'echo b-hook'); return f ? f.textContent : null; })()",
+            )
+        }
+        Surface::AppShell => blocked["body"].clone(),
+    };
+    assert!(
+        reason
+            .as_str()
+            .unwrap_or("")
+            .contains("PreToolUse:Bash hook error: [guard] deploys need a person"),
+        "the client's reason is the blocked call's output: {reason:?}"
+    );
+    // #s620: the record the three calls fold into (the last turn's, so the last such head) says
+    // what ran and what was stopped before it ran, never "Ran 3 shell commands"; and opened, each
+    // stopped call's word is drawn where a reader sees it, a box and not only a node (hd-replay's
+    // walk found the words in the DOM of a record nobody had opened).
+    let summaries = probe(
+        tab,
+        match surface {
+            Surface::Classic => "[...document.querySelectorAll('#stream .fold > .fold-h .summary')].map(s => s.textContent.replace(/\\s+/g, ' ').trim()).filter(t => /shell command|calls? (blocked|declined)/.test(t)).slice(-1)",
+            Surface::AppShell => "[...document.querySelectorAll('.renderer[data-renderer-kind=\"activity\"]')].map(r => ((r.querySelector('.renderer-head .renderer-target') || {}).textContent || '').replace(/\\s+/g, ' ').trim()).filter(t => /shell command|calls? (blocked|declined)/.test(t)).slice(-1)",
+        },
+    );
+    assert_eq!(
+        summaries,
+        serde_json::json!(["✻ Ran 1 shell command, 1 call blocked, 1 call declined"]),
+        "the folded record counts only the call that ran as run"
+    );
+    eval(
+        tab,
+        match surface {
+            Surface::Classic => "(function(){ var f = [...document.querySelectorAll('#stream .fold')].find(f => /call blocked/.test(((f.querySelector(':scope > .fold-h .summary') || {}).textContent) || '')); if (f && f.dataset.open === '0') f.querySelector(':scope > .fold-h').click(); return !!f; })()",
+            Surface::AppShell => "(function(){ var r = [...document.querySelectorAll('.renderer[data-renderer-kind=\"activity\"]')].find(r => /call blocked/.test(((r.querySelector('.renderer-head .renderer-target') || {}).textContent) || '')); var h = r && r.querySelector('.renderer-head'); if (h && h.getAttribute('aria-expanded') === 'false') h.click(); return !!r; })()",
+        },
+    );
+    settle();
+    let drawn = probe(
+        tab,
+        match surface {
+            Surface::Classic => "['echo b-hook', 'echo b-decl'].map(t => { var f = [...document.querySelectorAll('#stream .fold')].find(f => ((f.querySelector(':scope > .fold-h .tool-target, :scope > .fold-h .tool-path') || {}).textContent || '') === t); var c = f && [...f.querySelector(':scope > .fold-h').querySelectorAll('.chip')].pop(); var b = c && c.getBoundingClientRect(); return t + ': ' + (c ? c.textContent + ' ' + Math.round(b.width) + 'x' + Math.round(b.height) : 'none'); })",
+            Surface::AppShell => "['echo b-hook', 'echo b-decl'].map(t => { var r = [...document.querySelectorAll('.renderer[data-renderer-kind]')].find(r => ((r.querySelector('.renderer-target') || {}).textContent || '') === t); var c = r && r.querySelector('.renderer-state'); var b = c && c.getBoundingClientRect(); return t + ': ' + (c ? c.textContent + ' ' + Math.round(b.width) + 'x' + Math.round(b.height) : 'none'); })",
+        },
+    );
+    let drawn_lines = drawn.as_array().cloned().unwrap_or_default();
+    assert_eq!(drawn_lines.len(), 2, "both stopped calls measured: {drawn}");
+    for line in drawn_lines {
+        let line = line.as_str().unwrap_or("").to_string();
+        assert!(
+            line.contains("blocked") || line.contains("declined"),
+            "the stopped call's word, drawn: {drawn}"
+        );
+        let size = line.rsplit(' ').next().unwrap_or("");
+        let (w, h) = size.split_once('x').unwrap_or(("0", "0"));
+        assert!(
+            w.parse::<i64>().unwrap_or(0) > 0 && h.parse::<i64>().unwrap_or(0) > 0,
+            "with the record opened, a stopped call's word has a box: {drawn}"
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_a_call_stopped_before_it_ran_says_why() {
+    let _serial = serial();
+    let fx = fixture_blocked("scenario-blocked-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_call_stopped_before_it_ran_says_why(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_a_call_stopped_before_it_ran_says_why() {
+    let _serial = serial();
+    let fx = fixture_blocked("scenario-blocked-app");
+    let page = open(Surface::AppShell, &fx, 3164);
+    scenario_a_call_stopped_before_it_ran_says_why(&page.tab, Surface::AppShell, &fx);
 }
 
 /// A spawn's `launched` chip is a launch EVENT, not liveness (#117): a closed session's
@@ -14466,6 +14785,108 @@ fn both_shells_say_how_long_a_turn_took_and_stay_silent_when_unrecorded() {
              cannot word it differently: {seen}"
         );
     }
+}
+
+/// #s580: a turn the transcript timed (#257's), a prompt that carries a changed-on-disk notice, and a
+/// slash command, each with the time it was sent.
+fn turn_time_layout_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut t = long_session(4, Shape::default());
+    t += &user_at("question 5: and the notes?", &now_minus(600));
+    t += &harness::edited_file_at("/w/notes/plan.md", &now_minus(599));
+    t += &assistant_at("Read them.", &now_minus(590));
+    t += &harness::command_at("review", "the plan", "", &now_minus(500));
+    t += &assistant_at("Reviewed.", &now_minus(490));
+    t += &user_at("question 7: how long did that take?", &now_minus(300));
+    t += &harness::named_tool_at("d1", "Bash", "cargo build", &now_minus(298));
+    t += &harness::tool_result_text("d1", "Finished", &now_minus(296));
+    t += &assistant_at("Built it.", &now_minus(200));
+    t += &harness::turn_duration_at(151_000, &now_minus(199));
+    let path = stores.claude_session(name, &t);
+    Fixture {
+        base,
+        path,
+        turns: 7,
+    }
+}
+
+/// #s580, Hong: a user turn's time and its duration sit on one line BELOW its bubble, ending at the
+/// bubble's right edge, at every width. Beside the bubble they took its room, "particularly bad
+/// when we are on narrow screens". At a desktop window, a narrow one and a phone, for a plain
+/// prompt with its duration, a prompt with a changed-on-disk notice and a slash command's card:
+/// nothing beside the bubble (its right edge is the turn's), the times under it on one line, in
+/// order, the last ending at the bubble's edge, and a notice below them. The classic page draws its
+/// prompt as a card the width of the column, the time in the card's own head row, and is left as
+/// it is.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_puts_a_turns_time_and_duration_below_its_bubble() {
+    let _serial = serial();
+    let fx = turn_time_layout_fixture("turn-time-below-app");
+    let page = open_with(Surface::AppShell, &fx, 3011, "mountall=1");
+    let tab = &page.tab;
+    let read = "(function(){ \
+        var r = function (e) { var b = e.getBoundingClientRect(); return [Math.round(b.left), Math.round(b.top), Math.round(b.right), Math.round(b.bottom)]; }; \
+        var turns = [...document.querySelectorAll('.turn.user')].filter(function (u) { return u.querySelector(':scope > .turn-time'); }).map(function (u) { \
+          var times = [...u.querySelectorAll(':scope > .turn-time')], n = u.querySelector(':scope > .turn-notice'); \
+          return { command: u.classList.contains('command'), turn: r(u), bubble: r(u.querySelector(':scope > .user-prompt')), times: times.map(r), \
+            titles: times.map(function (e) { return e.title; }), notice: n ? r(n) : null }; }); \
+        return JSON.stringify({ w: innerWidth, phone: document.getElementById('sessionView').classList.contains('pl-phone'), turns: turns }); })()";
+    let below = |v: &serde_json::Value| -> bool {
+        let n = |a: &serde_json::Value, i: usize| a[i].as_i64().unwrap_or(i64::MIN);
+        let Some(turns) = v["turns"].as_array() else {
+            return false;
+        };
+        let laid = |u: &serde_json::Value| {
+            let (turn, bubble) = (&u["turn"], &u["bubble"]);
+            let Some(t) = u["times"].as_array().filter(|t| !t.is_empty()) else {
+                return false;
+            };
+            let last = &t[t.len() - 1];
+            t.iter().all(|r| {
+                n(r, 1) >= n(bubble, 3)
+                    && n(r, 3) <= n(turn, 3)
+                    && (n(r, 1) - n(&t[0], 1)).abs() <= 1
+            }) && t.windows(2).all(|p| n(&p[0], 2) <= n(&p[1], 0))
+                && (n(last, 2) - n(bubble, 2)).abs() <= 5
+                && n(bubble, 2) >= n(turn, 2) - 2
+                && (u["notice"].is_null() || n(&u["notice"], 1) >= n(last, 3))
+        };
+        let timed = turns.iter().filter(|u| {
+            u["titles"] == serde_json::json!(["When this turn was sent", "How long this turn took"])
+        });
+        turns.iter().any(|u| u["command"] == true)
+            && turns.iter().any(|u| !u["notice"].is_null())
+            && timed.count() == 1
+            && turns.iter().all(laid)
+    };
+    let poll = |what: &str, done: &dyn Fn(&serde_json::Value) -> bool| {
+        let mut last = serde_json::Value::Null;
+        for _ in 0..40 {
+            last = serde_json::from_str(eval(tab, read).as_str().unwrap_or("null"))
+                .unwrap_or(serde_json::Value::Null);
+            if done(&last) {
+                return last;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        panic!("{what}: {last}");
+    };
+    harness::resize(tab, 1440.0, 900.0);
+    poll(
+        "a desktop window: each turn's times on one line below its bubble, at its edge, a notice below them",
+        &|v| v["w"] == 1440 && below(v),
+    );
+    harness::resize(tab, 900.0, 800.0);
+    poll("a narrow window: the same", &|v| {
+        v["w"] == 900 && v["phone"] == false && below(v)
+    });
+    harness::phone(tab, 390, 844);
+    poll(
+        "a phone: the same, the time and duration sharing one line rather than a line each",
+        &|v| v["w"] == 390 && v["phone"] == true && below(v),
+    );
 }
 
 /// An `AskUserQuestion` call and the answers that came back (#255).

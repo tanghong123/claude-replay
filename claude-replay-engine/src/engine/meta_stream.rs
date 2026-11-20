@@ -396,11 +396,33 @@ pub const COMPACT_AFTER: usize = 256;
 /// (v1.531.0 is 81, v1.532.0 is 83), so the metrics cursor, the monitor cache, the durable
 /// session cache and the cost ledger discard such a cursor anyway.
 ///
+/// v84: #s594 — a Claude call the client refused before it ran (`toolDenialBeforeRun`, or the
+/// person's no at the permission prompt) reads Declined, its output the person's reason or none,
+/// where a v83 stream holds it Failed with the client's sentence to the model as its output.
+///
+/// v85: #s607 — a `queued_command` whose prompt is the prompt's own content blocks (a mid-turn
+/// message with pasted images) folds to the person's turn and its images, where a v84 stream holds
+/// nothing for it at all.
+///
+/// v86: #s606 — a task carries taskq's two marks (`top_level`, `follows_up`), set by a new
+/// task op, `Lineage`, which a v85 stream never recorded.
+///
+/// v87: #s600 — a Claude call a hook, a permission rule or auto mode stopped before it ran
+/// (`toolDenialKind` "permission-rule" or an `automode-*` kind) reads Blocked, a new tool status,
+/// its output the client's reason without the "Error: " an edit's join took, where a v86 stream
+/// holds it Failed.
+///
+/// v88: #s608 (its own branch's v86, landed beside #s606 and #s600) — a Claude `enqueue` with no
+/// content (an image-only message) holds its place in the queue, so the content-less pop after it
+/// no longer takes the prompt queued behind it and suppresses that prompt's marker early; and an
+/// image block whose bytes are missing is no attachment. A stream from before it holds the earlier
+/// pops, whether it was written at v86 or v87.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 83;
+pub const FOLD_VERSION: u16 = 88;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

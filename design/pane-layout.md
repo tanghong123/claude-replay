@@ -434,9 +434,9 @@ screen up to 760px):
   So a touch window widened past 992px with the pane open folds the list: the phone layout gives way
   to his order there.
 - **The glyphs in the top bar.** On a phone they float in the dock. On a desktop they join the
-  session's top bar, after the title and before Info and the pane's control, the title giving way
-  first. Each opens its list as a panel over the transcript's right edge, 290px wide, one at a time,
-  closed by a click elsewhere or Esc, as an 820px window opens the outline today (hd-replay's research
+  session's top bar, at its start (#s582). Each opens its list as a panel over the transcript's right
+  edge, 290px wide, one at a time, closed by a click elsewhere or Esc, as an 820px window opens the
+  outline today (hd-replay's research
   on #s462: Windows NavigationView's minimal mode, JetBrains' undocked tool windows, VS Code's
   title-bar toggles). A glyph in the column opens the outline at its pane where the outline fits, as
   today, and its list as the same panel where the outline does not.
@@ -444,13 +444,23 @@ screen up to 760px):
   ten where the host gives the transcript a tab of its own (#s433's ↗). Laid out at their widest they
   did not fit (#s520): the search box took 180 or 286px by the window's bands, the title shrank to a
   letter, and Info and the pane's control went past the window or under the open pane.
-  There, read from the arrangement (`pl-outline-bar`), the crumb and its dividers go, the status chip
-  is its dot, the gaps tighten, the fold-all control moves into Aa's menu and the search box rests
-  as its glyph. A click, a focus or the search key opens it for typing in the room the title and the
-  glyphs give up while it is in use, and it folds back at a press outside the search (the pane's
-  page included), a Tab out of it, or Escape wherever the focus is; each also shuts its filter there.
-  It never folds at the field's blur alone, since Safari and Firefox give a pressed button no focus. The box that takes the heading's place while it is in
-  use below a 900px window keeps it by the same rule. At every desktop width the
+  So the bar there reads, left to right, Turns, Tasks, Agents, the search box, Aa, Info and the pane's
+  control (Hong, #s582, replacing #s520's design for it), read from the arrangement
+  (`pl-outline-bar`): the session's name leaves the bar for the head of Info's card, its agent and
+  project and its state with it, whole there and still opening its menu (on a press or a focus, not a
+  hover: a mouse on its way into the card crosses it), the card following the bar in the page so a
+  Tab from Info reaches the name; the fold-all control moves into Aa's menu; the outline's expand
+  control stays in its column, unless a host gives the room the outline would need there
+  (`outlineCanOpen`), when it stands before Info; a sub-agent's way back to its parent stays as its
+  glyph before the outline's, and a host's ↗ before the pane's control. The search box is a box with the bar's room at rest (about 190px in a 480px column under
+  the drawer's handle). While it is in use (a click, a focus or the search key) the glyphs give it
+  their room too, and they come back at a press outside the search (the pane's page included), a Tab
+  out of it, or Escape wherever the focus is; each also shuts its filter there. It never rests at
+  the field's blur alone, since Safari and Firefox give a pressed button no focus. The box that takes
+  the heading's place while it is in use below a 900px window keeps it by the same rule. Outside that
+  bar, wherever the name has too little room beside its crumb (the agent and the project), the crumb
+  goes (#s581); the name's menu names them at its head wherever the bar does not draw them whole,
+  the phone's included. Wherever a desktop's bar draws it, the
   title keeps at least its first word (at most 160px), the crumb, the chip and the resting search
   box (down to 150px) giving way first. While the search is in use or holds a query, above a 900px
   window and outside that bar, the order turns round: the title gives way first and the box keeps

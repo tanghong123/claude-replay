@@ -415,10 +415,15 @@ mod tests {
     /// is the app's. `keyboard` is the app's too: its one choice besides the default, `"page"`,
     /// hands every key to the host's own keymap, where #s436 offered keys answered only while the
     /// reader works in the part, which is the default. Offering one is a contract change for the
-    /// owner to rule on first.
-    const VIEW_WITHHELD: [&str; 7] = [
+    /// owner to rule on first. `assets` is the native app's too (#s595, design/app-mount.md): where
+    /// mdrev's bundle and the Mermaid runtime load from when the app carries them itself; and so is
+    /// `reviewSheet` (#s596, Hong on #s555: "The phone's Review sheet on an iPad too (native app
+    /// only)"), the pane's Review and its sheet offered at every width.
+    const VIEW_WITHHELD: [&str; 9] = [
         "keyboard",
         "frame",
+        "assets",
+        "reviewSheet",
         "parentShown",
         "openList",
         "openSidebar",
@@ -437,8 +442,20 @@ mod tests {
     /// `frame` is"): `mountApp` itself is withheld, exported from the second entry alone, and so is
     /// every option it takes, its own list (`MOUNT_OPTIONS` in app-mount.js) and this one kept in
     /// step. A name the view or the list also takes (`backend`) is declared for them; the rest are
-    /// the mount's alone and declared for neither. Each later stage adds its options to both lists.
-    const APP_WITHHELD: [&str; 2] = ["backend", "version"];
+    /// the mount's alone and declared for neither. Each later stage adds its options to both lists:
+    /// stage 4 (#s596) the native app's own, the start theme, `show` passed on, `onMachines` (Hong
+    /// on #s553), `reviewSheet` (#s555) and `frame`, the app's frame for agent pages.
+    const APP_WITHHELD: [&str; 9] = [
+        "backend",
+        "machines",
+        "assets",
+        "version",
+        "theme",
+        "show",
+        "onMachines",
+        "reviewSheet",
+        "frame",
+    ];
 
     /// The declarations follow each component's own lists: every option it takes but the ones the
     /// kit withholds, each optional control, and the view's required options as its doc comment

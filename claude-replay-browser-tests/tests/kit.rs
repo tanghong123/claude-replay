@@ -32,10 +32,11 @@ const HOST: &str = r#"<!doctype html>
 <div class="host-sessions"><div id="sessionList"></div></div>
 <div class="host-pane" id="pane"><div id="sessionView"></div></div>
 <script type="module">
-const host = window.__host = { mounted: false, error: null, opened: [], titles: [], errors: [], tabs: [] };
+const host = window.__host = { mounted: false, error: null, opened: [], titles: [], errors: [], loops: [], tabs: [] };
 // A tab the view opens is recorded, never opened: the case loads each address itself (#s433).
 window.open = url => { host.tabs.push(String(url)); return null; };
-addEventListener("error", event => host.errors.push(String(event.message)));
+// A ResizeObserver loop notice is the browser putting a size report off to the next frame, not a throw: it is kept apart, with the step the case names, fails nothing, and the harness reports it as the case ends (#s596, #s624).
+addEventListener("error", event => !event.error && /^ResizeObserver loop/.test(String(event.message)) ? host.loops.push({ step: window.__step || null, t: Math.round(performance.now()) }) : host.errors.push(String(event.message)));
 addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
 try {
   const kit = await import("/kit/bundle/index.js");
@@ -88,8 +89,9 @@ const TAB: &str = r#"<!doctype html>
 <body>
 <div id="detachedView"></div>
 <script type="module">
-const tab = window.__tab = { mounted: false, error: null, errors: [] };
-addEventListener("error", event => tab.errors.push(String(event.message)));
+const tab = window.__tab = { mounted: false, error: null, errors: [], loops: [] };
+// A ResizeObserver loop notice is the browser putting a size report off to the next frame, not a throw: it is kept apart, with the step the case names, fails nothing, and the harness reports it as the case ends (#s596, #s624).
+addEventListener("error", event => !event.error && /^ResizeObserver loop/.test(String(event.message)) ? tab.loops.push({ step: window.__step || null, t: Math.round(performance.now()) }) : tab.errors.push(String(event.message)));
 addEventListener("unhandledrejection", event => tab.errors.push(String(event.reason && event.reason.message || event.reason)));
 try {
   const { backendHandle, mountDetached } = await import("/kit/bundle/index.js");
@@ -110,24 +112,7 @@ try {
 /// origin, answered by the browser itself from what `kit::files` lays out, so nothing the case loads
 /// comes from the monitor's own `/monitor-ui/`.
 fn kit_answers(view_options: &str) -> Vec<Answer> {
-    let files = claude_monitor::kit::files().expect("the kit is laid out");
-    let mut answers: Vec<Answer> = files
-        .into_iter()
-        .filter_map(|(path, bytes)| {
-            let name = path.strip_prefix("bundle/")?;
-            let content_type = match name.rsplit_once('.')?.1 {
-                "js" => "text/javascript; charset=utf-8",
-                "css" => "text/css; charset=utf-8",
-                _ => return None,
-            };
-            Some(Answer {
-                pattern: format!("*/kit/bundle/{name}*"),
-                path: format!("/kit/{path}"),
-                content_type: content_type.into(),
-                body: String::from_utf8(bytes).expect("the kit's bundle is text"),
-            })
-        })
-        .collect();
+    let mut answers = harness::kit_bundle();
     answers.push(Answer {
         pattern: "*/kit-host*".into(),
         path: "/kit-host".into(),
@@ -248,7 +233,7 @@ fn a_page_mounts_both_components_from_the_kit_alone_and_reads_a_session() {
 /// since the guide offers none of it: the app's three stylesheets in order, the viewport meta with
 /// `viewport-fit=cover`, the Mermaid runtime the view reads, an empty wrapper, and the kit's second
 /// entry. Before it mounts, it makes two calls the mount must refuse (an option no stage takes yet, and
-/// no backend); then it mounts with a server and a version of its own, which its body does not carry:
+/// no server); then it mounts with a server and a version of its own, which its body does not carry:
 /// a paired server where the page's own handle would say unpaired, whose every `fetch` it counts, and
 /// a version the page names nowhere. Then a second mount, which must throw.
 const APP_HOST: &str = r#"<!doctype html>
@@ -266,8 +251,9 @@ const APP_HOST: &str = r#"<!doctype html>
 <body>
 <div id="appRoot"></div>
 <script type="module">
-const host = window.__host = { mounted: false, error: null, refused: [], again: null, asks: [], errors: [] };
-addEventListener("error", event => host.errors.push(String(event.message)));
+const host = window.__host = { mounted: false, error: null, refused: [], again: null, asks: [], errors: [], loops: [] };
+// A ResizeObserver loop notice is the browser putting a size report off to the next frame, not a throw: it is kept apart, with the step the case names, fails nothing, and the harness reports it as the case ends (#s596, #s624).
+addEventListener("error", event => !event.error && /^ResizeObserver loop/.test(String(event.message)) ? host.loops.push({ step: window.__step || null, t: Math.round(performance.now()) }) : host.errors.push(String(event.message)));
 addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
 const refusal = run => { try { run(); return null; } catch (error) { return String(error && error.message || error); } };
 try {
@@ -277,7 +263,7 @@ try {
   const server = backendHandle({ paired: true });
   const backend = { ...server, fetch: (path, init) => { host.asks.push(String(path).split("?")[0]); return server.fetch(path, init); } };
   const root = document.getElementById("appRoot");
-  host.refused.push(refusal(() => native.mountApp(root, { backend, machines: [] })));
+  host.refused.push(refusal(() => native.mountApp(root, { backend, keyboard: "page" })));
   host.refused.push(refusal(() => native.mountApp(root, { version: "9.9.9-kit" })));
   native.mountApp(root, { backend, version: "9.9.9-kit" });
   host.again = refusal(() => native.mountApp(document.createElement("div"), { backend }));
@@ -366,8 +352,8 @@ fn the_web_app_mounts_from_the_kits_second_entry_with_its_own_server_and_version
             "error": null,
             "exports": ["mountApp"],
             "refused": [
-                "mountApp takes no option named machines; its options are backend, version",
-                "mountApp needs its backend: the server the web app reads, as a backend handle (backendHandle())",
+                "mountApp takes no option named keyboard; its options are backend, machines, assets, version, theme, show, onMachines, reviewSheet, frame",
+                "mountApp needs its backend: the server the web app reads, as a backend handle (backendHandle()), or the machines it reads",
             ],
             "again": "mountApp draws the web app once per page, and this page holds it already",
             "wrapper": "app-mount",
@@ -406,6 +392,455 @@ fn the_web_app_mounts_from_the_kits_second_entry_with_its_own_server_and_version
     );
 }
 
+/// A page of the native app's kind over two machines (#s595, design/app-mount.md, stage 3): the kit's
+/// second entry, mounted with `machines` and the `assets` the app carries, and no Mermaid runtime in
+/// its head (the mount names it). The first machine is the page's own monitor, the second is relayed
+/// under `/machine-b`, and the assets under `/app-vendor` (relayed to the first monitor, which serves
+/// mdrev's bundle and the runtime, so a load from there is told apart from a load from a machine).
+/// Each machine says it pins an mdrev release that does not exist, so a bundle read from a machine
+/// would fail. The second is unpaired, the first paired. Every fetch the page makes is recorded.
+const APP_MACHINES_HOST: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>The web app over two machines</title>
+<link rel="stylesheet" href="/kit/bundle/app-shell.css">
+<link rel="stylesheet" href="/kit/bundle/session-list.css">
+<link rel="stylesheet" href="/kit/bundle/session-view.css">
+</head>
+<body>
+<div id="appRoot"></div>
+<script type="module">
+const host = window.__host = { mounted: false, error: null, errors: [], loops: [], asked: [] };
+// A ResizeObserver loop notice is the browser putting a size report off to the next frame, not a throw: it is kept apart, with the step the case names, fails nothing, and the harness reports it as the case ends (#s596, #s624).
+addEventListener("error", event => !event.error && /^ResizeObserver loop/.test(String(event.message)) ? host.loops.push({ step: window.__step || null, t: Math.round(performance.now()) }) : host.errors.push(String(event.message)));
+addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
+const pageFetch = window.fetch.bind(window);
+window.fetch = (input, init) => { host.asked.push(new URL(String(input && input.url || input), location.href).href.slice(location.origin.length)); return pageFetch(input, init); };
+try {
+  const native = await import("/kit/bundle/native-app.js");
+  const { backendHandle } = await import("/kit/bundle/index.js");
+  native.mountApp(document.getElementById("appRoot"), {
+    machines: [
+      { machine: "a", label: "tern-mini.tail5e1f.ts.net", handle: backendHandle({ paired: true, mdrevVersion: "0.0.1-not-a-release" }) },
+      { machine: "b", label: "skua-book.tail5e1f.ts.net", handle: backendHandle({ base: "/machine-b", paired: false, mdrevVersion: "0.0.2-not-a-release" }) },
+    ],
+    assets: { mdrev: "/app-vendor/", mdrevVersion: "{{MDREV}}", mermaid: "/app-vendor{{MERMAID}}" },
+    version: "9.9.9-kit",
+  });
+  host.mounted = true;
+} catch (error) {
+  host.error = String(error && error.stack || error);
+}
+</script>
+</body>
+</html>
+"#;
+
+/// One session id held by both machines, with different text: a mix-up of a machine's own id and
+/// the list's (`<machine>/<id>`) shows as the wrong text rather than passing by chance.
+const SID_BOTH: &str = "cccccccc-0000-4000-8000-000000005950";
+/// A second session on the first machine: a row of the machine the view is on, no remount.
+const SID_A_TOO: &str = "cccccccc-0000-4000-8000-000000005951";
+
+/// #s595 (design/app-mount.md, "One list over every machine", stage 3) — the web app from the kit
+/// over two hermetic monitors. One list holds both machines' sessions. A link to the second
+/// machine's session opens it read from that machine alone, by its own id; its diagram draws with
+/// the runtime the app carries, and its document opens in mdrev with the app's bundle while mdrev's
+/// routes go to that machine and no machine is asked which release it serves; write mode follows
+/// that machine, unpaired. A row of the first machine with the same id mounts the view again on the
+/// first machine: its text, its routes, its pairing, the pane's state on `#app` the new view's, and
+/// a view key reaching the new view; a second row there opens with no remount; ⌘K names each row's
+/// machine; and the browser's Back goes across machines.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_web_app_over_two_machines_reads_each_session_from_its_own_machine() {
+    let _serial = serial();
+    let base = base("kit-app-machines");
+    let stores = Stores::new(&base);
+    stores.claude_session(
+        SID_BOTH,
+        &(harness::user_at(
+            "where do the terns nest this spring?",
+            &harness::rfc3339_secs_ago(400),
+        ) + &harness::assistant_at(
+            "on the north spit, past the second dune",
+            &harness::rfc3339_secs_ago(390),
+        )),
+    );
+    stores.claude_session(
+        SID_A_TOO,
+        &(harness::user_at(
+            "how many tern chicks fledged?",
+            &harness::rfc3339_secs_ago(300),
+        ) + &harness::assistant_at("thirty, by the last count", &harness::rfc3339_secs_ago(290))),
+    );
+    let monitor = Monitor::spawn(Kind::V1, 3331, &base, Some(&stores), true);
+    let there_base = base.join("machine-b");
+    let there_stores = Stores::new(&there_base);
+    let diagram = serde_json::to_string(
+        "forty-one, by the cairn\n\n```mermaid\ngraph TD\n  Ridge --> Cairn\n```",
+    )
+    .unwrap();
+    let notes = "/r/SKUA.md";
+    let attachment = format!(
+        "{{\"type\":\"attachment\",\"timestamp\":\"{ts}\",\"attachment\":{{\"type\":\"file\",\"filename\":\"{notes}\",\"displayPath\":\"SKUA.md\",\"content\":{{\"type\":\"text\",\"file\":{{\"filePath\":\"{notes}\",\"content\":\"# Skua notes\\n\\nThe ridge holds forty-one burrows.\\n\",\"numLines\":3,\"startLine\":1,\"totalLines\":3}}}}}}}}\n",
+        ts = harness::rfc3339_secs_ago(170)
+    );
+    there_stores.claude_session(
+        SID_BOTH,
+        &(harness::user_at(
+            "count the skua burrows on the ridge",
+            &harness::rfc3339_secs_ago(200),
+        ) + &harness::assistant_at(
+            &diagram[1..diagram.len() - 1],
+            &harness::rfc3339_secs_ago(190),
+        ) + &attachment),
+    );
+    let there = Monitor::spawn(Kind::V1, 3332, &there_base, Some(&there_stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let runtime = claude_replay_html::mermaid_runtime_path();
+    let mut answers = kit_answers("");
+    answers.push(Answer {
+        pattern: "*/kit-machines*".into(),
+        path: "/kit-machines".into(),
+        content_type: "text/html; charset=utf-8".into(),
+        body: APP_MACHINES_HOST
+            .replace("{{MDREV}}", claude_monitor::kit::MDREV)
+            .replace("{{MERMAID}}", runtime),
+    });
+    harness::answer_and_relay_in_browser(
+        &tab,
+        answers,
+        vec![
+            harness::Relay {
+                prefix: "/machine-b".into(),
+                port: there.port,
+                token: there.token(),
+            },
+            harness::Relay {
+                prefix: "/app-vendor".into(),
+                port: monitor.port,
+                token: monitor.token(),
+            },
+        ],
+    );
+    let address = |id: &str| {
+        format!(
+            "{}?session={}",
+            monitor.url("kit-machines"),
+            id.replace('/', "%2F")
+        )
+    };
+    tab.navigate_to(&address(&format!("b/{SID_BOTH}"))).unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "!!(window.__host && (window.__host.mounted || window.__host.error))",
+        "the page to mount the web app over two machines",
+        Duration::from_secs(20),
+        "JSON.stringify(window.__host || null)",
+    );
+    let now = "JSON.stringify({ host: window.__host, list: (document.getElementById('sessionList') || {}).innerText, transcript: (document.querySelector('#sessionView .transcript') || {}).innerText, address: location.search })";
+    let transcript_says = |text: &str, what: &str| {
+        harness::until(
+            &tab,
+            &format!("((document.querySelector('#sessionView .transcript') || {{}}).innerText || '').includes({text:?})"),
+            what,
+            Duration::from_secs(30),
+            now,
+        );
+    };
+    transcript_says(
+        "forty-one, by the cairn",
+        "the second machine's session, read from it",
+    );
+    let rows = |id: &str| format!("#sessionList .tree-row.session[data-session=\"{id}\"]");
+    harness::until(
+        &tab,
+        &format!(
+            "!!document.querySelector({:?}) && !!document.querySelector({:?}) && !!document.querySelector({:?})",
+            rows(&format!("a/{SID_BOTH}")),
+            rows(&format!("b/{SID_BOTH}")),
+            rows(&format!("a/{SID_A_TOO}"))
+        ),
+        "one list over both machines",
+        Duration::from_secs(30),
+        now,
+    );
+    harness::until(
+        &tab,
+        "document.querySelectorAll('#sessionView [data-mermaid-state=ready] svg').length === 1",
+        "the second machine's diagram drawn with the runtime the app carries",
+        Duration::from_secs(30),
+        "JSON.stringify({ cards: [...document.querySelectorAll('[data-mermaid]')].map(e => e.dataset.mermaidState), meta: (document.querySelector('meta[name=mermaid-runtime]') || {}).content, errors: window.__host.errors })",
+    );
+    // What the page loaded, and asked, by path: a script or a stylesheet is a resource, not a fetch.
+    let loaded = "(function () { var names = performance.getEntriesByType('resource').map(function (e) { return new URL(e.name).pathname; }); return { names: names.filter(function (p) { return /mermaid|mdrev/.test(p); }), asked: window.__host.asked.slice() }; })()";
+    let first = harness::probe(&tab, loaded);
+    let names: Vec<String> = serde_json::from_value(first["names"].clone()).unwrap();
+    let asked: Vec<String> = serde_json::from_value(first["asked"].clone()).unwrap();
+    let on_b = |path: &str| {
+        asked
+            .iter()
+            .any(|a| a.starts_with(&format!("/machine-b{path}")))
+    };
+    assert!(
+        on_b(&format!("/pull?session={SID_BOTH}")) && !asked.iter().any(|a| a.starts_with("/pull")),
+        "the second machine's session is pulled from that machine alone, by its own id: {asked:?}"
+    );
+    assert_eq!(
+        names
+            .iter()
+            .filter(|p| p.ends_with(".js")
+                && p.contains("mermaid")
+                && *p != "/kit/bundle/shared/mermaid.js")
+            .collect::<Vec<_>>(),
+        vec![&format!("/app-vendor{runtime}")],
+        "the runtime the app carries (the kit's own shared module aside), and none from a machine: {names:?}"
+    );
+    let state = harness::probe(
+        &tab,
+        "(function () { return { meta: document.querySelector('meta[name=mermaid-runtime]').content, writeOn: document.getElementById('writeSwitch').getAttribute('aria-checked'), pairHint: !document.getElementById('writeInfo').hidden, address: new URLSearchParams(location.search).get('session') }; })()",
+    );
+    assert_eq!(
+        state,
+        serde_json::json!({ "meta": format!("/app-vendor{runtime}"), "writeOn": "false", "pairHint": true, "address": format!("b/{SID_BOTH}") }),
+        "the mount named the runtime in the head, write mode follows the unpaired machine, and the address holds the list's id"
+    );
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    assert_eq!(
+        harness::probe(
+            &tab,
+            "document.getElementById('writeSwitch').getAttribute('aria-checked')"
+        ),
+        serde_json::json!("false"),
+        "write mode does not turn on for an unpaired machine"
+    );
+
+    // The document the second machine's session carries, in mdrev with the app's bundle.
+    harness::eval(
+        &tab,
+        "document.querySelector('#sessionView [data-attachment-action=\"preview\"]').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "((document.querySelector('#previewBody .mdrev-host h1') || {}).textContent || '').trim() === 'Skua notes'",
+        "the document in mdrev, from the app's bundle",
+        Duration::from_secs(30),
+        "JSON.stringify({ pane: (document.getElementById('previewBody') || {}).innerText, asked: window.__host.asked, errors: window.__host.errors })",
+    );
+    let after = harness::probe(&tab, loaded);
+    let names: Vec<String> = serde_json::from_value(after["names"].clone()).unwrap();
+    let asked: Vec<String> = serde_json::from_value(after["asked"].clone()).unwrap();
+    let mdrev = claude_monitor::kit::MDREV;
+    // The bundle's files (mdrev's routes, `/api/mdrev…`, are fetches, read below).
+    let bundle: Vec<&String> = names
+        .iter()
+        .filter(|p| p.contains("/mdrev/") && !p.contains("/api/"))
+        .collect();
+    let from_app = format!("/app-vendor/mdrev/{mdrev}/");
+    assert!(
+        bundle.iter().all(|p| p.starts_with(&from_app))
+            && bundle.contains(&&format!("{from_app}mdrev.js"))
+            && bundle.contains(&&format!("{from_app}mdrev.css")),
+        "mdrev's bundle is the release the app carries, from the app's copy, and nothing of it from a machine: {names:?}"
+    );
+    // That no machine is asked which release it serves when the app's bundle fails to load is held
+    // in node (`codex_machines.test.mjs`): here the app's bundle loads, so nothing would ask.
+    assert!(
+        asked
+            .iter()
+            .any(|a| a.starts_with("/machine-b/api/mdrev/hold"))
+            && !asked.iter().any(|a| a.starts_with("/api/mdrev")),
+        "mdrev's routes go to the session's machine: {asked:?}"
+    );
+    let pane_open = harness::probe(&tab, "(function () { var app = document.getElementById('app'), view = document.getElementById('sessionView'); return { app: app.classList.contains('preview-off'), view: view.classList.contains('preview-off') }; })()");
+    assert_eq!(
+        pane_open,
+        serde_json::json!({ "app": false, "view": false }),
+        "the pane is open"
+    );
+
+    // The first machine's session of the same id: the view is mounted again there.
+    harness::eval(
+        &tab,
+        "document.querySelector('#sessionView .transcript').__s595 = 'b'; 'ok'",
+    );
+    let asked_before = harness::probe(&tab, "window.__host.asked.length")
+        .as_u64()
+        .unwrap() as usize;
+    harness::eval(
+        &tab,
+        &format!(
+            "document.querySelector({:?}).click(); 'ok'",
+            rows(&format!("a/{SID_BOTH}"))
+        ),
+    );
+    transcript_says(
+        "past the second dune",
+        "the first machine's session of the same id",
+    );
+    let switched = harness::probe(
+        &tab,
+        &format!("(function () {{ var app = document.getElementById('app'), view = document.getElementById('sessionView'); var since = window.__host.asked.slice({asked_before}); return {{ remounted: document.querySelector('#sessionView .transcript').__s595 !== 'b', viewAsked: since.filter(function (a) {{ return !/\\/api\\/(sessions|layout|ignore)\\b/.test(a); }}), stateOnApp: ['preview-off', 'preview-full'].every(function (c) {{ return app.classList.contains(c) === view.classList.contains(c); }}), pairHint: !document.getElementById('writeInfo').hidden, address: new URLSearchParams(location.search).get('session'), wrap: view.classList.contains('wrap-code') }}; }})()"),
+    );
+    // Everything but the list's own reads, which go to every machine.
+    let view_asked: Vec<String> = serde_json::from_value(switched["viewAsked"].clone()).unwrap();
+    // The old view may still have polled its machine before it went; from the new one's first pull
+    // on, every request the view makes is the first machine's.
+    let first_a = view_asked
+        .iter()
+        .position(|a| a.starts_with(&format!("/pull?session={SID_BOTH}")));
+    assert!(
+        first_a.is_some_and(|at| view_asked[at..].iter().all(|a| !a.starts_with("/machine-b/"))),
+        "the first machine's session is read from the first machine alone, by its own id: {switched}"
+    );
+    assert_eq!(
+        (&switched["remounted"], &switched["stateOnApp"], &switched["pairHint"], &switched["address"]),
+        (&serde_json::json!(true), &serde_json::json!(true), &serde_json::json!(false), &serde_json::json!(format!("a/{SID_BOTH}"))),
+        "a new view on the first machine, the pane's state on #app the new view's, no pairing hint on the paired machine, and the list's id in the address: {switched}"
+    );
+    // Write mode turns on for the paired machine.
+    let write = "document.getElementById('writeSwitch').getAttribute('aria-checked')";
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    assert_eq!(
+        harness::probe(&tab, write),
+        serde_json::json!("true"),
+        "write mode turns on for the paired machine"
+    );
+    // A view key reaches the view mounted now.
+    let wrap_before = switched["wrap"].clone();
+    harness::key(&tab, "w", false);
+    let wrap_after = harness::probe(
+        &tab,
+        "document.getElementById('sessionView').classList.contains('wrap-code')",
+    );
+    assert_ne!(wrap_after, wrap_before, "w toggles the new view's wrapping");
+    harness::key(&tab, "w", false);
+
+    // Another row of the same machine: no remount, and write mode stays on.
+    harness::eval(
+        &tab,
+        "document.querySelector('#sessionView .transcript').__s595 = 'a'; 'ok'",
+    );
+    harness::eval(
+        &tab,
+        &format!(
+            "document.querySelector({:?}).click(); 'ok'",
+            rows(&format!("a/{SID_A_TOO}"))
+        ),
+    );
+    transcript_says(
+        "thirty, by the last count",
+        "a second session on the same machine",
+    );
+    assert_eq!(
+        (
+            harness::probe(
+                &tab,
+                "document.querySelector('#sessionView .transcript').__s595 || null"
+            ),
+            harness::probe(&tab, write)
+        ),
+        (serde_json::json!("a"), serde_json::json!("true")),
+        "a row of the machine the view is on opens in the same view, write mode still on"
+    );
+
+    // ⌘K names each row's machine, and its row of the other machine opens there.
+    harness::eval(&tab, "document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true, cancelable: true })); 'ok'");
+    harness::until(&tab, "document.getElementById('searchLayer').classList.contains('production-open') && document.querySelectorAll('#searchResults .search-result').length > 0", "⌘K's rows", Duration::from_secs(10), now);
+    let jump = harness::probe(&tab, "[...document.querySelectorAll('#searchResults .search-result')].filter(function (b) { return b.querySelector('.result-kind').textContent === 'session'; }).map(function (b) { return b.querySelector('b').textContent + ' | ' + b.querySelector('small').textContent; }).sort()");
+    let jump: Vec<String> = serde_json::from_value(jump).unwrap();
+    assert_eq!(jump.len(), 3, "⌘K lists the three sessions: {jump:?}");
+    assert_eq!(
+        (
+            jump.iter().filter(|r| r.ends_with(" · tern-mini")).count(),
+            jump.iter().filter(|r| r.ends_with(" · skua-book")).count()
+        ),
+        (2, 1),
+        "each names its machine by the list's short name: {jump:?}"
+    );
+    let chosen = harness::probe(&tab, "(function () { var row = [...document.querySelectorAll('#searchResults .search-result')].find(function (b) { return b.querySelector('.result-kind').textContent === 'session' && / · skua-book$/.test(b.querySelector('small').textContent); }); if (!row) return 'no row'; row.click(); return 'chosen'; })()");
+    assert_eq!(chosen, serde_json::json!("chosen"));
+    transcript_says(
+        "forty-one, by the cairn",
+        "⌘K's row of the second machine, opened there",
+    );
+    let chose = harness::probe(&tab, &format!("(function () {{ return {{ address: new URLSearchParams(location.search).get('session'), write: {write}, pairHint: !document.getElementById('writeInfo').hidden }}; }})()"));
+    assert_eq!(
+        chose,
+        serde_json::json!({ "address": format!("b/{SID_BOTH}"), "write": "false", "pairHint": true }),
+        "⌘K's row opens on its machine, where write mode is off: the machine is not paired"
+    );
+
+    // The browser's Back, across machines and on one, the list's selection following.
+    let at = "(function () { var selected = [...document.querySelectorAll('#sessionList .tree-row.session.selected')].map(function (r) { return r.dataset.session; }); return { address: new URLSearchParams(location.search).get('session'), selected: selected, write: document.getElementById('writeSwitch').getAttribute('aria-checked'), errors: window.__host.errors }; })()";
+    let mut backs = Vec::new();
+    for (text, what) in [
+        ("thirty, by the last count", "Back to the first machine"),
+        ("past the second dune", "Back on the first machine"),
+        ("forty-one, by the cairn", "Back to the second machine"),
+    ] {
+        harness::eval(&tab, "history.back(); 'ok'");
+        transcript_says(text, what);
+        backs.push(harness::probe(&tab, at));
+    }
+    // An id no machine of the list holds: said once, and kept as the selection through the index's
+    // next answers (it used to be selected again at each, shutting a phone's drawer), the switch
+    // saying to open a session; a row chosen after it opens.
+    harness::eval(&tab, "history.pushState({}, '', '?session=zz%2Fnowhere'); dispatchEvent(new PopStateEvent('popstate')); 'ok'");
+    transcript_says("Cannot read this session", "an id no machine holds, said");
+    let mark = "(function () { var said = [...document.querySelectorAll('#sessionView strong')].find(function (e) { return e.textContent === 'Cannot read this session'; }); if (!said) return 'not said'; said.__s595 = 1; return window.__host.asked.length; })()";
+    let polls_from = harness::probe(&tab, mark)
+        .as_u64()
+        .expect("the refusal is drawn") as usize;
+    // Two of the index's answers (it asks every 5 s) from each machine.
+    harness::until(
+        &tab,
+        &format!("window.__host.asked.slice({polls_from}).filter(function (a) {{ return /\\/api\\/sessions/.test(a); }}).length >= 4"),
+        "two more index answers from each machine",
+        Duration::from_secs(30),
+        now,
+    );
+    harness::eval(&tab, "document.getElementById('writeInfo').click(); 'ok'");
+    let nowhere = harness::probe(&tab, "(function () { var said = [...document.querySelectorAll('#sessionView strong')].find(function (e) { return e.textContent === 'Cannot read this session'; }); return { kept: !!(said && said.__s595), address: new URLSearchParams(location.search).get('session'), selected: [...document.querySelectorAll('#sessionList .tree-row.session.selected')].length, write: document.getElementById('writeSwitch').getAttribute('aria-checked'), help: (document.getElementById('writeHelp').querySelector('b') || {}).textContent }; })()");
+    harness::eval(
+        &tab,
+        &format!(
+            "document.querySelector({:?}).click(); 'ok'",
+            rows(&format!("a/{SID_BOTH}"))
+        ),
+    );
+    transcript_says("past the second dune", "a row chosen after it");
+    let after = harness::probe(&tab, at);
+    drop(there);
+    drop(monitor);
+    let one = |id: String, write: &str| serde_json::json!({ "address": id, "selected": [id], "write": write, "errors": [] });
+    assert_eq!(
+        backs,
+        vec![
+            one(format!("a/{SID_A_TOO}"), "true"),
+            one(format!("a/{SID_BOTH}"), "true"),
+            one(format!("b/{SID_BOTH}"), "false"),
+        ],
+        "Back goes across machines, the list selecting the row it opens and write mode following its machine, and the page said no error"
+    );
+    assert_eq!(
+        nowhere,
+        serde_json::json!({ "kept": true, "address": "zz/nowhere", "selected": 0, "write": "false", "help": "Open a session to write to it" }),
+        "an id no machine holds is said once and stays the selection, no row selected, the switch saying to open a session"
+    );
+    assert_eq!(
+        after,
+        one(format!("a/{SID_BOTH}"), "true"),
+        "and a row chosen after it opens"
+    );
+}
+
 /// The session of the list's own server in [`a_list_given_a_server_of_its_own_keeps_to_it_beside_a_view_on_another`]:
 /// a session the page's monitor does not hold.
 const SID_LISTED: &str = "cccccccc-0000-4000-8000-000000000540";
@@ -433,8 +868,9 @@ const HOST_APART: &str = r#"<!doctype html>
 <div class="host-sessions"><div id="sessionList"></div></div>
 <div class="host-pane" id="pane"><div id="sessionView"></div></div>
 <script type="module">
-const host = window.__host = { mounted: false, error: null, errors: [] };
-addEventListener("error", event => host.errors.push(String(event.message)));
+const host = window.__host = { mounted: false, error: null, errors: [], loops: [] };
+// A ResizeObserver loop notice is the browser putting a size report off to the next frame, not a throw: it is kept apart, with the step the case names, fails nothing, and the harness reports it as the case ends (#s596, #s624).
+addEventListener("error", event => !event.error && /^ResizeObserver loop/.test(String(event.message)) ? host.loops.push({ step: window.__step || null, t: Math.round(performance.now()) }) : host.errors.push(String(event.message)));
 addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
 try {
   const { backendHandle, mountSessionList, mountSessionView } = await import("/kit/bundle/index.js");
@@ -614,8 +1050,9 @@ const HOST_MERGED: &str = r#"<!doctype html>
 <div class="host-sessions"><div id="sessionList"></div></div>
 <div class="host-pane" id="pane"><div id="sessionView"></div></div>
 <script type="module">
-const host = window.__host = { mounted: false, error: null, errors: [], opened: [], views: [], asked: [] };
-addEventListener("error", event => host.errors.push(String(event.message)));
+const host = window.__host = { mounted: false, error: null, errors: [], loops: [], opened: [], views: [], asked: [] };
+// A ResizeObserver loop notice is the browser putting a size report off to the next frame, not a throw: it is kept apart, with the step the case names, fails nothing, and the harness reports it as the case ends (#s596, #s624).
+addEventListener("error", event => !event.error && /^ResizeObserver loop/.test(String(event.message)) ? host.loops.push({ step: window.__step || null, t: Math.round(performance.now()) }) : host.errors.push(String(event.message)));
 addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
 const pageFetch = window.fetch.bind(window);
 window.fetch = (input, init) => { host.asked.push(new URL(String(input && input.url || input), location.href).href.slice(location.origin.length)); return pageFetch(input, init); };
@@ -1371,6 +1808,147 @@ fn a_phone_list_over_two_machines_groups_by_machine_from_the_filter() {
     groups_by_machine_from_the_filter(true, 3323, 3324);
 }
 
+/// #s615 (Hong, 2026-11-19: "the sessions are not sorted by the last active time"). The #s541 host
+/// over two hermetic monitors, each with two projects: the list put every project of the first machine
+/// before the second's, so one busy a minute ago on the second machine sat under one five hours idle
+/// on the first. Now the projects are in the server's calm order across the machines: those active in
+/// the last ten minutes first, by name, then the rest newest first; and Group by machine shows each
+/// machine's own projects in its own order.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_list_over_two_machines_puts_its_projects_in_the_order_of_their_last_activity() {
+    let _serial = serial();
+    let base = base("kit-merged-order");
+    let session = |stores: &Stores, sid: &str, dir: &str, ask: &str, ago: u64| {
+        let jsonl = harness::user_at(ask, &harness::rfc3339_secs_ago(ago + 5))
+            + &harness::assistant_at("done", &harness::rfc3339_secs_ago(ago));
+        let path = stores.claude_session(
+            sid,
+            &jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"/w/{dir}\"")),
+        );
+        // The file's time agrees with its last record, whichever the server reads first.
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .and_then(|file| {
+                file.set_modified(std::time::SystemTime::now() - Duration::from_secs(ago))
+            })
+            .expect("date the transcript");
+    };
+    let stores = Stores::new(&base);
+    session(
+        &stores,
+        SID_ORDER[0],
+        "tern-old",
+        "list the tern nests",
+        5 * 3600,
+    );
+    session(
+        &stores,
+        SID_ORDER[1],
+        "tern-now",
+        "count the tern chicks",
+        30,
+    );
+    let monitor = Monitor::spawn(Kind::V1, 3325, &base, Some(&stores), true);
+    let there_base = base.join("machine-b");
+    let there_stores = Stores::new(&there_base);
+    session(
+        &there_stores,
+        SID_ORDER[2],
+        "skua-mid",
+        "map the skua burrows",
+        30 * 60,
+    );
+    session(
+        &there_stores,
+        SID_ORDER[3],
+        "auk-now",
+        "time the auk dives",
+        90,
+    );
+    let there = Monitor::spawn(Kind::V1, 3326, &there_base, Some(&there_stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let mut answers: Vec<Answer> = kit_answers("")
+        .into_iter()
+        .filter(|answer| answer.path != "/kit-host")
+        .collect();
+    answers.push(Answer {
+        pattern: "*/kit-merged*".into(),
+        path: "/kit-merged".into(),
+        content_type: "text/html; charset=utf-8".into(),
+        body: HOST_MERGED.replace("{{MERMAID}}", claude_replay_html::mermaid_runtime_path()),
+    });
+    harness::answer_and_relay_in_browser(
+        &tab,
+        answers,
+        vec![harness::Relay {
+            prefix: "/machine-b".into(),
+            port: there.port,
+            token: there.token(),
+        }],
+    );
+    tab.navigate_to(&monitor.url("kit-merged")).unwrap();
+    tab.wait_until_navigated().unwrap();
+    until(
+        &tab,
+        "!!(window.__host && (window.__host.mounted || window.__host.error))",
+        "the host to mount the list over two machines",
+        Duration::from_secs(20),
+        "JSON.stringify(window.__host || null)",
+    );
+    assert_eq!(
+        harness::probe(&tab, "window.__host.error"),
+        serde_json::Value::Null,
+        "the host mounts the list with the merged source"
+    );
+    // The tree's heads in order: a machine's (when grouped) and each project's title with its machine.
+    let heads = "JSON.stringify(Array.from(document.querySelectorAll('#tree > .tree-machine-group, #tree > .tree-row.project')).map(function (el) { return el.classList.contains('tree-machine-group') ? 'M:' + el.dataset.machine : el.querySelector('.tree-title').textContent + '@' + el.dataset.toggle.split('/')[0].replace('p:', ''); }))";
+    let order = serde_json::json!(["auk-now@b", "tern-now@a", "skua-mid@b", "tern-old@a"]);
+    until(
+        &tab,
+        &format!("{heads} === {:?}", order.to_string()),
+        "the projects of both machines in the order of their last activity",
+        Duration::from_secs(30),
+        &format!("JSON.stringify({{ heads: {heads}, list: (document.getElementById('sessionList') || {{}}).innerText, errors: window.__host.errors }})"),
+    );
+    // Grouped by machine, each machine's projects in its own order.
+    eval(&tab, "document.getElementById('filterBtn').click()");
+    eval(
+        &tab,
+        "document.querySelector('#sessionFilter [data-by-machine]').click()",
+    );
+    let grouped = serde_json::json!([
+        "M:a",
+        "tern-now@a",
+        "tern-old@a",
+        "M:b",
+        "auk-now@b",
+        "skua-mid@b"
+    ]);
+    until(
+        &tab,
+        &format!("{heads} === {:?}", grouped.to_string()),
+        "each machine's projects in its own order under its head",
+        Duration::from_secs(20),
+        &format!("JSON.stringify({{ heads: {heads}, errors: window.__host.errors }})"),
+    );
+    assert_eq!(
+        harness::probe(&tab, "window.__host.errors"),
+        serde_json::json!([]),
+        "and the page said no error"
+    );
+}
+
+/// The sessions of [`a_list_over_two_machines_puts_its_projects_in_the_order_of_their_last_activity`].
+const SID_ORDER: [&str; 4] = [
+    "cccccccc-0000-4000-8000-000000006151",
+    "cccccccc-0000-4000-8000-000000006152",
+    "cccccccc-0000-4000-8000-000000006153",
+    "cccccccc-0000-4000-8000-000000006154",
+];
+
 /// What a host page's tab of its own holds right now, for a failure message.
 const TAB_NOW: &str = "JSON.stringify({ href: location.href, tab: window.__tab || null, text: (document.getElementById('detachedView') || {}).innerText ? document.getElementById('detachedView').innerText.slice(0, 300) : '' })";
 
@@ -1692,5 +2270,504 @@ fn the_monitor_opens_a_transcript_in_a_tab_of_its_own() {
         address,
         serde_json::json!({ "trace": "viewport", "session": SID }),
         "the tab keeps the rest of its address"
+    );
+}
+
+/// One session id on both machines, long enough to scroll, for #s612.
+const SID_PLACE: &str = "cccccccc-0000-4000-8000-000000006120";
+
+/// #s612 (#s597's browser case): a session's reading place is kept per machine. Over two machines
+/// one id names a session on each, and the view remembers where the reader was by the handle's base
+/// and the id (`viewMemoryKey`: `am-view:<id>` for the page's own server, `am-view:<base>|<id>` for
+/// another). The reader scrolls the first machine's copy to a turn well inside it, opens the second
+/// machine's copy of the same id, which has nothing remembered and so follows its own end, not the
+/// first machine's place; back on the first machine, its place comes back. The first machine is the
+/// page's own server, which keeps the key it always had.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_web_app_over_two_machines_keeps_each_machines_reading_place_for_a_shared_id() {
+    let _serial = serial();
+    let base = base("kit-app-places");
+    // Sixty turns at a fixed past hour, then a last one now, so the list shows the session.
+    let long = |last: &str| {
+        harness::long_session(60, harness::Shape::default())
+            + &harness::user_at(&format!("{last}?"), &harness::rfc3339_secs_ago(120))
+            + &harness::assistant_at(&format!("{last}, counted"), &harness::rfc3339_secs_ago(110))
+    };
+    let stores = Stores::new(&base);
+    stores.claude_session(SID_PLACE, &long("the terns on the north spit"));
+    let monitor = Monitor::spawn(Kind::V1, 3333, &base, Some(&stores), true);
+    let there_base = base.join("machine-b");
+    let there_stores = Stores::new(&there_base);
+    there_stores.claude_session(SID_PLACE, &long("the skuas on the ridge"));
+    let there = Monitor::spawn(Kind::V1, 3334, &there_base, Some(&there_stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let mut answers = kit_answers("");
+    answers.push(Answer {
+        pattern: "*/kit-machines*".into(),
+        path: "/kit-machines".into(),
+        content_type: "text/html; charset=utf-8".into(),
+        body: APP_MACHINES_HOST
+            .replace("{{MDREV}}", claude_monitor::kit::MDREV)
+            .replace("{{MERMAID}}", claude_replay_html::mermaid_runtime_path()),
+    });
+    harness::answer_and_relay_in_browser(
+        &tab,
+        answers,
+        vec![
+            harness::Relay {
+                prefix: "/machine-b".into(),
+                port: there.port,
+                token: there.token(),
+            },
+            harness::Relay {
+                prefix: "/app-vendor".into(),
+                port: monitor.port,
+                token: monitor.token(),
+            },
+        ],
+    );
+    let own_key = format!("am-view:{SID_PLACE}");
+    let there_key = format!("am-view:/machine-b|{SID_PLACE}");
+    // Where the view is: the first unit at the transcript's top (the viewport's own anchor, as it
+    // remembers it), whether it is at its end, which machine's text its end says, and what each
+    // machine's memory holds.
+    let place = format!(
+        "(function () {{ var s = document.querySelector('#sessionView .transcript'), w = document.querySelector('#sessionView .virtual-window'); var anchor = null; if (s && w) {{ var top = s.getBoundingClientRect().top; for (var c of w.children) {{ var r = c.getBoundingClientRect(); if (c.dataset.unitKey && r.bottom > top + 1) {{ anchor = {{ key: c.dataset.unitKey, top: Math.round(r.top - top) }}; break; }} }} }} var memory = function (k) {{ try {{ return JSON.parse(sessionStorage.getItem(k) || 'null'); }} catch (e) {{ return 'unreadable'; }} }}; var keys = []; for (var i = 0; i < sessionStorage.length; i++) {{ if (sessionStorage.key(i).indexOf('am-view:') === 0) keys.push(sessionStorage.key(i)); }} var text = (s && s.innerText) || ''; return {{ session: new URLSearchParams(location.search).get('session'), anchor: anchor, tail: !!s && s.scrollHeight - s.clientHeight - s.scrollTop <= 2, tall: !!s && s.scrollHeight > s.clientHeight * 3, terns: text.includes('the terns on the north spit, counted'), skuas: text.includes('the skuas on the ridge, counted'), own: memory({own_key:?}), there: memory({there_key:?}), keys: keys.sort() }}; }})()"
+    );
+    let now = format!("JSON.stringify({place})");
+    tab.navigate_to(&format!(
+        "{}?session=a%2F{SID_PLACE}",
+        monitor.url("kit-machines")
+    ))
+    .unwrap();
+    tab.wait_until_navigated().unwrap();
+    until(
+        &tab,
+        &format!("(function () {{ var p = {place}; return p.tall && p.tail && p.terns; }})()"),
+        "the first machine's session, tall enough to scroll, at its end",
+        Duration::from_secs(30),
+        &now,
+    );
+
+    // The reader scrolls the first machine's copy to a turn well inside it.
+    eval(&tab, "(function () { var s = document.querySelector('#sessionView .transcript'); s.dispatchEvent(new WheelEvent('wheel', { deltaY: 1 })); s.scrollTop = Math.floor(s.scrollHeight * 0.45); return 'ok'; })()");
+    until(
+        &tab,
+        &format!("(function () {{ var p = {place}; return !p.tail && !!p.own && p.own.following === false && !!p.anchor && p.anchor.key === p.own.key; }})()"),
+        "the first machine's place, remembered at the turn the reader scrolled to",
+        Duration::from_secs(20),
+        &now,
+    );
+    let rows = |id: &str| format!("#sessionList .tree-row.session[data-session=\"{id}\"]");
+    until(
+        &tab,
+        &format!(
+            "!!document.querySelector({:?}) && !!document.querySelector({:?})",
+            rows(&format!("a/{SID_PLACE}")),
+            rows(&format!("b/{SID_PLACE}"))
+        ),
+        "the session's row on each machine",
+        Duration::from_secs(30),
+        &now,
+    );
+
+    // The second machine's copy of the same id: nothing remembered there, so its own end.
+    eval(
+        &tab,
+        &format!(
+            "document.querySelector({:?}).click(); 'ok'",
+            rows(&format!("b/{SID_PLACE}"))
+        ),
+    );
+    until(
+        &tab,
+        &format!(
+            "(function () {{ var p = {place}; return p.session === {:?} && !!p.anchor; }})()",
+            format!("b/{SID_PLACE}")
+        ),
+        "the view mounted on the second machine",
+        Duration::from_secs(30),
+        &now,
+    );
+    // The view either follows its end or restores a place as the records stream in; give a
+    // restore every chance to happen before reading where it is.
+    let landed_there = (0..80)
+        .find_map(|_| {
+            std::thread::sleep(Duration::from_millis(250));
+            let p = harness::probe(&tab, &place);
+            (p["tail"] == true && p["skuas"] == true).then_some(p)
+        })
+        .map(|_| {
+            std::thread::sleep(Duration::from_millis(1500));
+            harness::probe(&tab, &place)
+        })
+        .unwrap_or_else(|| harness::probe(&tab, &place));
+    let own_memory = landed_there["own"].clone();
+    assert_ne!(
+        landed_there["anchor"]["key"], own_memory["key"],
+        "the second machine's copy is not at the first machine's turn: {landed_there}"
+    );
+    assert_eq!(
+        (&landed_there["tail"], &landed_there["skuas"]),
+        (&serde_json::json!(true), &serde_json::json!(true)),
+        "the second machine's copy opens at its own end, not at the first machine's turn: {landed_there}"
+    );
+
+    // Back on the first machine: its place comes back.
+    eval(
+        &tab,
+        &format!(
+            "document.querySelector({:?}).click(); 'ok'",
+            rows(&format!("a/{SID_PLACE}"))
+        ),
+    );
+    let back = (0..80)
+        .find_map(|_| {
+            std::thread::sleep(Duration::from_millis(250));
+            let p = harness::probe(&tab, &place);
+            (p["session"] == format!("a/{SID_PLACE}") && p["anchor"]["key"] == own_memory["key"])
+                .then_some(p)
+        })
+        // Once there, it stays there: a restore that lands and then drifts is not one.
+        .map(|_| {
+            std::thread::sleep(Duration::from_millis(1500));
+            harness::probe(&tab, &place)
+        })
+        .unwrap_or_else(|| harness::probe(&tab, &place));
+    drop(there);
+    drop(monitor);
+    assert_eq!(
+        back["anchor"]["key"], own_memory["key"],
+        "back on the first machine, the turn the reader left is at the top again: left {own_memory}, back {back}"
+    );
+    let drift = (back["anchor"]["top"].as_i64().unwrap_or(9999)
+        - own_memory["top"].as_i64().unwrap_or(0))
+    .abs();
+    assert!(
+        drift <= 6,
+        "…within a few pixels: left {own_memory}, back {back}"
+    );
+    // The page's own server keeps the key it always had; the second machine's is its own.
+    assert_eq!(
+        back["own"]["key"], own_memory["key"],
+        "the first machine's memory is under am-view:<id>, untouched by the second machine: {back}"
+    );
+    let keys: Vec<String> = serde_json::from_value(back["keys"].clone()).unwrap();
+    assert!(
+        keys.contains(&own_key) && keys.iter().all(|k| *k == own_key || *k == there_key),
+        "the views keep their places under am-view:<id> and am-view:/machine-b|<id> alone: {keys:?}"
+    );
+    assert!(
+        back["there"].is_null() || back["there"]["following"] == true,
+        "the second machine's memory, when it wrote one, says it followed its end: {back}"
+    );
+}
+
+/// The native app's page as #s596's cases serve it: under the app's own content security policy
+/// (agent-monitor-app `KitPage.policy`, its `app://monitor/kit/` this origin's `/kit/`), so every
+/// script is the kit's or the host's file under `/kit/`, none inline; what the page reads of its
+/// machine goes to this origin; inline styles stay allowed, as there.
+const NATIVE_HOST: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src {{KIT}}; style-src {{KIT}} 'unsafe-inline'; font-src {{KIT}} data:; img-src 'self' data: blob:; media-src 'self' data: blob:; connect-src 'self' data: blob:; object-src 'none'; form-action 'none'; base-uri 'none'">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>The native app's own options</title>
+<link rel="stylesheet" href="/kit/bundle/app-shell.css">
+<link rel="stylesheet" href="/kit/bundle/session-list.css">
+<link rel="stylesheet" href="/kit/bundle/session-view.css">
+<script type="module" src="/kit/native-host.js"></script>
+</head>
+<body>
+<div id="appRoot"></div>
+</body>
+</html>
+"#;
+
+/// The host's script, a file under `/kit/` as the app's is: the mount with the native app's own
+/// options (#s596), its Machines row counting its calls.
+const NATIVE_SCRIPT: &str = r#"const host = window.__host = { mounted: false, error: null, errors: [], loops: [], violations: [], machines: 0 };
+addEventListener("securitypolicyviolation", event => host.violations.push(`${event.effectiveDirective} ${event.blockedURI}`));
+// A ResizeObserver loop notice is the browser putting a size report off to the next frame, not a throw: it is kept apart, with the step the case names, fails nothing, and the harness reports it as the case ends (#s596, #s624).
+addEventListener("error", event => !event.error && /^ResizeObserver loop/.test(String(event.message)) ? host.loops.push({ step: window.__step || null, t: Math.round(performance.now()) }) : host.errors.push(String(event.message)));
+addEventListener("unhandledrejection", event => host.errors.push(String(event.reason && event.reason.message || event.reason)));
+try {
+  const native = await import("/kit/bundle/native-app.js");
+  const { backendHandle } = await import("/kit/bundle/index.js");
+  native.mountApp(document.getElementById("appRoot"), {
+    backend: backendHandle({ paired: true }),
+    version: "9.9.9-kit",
+    theme: "dark",
+    show: { detach: false },
+    onMachines: () => { host.machines += 1; },
+    reviewSheet: true,
+  });
+  host.mounted = true;
+} catch (error) {
+  host.error = String(error && error.stack || error);
+}
+"#;
+
+/// The kit, the native host page and its script, for #s596's cases on `monitor`.
+fn native_answers(monitor: &Monitor) -> Vec<Answer> {
+    let mut answers = harness::kit_bundle();
+    answers.push(Answer {
+        pattern: "*/kit-native*".into(),
+        path: "/kit-native".into(),
+        content_type: "text/html; charset=utf-8".into(),
+        body: NATIVE_HOST.replace("{{KIT}}", &monitor.url("kit/")),
+    });
+    answers.push(Answer {
+        pattern: "*/kit/native-host.js*".into(),
+        path: "/kit/native-host.js".into(),
+        content_type: "text/javascript; charset=utf-8".into(),
+        body: NATIVE_SCRIPT.into(),
+    });
+    answers
+}
+
+/// A recent session, so the list's default filter shows it.
+const SID_NATIVE: &str = "cccccccc-0000-4000-8000-000000005960";
+
+fn native_world(case: &str, port: u16) -> (Monitor, std::path::PathBuf) {
+    let base = base(case);
+    let stores = Stores::new(&base);
+    stores.claude_session(
+        SID_NATIVE,
+        &(harness::user_at(
+            "where do the terns nest this spring?",
+            &harness::rfc3339_secs_ago(400),
+        ) + &harness::assistant_at(
+            "on the north spit, past the second dune",
+            &harness::rfc3339_secs_ago(390),
+        )),
+    );
+    (
+        Monitor::spawn(Kind::V1, port, &base, Some(&stores), true),
+        base,
+    )
+}
+
+/// Where a control is and whether a reader reaches it: drawn, its box, whether its centre hit-tests
+/// to it, and the ids beside it.
+fn reach(tab: &headless_chrome::Tab, id: &str) -> serde_json::Value {
+    let read = eval(
+        tab,
+        &format!(
+            "(function () {{ var b = document.getElementById({id:?}); if (!b) return JSON.stringify(null); var r = b.getBoundingClientRect(), x = r.left + r.width / 2, y = r.top + r.height / 2, hit = document.elementFromPoint(x, y); return JSON.stringify({{ reached: r.width > 0 && r.height > 0 && x >= 0 && y >= 0 && x < innerWidth && y < innerHeight && !!hit && b.contains(hit), box: [r.left, r.top, r.width, r.height].map(Math.round), centre: [x, y], hit: hit ? hit.tagName.toLowerCase() + (hit.id ? '#' + hit.id : '') : null, before: b.previousElementSibling ? b.previousElementSibling.id : null, label: b.innerText.trim() || b.getAttribute('aria-label') }}); }})()"
+        ),
+    );
+    serde_json::from_str(read.as_str().unwrap_or("null")).unwrap()
+}
+
+fn mounted(tab: &headless_chrome::Tab, what: &str) {
+    until(
+        tab,
+        "!!(window.__host && (window.__host.mounted || window.__host.error)) && !!document.querySelector('#sessionView .transcript') && document.querySelector('#sessionView .transcript').innerText.indexOf('north spit') >= 0",
+        what,
+        Duration::from_secs(30),
+        "JSON.stringify({ host: window.__host || null, transcript: (document.querySelector('#sessionView .transcript') || {}).innerText })",
+    );
+}
+
+const THEMES: &str = "JSON.stringify({ page: document.documentElement.dataset.theme || 'light', list: document.getElementById('sessionList').dataset.theme || 'light', view: document.getElementById('sessionView').dataset.theme || 'light', stored: localStorage.getItem('am-demo-theme') })";
+
+/// #s596 (design/app-mount.md, "Kept for the native app", stage 4) — the web app from the kit with
+/// the native app's own options, under the app's content security policy. With nothing stored it
+/// opens in the start theme the app passed, the page, the list and the view alike; a theme the
+/// reader picks is stored and wins over the start at the next load. The Machines row sits after
+/// Search in the nav and a reader reaches it, at the default width and at the list's least (232px),
+/// and pressing it calls `onMachines`; on the rail it is a glyph after the filter's, pressed the
+/// same. `show: { detach: false }` draws no ↗ on the transcript's top bar. Nothing the page loads
+/// breaks the policy.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_native_app_s_own_options_from_the_kit_under_its_policy() {
+    let _serial = serial();
+    let (monitor, _base) = native_world("kit-native", 3341);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::answer_in_browser(&tab, native_answers(&monitor));
+    tab.navigate_to(&monitor.url("kit-native")).unwrap();
+    tab.wait_until_navigated().unwrap();
+    mounted(&tab, "the app from the kit, its first session read");
+    let opened: serde_json::Value =
+        serde_json::from_str(eval(&tab, THEMES).as_str().unwrap()).unwrap();
+    let row = reach(&tab, "machinesBtn");
+    let new_tab = eval(
+        &tab,
+        "(function () { var b = document.getElementById('sessionNewTab'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+    );
+    harness::click_when_settled(&tab, "#machinesBtn", "the Machines row");
+    let after_row = eval(&tab, "window.__host.machines");
+
+    // The rail: the glyph after the filter's, pressed the same.
+    harness::click_when_settled(&tab, "#sidebarCollapse", "the sidebar's collapse");
+    until(
+        &tab,
+        "document.getElementById('app').classList.contains('sidebar-off') && (function () { var b = document.getElementById('sidebarMiniMachines'); return !!b && b.offsetWidth > 0; })()",
+        "the rail, with its Machines glyph",
+        Duration::from_secs(10),
+        "document.getElementById('app').className",
+    );
+    let glyph = reach(&tab, "sidebarMiniMachines");
+    harness::click_when_settled(&tab, "#sidebarMiniMachines", "the rail's Machines glyph");
+    let after_glyph = eval(&tab, "window.__host.machines");
+    harness::click_when_settled(&tab, "#sidebarMiniExpand", "the rail's expand");
+    until(
+        &tab,
+        "!document.getElementById('app').classList.contains('sidebar-off')",
+        "the sidebar back",
+        Duration::from_secs(10),
+        "document.getElementById('app').className",
+    );
+
+    // The list at its least, and the theme the reader picks, after a load.
+    harness::click_when_settled(&tab, "#themeBtn", "the theme toggle");
+    eval(
+        &tab,
+        "localStorage.setItem('am-sidebar-width', '232'); 'ok'",
+    );
+    tab.navigate_to(&monitor.url("kit-native")).unwrap();
+    tab.wait_until_navigated().unwrap();
+    mounted(&tab, "the app again, after a load");
+    let reloaded: serde_json::Value =
+        serde_json::from_str(eval(&tab, THEMES).as_str().unwrap()).unwrap();
+    let narrow = reach(&tab, "machinesBtn");
+    let sidebar = eval(
+        &tab,
+        "(function () { var s = document.querySelector('#app>.sidebar').getBoundingClientRect(), b = document.getElementById('machinesBtn').getBoundingClientRect(); return JSON.stringify({ width: Math.round(s.width), inside: b.left >= s.left && b.right <= s.right + 0.5 }); })()",
+    );
+    let sidebar: serde_json::Value = serde_json::from_str(sidebar.as_str().unwrap()).unwrap();
+    let host: serde_json::Value = serde_json::from_str(
+        eval(&tab, "JSON.stringify(window.__host)")
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    drop(monitor);
+
+    assert_eq!(
+        opened,
+        serde_json::json!({ "page": "dark", "list": "dark", "view": "dark", "stored": null }),
+        "nothing stored: the app's start theme, everywhere"
+    );
+    assert!(
+        row["reached"] == true && row["before"] == "searchBtn" && row["label"] == "Machines",
+        "the Machines row after Search, reached: {row}"
+    );
+    assert_eq!(after_row, 1, "the row calls onMachines");
+    assert!(
+        glyph["reached"] == true && glyph["before"] == "sidebarMiniFilter",
+        "the rail's glyph after the filter's, reached: {glyph}"
+    );
+    assert_eq!(after_glyph, 2, "and so does the glyph");
+    assert_eq!(
+        new_tab, false,
+        "detach off: no ↗ on the transcript's top bar"
+    );
+    assert_eq!(
+        reloaded,
+        serde_json::json!({ "page": "light", "list": "light", "view": "light", "stored": "light" }),
+        "the reader's choice is stored and wins over the start"
+    );
+    assert!(
+        narrow["reached"] == true && sidebar["width"] == 232 && sidebar["inside"] == true,
+        "the row reached at the list's least, inside the sidebar: {narrow} {sidebar}"
+    );
+    assert_eq!(
+        (&host["error"], &host["errors"], &host["violations"]),
+        (
+            &serde_json::Value::Null,
+            &serde_json::json!([]),
+            &serde_json::json!([])
+        ),
+        "no error, and nothing breaks the app's policy"
+    );
+}
+
+/// #s596 on a phone: the Machines row is in the drawer's nav, upright, and in a wide phone's column
+/// held sideways, and a finger's tap on it calls `onMachines` in each.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_native_app_s_machines_row_is_reached_on_a_phone() {
+    let _serial = serial();
+    let (monitor, _base) = native_world("kit-native-phone", 3342);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::phone(&tab, 390, 844);
+    harness::answer_in_browser(&tab, native_answers(&monitor));
+    tab.navigate_to(&monitor.url("kit-native")).unwrap();
+    tab.wait_until_navigated().unwrap();
+    mounted(&tab, "the app on a phone");
+    harness::click_when_settled(&tab, "#drawerHandle", "the drawer's handle");
+    until(
+        &tab,
+        "!document.getElementById('app').classList.contains('mobile-detail') && (function () { var b = document.getElementById('machinesBtn'); if (!b) return false; var r = b.getBoundingClientRect(); var h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!h && b.contains(h) && document.getAnimations().every(function (a) { return a.playState !== 'running'; }); })()",
+        "the drawer open, its Machines row on top",
+        Duration::from_secs(10),
+        "document.getElementById('app').className",
+    );
+    let drawer = reach(&tab, "machinesBtn");
+    let centre = |v: &serde_json::Value| {
+        (
+            v["centre"][0].as_f64().unwrap(),
+            v["centre"][1].as_f64().unwrap(),
+        )
+    };
+    let (x, y) = centre(&drawer);
+    harness::finger_tap(&tab, x, y);
+    harness::until(
+        &tab,
+        "window.__host.machines === 1",
+        "the drawer's row to call onMachines",
+        Duration::from_secs(5),
+        "window.__host.machines",
+    );
+
+    harness::phone(&tab, 956, 440);
+    tab.navigate_to(&monitor.url("kit-native")).unwrap();
+    tab.wait_until_navigated().unwrap();
+    mounted(&tab, "the app on a wide phone held sideways");
+    until(
+        &tab,
+        "(function () { var b = document.getElementById('machinesBtn'); if (!b) return false; var r = b.getBoundingClientRect(); var h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!h && b.contains(h); })()",
+        "the column's Machines row",
+        Duration::from_secs(10),
+        "JSON.stringify({ app: document.getElementById('app').className, row: (function () { var b = document.getElementById('machinesBtn'); return b ? [b.offsetWidth, b.offsetHeight] : null; })() })",
+    );
+    let column = reach(&tab, "machinesBtn");
+    let (x, y) = centre(&column);
+    harness::finger_tap(&tab, x, y);
+    harness::until(
+        &tab,
+        "window.__host.machines === 1",
+        "the column's row to call onMachines",
+        Duration::from_secs(5),
+        "window.__host.machines",
+    );
+    let host: serde_json::Value = serde_json::from_str(
+        eval(&tab, "JSON.stringify(window.__host)")
+            .as_str()
+            .unwrap(),
+    )
+    .unwrap();
+    drop(monitor);
+    assert!(
+        drawer["reached"] == true && column["reached"] == true,
+        "reached in the drawer and in the column: {drawer} {column}"
+    );
+    assert_eq!(
+        (&host["error"], &host["errors"], &host["violations"]),
+        (
+            &serde_json::Value::Null,
+            &serde_json::json!([]),
+            &serde_json::json!([])
+        ),
+        "no error, and nothing breaks the app's policy"
     );
 }

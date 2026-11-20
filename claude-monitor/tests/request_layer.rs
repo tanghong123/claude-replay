@@ -28,14 +28,17 @@ const ROUTES: &[&str] = &[
     "mermaid",
 ];
 
-/// A line that hands its server path to the handle: the page's (`backend()`), or the session
-/// list's own, which is the page's unless the host gave the list one (#s540).
+/// A line that hands its server path to the handle: the page's (`backend()`), the session list's
+/// own, which is the page's unless the host gave the list one (#s540), or the one an mdrev mount
+/// took from `backend()` as it began and keeps for its later steps (`handle`, #s595: over several
+/// machines the view may be mounted on another machine's by then).
 const THROUGH_THE_HANDLE: &[&str] = &[
     "backend().fetch(",
     "listBackend().fetch(",
     "backend().url(",
     "backend().mdrevUrl(",
     "backend().mdrevFetch(",
+    "handle.mdrevFetch(",
 ];
 
 /// (module, text on the line): server paths that are names, not requests.
@@ -43,7 +46,7 @@ const NAMED: &[(&str, &str, &str)] = &[
     (
         "codex-ui/attachment-viewer.js",
         "const filePath = `/file?",
-        "the path the next two lines hand to backend().url and backend().fetch",
+        "the path the next two lines hand to the handle the download took from backend() as it began",
     ),
     (
         "codex-ui/mdrev-pane.js",
@@ -54,6 +57,11 @@ const NAMED: &[(&str, &str, &str)] = &[
         "codex-ui/mdrev-pane.js",
         "const REVIEW_CONTRACT = \"/api/mdrev-review\"",
         "the detached tab's route prefix, joined through backend().mdrevUrl",
+    ),
+    (
+        "codex-ui/mdrev-pane.js",
+        "bundleUrl(",
+        "a path of mdrev's bundle, which bundleUrl hands to the mount's handle (backend(), taken as the mount began), or to the host's own copy of the bundle where it carries one (assets, #s595)",
     ),
     (
         "codex-ui/merged-source.js",

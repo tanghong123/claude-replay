@@ -1701,7 +1701,10 @@
 :where(#sessionView) .turn-raw-text{white-space:pre-wrap;overflow-wrap:anywhere}
 :where(#sessionView) .filter-hidden{display:none!important}
 :where(#sessionView) .renderer-head.filter-hit{box-shadow:inset 3px 0 0 var(--blue)}
-:where(#sessionView) .turn.user .turn-time{align-self:flex-end;margin:0 4px 4px 8px;font-size:11px;line-height:1.3;color:var(--faint);white-space:nowrap}
+:where(#sessionView) .turn.user{flex-wrap:wrap}
+:where(#sessionView) .turn.user::after{content:"";flex-basis:100%;order:1}
+:where(#sessionView) .turn.user .turn-time{order:2;margin:4px 4px 0 8px;font-size:11px;line-height:1.3;color:var(--faint);white-space:nowrap}
+:where(#sessionView) .turn.user:has(>.turn-time){padding-bottom:10px}
 :where(#sessionView) .turn.user.command .command-card{width:max-content;max-width:min(76%,640px);background:var(--panel);border:1px solid var(--line);border-radius:12px;overflow:hidden}
 :where(#sessionView) .command-head{display:flex;align-items:center;gap:8px;width:100%;padding:8px 12px;border:0;background:transparent;color:var(--ink);text-align:left;cursor:pointer;font:inherit}
 :where(#sessionView) .command-head:hover,:where(#sessionView) .command-head:focus-visible{background:color-mix(in srgb,var(--sub) 8%,transparent);outline:0}
@@ -1844,10 +1847,10 @@
 #sessionView .activity-empty .activity-empty-show:hover{border-color:color-mix(in srgb,var(--primary) 26%,var(--line))}
 }
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .activity-empty .activity-empty-show{min-height:44px;min-width:44px;padding:0 20px;font-size:15px}
-:where(#sessionView) .agents-filter-row{display: block; width: 100%; min-height: 44px; padding: 0 12px; border-radius: 9px;
+:where(#sessionView) .agents-filter-row,:where(#sessionView) .tasks-filter-row{display: block; width: 100%; min-height: 44px; padding: 0 12px; border-radius: 9px;
   background: transparent; color: var(--primary);
   font: inherit; font-size: 14px; font-weight: 570; text-align: left; cursor: pointer;}
-:where(#sessionView) .agents-filter-row:focus-visible{outline: 2px solid color-mix(in srgb, var(--primary) 48%, transparent); outline-offset: -2px;}
+:where(#sessionView) .agents-filter-row:focus-visible,:where(#sessionView) .tasks-filter-row:focus-visible{outline: 2px solid color-mix(in srgb, var(--primary) 48%, transparent); outline-offset: -2px;}
 :where(#sessionView) .reading-cluster>.reading-options{position: absolute;
   right: 0;
   top: 45px;
@@ -1936,9 +1939,15 @@
 :where(#sessionView) .header-searchbox .find-count{flex:none}
 :where(#sessionView) .session-heading>.crumb{min-width:0;flex-shrink:8;overflow:hidden;text-overflow:ellipsis}
 :where(#sessionView) .session-heading>.status-chip{min-width:0;flex-shrink:4}
+:where(#sessionView) .session-heading.crumb-off>:is(.crumb,.crumb+.header-divider){display:none}
+#sessionView:not(.pl-phone) .workspace>.topbar>.session-heading.crumb-off{flex:0 0 var(--heading-room,auto);max-width:max-content}
+:where(#sessionView) .session-copy-about{display:none;padding:6px 8px 8px;margin-bottom:2px;border-bottom:1px solid var(--line);color:var(--sub);font-size:11.5px;line-height:1.4;overflow-wrap:anywhere}
+:where(#sessionView) .session-copy-menu.names-crumb .session-copy-about{display:block}
+#sessionView:not(.pl-phone) .workspace>.topbar>.session-heading.chip-dot>.status-chip{flex:none;gap:0;padding:0;max-width:none;font-size:0}
 #sessionView:not(.pl-phone) .workspace>.topbar>.session-heading>#sessionTitle{min-width:calc(min(var(--title-word,0px),160px) + 10px)}
 #sessionView:not(.pl-phone) .workspace>.topbar>.session-heading{min-width:calc(min(var(--title-word,0px),160px) + 65px)}
-#sessionView.pl-outline-bar .workspace>.topbar>.session-heading{min-width:calc(min(var(--title-word,0px),160px) + 30px)}
+#sessionView:not(.pl-phone) .workspace>.topbar>.session-heading{--heading-rest:22px}
+#sessionView:not(.pl-phone) .workspace>.topbar>.session-heading.crumb-off{min-width:calc(min(var(--title-word,0px),160px) + 10px + var(--heading-rest))}
 #sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster{flex-shrink:1;min-width:150px}
 #sessionView:not(.pl-phone) .workspace>.topbar>.header-search-cluster>.header-searchbox{max-width:100%}
 #sessionView:not(.pl-phone) .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held))>.session-heading,#sessionView:not(.pl-phone) .workspace>.topbar:has(>.header-search-cluster>.header-searchbox.has-query)>.session-heading{flex-shrink:2}
@@ -2018,23 +2027,22 @@
 #sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 6px 6px}
 #sessionView:not(.pl-phone) .workspace>.phone-pane-menu .phone-pane-body .navigator-list{overflow:visible}
 #sessionView.pl-outline-bar .workspace>.topbar{column-gap:4px;padding-right:10px}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster{min-width:0}
+#sessionView.pl-outline-bar .workspace>.topbar>.top-spacer{display:none}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster{flex:1 1 auto;min-width:0}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster>.header-searchbox{width:100%;max-width:none}
+#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox .search-field~:is(.find-count,.find-nav,.search-clear),#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster.search-pressing>.header-searchbox .search-field~:is(.find-count,.find-nav,.search-clear){display:none}
+#sessionView.pl-outline-bar .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held):not(.search-pressing))>.phone-pane{display:none}
 #sessionView .reading-options .reading-fold-all{display:none}
 #sessionView.pl-outline-bar .reading-options .reading-fold-all{display:grid}
 #sessionView.pl-outline-bar .workspace>.topbar:has(>.reading-cluster)>#sessionFoldAll{display:none}
-#sessionView.pl-outline-bar .workspace>.topbar>.session-heading{column-gap:6px}
-#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>:is(.header-divider,.crumb){display:none}
-#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>.status-chip{flex:none;gap:0;padding:0 4px;border-color:transparent;background:transparent;font-size:0}
-#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>.status-chip .state-dot{margin:0!important}
-#sessionView.pl-outline-bar .workspace>.topbar>.session-heading>.status-chip:not(:has(.state-dot)){display:none}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox{width:34px;height:34px;padding:0;gap:0;justify-content:center;border-color:transparent;background:transparent;box-shadow:none;cursor:pointer}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox>:is(.find-count,.find-nav,.search-clear,.header-filter,.find-whole){display:none}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox>.search-field{flex:0 0 0;width:0;overflow:hidden}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox:hover{background:var(--hover)}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:not(:focus-within):not(.search-held)>.header-searchbox.has-query{background:var(--selected);color:var(--blue)}
-#sessionView.pl-outline-bar .workspace>.topbar:has(>.header-search-cluster:is(:focus-within,.search-held))>:is(.session-heading,.top-spacer,.phone-pane,#navigatorRailExpand){display:none}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:is(:focus-within,.search-held){flex:1 1 auto;min-width:0}
-#sessionView.pl-outline-bar .workspace>.topbar>.header-search-cluster:is(:focus-within,.search-held)>.header-searchbox{width:100%;max-width:none}
+#sessionView.pl-outline-bar .workspace>.topbar>#sessionParent.is-live{width:34px;padding:0;justify-content:center}
+#sessionView.pl-outline-bar .workspace>.topbar>#sessionParent.is-live .session-parent-label{display:none}
+#sessionView .info-popover>.session-heading{display:flex;flex-wrap:wrap;align-items:center;gap:2px 8px;width:auto;max-width:none;min-width:0;height:auto;margin:0 0 6px;padding:2px 4px 8px 7px;border-bottom:1px solid var(--line)}
+#sessionView .info-popover>.session-heading>#sessionTitle{flex:1 1 100%;min-width:0;max-width:none;white-space:normal;overflow-wrap:anywhere;font-size:13px;line-height:1.35;color:var(--ink)}
+#sessionView .info-popover>.session-heading>.header-divider{display:none}
+#sessionView .info-popover>.session-heading>.crumb{display:block;flex:0 1 auto;min-width:0;white-space:normal;overflow-wrap:anywhere;font-size:11px}
+#sessionView .info-popover>.session-heading>.status-chip{flex:none;max-width:none}
+#sessionView .info-popover>.session-heading>.session-copy-menu{left:0;right:0;width:auto;top:calc(100% + 2px)}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) #mobileBack,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) #sidebarReopen{display:none!important}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500)>.workspace{isolation:isolate}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .workspace{grid-template-rows:auto minmax(0,1fr)}
@@ -2052,6 +2060,7 @@
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .workspace>.topbar>#sessionParent.is-live .session-parent-label{display:none}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .workspace>.topbar>#sessionParent.is-live .icon{width:20px;height:20px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .workspace>.topbar:has(>#sessionParent.is-live)>.session-heading{padding-left:6px}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500).pl-max-w-700 .session-copy-menu{top:var(--phone-top,51px)}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .workspace>.topbar>.phone-info{order:2}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .workspace>.topbar>#previewBtn{order:3}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .phone-only{display:grid}
@@ -2075,6 +2084,10 @@
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-head{display:flex;align-items:center;justify-content:space-between;flex:none;padding:0 2px 0 16px;border-bottom:1px solid var(--line)}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-head strong{font-size:14px;color:var(--ink)}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-close{width:44px;height:44px;border-radius:10px;background:transparent;color:var(--sub);font-size:17px;cursor:pointer}
+:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-head strong,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-close{flex:none}
+:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-filter:not([hidden]){flex:0 1 auto;min-width:0;height:44px;margin-left:auto;padding:0 10px;border-radius:10px;background:transparent;color:var(--primary);font:inherit;font-size:14px;font-weight:570;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-filter:active,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-filter:focus-visible{background:var(--hover);outline:0}
+:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-menu .phone-pane-body .tasks-filter-row,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-menu .phone-pane-body .agents-filter-row{display:none}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 6px 6px}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-body .outline-turn-row,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-body .work-task-head,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-body .outline-agent{min-height:44px}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .phone-pane-body .outline-turn-row .outline-label{font-size:14px}
@@ -2104,9 +2117,8 @@
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .sv-session-main .transcript-inner{width:calc(100% - 48px);padding-top:16px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500).wide .sv-session-main .transcript-inner{width:calc(100% - 26px)}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .turn-stickybar{margin:0 8px}
-#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .turn.user{flex-wrap:wrap}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .turn.user .user-prompt{max-width:100%}
-#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .turn.user .turn-time{flex-basis:100%;order:2;margin:4px 2px 0 0;text-align:right}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .turn.user .turn-time{margin:4px 2px 0 8px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .spot-link,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .renderer>.renderer-spot{display:none!important}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .jump-to-bottom{right:auto;left:50%;translate:-50% 0;min-width:44px;height:44px;bottom:calc(var(--phone-dock-h) + 10px)}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .jump-to-bottom:not(.has-new){width:44px}
@@ -2329,7 +2341,6 @@
 :where(#sessionView) .turn.assistant>.body>.renderer-note::before{content:"⎿";flex:none}
 :where(#sessionView) .turn.assistant>.body>.renderer-note p{margin:0;font:inherit}
 :where(#sessionView) .turn.assistant>.body>*:has(+.renderer-note:last-child){margin-bottom:4px}
-#sessionView .turn.user:has(> .turn-notice){flex-wrap:wrap}
 #sessionView .turn-notice{flex:0 0 100%;order:3;margin:6px 0 0;color:var(--faint);font:12px/1.45 var(--sans);text-align:left}
 #sessionView .turn-notice-file{padding:0;border:0;background:none;color:var(--sub);font:inherit;cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px}
 #sessionView .compose-fab.disabled{background:var(--hover);color:var(--faint);box-shadow:none;cursor:help}
