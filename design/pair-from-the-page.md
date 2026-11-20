@@ -1,6 +1,7 @@
 # Pairing a browser from the monitor's page (#s590)
 
-> **Stage 1 is built (#s618); stage 2 is not yet (#s619).** The owner chose to build both, in two
+> **Stage 1 is built (#s618, in 1.543.0); stage 2 is built on its own branch and waits for the
+> owner's yes (#s619).** The owner chose to build both, in two
 > stages (#s605). Stage 1 is a paired monitor's page asking for a code (4.1–4.5, 4.7); stage 2 is an
 > unpaired monitor turning pairing on from the page (4.6). Each stage lands only on the owner's yes,
 > since pairing is the owner's. Phone codes stay in the terminal (#s585).
