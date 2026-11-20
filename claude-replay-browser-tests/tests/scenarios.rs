@@ -21913,7 +21913,7 @@ fn scenario_a_far_scroll_beside_a_size_report_raises_no_loop_notice(
     eval(
         tab,
         &format!(
-            "(function () {{ var s = {s}, r = {root}; var raf = window.requestAnimationFrame; window.__inFrame = false; window.requestAnimationFrame = function (cb) {{ return raf.call(window, function (ts) {{ window.__inFrame = true; try {{ cb(ts); }} finally {{ window.__inFrame = false; }} }}); }}; var far = function () {{ {wheel_target}.dispatchEvent(new WheelEvent('wheel', {{ deltaY: -9000, bubbles: true }})); s.scrollTo({{ top: Math.max(0, s.scrollTop - 9000), behavior: 'instant' }}); window.__farTop = s.scrollTop; }}; var mo = new MutationObserver(function () {{ mo.disconnect(); if (window.__inFrame) setTimeout(far, 0); else far(); }}); mo.observe(r, {{ childList: true, subtree: true }}); return 'armed'; }})()"
+            "(function () {{ var s = {s}, r = {root}; var raf = window.requestAnimationFrame; window.__inFrame = false; window.requestAnimationFrame = function (cb) {{ return raf.call(window, function (ts) {{ window.__inFrame = true; try {{ cb(ts); }} finally {{ window.__inFrame = false; }} }}); }}; var far = function () {{ {wheel_target}.dispatchEvent(new WheelEvent('wheel', {{ deltaY: -9000, bubbles: true }})); s.scrollTo({{ top: Math.max(0, s.scrollTop - 9000), behavior: 'instant' }}); window.__farTop = s.scrollTop; var b = s === document.scrollingElement ? {{ top: 0, bottom: innerHeight }} : s.getBoundingClientRect(), top = Math.max(0, b.top), bottom = Math.min(innerHeight, b.bottom); window.__farInPad = ![].some.call(document.querySelectorAll('{records}'), function (e) {{ var q = e.getBoundingClientRect(); return q.height > 0 && q.bottom > top && q.top < bottom; }}); }}; var mo = new MutationObserver(function () {{ mo.disconnect(); if (window.__inFrame) setTimeout(far, 0); else far(); }}); mo.observe(r, {{ childList: true, subtree: true }}); return 'armed'; }})()"
         ),
     );
     // The update that mounts them back, then the far scroll.
@@ -21926,6 +21926,13 @@ fn scenario_a_far_scroll_beside_a_size_report_raises_no_loop_notice(
             .unwrap_or(-1.0)
             >= 0.0,
         "{surface:?}: the update mounted records and the far scroll followed it"
+    );
+    // The far scroll left the mounted window, so the reader sat in a pad when the frame's reports
+    // came: else nothing here reaches the #s277 branch and the case passes on the old code too.
+    assert_eq!(
+        eval(tab, "window.__farInPad === true").as_bool(),
+        Some(true),
+        "{surface:?}: the far scroll left the mounted window, the reader in a pad"
     );
     harness::until(
         tab,

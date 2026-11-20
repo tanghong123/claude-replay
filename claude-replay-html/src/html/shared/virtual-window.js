@@ -2192,15 +2192,19 @@ class VirtualWindow {
     else if (verdict === "heal") this.convergeBottom();
     // This scroll moved the reader, and that is all it does to `P` (framework I1): the position
     // keeps the offset it was read at, so what they scrolled since is known to the pixel without a
-    // read, and the deferred window update below re-reads it once per batch of scroll events
-    // rather than per event. Nothing is owed and nothing is dropped (#138): a correction that
+    // read, and the window update below re-reads it: deferred, once per batch of scroll events
+    // rather than per event, while the window still covers the reader, and at once when it does not.
+    // Nothing is owed and nothing is dropped (#138): a correction that
     // reads where they are now replays nothing.
     this.afterScroll();
     // A scroll past the window, into a pad, gets its window now, in this event, not after the
     // frame (#s626). The observer delivers after the frame's scroll events: a size report in this
     // frame found the reader in the pad and mounted the window inside its delivery, which moved the
     // content's height under observers whose turn had passed, and Chrome reported a ResizeObserver
-    // loop. Mounted here, the frame's layout and its reports take the new window in one round.
+    // loop. Mounted here, the frame's layout and its reports take the new window in one round. That
+    // holds for a move heard as a scroll event before the frame's reports; a move made after them in
+    // the same frame (a `scrollTo` from a frame callback, a clamp as the content shrinks) still meets
+    // a report first, and the report mounts the window as before.
     if (!this.viewportMounted()) {
       this.pendingScroll = false;
       this.updateWindow();
