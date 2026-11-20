@@ -49,13 +49,14 @@ const takesKeyboard = at => at?.localName === "input" ? !NO_KEYBOARD_INPUTS.has(
  *  document scrolling inside it) does not answer. So a note box mdrev opens beside a line low on the
  *  screen took the focus under the keyboard and stayed there, its Save past the window's foot
  *  (measured on the iPad Simulator, iPadOS 26.5: the box at 1279pt, the keyboard from 1028pt).
- *  The keyboard is read as the session view's keyboard ride reads it: it covers the sheet's
- *  containing block (the window, or the app the ride moves) by that block's height less the visual
- *  viewport's, from its foot. Never from `visualViewport.offsetTop`: with the keyboard up iOS 26
- *  reports it equal to the page's own offset (338 with the sheet drawn at the screen's top, measured
- *  on the iPhone 17 Pro Simulator), and on a phone the ride moves the app back over that offset, so
- *  what is visible starts at the top as drawn. The sheet's foot is raised by what the keyboard covers
- *  below it, and the scroller holding the field brings into view the field with what belongs to it:
+ *  The keyboard is read as the session view's keyboard ride reads it: the layout viewport's height
+ *  less the visual viewport's, covering the window from its foot, so the visible part runs from the
+ *  window's top for the visual viewport's height. Never from `visualViewport.offsetTop`: with the
+ *  keyboard up iOS 26 reports it equal to the page's own offset (338 with the sheet drawn at the
+ *  screen's top, measured on the iPhone 17 Pro Simulator), and on a phone the ride moves the app (or
+ *  a host's box) back over that offset, so what is visible starts at the top as drawn. The sheet's
+ *  foot is raised to the visible part's foot, measured from its containing block's top (the window's
+ *  in the app, a host's pane under the host's bar), and the scroller holding the field brings into view the field with what belongs to it:
  *  its largest ancestor under the scroller that fits in what stays visible (mdrev's note card: the
  *  quote, the field, the share box and Save), or the field's top where nothing does. Without a field
  *  the sheet is as its rules draw it. Returns the height it fitted the sheet to, as a string, so a
@@ -67,22 +68,30 @@ const takesKeyboard = at => at?.localName === "input" ? !NO_KEYBOARD_INPUTS.has(
  *  only the screen's edge needs. */
 function fitSheetAboveKeyboard(sheet, field, viewport, applied) {
   // The sheet as its rules draw it, from the box drawn now plus what was applied, so the sheet never
-  // grows back for a measure (a scroller grown for a moment would clamp the reader's place); and its
-  // containing block, the box with the rules' own insets around it, read in no frame of the page's.
+  // grows back for a measure (a scroller grown for a moment would clamp the reader's place), and its
+  // inset from its containing block's top as the rules set it. Its height and insets alone, never its
+  // place on the screen, which iOS's scroll and the ride move.
   const box = sheet.getBoundingClientRect(), style = getComputedStyle(sheet);
   const drawn = box.height + applied.bottom;
-  const insets = (parseFloat(style.top) || 0) + (parseFloat(style.bottom) || 0) - applied.bottom;
+  const ruledTop = parseFloat(style.top) || 0, ruledBottom = (parseFloat(style.bottom) || 0) - applied.bottom;
+  // The containing block's top below the window's: a view that contains its layers (`pl-boxed`: a
+  // host's pane under the host's bar) has its own box as the block, its gap to the window's top kept
+  // from before the ride moved it (`--pane-y`, pane-layout.js); in the app the block starts at the
+  // window's top. What the keyboard covers is the ride's own measure, the layout viewport's height
+  // less the visible one's: nothing on a desktop, so a sheet taller than the window is left alone.
+  const holder = sheet.parentElement;
+  const blockTop = holder?.classList.contains("pl-boxed") ? parseFloat(holder.style.getPropertyValue("--pane-y")) || 0 : 0;
+  const covered = viewport ? (viewRoot.styleRoot()?.clientHeight || 0) - viewport.height : 0;
   let want = 0;
-  if (field && viewport && Math.abs((viewport.scale || 1) - 1) < 0.01) {
-    const covered = drawn + insets - viewport.height;
-    const ruledBottom = (parseFloat(style.bottom) || 0) - applied.bottom;
-    want = Math.max(0, Math.round(covered - ruledBottom));
+  if (field && covered > 0.5 && Math.abs((viewport.scale || 1) - 1) < 0.01) {
+    // The sheet's foot at the visible part's foot: the block's top, the sheet's own top inset and its
+    // height, less the visible height.
+    want = Math.max(0, Math.round(blockTop + ruledTop + drawn - viewport.height));
     if (drawn - want < 120) want = 0;
   }
   if (want !== applied.bottom) {
     if (want > 0) {
-      const ruled = (parseFloat(style.bottom) || 0) - applied.bottom;
-      sheet.style.bottom = `${ruled + want}px`;
+      sheet.style.bottom = `${ruledBottom + want}px`;
       sheet.style.setProperty("padding-bottom", "0px");
     } else {
       sheet.style.removeProperty("bottom");
@@ -529,9 +538,9 @@ export class Preview {
       let at = viewRoot.active();
       while (at?.shadowRoot?.activeElement) at = at.shadowRoot.activeElement;
       const field = at && sheet.contains(at) && takesKeyboard(at) ? at : null;
-      const band = fitSheetAboveKeyboard(sheet, field, viewport, applied);
-      if (field && band && (band !== fitted || field !== fittedField)) revealInSheet(sheet, field);
-      fitted = band; fittedField = field;
+      const height = fitSheetAboveKeyboard(sheet, field, viewport, applied);
+      if (field && height && (height !== fitted || field !== fittedField)) revealInSheet(sheet, field);
+      fitted = height; fittedField = field;
     };
     const fitSoon = () => queueMicrotask(fit);
     // Focus going from one field of the sheet to another: the focusin that follows refits, and the

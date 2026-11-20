@@ -45,7 +45,9 @@ try {
   const { mountSessionView } = await import("/monitor-ui/session-view.js");
   const params = new URLSearchParams(location.search);
   const off = (params.get("hide") || "").split(",").filter(Boolean);
-  const backend = backendHandle({ paired: true });
+  // `mdrev=<version>`: the release the monitor pins, passed as the kit's guide tells a host to, so
+  // Markdown in the pane is mdrev's reader; without it the pane shows it as plain text.
+  const backend = backendHandle({ paired: true, ...(params.get("mdrev") ? { mdrevVersion: params.get("mdrev") } : {}) });
   // A session to open: its row from the monitor's own list, which a first scan may not have yet.
   const session = params.get("session") || "";
   const rows = new Map();

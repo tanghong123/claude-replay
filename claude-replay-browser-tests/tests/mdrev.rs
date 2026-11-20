@@ -155,7 +155,8 @@ fn lengthen_guide(repo: &Path) {
 /// #s627: a note started on a line low in the open review sheet, then an on-screen keyboard over the
 /// window's foot (the visual viewport shortened, as iOS's keyboard does and as the phone keyboard
 /// cases shadow it): the sheet ends above the keyboard, and the note's field and its Save are in view
-/// and are what a tap there hits. The keyboard put away, the sheet covers the window again. Red on
+/// and are what a tap there hits. The keyboard put away, the sheet is where it was again (the window,
+/// in the app; a host's pane). Red on
 /// 54b26c5f, where the field stayed under the keyboard (the iPad Simulator walk saw it at 1279pt
 /// under a keyboard from 1028pt, its Save past the window's foot).
 fn a_note_stays_above_the_keyboard(tab: &headless_chrome::Tab) {
@@ -202,6 +203,10 @@ fn a_note_stays_above_the_keyboard(tab: &headless_chrome::Tab) {
     .unwrap();
     let before = read(tab);
     let inner = before["inner"].as_i64().unwrap();
+    let (rest_top, rest_bottom) = (
+        before["sheet"][0].as_i64().unwrap(),
+        before["sheet"][1].as_i64().unwrap(),
+    );
     assert!(
         before["save"][1].as_i64().unwrap_or(0) > inner - kb,
         "the note's Save lies where the keyboard will be: {before}"
@@ -227,8 +232,8 @@ fn a_note_stays_above_the_keyboard(tab: &headless_chrome::Tab) {
     );
     until(
         tab,
-        "(function(){ var s = document.querySelector('.review-sheet').getBoundingClientRect(); return Math.round(s.top) === 0 && Math.round(s.bottom) === innerHeight; })()",
-        "the sheet covering the window again once the keyboard is down",
+        &format!("(function(){{ var s = document.querySelector('.review-sheet').getBoundingClientRect(); return Math.round(s.top) === {rest_top} && Math.round(s.bottom) === {rest_bottom}; }})()"),
+        "the sheet where it was again once the keyboard is down",
         Duration::from_secs(5),
         geometry,
     );
@@ -1562,6 +1567,65 @@ fn a_phone_review_sheet_keeps_a_note_above_the_keyboard() {
         "the review sheet, its document drawn",
         Duration::from_secs(30),
         "(document.querySelector('.review-sheet') || {innerText: 'no sheet'}).innerText.slice(0, 200)",
+    );
+    a_note_stays_above_the_keyboard(&tab);
+}
+
+/// #s627: in a host's pane under the host's bar (the kit's session view in a page of its own), the
+/// review sheet's foot meets the keyboard's top too: the sheet is drawn inside the pane, whose top is
+/// the bar's height below the window's, so the foot is measured from there. Red on ec596bb1, which
+/// measured from the window's top and left the foot the bar's height under the keyboard.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
+fn a_phone_review_sheet_in_a_host_s_pane_keeps_a_note_above_the_keyboard() {
+    let _serial = serial();
+    let (base, stores, repo, state) = shared_review_world("mdrev-sheet-keyboard-host");
+    lengthen_guide(&repo);
+    let m = Monitor::spawn_with(
+        Kind::V1,
+        3347,
+        &base,
+        Some(&stores),
+        true,
+        &[("MDREV_STATE_DIR", &state.display().to_string())],
+    );
+    let (_browser, tab) = chrome_tab();
+    harness::phone(&tab, 402, 874);
+    m.pair(&tab);
+    harness::open_host_page(
+        &tab,
+        &m,
+        &format!("session={SID}&mdrev={}", harness::mdrev_pin()),
+    );
+    until(
+        &tab,
+        "!!document.querySelector('[data-reference-path]') && !!document.querySelector('.host-pane #sessionView.pl-boxed')",
+        "the session in the host's pane, boxed under the host's bar",
+        Duration::from_secs(30),
+        "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+    );
+    eval(
+        &tab,
+        "Object.defineProperty(Navigator.prototype, 'languages', { configurable: true, get: () => ['en-US'] }); 'ok'",
+    );
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1') && (function(){ var b = document.querySelector('.preview-review'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+        "the guide in the pane, with its Review control",
+        Duration::from_secs(30),
+        PANE,
+    );
+    eval(
+        &tab,
+        "document.querySelector('.preview-review').click(); 'ok'",
+    );
+    until(
+        &tab,
+        "!!document.querySelector('.review-sheet .mdrev-host h1') && !!document.querySelector('.review-sheet .doc p') && Math.round(document.querySelector('.review-sheet').getBoundingClientRect().top) === 40",
+        "the review sheet drawn inside the host's pane, its document drawn",
+        Duration::from_secs(30),
+        "JSON.stringify({ sheet: (function(){ var s = document.querySelector('.review-sheet'); return s ? [s.getBoundingClientRect().top, s.getBoundingClientRect().bottom].map(Math.round) : null; })(), text: (document.querySelector('.review-sheet') || {innerText: 'no sheet'}).innerText.slice(0, 120) })",
     );
     a_note_stays_above_the_keyboard(&tab);
 }
