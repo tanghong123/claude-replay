@@ -1381,6 +1381,211 @@ fn one_list_over_two_machines_labels_routes_and_greys_each_machine() {
     );
 }
 
+/// #s603: a session on the page's own machine and one on the other.
+const SID_CMDK_HERE: &str = "cccccccc-0000-4000-8000-000000006031";
+const SID_CMDK_THERE: &str = "cccccccc-0000-4000-8000-000000006032";
+
+/// #s603 (ab-replay's review of #s595) — the web app from the kit over two machines, the second of
+/// which stops answering. The list greys that machine's rows; ⌘K's project and session rows of it
+/// are drawn the same way: dimmed as the list's greyed rows are, the note "not answering since …"
+/// beside them in the list's amber, the machine's words with the reason in their title. The page's
+/// own machine's rows are unchanged, and so is the agent's row, which names no machine.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn cmdk_over_two_machines_greys_the_rows_of_one_that_stopped_answering() {
+    let _serial = serial();
+    let base = base("kit-cmdk-stale");
+    let stores = Stores::new(&base);
+    stores.claude_session(
+        SID_CMDK_HERE,
+        &(harness::user_at(
+            "where do the terns nest this spring?",
+            &harness::rfc3339_secs_ago(400),
+        ) + &harness::assistant_at(
+            "on the north spit, past the second dune",
+            &harness::rfc3339_secs_ago(390),
+        )),
+    );
+    let monitor = Monitor::spawn(Kind::V1, 3335, &base, Some(&stores), true);
+    let there_base = base.join("machine-b");
+    let there_stores = Stores::new(&there_base);
+    there_stores.claude_session(
+        SID_CMDK_THERE,
+        &(harness::user_at(
+            "count the skua burrows on the ridge",
+            &harness::rfc3339_secs_ago(200),
+        ) + &harness::assistant_at("forty-one, by the cairn", &harness::rfc3339_secs_ago(190))),
+    );
+    let there = Monitor::spawn(Kind::V1, 3336, &there_base, Some(&there_stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let mut answers = kit_answers("");
+    answers.push(Answer {
+        pattern: "*/kit-machines*".into(),
+        path: "/kit-machines".into(),
+        content_type: "text/html; charset=utf-8".into(),
+        body: APP_MACHINES_HOST
+            .replace("{{MDREV}}", claude_monitor::kit::MDREV)
+            .replace("{{MERMAID}}", claude_replay_html::mermaid_runtime_path()),
+    });
+    harness::answer_and_relay_in_browser(
+        &tab,
+        answers,
+        vec![
+            harness::Relay {
+                prefix: "/machine-b".into(),
+                port: there.port,
+                token: there.token(),
+            },
+            harness::Relay {
+                prefix: "/app-vendor".into(),
+                port: monitor.port,
+                token: monitor.token(),
+            },
+        ],
+    );
+    tab.navigate_to(&format!(
+        "{}?session=a%2F{SID_CMDK_HERE}",
+        monitor.url("kit-machines")
+    ))
+    .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let now = "JSON.stringify({ host: window.__host, list: (document.getElementById('sessionList') || {}).innerText, results: (document.getElementById('searchResults') || {}).innerText })";
+    until(
+        &tab,
+        "!!(window.__host && (window.__host.mounted || window.__host.error))",
+        "the page to mount the web app over two machines",
+        Duration::from_secs(20),
+        now,
+    );
+    let row = |id: &str| format!("#sessionList .tree-row.session[data-session=\"{id}\"]");
+    until(
+        &tab,
+        &format!(
+            "!!document.querySelector({:?}) && !!document.querySelector({:?})",
+            row(&format!("a/{SID_CMDK_HERE}")),
+            row(&format!("b/{SID_CMDK_THERE}"))
+        ),
+        "one list over both machines",
+        Duration::from_secs(30),
+        now,
+    );
+
+    // ⌘K's rows, as the page draws them: each row's kind, the machine its meta names, its classes,
+    // the note beside it and its colour, its title, and how its copy is dimmed.
+    let rows = "(function () { return [...document.querySelectorAll('#searchResults .search-result')].map(function (b) { var why = b.querySelector('.result-why'), small = b.querySelector('small'), m = / · (tern-mini|skua-book)$/.exec(small.textContent); return { kind: b.querySelector('.result-kind').textContent, machine: m ? m[1] : null, greyed: b.classList.contains('search-result-machine-stale'), why: why ? why.textContent : null, whyColour: why && why.querySelector('.result-machine-note') ? getComputedStyle(why.querySelector('.result-machine-note')).color : null, title: b.getAttribute('title'), copy: getComputedStyle(b.querySelector('.result-copy b')).opacity }; }); })()";
+    let open_cmdk = || {
+        eval(&tab, "document.getElementById('searchLayer').classList.remove('production-open'); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true, cancelable: true })); 'ok'");
+        until(
+            &tab,
+            "document.getElementById('searchLayer').classList.contains('production-open') && document.querySelectorAll('#searchResults .search-result').length >= 5",
+            "⌘K's rows: the agent, a project and a session on each machine",
+            Duration::from_secs(10),
+            now,
+        );
+        harness::probe(&tab, rows)
+    };
+    let live = open_cmdk();
+    assert!(
+        live.as_array().is_some_and(|all| all
+            .iter()
+            .all(|r| r["greyed"] == false && r["why"].is_null() && r["copy"] == "1")),
+        "while both machines answer, no ⌘K row is greyed or says anything beside it: {live}"
+    );
+
+    // The other machine stops answering: the list greys its rows under a head saying since when.
+    drop(there);
+    until(
+        &tab,
+        "!!document.querySelector('#sessionList .tree-machines .tree-machine-head.tree-machine-head-stale[data-machine=\"b\"]')",
+        "a head saying the other machine has stopped answering",
+        Duration::from_secs(30),
+        "JSON.stringify({ machines: window.__merged && window.__merged.machines(), list: (document.getElementById('sessionList') || {}).innerText })",
+    );
+    let listed = harness::probe(
+        &tab,
+        &format!(
+            "(function () {{ var r = document.querySelector({:?}), tag = document.querySelector('#sessionList .tree-machine.tree-machine-stale'); return {{ faded: getComputedStyle(r).opacity, amber: tag ? getComputedStyle(tag).color : null }}; }})()",
+            row(&format!("b/{SID_CMDK_THERE}"))
+        ),
+    );
+    let stale = open_cmdk();
+    // Choosing the stopped machine's session still opens it, and moves no filter: the machine's
+    // trouble is not a reason the sidebar hides a row.
+    let filter_before = eval(
+        &tab,
+        "String(localStorage.getItem('am-prod-session-filter'))",
+    );
+    let chosen = harness::probe(
+        &tab,
+        "(function () { var b = [...document.querySelectorAll('#searchResults .search-result.search-result-machine-stale')].find(function (b) { return b.querySelector('.result-kind').textContent === 'session'; }); if (!b) return null; b.click(); return b.getAttribute('data-global-index'); })()",
+    );
+    assert!(!chosen.is_null(), "a greyed session row to choose: {stale}");
+    until(
+        &tab,
+        &format!(
+            "!document.getElementById('searchLayer').classList.contains('production-open') && !!document.querySelector({:?})",
+            format!("{}.selected", row(&format!("b/{SID_CMDK_THERE}")))
+        ),
+        "⌘K closed and the stopped machine's session chosen in the list",
+        Duration::from_secs(10),
+        now,
+    );
+    assert_eq!(
+        eval(
+            &tab,
+            "String(localStorage.getItem('am-prod-session-filter'))"
+        ),
+        filter_before,
+        "choosing a row of a machine not answering moves no filter"
+    );
+    drop(monitor);
+    let all: Vec<serde_json::Value> = stale.as_array().cloned().unwrap_or_default();
+    let of = |machine: &str| -> Vec<&serde_json::Value> {
+        all.iter().filter(|r| r["machine"] == machine).collect()
+    };
+    let there_rows = of("skua-book");
+    let here_rows = of("tern-mini");
+    let agents: Vec<&serde_json::Value> = all.iter().filter(|r| r["kind"] == "agent").collect();
+    assert_eq!(
+        (
+            {
+                let mut kinds: Vec<&str> = there_rows
+                    .iter()
+                    .map(|r| r["kind"].as_str().unwrap_or(""))
+                    .collect();
+                kinds.sort_unstable();
+                kinds
+            },
+            here_rows.len(),
+            agents.len()
+        ),
+        (vec!["project", "session"], 2, 1),
+        "⌘K lists a project and a session on each machine and the agent once: {stale}"
+    );
+    for r in &there_rows {
+        let why = r["why"].as_str().unwrap_or("");
+        let title = r["title"].as_str().unwrap_or("");
+        assert!(
+            r["greyed"] == true
+                && why.starts_with("not answering since ")
+                && !why.contains('(')
+                && title.starts_with("skua-book: not answering since ")
+                && title.contains('(')
+                && r["copy"] == listed["faded"]
+                && r["whyColour"] == listed["amber"],
+            "the stopped machine's {} row is greyed as the list greys its rows ({listed}), the note beside it in the list's amber with no reason, the machine's words and reason in its title: {r}",
+            r["kind"]
+        );
+    }
+    for r in here_rows.iter().chain(agents.iter()) {
+        assert!(
+            r["greyed"] == false && r["why"].is_null() && r["title"].is_null() && r["copy"] == "1",
+            "a row of the machine that answers, and the agent's row, are unchanged: {r}"
+        );
+    }
+}
+
 /// A monitor's own answer to `GET /api/sessions` once it lists `wanted`, asked as a paired reader
 /// (its token in the legacy cookie, which the gate still reads), over a plain socket.
 fn sessions_of(monitor: &Monitor, wanted: &str) -> String {

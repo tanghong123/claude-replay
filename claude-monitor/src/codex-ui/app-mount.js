@@ -9,7 +9,7 @@
 import { svg } from "./icons.js";
 import { checkAssets, useBackend } from "./backend.js";
 import { mergedBackend } from "./merged-source.js";
-import { machineShortLabel } from "./session-list.js";
+import { machineNote, machineShortLabel } from "./session-list.js";
 import { APP_SHELL_MARKUP } from "./app-shell-markup.js";
 import { WIDE_PHONE_QUERY } from "./shared/capabilities.js";
 import { controlState, indexState, persist as persistIndex, searchState, selectedRow } from "./state.js";
@@ -329,6 +329,11 @@ function openGlobalSearch() { page.byId("searchLayer").classList.add("production
  *  and marked `stale` so it reads dimmed; choosing one clears that filter (the reader picked the
  *  row, so it is their own act, not a filter moving underneath them).
  *
+ *  Over several machines, a project's and a session's row of a machine that is not answering is
+ *  drawn as the list draws that machine's rows (#s603): greyed, saying how the machine answers
+ *  (`trouble`, `machineNote`), with the machine's words in its title. Choosing one still opens it;
+ *  it moves no filter. An agent's row spans machines and names none, so it is left as it is.
+ *
  *  The query: plain words match names; `agent:` and `project:` narrow, the same `key:value` shape
  *  as the in-session `tool:`. An in-session scope prefix and `tool:` tokens mean nothing here and
  *  are dropped rather than matched as text. */
@@ -358,6 +363,15 @@ function globalRows(raw) {
     const label = machines.find(entry => entry.machine === session?.machine)?.label;
     return label ? ` · ${machineShortLabel(label, labels)}` : "";
   };
+  // How the session's machine answers while it has stopped (stale, the one state the list greys its
+  // rows for: a failed or waiting machine has no rows), or null: the words the list's greyed rows say
+  // in their title (`<name>: <note>`, the reason included), and the note beside the row, one line
+  // without the reason, which the title keeps.
+  const trouble = session => {
+    const entry = machines.find(each => each.machine === session?.machine);
+    if (entry?.state !== "stale") return null;
+    return { note: machineNote({ ...entry, error: null }), words: `${machineShortLabel(entry.label, labels)}: ${machineNote(entry)}` };
+  };
   const rows = [];
   for (const agent of listHandle.grouped()) {
     const agentSessions = agent.projects.flatMap(project => project.sessions);
@@ -376,9 +390,9 @@ function globalRows(raw) {
       // A project row lands on its OWN most recent session (owner, 2026-09-26): the project is the
       // address, its newest session is where the reader means to be.
       const top = newest(project.sessions);
-      if (top) rows.push({ kind: "project", label: project.name, meta: `${agent.name}${on(top)}`, sid: top.id, ts: ts(top), why: concealed(top, project) });
+      if (top) rows.push({ kind: "project", label: project.name, meta: `${agent.name}${on(top)}`, sid: top.id, ts: ts(top), why: concealed(top, project), trouble: trouble(top) });
       for (const session of project.sessions) {
-        rows.push({ kind: "session", label: session.name || session.id, meta: `${agent.name} · ${project.name}${on(session)}`, sid: session.id, ts: ts(session), why: concealed(session, project) });
+        rows.push({ kind: "session", label: session.name || session.id, meta: `${agent.name} · ${project.name}${on(session)}`, sid: session.id, ts: ts(session), why: concealed(session, project), trouble: trouble(session) });
       }
     }
   }
@@ -391,7 +405,13 @@ function renderGlobalSearch() {
   const query = page.byId("searchInput").value.trim();
   const rows = globalRows(query).slice(0, 80);
   searchState.globalResults = rows; searchState.globalIndex = Math.min(searchState.globalIndex, Math.max(0, rows.length - 1));
-  page.byId("searchResults").innerHTML = rows.map((row, index) => `<button class="search-result ${index === searchState.globalIndex ? "active" : ""}${row.why.length ? " search-result-stale" : ""}" data-global-index="${index}"${row.why.length ? ` title="The sidebar is not showing this (${escapeText(row.why.join(", "))}) — opening it shows it there again"` : ""}><span class="result-copy"><b>${escapeText(row.label)}</b><small>${escapeText(row.meta)}</small></span>${row.why.length ? `<span class="result-why">${escapeText(row.why.join(" · "))}</span>` : ""}<span class="result-kind">${escapeText(row.kind)}</span></button>`).join("") || '<div class="no-results">No matches</div>';
+  page.byId("searchResults").innerHTML = rows.map((row, index) => {
+    // A machine not answering (#s603) is said first, then what hides the row in the sidebar.
+    const title = [row.trouble?.words, row.why.length ? `The sidebar is not showing this (${row.why.join(", ")}) — opening it shows it there again` : ""].filter(Boolean).join(" · ");
+    // The machine's note in the list's amber, the sidebar's words beside it kept faint.
+    const why = [row.trouble ? `<span class="result-machine-note">${escapeText(row.trouble.note)}</span>` : "", escapeText(row.why.join(" · "))].filter(Boolean).join(" · ");
+    return `<button class="search-result ${index === searchState.globalIndex ? "active" : ""}${row.why.length ? " search-result-stale" : ""}${row.trouble ? " search-result-machine-stale" : ""}" data-global-index="${index}"${title ? ` title="${escapeText(title)}"` : ""}><span class="result-copy"><b>${escapeText(row.label)}</b><small>${escapeText(row.meta)}</small></span>${why ? `<span class="result-why">${why}</span>` : ""}<span class="result-kind">${escapeText(row.kind)}</span></button>`;
+  }).join("") || '<div class="no-results">No matches</div>';
 }
 page.byId("searchBtn").onclick = openGlobalSearch; page.byId("sidebarMiniSearch").onclick = openGlobalSearch;
 page.byId("searchInput").oninput = () => { searchState.globalIndex = 0; renderGlobalSearch(); };

@@ -11,7 +11,7 @@ import { SessionIndexStore } from "./session-index-store.js";
 import { SESSION_LIST_MARKUP } from "./session-list-markup.js";
 import { indexState, selectedRow } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
-import { ARRANGE_SOURCES, arrangeSessions, familyHolds, flatFamilies, isDefaultView, machineSections, machineShortLabel, nestSideSessions, paneLookup, rowLookup, sectionView, viewSection } from "./session-list.js";
+import { ARRANGE_SOURCES, arrangeSessions, familyHolds, flatFamilies, isDefaultView, machineNote, machineSections, machineShortLabel, nestSideSessions, paneLookup, rowLookup, sectionView, viewSection } from "./session-list.js";
 import { displayState, denoteState, sessionBucket, sessionFilterBuckets, FILTER_BUCKETS, FILTER_LABELS, BLOCKED_SUMMARY } from "./shared/state-labels.js";
 import { agentName, escapeText } from "./view-model.js";
 import { page } from "./view-root.js";
@@ -446,14 +446,6 @@ function treeAction(target, kind) {
 function machineState(key) {
   if (!key) return null;
   return indexState.machines.find(entry => entry.machine === key) || { machine: key, label: key, state: "live", since: null, error: null };
-}
-const clockTime = iso => { const at = iso ? new Date(iso) : null; return at && !Number.isNaN(at.getTime()) ? at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""; };
-/** How a machine answers, in words, or "" while it answers (#s561 puts it beside the machine's head). */
-function machineNote(entry) {
-  if (entry.state === "stale") return `not answering${entry.since ? ` since ${clockTime(entry.since)}` : ""}${entry.error ? ` (${entry.error})` : ""}`;
-  if (entry.state === "failed") return `no answer${entry.error ? ` (${entry.error})` : ""}`;
-  if (entry.state === "waiting") return "waiting for its first answer";
-  return "";
 }
 /** The name a machine goes by in the list: its label, cut to the host name's first label where that
  *  keeps it apart from the list's other machines (#s561, Hong: "limit to the first dot component
