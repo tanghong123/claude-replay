@@ -4642,8 +4642,13 @@ pub(crate) fn decode_line_known(
                 if let Some(text) = &fallback {
                     msgs.push(Message::UserText { text: text.clone() });
                 }
-                // #s617: a prompt of pictures alone is still the person's turn, its words empty.
-                if fallback.is_none() && injected == Injected::No && images_alone(arr) {
+                // #s617: a prompt of pictures alone is still the person's turn, its words empty: the
+                // person's own record only (`relayable`: no sub-agent's, no other origin's).
+                if fallback.is_none()
+                    && injected == Injected::No
+                    && relayable(&v)
+                    && images_alone(arr)
+                {
                     msgs.push(Message::UserText {
                         text: String::new(),
                     });
@@ -4820,7 +4825,11 @@ pub(crate) fn decode_line_known(
                         a.and_then(|a| a.get("isMeta")).and_then(Value::as_bool) == Some(true);
                     if p.trim().is_empty() {
                         // #s617: a mid-turn message of pictures alone is the person's turn too.
-                        if !meta && !from_peer(a) && images_alone(images.iter().copied()) {
+                        if !meta
+                            && human_origin(a)
+                            && relayable(&v)
+                            && images_alone(images.iter().copied())
+                        {
                             msgs.push(Message::AttachmentPrompt {
                                 text: String::new(),
                             });
@@ -6130,7 +6139,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                     }
                     // #s617 mirror: a prompt of pictures alone, the person's turn with no words. No
                     // #52 match: an empty text names no queued prompt.
-                    if fallback.is_none() && !injected && images_alone(arr) {
+                    if fallback.is_none() && !injected && relayable(&v) && images_alone(arr) {
                         out.push(Block::UserText(String::new()));
                     }
                     for blk in arr {
@@ -6403,7 +6412,8 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                             }
                         } else if a.and_then(|a| a.get("isMeta")).and_then(Value::as_bool)
                             != Some(true)
-                            && !from_peer(a)
+                            && human_origin(a)
+                            && relayable(&v)
                             && images_alone(images.iter().copied())
                         {
                             // #s617 mirror: pictures alone, the person's turn; no #52 match.
@@ -6867,12 +6877,11 @@ fn images_alone<'a>(blocks: impl IntoIterator<Item = &'a Value>) -> bool {
     any
 }
 
-/// Whether a `queued_command` came from another session (#s79): never the person's turn.
-fn from_peer(a: Option<&Value>) -> bool {
+/// Whether a `queued_command` is the person's own (#s617): its origin absent or human. Another
+/// session's message (#s79), a task's notification or any other origin is never their turn.
+fn human_origin(a: Option<&Value>) -> bool {
     a.and_then(|a| a.get("origin"))
-        .and_then(|o| o.get("kind"))
-        .and_then(Value::as_str)
-        == Some("peer")
+        .is_none_or(|o| o.get("kind").and_then(Value::as_str) == Some("human"))
 }
 
 /// A `queued_command`'s prompt: its text and its image blocks. The client writes it as a string,
@@ -8073,8 +8082,8 @@ mod tests {
     /// picked up mid-turn (a content-less enqueue, its pop, then a `queued_command` whose prompt is
     /// image blocks alone) or sent while the agent waited (a `user` record of image blocks alone,
     /// or beside empty text). The empty words take no queued prompt: one typed after the mid-turn
-    /// message keeps its marker. A meta record of images alone, and another session's message, are
-    /// no turn of the person's. Both parse paths agree, and each picture loads its bytes.
+    /// message keeps its marker. A meta record of images alone, and one of another origin (another
+    /// session's, a task's notification), are no turn of the person's. Both parse paths agree, and each picture loads its bytes.
     #[test]
     fn a_message_of_pictures_alone_is_the_persons_turn() {
         let jsonl = r##"
@@ -8090,6 +8099,8 @@ mod tests {
 {"type":"user","timestamp":"2026-11-20T09:00:04.000Z","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"ZGlyZWN0"}}]}}
 {"type":"assistant","timestamp":"2026-11-20T09:00:04.500Z","message":{"content":[{"type":"text","text":"a ridge"}]}}
 {"type":"user","timestamp":"2026-11-20T09:00:05.000Z","isMeta":true,"message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"bWV0YQ=="}}]}}
+{"type":"user","timestamp":"2026-11-20T09:00:05.200Z","origin":{"kind":"peer","name":"skua-HD"},"message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"cGVlcjI="}}]}}
+{"type":"attachment","timestamp":"2026-11-20T09:00:05.400Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"task-notification"},"prompt":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"dGFzaw=="}}]}}
 {"type":"user","timestamp":"2026-11-20T09:00:06.000Z","message":{"content":[{"type":"text","text":"  "},{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"c3BhY2U="}}]}}
 {"type":"assistant","timestamp":"2026-11-20T09:00:06.500Z","message":{"content":[{"type":"text","text":"a dune"}]}}
 {"type":"user","timestamp":"2026-11-20T09:00:07.000Z","message":{"content":"last turn"}}
@@ -8124,7 +8135,10 @@ mod tests {
                 // Sent while the agent waited.
                 "user ",
                 "image",
-                // A meta record's picture is the client's, not the person's.
+                // A meta record's picture is the client's, not the person's; nor is one another
+                // session sent directly, or one a task's notification carried.
+                "image",
+                "image",
                 "image",
                 // Beside empty text.
                 "user ",

@@ -7406,6 +7406,64 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
+    /// #s617: a committed prompt of pictures alone keeps its name. The live store renders each
+    /// committed block alone, so the pictures after it come in through `put_with_next`, as the
+    /// accumulator drains a turn; a block put without them is named by nothing (empty, never a
+    /// count it cannot see).
+    #[test]
+    fn a_committed_prompt_of_pictures_alone_is_named_by_its_pictures() {
+        use crate::engine::BlockStore;
+        use crate::model::{Attachment, AttachmentContent, AttachmentKind, Block};
+        let dir = std::env::temp_dir().join(format!("cr-records-617-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("t.records");
+        let _ = std::fs::remove_file(&path);
+        let mut store = super::super::record_store::RecordStore::open_append(
+            &path,
+            FoldPolicy::default(),
+            "/r".into(),
+            crate::Transcript::open(Agent::CLAUDE, path.clone()),
+        )
+        .unwrap();
+        let image = || {
+            Block::Attachment(Attachment {
+                lines: None,
+                kind: AttachmentKind::Image,
+                name: "image.png".into(),
+                path: None,
+                content: AttachmentContent::Deferred {
+                    at: 0,
+                    index: 0,
+                    span: None,
+                },
+            })
+        };
+        let drained = vec![
+            Block::UserText("words".into()),
+            Block::AssistantText("first".into()),
+            Block::UserText(String::new()),
+            image(),
+            image(),
+            Block::AssistantText("both".into()),
+            Block::UserText(String::new()),
+            image(),
+        ];
+        for (i, b) in drained.iter().enumerate() {
+            store.put_with_next(b.clone(), i, &[], &[], &drained[i + 1..]);
+        }
+        // Put alone, an empty prompt sees nothing after it and claims no picture.
+        store.put(Block::UserText(String::new()), drained.len(), &[], &[]);
+        let bytes = store.read_range(0, store.log_len());
+        let labels: Vec<String> = std::str::from_utf8(&bytes)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .filter(|r| r["kind"] == "user")
+            .map(|r| r["label"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert_eq!(labels, vec!["words", "[2 images]", "[image]", ""]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     /// The artifact route's containment rule. `/file` is the only route that reads an
     /// arbitrary disk path, so what it REFUSES is the test worth writing: a path no hosted
     /// session explains, a symlink out of a contained tree (the case a textual prefix check

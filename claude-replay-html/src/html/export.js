@@ -602,9 +602,10 @@
       var md = el("div", "uturn-md");
       // A prompt of pictures alone (#s617): nothing was typed, so the card names what was sent, as
       // the TUI's caret line does; the pictures follow it as their own blocks, as a prompt's do.
-      var imagesAlone = !inbox && typeof b.src === "string" && !b.src.trim();
+      // Keyed on the label the server names the pictures by, never on empty words alone.
+      var imagesAlone = !inbox && typeof b.src === "string" && !b.src.trim() && !!b.label;
       if (imagesAlone) {
-        md.appendChild(el("span", "uturn-images", b.label || "[image]"));
+        md.appendChild(el("span", "uturn-images", b.label));
       } else if (rawFor(b) && typeof b.src === "string") {
         md.appendChild(el("pre", "raw", b.src));   // textContent — exactly what was typed
       } else {

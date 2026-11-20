@@ -644,8 +644,10 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
                 ]));
             }
             // Pasted text (#s79) keeps its lines; its fence lines become a dim label and a rule.
+            // Words that are only blanks draw nothing past the caret line above.
+            let words = if t.trim().is_empty() { "" } else { t.as_str() };
             let mut paste: Option<&str> = None;
-            for (i, line) in t.lines().enumerate() {
+            for (i, line) in words.lines().enumerate() {
                 let shown = match paste {
                     Some(f) if line == f => {
                         paste = None;
@@ -2637,6 +2639,9 @@ mod tests {
         let b = Block::UserText(String::new());
         let lines = render_one(&b, 80, Hl::Styled);
         assert_eq!(texts(&lines), vec!["❯ [image]".to_string()]);
+        // Blanks are no words: the same one line.
+        let blanks = render_one(&Block::UserText("  \n ".into()), 80, Hl::Styled);
+        assert_eq!(texts(&blanks), texts(&lines));
         assert_eq!(texts(&[render_header(&b)]), texts(&lines));
         assert!(lines[0]
             .spans

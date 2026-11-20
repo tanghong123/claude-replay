@@ -44,6 +44,20 @@ pub trait BlockStore {
         user_times: &[Option<crate::model::EpochSeconds>],
         turn_durations: &[Option<u64>],
     ) -> Self::Bv;
+    /// [`put`](Self::put), told the blocks committed right after `b` in the same drain: a
+    /// PROJECTION store whose rendering of a block reads what follows it uses them (the html store
+    /// names a prompt of pictures alone by the pictures after it, #s617). A drain ends at a turn
+    /// boundary, so a turn's blocks are always in one. Default: `put`, the lossless stores'.
+    fn put_with_next(
+        &mut self,
+        b: Block,
+        at: BlockIndex,
+        user_times: &[Option<crate::model::EpochSeconds>],
+        turn_durations: &[Option<u64>],
+        _next: &[Block],
+    ) -> Self::Bv {
+        self.put(b, at, user_times, turn_durations)
+    }
     /// Discard everything stored — called when the accumulator rebuilds from scratch (a source
     /// truncation/rewrite), so an append-only backing doesn't accrete dead content across resets.
     /// Default no-op (the in-memory identity store has nothing of its own to discard).

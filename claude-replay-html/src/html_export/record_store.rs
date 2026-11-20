@@ -202,6 +202,20 @@ impl RecordStore {
 impl BlockStore for RecordStore {
     type Bv = RecordLocator;
 
+    /// #s617: a prompt of pictures alone is named by the pictures after it ("[2 images]"), which a
+    /// record rendered alone cannot see; the drain can, so their count goes in with it.
+    fn put_with_next(
+        &mut self,
+        b: Block,
+        at: BlockIndex,
+        user_times: &[Option<EpochSeconds>],
+        turn_durations: &[Option<u64>],
+        next: &[Block],
+    ) -> RecordLocator {
+        self.emit.images_next = super::images_following(next);
+        self.put(b, at, user_times, turn_durations)
+    }
+
     /// Render-once TO DISK: one wire record per committed block, appended with its framing
     /// newline; the locator is the `Bv` the `Session` holds. `user_times` is the session's
     /// per-turn clock — `EmitState::seen_turns` indexes into it exactly as the whole-session

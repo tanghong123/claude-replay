@@ -466,10 +466,16 @@ impl<S: BlockStore> SessionAccumulator<S> {
             let times = self.replayer.user_times().to_vec();
             let durs = self.replayer.turn_durations().to_vec();
             let durs_for_put: &[Option<u64>] = &durs;
-            for b in drained {
+            // Each block goes in told the blocks after it in this drain (`put_with_next`, #s617),
+            // taken out of the drain in turn so none is copied.
+            let mut drained = drained;
+            for i in 0..drained.len() {
+                let b = std::mem::replace(&mut drained[i], Block::UserText(String::new()));
                 self.committed_meta.push(&b);
                 let at = self.committed.len();
-                let bv = self.store.put(b, at, &times, durs_for_put);
+                let bv = self
+                    .store
+                    .put_with_next(b, at, &times, durs_for_put, &drained[i + 1..]);
                 self.committed.push(bv);
             }
             // `user_times` cannot come from the blocks: the stamps live in the replayer,

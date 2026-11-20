@@ -2209,6 +2209,19 @@ pub(super) struct EmitState {
     seen_turns: usize,
     /// The sidebar rows, accumulated across ranges — see [`SideEntry`].
     turns: Vec<SideEntry>,
+    /// The pictures right after the LAST block of the next range, when it is a prompt of pictures
+    /// alone and the range ends there (#s617): `RecordStore::put_with_next` renders one block at a
+    /// time and knows what its drain holds after it. Used once, then cleared.
+    pub(super) images_next: usize,
+}
+
+/// How many pictures open `next` (#s617): the attachments a prompt of pictures alone is named by.
+pub(super) fn images_following(next: &[Block]) -> usize {
+    next.iter()
+        .take_while(
+            |n| matches!(n, Block::Attachment(a) if a.kind == crate::model::AttachmentKind::Image),
+        )
+        .count()
 }
 
 impl EmitState {
@@ -2221,6 +2234,7 @@ impl EmitState {
             turn: turns,
             seen_turns: turns,
             turns: Vec::new(),
+            images_next: 0,
         }
     }
 }
@@ -2257,13 +2271,13 @@ pub(super) fn render_blocks(
     };
     let mut lines = Vec::with_capacity(blocks.len());
     for (i, b) in blocks.iter().enumerate() {
+        // A prompt of pictures alone is named by the pictures after it (#s617): read from this
+        // range, or, where the range ends at it, from what the store's drain held after it.
         em.images_after = match b {
-            Block::UserText(t) if t.trim().is_empty() => blocks[i + 1..]
-                .iter()
-                .take_while(|n| {
-                    matches!(n, Block::Attachment(a) if a.kind == crate::model::AttachmentKind::Image)
-                })
-                .count(),
+            Block::UserText(t) if t.trim().is_empty() && i + 1 < blocks.len() => {
+                images_following(&blocks[i + 1..])
+            }
+            Block::UserText(t) if t.trim().is_empty() => st.images_next,
             _ => 0,
         };
         // `user_times[i]` is the ith user turn's timestamp (see `model::parse_main`).
@@ -2282,6 +2296,7 @@ pub(super) fn render_blocks(
     st.next_block = em.next_block;
     st.turn = em.turn;
     st.turns = em.turns;
+    st.images_next = 0;
     lines
 }
 
