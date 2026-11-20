@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
-import { PROMPT_CLAMP_LINES, PROMPT_MIN_HIDDEN, promptExpanderHtml, promptHiddenLines, rawTurnHtml, rendererStartsClosed, changeBadgeHtml, groupImageRuns, imageRunHtml, imageThumbHtml, isChangedNotice, promptNoticesHtml } from "../../claude-monitor/src/codex-ui/components.js";
+import { PROMPT_CLAMP_LINES, PROMPT_MIN_HIDDEN, promptExpanderHtml, promptHiddenLines, rawTurnHtml, renderUnit, rendererStartsClosed, changeBadgeHtml, groupImageRuns, imageRunHtml, imageThumbHtml, isChangedNotice, promptNoticesHtml } from "../../claude-monitor/src/codex-ui/components.js";
 import { attachmentCapability, canReveal, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
 import { costDisplay, reportedCostDisplay } from "../../claude-replay-html/src/html/shared/cost-display.js";
 import { fleetGroups } from "../../claude-replay-html/src/html/shared/fleet.js";
@@ -1220,7 +1220,32 @@ assert.equal(richProjection.units[2].views[0].view.interaction.answers[0].label,
   assert.equal(viewRecord({ kind: "attachment", id: "c", head: { att_kind: "edited", att_name: "x.rs" }, body: [] }).name, "changed on disk", "…and inside a group of steps its row says what it is");
   const componentsSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
   assert.match(componentsSrc, /function renderPromptAttachments\(attachments = \[\]\) \{\n  attachments = attachments\.filter\(view => !isChangedNotice\(view\)\);/, "the prompt's cards leave the notice out");
-  assert.equal((componentsSrc.match(/\$\{promptNoticesHtml\(unit\.attachments\)\}<\/div>`;/g) || []).length, 4, "…and every kind of prompt turn draws its notices last");
+  assert.equal((componentsSrc.match(/\$\{promptNoticesHtml\(unit\.attachments\)\}<\/div>`;/g) || []).length, 5, "…and every kind of prompt turn draws its notices last (#s617: a message of pictures alone is one)");
+}
+// #s617, held by what is drawn: a prompt of pictures alone is the person's turn as its pictures, with no
+// empty bubble and no "as typed" toggle; a typed prompt with a picture keeps its bubble. The typed text is
+// the record's `src` (`view.source` is the record): read as the view's own, the branch never ran, and the
+// browser case on CI found it.
+{
+  const draw = (src, label) => {
+    const projection = new Projection();
+    projection.rebuild([
+      { kind: "user", id: "pics", turn: 1, src, label, head: {}, body: src.trim() ? [{ p: "md", h: `<p>${src}</p>` }] : [] },
+      { kind: "attachment", id: "pic", head: { att_kind: "image", att_name: "a.png", att_datauri: "data:image/png;base64,AA==" }, body: [] },
+    ], 0);
+    // renderUnit parses its HTML in a <template>; the contract has no DOM, so a stand-in hands the
+    // markup back as the root's `html`.
+    const saved = globalThis.document;
+    globalThis.document = { createElement: () => { const root = { querySelectorAll: () => [], dataset: {} }; return { set innerHTML(html) { root.html = html; }, content: { firstElementChild: root } }; } };
+    try { return renderUnit(projection.units[0], { rawTurns: new Map(), rawUser: false, promptExpanded: new Set() }).html; }
+    finally { globalThis.document = saved; }
+  };
+  const alone = draw("", "[image]"), typed = draw("look at this", null);
+  assert.match(alone, /<div class="turn user user-images-alone"/, "a prompt of pictures alone is drawn as its pictures (#s617)");
+  assert.doesNotMatch(alone, /class="body markdown"/, "…with no empty bubble");
+  assert.doesNotMatch(alone, /data-raw-toggle/, "…and no as-typed toggle");
+  assert.doesNotMatch(typed, /user-images-alone/, "a typed prompt with a picture is an ordinary prompt");
+  assert.match(typed, /class="body markdown"><p>look at this<\/p>/, "…its words in its bubble");
 }
 const incrementalPrompt = new Projection();
 const promptRecords = [{ kind: "user", id: "late-prompt", turn: 1, body: [{ p: "md", h: "<p>Prompt</p>" }] }];
@@ -3579,7 +3604,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 {
   const components174 = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
   const stamped = [...components174.matchAll(/<div class="turn [^"]*"[^>]*?data-record-id="\$\{escapeText\(unit\.view\?\.id \|\| ""\)\}"/g)];
-  assert.equal(stamped.length, 5, "the five prose turn wrappers — slash command, another session's message (#s79), a relayed message from the person (#s272), user, assistant — each stamp the record id the classic page has always carried");
+  assert.equal(stamped.length, 6, "the six prose turn wrappers — slash command, another session's message (#s79), a relayed message from the person (#s272), a message of pictures alone (#s617), user, assistant — each stamp the record id the classic page has always carried");
   assert.match(components174, /data-record-id="\$\{escapeText\(key\)\}"/, "…and a tool rendering still stamps its own, on the `.renderer` inside the turn");
   // The painter that means "a tool head" must stay scoped to one, or widening the attribute
   // silently widens what it paints.

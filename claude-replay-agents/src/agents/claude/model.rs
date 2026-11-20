@@ -4642,6 +4642,17 @@ pub(crate) fn decode_line_known(
                 if let Some(text) = &fallback {
                     msgs.push(Message::UserText { text: text.clone() });
                 }
+                // #s617: a prompt of pictures alone is still the person's turn, its words empty: the
+                // person's own record only (`relayable`: no sub-agent's, no other origin's).
+                if fallback.is_none()
+                    && injected == Injected::No
+                    && relayable(&v)
+                    && images_alone(arr)
+                {
+                    msgs.push(Message::UserText {
+                        text: String::new(),
+                    });
+                }
                 for blk in arr {
                     if fallback.is_some() && blk.get("type").and_then(Value::as_str) == Some("text")
                     {
@@ -4810,29 +4821,39 @@ pub(crate) fn decode_line_known(
                 }
                 if let Some((p, images)) = a.and_then(|a| a.get("prompt")).map(queued_prompt) {
                     let p: &str = &p;
-                    if !p.trim().is_empty() {
-                        let meta =
-                            a.and_then(|a| a.get("isMeta")).and_then(Value::as_bool) == Some(true);
-                        if let Some(peer) = peer_of(a.and_then(|a| a.get("origin")), Some(p), meta)
+                    let meta =
+                        a.and_then(|a| a.get("isMeta")).and_then(Value::as_bool) == Some(true);
+                    if p.trim().is_empty() {
+                        // #s617: a mid-turn message of pictures alone is the person's turn too.
+                        if !meta
+                            && a.is_some_and(relayable)
+                            && relayable(&v)
+                            && images_alone(images.iter().copied())
                         {
-                            msgs.push(Message::PeerText {
-                                from: peer.from,
-                                mode: peer.mode,
-                                text: peer.body,
-                                queued: Some(fence_pasted(p).into_owned()),
-                                addr: peer.addr,
-                            });
-                        } else if let Some(m) = (!meta && relayable(&v) && a.is_some_and(relayable))
-                            .then(|| inbox_message(p, || fence_pasted(p).into_owned()))
-                            .flatten()
-                        {
-                            // #s272: picked up mid-turn, which is how most of them arrive.
-                            msgs.push(m);
-                        } else {
                             msgs.push(Message::AttachmentPrompt {
-                                text: fence_pasted(p).into_owned(),
+                                text: String::new(),
                             });
                         }
+                    } else if let Some(peer) =
+                        peer_of(a.and_then(|a| a.get("origin")), Some(p), meta)
+                    {
+                        msgs.push(Message::PeerText {
+                            from: peer.from,
+                            mode: peer.mode,
+                            text: peer.body,
+                            queued: Some(fence_pasted(p).into_owned()),
+                            addr: peer.addr,
+                        });
+                    } else if let Some(m) = (!meta && relayable(&v) && a.is_some_and(relayable))
+                        .then(|| inbox_message(p, || fence_pasted(p).into_owned()))
+                        .flatten()
+                    {
+                        // #s272: picked up mid-turn, which is how most of them arrive.
+                        msgs.push(m);
+                    } else {
+                        msgs.push(Message::AttachmentPrompt {
+                            text: fence_pasted(p).into_owned(),
+                        });
                     }
                     // #s607: the prompt's pasted images, after its words as a prompt's are.
                     for blk in images {
@@ -6116,6 +6137,11 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                         }
                         out.push(Block::UserText(text.clone()));
                     }
+                    // #s617 mirror: a prompt of pictures alone, the person's turn with no words. No
+                    // #52 match: an empty text names no queued prompt.
+                    if fallback.is_none() && !injected && relayable(&v) && images_alone(arr) {
+                        out.push(Block::UserText(String::new()));
+                    }
                     for blk in arr {
                         if fallback.is_some()
                             && blk.get("type").and_then(Value::as_str) == Some("text")
@@ -6384,6 +6410,14 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                                     None => out.push(Block::UserText(p.into_owned())),
                                 },
                             }
+                        } else if a.and_then(|a| a.get("isMeta")).and_then(Value::as_bool)
+                            != Some(true)
+                            && a.is_some_and(relayable)
+                            && relayable(&v)
+                            && images_alone(images.iter().copied())
+                        {
+                            // #s617 mirror: pictures alone, the person's turn; no #52 match.
+                            out.push(Block::UserText(String::new()));
                         }
                         // #s607 mirror: the prompt's pasted images.
                         for blk in images {
@@ -6820,6 +6854,27 @@ fn note_queued_prompt_shape(v: &Value, prompt: &Value) {
         Value::Null => "queued_command.prompt:null",
     };
     note_unknown_shape(v, UnknownAt::ContentType, Some(name), &[]);
+}
+
+/// A prompt of pictures alone (#s617): at least one image this adapter draws, beside nothing but
+/// empty text. Claude Code writes such a message, sent with no words, as a `user` record whose
+/// content is image blocks alone, or picked up mid-turn as a `queued_command` whose prompt is (93
+/// mid-turn and 5 direct on one Mac, clients 2.1.296 to 2.1.325). It is the person's turn, its
+/// words empty; folded to its images alone, it read as the agent's, in the agent's running turn.
+fn images_alone<'a>(blocks: impl IntoIterator<Item = &'a Value>) -> bool {
+    let mut any = false;
+    for blk in blocks {
+        match blk.get("type").and_then(Value::as_str) {
+            Some("image") => any |= image_source(blk).is_some(),
+            Some("text")
+                if blk
+                    .get("text")
+                    .and_then(Value::as_str)
+                    .is_none_or(|t| t.trim().is_empty()) => {}
+            _ => return false,
+        }
+    }
+    any
 }
 
 /// A `queued_command`'s prompt: its text and its image blocks. The client writes it as a string,
@@ -7982,6 +8037,8 @@ mod tests {
                 "user [Image #1] [Image #2] - the dialog over a dialog",
                 "image",
                 "image",
+                // #s617: the message of a picture alone is the person's turn, its words empty.
+                "user ",
                 "image",
                 "user [Image #4] one more",
                 "image",
@@ -8012,6 +8069,90 @@ mod tests {
             Some("YmF6")
         );
         assert_eq!(b64(line("\"prompt\":\"words alone\""), 0), None);
+    }
+
+    /// #s617: a message of pictures alone is the person's turn, its words empty, then its pictures:
+    /// picked up mid-turn (a content-less enqueue, its pop, then a `queued_command` whose prompt is
+    /// image blocks alone) or sent while the agent waited (a `user` record of image blocks alone,
+    /// or beside empty text). The empty words take no queued prompt: one typed after the mid-turn
+    /// message keeps its marker. A meta record of images alone, and one of another origin (another
+    /// session's, a task's notification), are no turn of the person's. Both parse paths agree, and each picture loads its bytes.
+    #[test]
+    fn a_message_of_pictures_alone_is_the_persons_turn() {
+        let jsonl = r##"
+{"type":"user","timestamp":"2026-11-20T09:00:00.000Z","message":{"content":"first turn"}}
+{"type":"assistant","timestamp":"2026-11-20T09:00:01.000Z","message":{"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"ls"}}]}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-20T09:00:01.200Z"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-20T09:00:01.500Z","content":"typed while it worked"}
+{"type":"queue-operation","operation":"dequeue","timestamp":"2026-11-20T09:00:02.000Z"}
+{"type":"attachment","timestamp":"2026-11-20T09:00:02.000Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"human"},"humanTurn":true,"imagePasteIds":[1,2],"prompt":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"YmFy"}}]}}
+{"type":"user","timestamp":"2026-11-20T09:00:02.100Z","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"out"}]}}
+{"type":"attachment","timestamp":"2026-11-20T09:00:02.500Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"peer","name":"skua-HD","from":"uds:/tmp/skua.sock"},"prompt":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"cGVlcg=="}}]}}
+{"type":"assistant","timestamp":"2026-11-20T09:00:03.000Z","message":{"content":[{"type":"text","text":"seen"}]}}
+{"type":"user","timestamp":"2026-11-20T09:00:04.000Z","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"ZGlyZWN0"}}]}}
+{"type":"assistant","timestamp":"2026-11-20T09:00:04.500Z","message":{"content":[{"type":"text","text":"a ridge"}]}}
+{"type":"user","timestamp":"2026-11-20T09:00:05.000Z","isMeta":true,"message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"bWV0YQ=="}}]}}
+{"type":"user","timestamp":"2026-11-20T09:00:05.200Z","origin":{"kind":"peer","name":"skua-HD"},"message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"cGVlcjI="}}]}}
+{"type":"attachment","timestamp":"2026-11-20T09:00:05.400Z","attachment":{"type":"queued_command","commandMode":"prompt","origin":{"kind":"task-notification"},"prompt":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"dGFzaw=="}}]}}
+{"type":"user","timestamp":"2026-11-20T09:00:06.000Z","message":{"content":[{"type":"text","text":"  "},{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"c3BhY2U="}}]}}
+{"type":"assistant","timestamp":"2026-11-20T09:00:06.500Z","message":{"content":[{"type":"text","text":"a dune"}]}}
+{"type":"user","timestamp":"2026-11-20T09:00:07.000Z","message":{"content":"last turn"}}
+"##;
+        let streamed = parse(jsonl);
+        let reference = parse_main(
+            jsonl.lines().filter(|l| !l.trim().is_empty()),
+            &mut Vec::new(),
+        );
+        assert_eq!(streamed, reference, "the two parse paths agree");
+        let seen: Vec<String> = streamed
+            .iter()
+            .filter_map(|b| match b {
+                Block::UserText(t) => Some(format!("user {t}")),
+                Block::PeerText { from, .. } => Some(format!("peer {from}")),
+                Block::Attachment(a) if a.kind == AttachmentKind::Image => Some("image".into()),
+                Block::QueueEvent { text } => Some(format!("queued {text}")),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            seen,
+            vec![
+                "user first turn",
+                "queued typed while it worked",
+                // Mid-turn, two pictures: the person's turn, then both.
+                "user ",
+                "image",
+                "image",
+                // Another session's picture is not the person's turn.
+                "image",
+                // Sent while the agent waited.
+                "user ",
+                "image",
+                // A meta record's picture is the client's, not the person's; nor is one another
+                // session sent directly, or one a task's notification carried.
+                "image",
+                "image",
+                "image",
+                // Beside empty text.
+                "user ",
+                "image",
+                "user last turn",
+            ],
+            "{streamed:#?}"
+        );
+        // Each picture loads its own bytes from its line.
+        let line = |needle: &str| jsonl.lines().find(|l| l.contains(needle)).unwrap();
+        let b64 = |l: &str, i: usize| match nth_loaded_attachment(l, i) {
+            Some(LoadedAttachment::Base64 { b64, .. }) => Some(b64),
+            _ => None,
+        };
+        let two = line("\"imagePasteIds\":[1,2]");
+        assert_eq!(
+            (b64(two, 0), b64(two, 1), b64(two, 2)),
+            (Some("Zm9v".to_string()), Some("YmFy".to_string()), None)
+        );
+        assert_eq!(b64(line("ZGlyZWN0"), 0).as_deref(), Some("ZGlyZWN0"));
+        assert_eq!(b64(line("c3BhY2U="), 0).as_deref(), Some("c3BhY2U="));
     }
 
     /// #s608: Claude Code writes an image-only mid-turn message as an `enqueue` with NO content,

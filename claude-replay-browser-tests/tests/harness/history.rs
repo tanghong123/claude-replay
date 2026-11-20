@@ -374,15 +374,18 @@ pub fn call_at(id: &str, name: &str, input: &str, ts: &str) -> String {
     )
 }
 
-/// A pasted image as its own record — a user message whose only block is the image, which the
-/// adapter files as an attachment of the prompt before it (no turn) — `rows` source pixels tall
+/// A pasted image as its own record — a META user message whose only block is the image, which the
+/// adapter files as an attachment of the prompt before it (no turn): since #s617 a person's own
+/// message of pictures alone is a turn of its own, so the record is marked `isMeta`, the client's
+/// picture, which folds exactly as the image-only record did before (`agent-replay --dump - --json`
+/// gives the same stream for both on 1.542.0) — `rows` source pixels tall
 /// and `CALIB_IMAGE_W` wide; the page scales it to its column, so the card's height is
 /// `Calib::image_chrome + rows × Calib::image_scale`. The PNG is written here (stored deflate
 /// blocks, grayscale) so the harness needs no image crate.
 pub fn image_only_at(rows: usize, ts: &str) -> String {
     let png = tall_png(CALIB_IMAGE_W, rows.clamp(1, 4000));
     format!(
-        "{{\"type\":\"user\",\"cwd\":\"/r\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"image\",\"source\":{{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"{}\"}}}}]}},\"timestamp\":\"{ts}\"}}\n",
+        "{{\"type\":\"user\",\"cwd\":\"/r\",\"isMeta\":true,\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"image\",\"source\":{{\"type\":\"base64\",\"media_type\":\"image/png\",\"data\":\"{}\"}}}}]}},\"timestamp\":\"{ts}\"}}\n",
         base64(&png)
     )
 }

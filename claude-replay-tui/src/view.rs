@@ -5092,9 +5092,14 @@ mod tests {
     #[test]
     fn the_parallel_measure_agrees_with_a_serial_walk() {
         let mut blocks: Vec<Block> = vec![
-            // Zero-height leaders: `carry_in` stays false across these.
-            Block::UserText(String::new()),
-            Block::UserText(String::new()),
+            // Zero-height leaders: `carry_in` stays false across these. (An empty prompt is
+            // pictures alone and draws its caret since #s617, so the leaders are empty markers.)
+            Block::QueueEvent {
+                text: String::new(),
+            },
+            Block::QueueEvent {
+                text: String::new(),
+            },
         ];
         for i in 0..300 {
             blocks.push(Block::UserText(format!(

@@ -840,6 +840,15 @@ fn prompt_label(text: &str, reply: Option<&ReplyContext>, max: usize) -> String 
     label_of(&kept.join("\n"), max)
 }
 
+/// The label of a prompt of pictures alone (#s617): `[image]`, or `[N images]`.
+fn images_label(n: usize) -> String {
+    if n == 1 {
+        "[image]".to_string()
+    } else {
+        format!("[{n} images]")
+    }
+}
+
 /// The Turns-pane label of another session's message (#s79): its sender, then the message —
 /// unless the message already opens with the sender's name, as these agents' do ("skua-HD here:
 /// …"), when the name is not said twice.
@@ -1176,6 +1185,10 @@ struct Emitter<'a> {
     turn: usize,
     /// The sidebar rows, in emit order — see [`SideEntry`].
     turns: Vec<SideEntry>,
+    /// How many images follow the block being emitted, for a prompt of pictures alone (#s617),
+    /// whose label names them. Set by `render_blocks`, which sees the blocks after it: a prompt and
+    /// its images come from one transcript line, so they are always in one range.
+    images_after: usize,
 }
 
 /// One sidebar row: a user turn, or (since #108) a compaction **epoch tick**. A session
@@ -1274,11 +1287,16 @@ impl Emitter<'_> {
                 };
                 self.turn += 1;
                 let id = format!("t{}", self.turn);
-                self.turns
-                    .push(SideEntry::turn(id.clone(), prompt_label(text, reply, 46)));
+                let label = |max| match self.images_after {
+                    // #s617: pictures alone are named by how many, as a paste is `[pasted]`.
+                    n if n > 0 && text.trim().is_empty() => images_label(n),
+                    _ => prompt_label(text, reply, max),
+                };
+                let (side, full) = (label(46), label(80));
+                self.turns.push(SideEntry::turn(id.clone(), side));
                 o.insert("id".into(), json!(id));
                 o.insert("turn".into(), json!(self.turn));
-                o.insert("label".into(), json!(prompt_label(text, reply, 80)));
+                o.insert("label".into(), json!(full));
                 // The turn's SOURCE, verbatim, beside its rendered parts: the page offers a
                 // "show as raw" toggle (globally or for one turn), and markdown rendering is
                 // lossy — collapsed padding and stripped indentation cannot be recovered from
@@ -2191,6 +2209,19 @@ pub(super) struct EmitState {
     seen_turns: usize,
     /// The sidebar rows, accumulated across ranges — see [`SideEntry`].
     turns: Vec<SideEntry>,
+    /// The pictures right after the LAST block of the next range, when it is a prompt of pictures
+    /// alone and the range ends there (#s617): `RecordStore::put_with_next` renders one block at a
+    /// time and knows what its drain holds after it. Used once, then cleared.
+    pub(super) images_next: usize,
+}
+
+/// How many pictures open `next` (#s617): the attachments a prompt of pictures alone is named by.
+pub(super) fn images_following(next: &[Block]) -> usize {
+    next.iter()
+        .take_while(
+            |n| matches!(n, Block::Attachment(a) if a.kind == crate::model::AttachmentKind::Image),
+        )
+        .count()
 }
 
 impl EmitState {
@@ -2203,6 +2234,7 @@ impl EmitState {
             turn: turns,
             seen_turns: turns,
             turns: Vec::new(),
+            images_next: 0,
         }
     }
 }
@@ -2235,9 +2267,19 @@ pub(super) fn render_blocks(
         next_block: st.next_block,
         turn: st.turn,
         turns: std::mem::take(&mut st.turns),
+        images_after: 0,
     };
     let mut lines = Vec::with_capacity(blocks.len());
-    for b in blocks {
+    for (i, b) in blocks.iter().enumerate() {
+        // A prompt of pictures alone is named by the pictures after it (#s617): read from this
+        // range, or, where the range ends at it, from what the store's drain held after it.
+        em.images_after = match b {
+            Block::UserText(t) if t.trim().is_empty() && i + 1 < blocks.len() => {
+                images_following(&blocks[i + 1..])
+            }
+            Block::UserText(t) if t.trim().is_empty() => st.images_next,
+            _ => 0,
+        };
         // `user_times[i]` is the ith user turn's timestamp (see `model::parse_main`).
         let (ts, dur) = if b.opens_turn() {
             let t = user_times.get(st.seen_turns).copied().flatten();
@@ -2254,6 +2296,7 @@ pub(super) fn render_blocks(
     st.next_block = em.next_block;
     st.turn = em.turn;
     st.turns = em.turns;
+    st.images_next = 0;
     lines
 }
 
@@ -3248,6 +3291,88 @@ mod tests {
             .iter()
             .map(|v| v["p"].as_str().unwrap_or("?").to_string())
             .collect()
+    }
+
+    /// #s617: a prompt of pictures alone (empty words, the images after it) is a turn named by its
+    /// pictures, in the Turns pane and the sticky strip alike: `[image]`, or `[N images]`. Its
+    /// record keeps kind `user` and its empty source, so `--json` and the `u:` class still read it
+    /// as the person's. Empty words with no picture after them keep their empty label.
+    #[test]
+    fn a_prompt_of_pictures_alone_is_named_by_its_pictures() {
+        let img = || {
+            Block::Attachment(crate::model::Attachment {
+                lines: None,
+                kind: crate::model::AttachmentKind::Image,
+                name: "image.png".into(),
+                path: None,
+                content: AttachmentContent::Deferred {
+                    at: 0,
+                    index: 0,
+                    span: None,
+                },
+            })
+        };
+        let file = Block::Attachment(crate::model::Attachment {
+            lines: None,
+            kind: crate::model::AttachmentKind::File,
+            name: "notes.md".into(),
+            path: Some("/repo/notes.md".into()),
+            content: AttachmentContent::Deferred {
+                at: 0,
+                index: 0,
+                span: None,
+            },
+        });
+        let blocks = vec![
+            Block::UserText("first".into()),
+            Block::AssistantText("ok".into()),
+            Block::UserText(String::new()),
+            img(),
+            img(),
+            Block::AssistantText("two".into()),
+            Block::UserText(String::new()),
+            img(),
+            Block::AssistantText("one".into()),
+            Block::UserText(String::new()),
+            file,
+        ];
+        let (jsonl, turns) = build_jsonl(
+            &blocks,
+            &[],
+            &[],
+            &FoldPolicy::default(),
+            "/repo",
+            true,
+            false,
+            None,
+            json!({ "t": "meta" }),
+        );
+        let users: Vec<(String, String, String)> = jsonl
+            .lines()
+            .skip(1)
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .filter(|r| r["kind"] == "user")
+            .map(|r| {
+                (
+                    r["kind"].as_str().unwrap_or("").to_string(),
+                    r["label"].as_str().unwrap_or("").to_string(),
+                    r["src"].as_str().unwrap_or("?").to_string(),
+                )
+            })
+            .collect();
+        let user =
+            |label: &str, src: &str| ("user".to_string(), label.to_string(), src.to_string());
+        assert_eq!(
+            users,
+            vec![
+                user("first", "first"),
+                user("[2 images]", ""),
+                user("[image]", ""),
+                user("", "")
+            ]
+        );
+        let side: Vec<&str> = turns.iter().map(|t| t.label.as_str()).collect();
+        assert_eq!(side, vec!["first", "[2 images]", "[image]", ""]);
     }
 
     /// A pasted terminal box is lifted out of the markdown into a VERBATIM part, and comes

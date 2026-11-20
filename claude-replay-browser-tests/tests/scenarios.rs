@@ -20332,6 +20332,103 @@ fn app_shell_shows_another_sessions_message_as_its_own_turn() {
     scenario_another_sessions_message_is_its_own_turn(&page.tab, Surface::AppShell, &fx);
 }
 
+// ── scenario: a message of pictures alone is the person's turn (#s617)
+
+/// A message the person sends with only pictures is recorded mid-turn as a content-less enqueue,
+/// its pop and a `queued_command` whose prompt is images alone, or as a `user` record of images
+/// alone. Both folded to the pictures alone inside the agent's turn: no Turns pane row, no count,
+/// and the pictures read as the agent's. Now each is a turn named by its pictures ("[2 images]",
+/// "[image]"), counted, and drawn as the person's: on the classic page a card naming them with
+/// the pictures after it, and in the app shell the pictures on the person's side with no empty
+/// bubble above them, and no "as typed" toggle on either. Each picture loads its bytes.
+fn scenario_a_message_of_pictures_alone_is_the_persons_turn(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+    fx: &Fixture,
+) {
+    jump_to_end(tab, surface);
+    await_tail(tab, surface, "a fresh open to land at the tail");
+    settle();
+    let labels = match surface {
+        Surface::Classic => "JSON.stringify([...document.querySelectorAll('#turnlist .side-item')].map(function (r) { return r.textContent; }))",
+        Surface::AppShell => "JSON.stringify([...document.querySelectorAll('#navigatorTurns .outline-turn-row')].map(function (r) { return r.textContent; }))",
+    };
+    let rows: Vec<String> =
+        serde_json::from_str(eval(tab, labels).as_str().unwrap_or("[]")).unwrap_or_default();
+    assert_eq!(
+        rows.len(),
+        fx.turns as usize,
+        "{surface:?}: both messages of pictures alone are turns: {rows:?}"
+    );
+    let last_two: Vec<&String> = rows.iter().rev().take(2).rev().collect();
+    assert!(
+        last_two[0].contains("[2 images]") && last_two[1].contains("[image]"),
+        "{surface:?}: each is named by its pictures in the Turns pane: {last_two:?}"
+    );
+    match surface {
+        Surface::Classic => {
+            until(
+                tab,
+                "(function () { var imgs = [...document.querySelectorAll('#stream .amark img')].slice(-3); return imgs.length === 3 && imgs.every(function (i) { return i.complete && i.naturalWidth >= 1; }); })()",
+                "the three pictures, each loaded from its bytes",
+                Duration::from_secs(20),
+                "document.querySelectorAll('#stream .amark').length + ' attachments, imgs ' + document.querySelectorAll('#stream .amark img').length",
+            );
+            let cards = probe(
+                tab,
+                "[...document.querySelectorAll('#stream .uturn')].slice(-2).map(function (c) { var n = c.querySelector('.uturn-images'); return { named: n ? n.textContent : null, caret: !!c.querySelector('.caret'), raw: !!c.querySelector('.rawbtn') }; })",
+            );
+            assert_eq!(
+                cards,
+                serde_json::json!([
+                    { "named": "[2 images]", "caret": true, "raw": false },
+                    { "named": "[image]", "caret": true, "raw": false },
+                ]),
+                "{surface:?}: each is the person's card naming its pictures, with nothing typed to show raw"
+            );
+        }
+        Surface::AppShell => {
+            until(
+                tab,
+                "(function () { var imgs = [...document.querySelectorAll('.turn.user.user-images-alone .prompt-image-thumb img')]; return imgs.length === 3 && imgs.every(function (i) { return i.complete && i.naturalWidth >= 1; }); })()",
+                "the three pictures, on the person's side, each loaded from its bytes",
+                Duration::from_secs(20),
+                "JSON.stringify([...document.querySelectorAll('.turn.user')].slice(-3).map(function (t) { return t.className + ' | ' + t.innerHTML.slice(0, 160); }))",
+            );
+            let turns = probe(
+                tab,
+                "(function () { var all = [...document.querySelectorAll('.turn.user')]; var words = all[all.length - 3].querySelector('.user-prompt').getBoundingClientRect(), col = document.querySelector('#sessionView .transcript').getBoundingClientRect(); return all.slice(-2).map(function (t) { var p = t.querySelector('.user-prompt').getBoundingClientRect(); return { alone: t.classList.contains('user-images-alone'), bubble: !!t.querySelector('.body'), raw: !!t.querySelector('[data-raw-toggle]'), pictures: t.querySelectorAll('.prompt-image-thumb img').length, right: Math.abs(Math.round(p.right - words.right)) <= 1, rightHalf: p.left + p.right > col.left + col.right }; }); })()",
+            );
+            assert_eq!(
+                turns,
+                serde_json::json!([
+                    { "alone": true, "bubble": false, "raw": false, "pictures": 2, "right": true, "rightHalf": true },
+                    { "alone": true, "bubble": false, "raw": false, "pictures": 1, "right": true, "rightHalf": true },
+                ]),
+                "{surface:?}: the pictures sit on the person's side, at the edge a prompt's bubble keeps, with no empty bubble and nothing typed to show raw"
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome"]
+fn classic_page_shows_a_message_of_pictures_alone_as_the_persons_turn() {
+    let _serial = serial();
+    let fx = pictures_alone_fixture("scenario-pictures-classic");
+    let page = open(Surface::Classic, &fx, 0);
+    scenario_a_message_of_pictures_alone_is_the_persons_turn(&page.tab, Surface::Classic, &fx);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_shows_a_message_of_pictures_alone_as_the_persons_turn() {
+    let _serial = serial();
+    let fx = pictures_alone_fixture("scenario-pictures-app");
+    let page = open(Surface::AppShell, &fx, 3194);
+    scenario_a_message_of_pictures_alone_is_the_persons_turn(&page.tab, Surface::AppShell, &fx);
+}
+
 // ── scenario: a reply the person cut off mid-stream says so (#s305)
 
 /// Claude Code 2.1.311 keeps a reply the person stopped with Esc, flagging the record
@@ -21583,6 +21680,43 @@ fn peer_fixture(name: &str) -> Fixture {
         base,
         path,
         turns: 14,
+    }
+}
+
+/// Twelve turns, a thirteenth whose running tool call meets a message of two pictures alone
+/// picked up mid-turn (a content-less enqueue, its pop, then the `queued_command`), and a message of
+/// one picture alone sent while the agent waited — #s617.
+fn pictures_alone_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    let line = |v: serde_json::Value| format!("{v}\n");
+    let image = || serde_json::json!({"type": "image", "source": {"type": "base64", "media_type": "image/png", "data": harness::TINY_PNG_B64}});
+    transcript += &user_at("question 13: draw the ridge", &now_minus(70));
+    transcript += &harness::tool_open_at("t-ridge", &now_minus(69));
+    transcript += &line(
+        serde_json::json!({"type": "queue-operation", "operation": "enqueue", "timestamp": now_minus(68)}),
+    );
+    transcript += &line(
+        serde_json::json!({"type": "queue-operation", "operation": "dequeue", "timestamp": now_minus(67)}),
+    );
+    transcript += &line(serde_json::json!({
+        "type": "attachment", "timestamp": now_minus(67),
+        "attachment": {"type": "queued_command", "commandMode": "prompt", "origin": {"kind": "human"},
+                       "humanTurn": true, "imagePasteIds": [1, 2], "prompt": [image(), image()]}
+    }));
+    transcript += &harness::tool_result_at("t-ridge", &now_minus(66));
+    transcript += &assistant_at("answer 13: both pictures show the ridge", &now_minus(60));
+    transcript += &line(serde_json::json!({
+        "type": "user", "cwd": "/r", "timestamp": now_minus(50), "origin": {"kind": "human"},
+        "message": {"role": "user", "content": [image()]}
+    }));
+    transcript += &assistant_at("answer 14: and this one the dune", &now_minus(45));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 15,
     }
 }
 
