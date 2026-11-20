@@ -557,8 +557,8 @@ export class Preview {
     this.reviewSheet = state;
     // #s627: the sheet keeps above an on-screen keyboard while a field inside it has the focus, and
     // brings the field (mdrev's note card) into view: again when the field changes, or what it is
-    // keyed on (`fitted`: the height the sheet was fitted to, else the page's own height) changes,
-    // never for a pan of the same band and never during a pinch.
+    // keyed on (`fitted`: the height the sheet was fitted to, else the sheet's own height) changes,
+    // never for a pan of the same band and never while a pinch has the page zoomed.
     const viewport = window.visualViewport;
     let fitted = "", fittedField = null;
     // `rest` and `laidAt`: the view's top as it rested and its place in the layout then, and whether
@@ -572,22 +572,33 @@ export class Preview {
       const typing = !!at && (takesKeyboard(at) || at.localName === "iframe");
       const field = typing && sheet.contains(at) ? at : null;
       const height = fitSheetAboveKeyboard(sheet, field, viewport, applied, typing);
-      // A pinch is the reader's: the reveal's key and field stay as they were, so nothing scrolls the
-      // sheet while zoomed, nor as the scale comes back to 1 onto the same band.
-      if (viewport && Math.abs((viewport.scale || 1) - 1) >= 0.01) return;
+      // A pinch is the reader's: nothing is brought into view while the page is zoomed. The key is
+      // cleared, so the return to a scale of 1 brings the field into view once: meanwhile the sheet was
+      // as its rules draw it, taller than the fit (`fitSheetAboveKeyboard`), and the scroller may have
+      // clamped the reader's place to that, which the fit back leaves under the keyboard.
+      if (viewport && Math.abs((viewport.scale || 1) - 1) >= 0.01) { fitted = ""; fittedField = null; return; }
       // A host may shorten the page itself for the keyboard: the iOS app's web view is made shorter,
-      // the visual viewport with it, and no keyboard covers the page to fit the sheet above (measured
-      // on the iPad Simulator, iPadOS 26.5: the page 1344px tall, then 941, the note's field focused
-      // before it shrank at 1247px under the sheet's new foot, and iOS scrolls no scroller inside a
-      // fixed layer to it). So with nothing fitted, the reveal is keyed on the page's own height (the
-      // layout's, which a pinch leaves alone): the field is brought into view as the field takes the
-      // focus (nothing moves for one already in view) and again whenever the page's height changes.
-      const page = viewRoot.styleRoot()?.clientHeight || innerHeight;
-      const band = height || (field ? `page ${Math.round(page)}` : "");
+      // and no keyboard covers the page to fit the sheet above (measured on the iPad Simulator, iPadOS
+      // 26.5: the page 1344px tall, then 941, the note's field focused before it shrank at 1247px under
+      // the sheet's new foot, and iOS scrolls no scroller inside a fixed layer to it). So with nothing
+      // fitted, the reveal is keyed on the sheet's own height as laid out now: the field is brought into
+      // view as it takes the focus (nothing moves for one already in view) and again whenever the sheet
+      // is laid out at another height. Never the page's height as an event reports it: the app's web
+      // view says its new height before its fixed layers are laid out at it (the walk read the page at
+      // 941 while mdrev's scroll pane still ended at 1278, mid-animation), and the reveal measured then
+      // stopped short; the observer below hears the sheet's box itself.
+      const band = height || (field ? `page ${Math.round(sheet.getBoundingClientRect().height)}` : "");
       if (field && band && (band !== fitted || field !== fittedField)) revealInSheet(sheet, field);
       fitted = band; fittedField = field;
     };
     const fitSoon = () => queueMicrotask(fit);
+    // The sheet laid out at another size (the app's web view shortened for the keyboard, a window
+    // resized, the fit itself) fits again in the next frame: outside the observer's report, since a fit
+    // changes the box it watches, and after the layout the report came from.
+    let frame = 0;
+    const sized = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => {
+      if (!frame) frame = requestAnimationFrame(() => { frame = 0; fit(); });
+    });
     // Focus going from one field of the sheet to another: the focusin that follows refits, and the
     // sheet does not grow back in between.
     const fitAfterLeaving = event => {
@@ -600,7 +611,8 @@ export class Preview {
       this.reviewSheet = null;
       viewport?.removeEventListener("resize", fit);
       viewport?.removeEventListener("scroll", fit);
-      removeEventListener("resize", fit);
+      sized?.disconnect();
+      cancelAnimationFrame(frame);
       sheet.removeEventListener("focusin", fitSoon);
       sheet.removeEventListener("focusout", fitAfterLeaving);
       removeEventListener("keydown", onKey, true);
@@ -631,10 +643,9 @@ export class Preview {
     addEventListener("focusin", onFocus, true);
     viewport?.addEventListener("resize", fit);
     viewport?.addEventListener("scroll", fit);
-    // A host shortening the page itself (the iOS app's web view) may say so on the window alone.
-    addEventListener("resize", fit);
     sheet.addEventListener("focusin", fitSoon);
     sheet.addEventListener("focusout", fitAfterLeaving);
+    sized?.observe(sheet);
     closeBtn.onclick = close;
     closeBtn.focus({ preventScroll: true });
     mountMarkdown(sheet.querySelector(".review-sheet-body"), item, { review: true }).then(handle => {
