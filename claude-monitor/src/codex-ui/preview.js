@@ -39,7 +39,7 @@ const tabWeight = tab => 256 + 2 * String(tab.text || "").length + 2 * String(ta
 /** A reason the pane cannot show a file, with the heading that says which kind (#s7). */
 const refusal = (title, message) => Object.assign(new Error(message), { title });
 
-// #s627: what takes an on-screen keyboard, as the session view's keyboard ride reads it.
+// #s627: a field that takes an on-screen keyboard (the review sheet holds no frames).
 const NO_KEYBOARD_INPUTS = new Set(["button", "checkbox", "radio", "range", "color", "file", "image", "reset", "submit", "hidden"]);
 const takesKeyboard = at => at?.localName === "input" ? !NO_KEYBOARD_INPUTS.has(at.type)
   : at?.localName === "textarea" || at?.localName === "select" || !!at?.isContentEditable;
@@ -56,14 +56,18 @@ const takesKeyboard = at => at?.localName === "input" ? !NO_KEYBOARD_INPUTS.has(
  *  quote, the field, the share box and Save), or the field's top where nothing does. Without a
  *  field the sheet is as its rules draw it. Returns the band it fitted to, as a string, so a caller
  *  reveals again only when the band or the field changed and leaves a reader who scrolled the
- *  sheet while typing alone. */
+ *  sheet while typing alone. A visible band under 120px (an iPhone held sideways in Safari, its bars
+ *  and the keyboard leaving about 16px) is not fitted: the sheet's head alone would not fit there.
+ *  A pinch zoom is not a keyboard: while the scale is off 1 the sheet is as its rules draw it, as the
+ *  keyboard ride leaves the pan to the reader. Where the sheet ends at the keyboard or starts below a
+ *  bar it drops that side's safe-area padding, which only the screen's edge needs. */
 function fitSheetAboveKeyboard(sheet, field, viewport, applied) {
   // The box as the sheet's rules draw it, from the box drawn now less what was applied, so the sheet
   // never grows back for a measure (a scroller grown for a moment would clamp the reader's place).
   const box = sheet.getBoundingClientRect();
   const drawn = { top: box.top - applied.top, bottom: box.bottom + applied.bottom };
   let top = drawn.top, bottom = drawn.bottom;
-  if (field && viewport) {
+  if (field && viewport && Math.abs((viewport.scale || 1) - 1) < 0.01) {
     top = Math.max(drawn.top, viewport.offsetTop);
     bottom = Math.min(drawn.bottom, viewport.offsetTop + viewport.height);
     if (bottom - top < 120) top = drawn.top, bottom = drawn.bottom;
@@ -71,13 +75,18 @@ function fitSheetAboveKeyboard(sheet, field, viewport, applied) {
   const want = { top: Math.round(top - drawn.top), bottom: Math.round(drawn.bottom - bottom) };
   for (const side of ["top", "bottom"]) {
     if (want[side] === applied[side]) continue;
+    const pad = side === "top" ? "padding-top" : "padding-bottom";
     if (want[side] > 0) {
       const ruled = (parseFloat(getComputedStyle(sheet)[side]) || 0) - applied[side];
       sheet.style[side] = `${ruled + want[side]}px`;
-    } else sheet.style.removeProperty(side);
+      sheet.style.setProperty(pad, "0px");
+    } else {
+      sheet.style.removeProperty(side);
+      sheet.style.removeProperty(pad);
+    }
     applied[side] = want[side];
   }
-  return want.top || want.bottom ? `${Math.round(top)}:${Math.round(bottom)}` : "";
+  return want.top || want.bottom ? String(Math.round(bottom - top)) : "";
 }
 function revealInSheet(sheet, field) {
   let scroller = field.parentElement;
@@ -90,10 +99,13 @@ function revealInSheet(sheet, field) {
   const view = scroller.getBoundingClientRect(), shown = sheet.getBoundingClientRect();
   const bandTop = Math.max(view.top, shown.top), bandBottom = Math.min(view.bottom, shown.bottom);
   if (bandBottom - bandTop < 40) return;
-  const margin = 8;
+  const margin = 8, own = field.getBoundingClientRect();
   let group = field;
   for (let at = field.parentElement; at && at !== scroller; at = at.parentElement) {
-    if (at.getBoundingClientRect().height > bandBottom - bandTop - 2 * margin) break;
+    const box = at.getBoundingClientRect();
+    // Taller than what stays visible, or not around the field (children placed absolutely).
+    if (box.height > bandBottom - bandTop - 2 * margin) break;
+    if (box.top > own.top + 1 || box.bottom < own.bottom - 1) break;
     group = at;
   }
   const rect = group.getBoundingClientRect();
@@ -503,7 +515,8 @@ export class Preview {
     const state = { sheet, handle: null, close: null };
     this.reviewSheet = state;
     // #s627: the sheet keeps above an on-screen keyboard while a field inside it has the focus, and
-    // brings the field (mdrev's note card) into view: again when the visible band or the field moves.
+    // brings the field (mdrev's note card) into view: again when the field changes or the visible
+    // band changes height (the keyboard rising or changing), never for a pan of the same band.
     const viewport = window.visualViewport;
     let fitted = "", fittedField = null;
     const applied = { top: 0, bottom: 0 };
@@ -517,13 +530,20 @@ export class Preview {
       fitted = band; fittedField = field;
     };
     const fitSoon = () => queueMicrotask(fit);
+    // Focus going from one field of the sheet to another: the focusin that follows refits, and the
+    // sheet does not grow back in between.
+    const fitAfterLeaving = event => {
+      const to = event.relatedTarget;
+      if (to && sheet.contains(to) && takesKeyboard(to)) return;
+      fitSoon();
+    };
     const close = () => {
       if (this.reviewSheet !== state) return;
       this.reviewSheet = null;
       viewport?.removeEventListener("resize", fit);
       viewport?.removeEventListener("scroll", fit);
       sheet.removeEventListener("focusin", fitSoon);
-      sheet.removeEventListener("focusout", fitSoon);
+      sheet.removeEventListener("focusout", fitAfterLeaving);
       removeEventListener("keydown", onKey, true);
       removeEventListener("focusin", onFocus, true);
       // Read before mdrev goes: its unmount takes the focused control with it, leaving the body.
@@ -553,7 +573,7 @@ export class Preview {
     viewport?.addEventListener("resize", fit);
     viewport?.addEventListener("scroll", fit);
     sheet.addEventListener("focusin", fitSoon);
-    sheet.addEventListener("focusout", fitSoon);
+    sheet.addEventListener("focusout", fitAfterLeaving);
     closeBtn.onclick = close;
     closeBtn.focus({ preventScroll: true });
     mountMarkdown(sheet.querySelector(".review-sheet-body"), item, { review: true }).then(handle => {

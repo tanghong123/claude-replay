@@ -186,7 +186,7 @@ fn a_note_stays_above_the_keyboard(tab: &headless_chrome::Tab) {
         Duration::from_secs(20),
         "(document.activeElement || {}).className || (document.activeElement || {}).tagName",
     );
-    let geometry = "(function(){ var H = innerHeight, kb = window.__kb || 0, s = document.querySelector('.review-sheet').getBoundingClientRect(), f = document.querySelector('.review-sheet .ann-draft textarea').getBoundingClientRect(), b = document.querySelector('.review-sheet .ann-draft .ann-composer-row button.primary'), br = b.getBoundingClientRect(), hit = document.elementFromPoint(br.left + br.width / 2, br.top + br.height / 2); return JSON.stringify({ inner: H, kb: kb, sheet: [s.top, s.bottom].map(Math.round), field: [f.top, f.bottom].map(Math.round), save: [br.top, br.bottom].map(Math.round), saveHit: !!hit && b.contains(hit), focused: !!document.activeElement && document.activeElement.matches('.review-sheet .ann-draft textarea') }); })()";
+    let geometry = "(function(){ var H = innerHeight, kb = window.__kb || 0, s = document.querySelector('.review-sheet').getBoundingClientRect(), f = document.querySelector('.review-sheet .ann-draft textarea').getBoundingClientRect(), b = document.querySelector('.review-sheet .ann-draft .ann-composer-row button.primary'), br = b.getBoundingClientRect(), hit = document.elementFromPoint(br.left + br.width / 2, br.top + br.height / 2), sc = document.querySelector('.review-sheet .ann-draft textarea').parentElement; while (sc && !(/(auto|scroll)/.test(getComputedStyle(sc).overflowY) && sc.scrollHeight > sc.clientHeight)) sc = sc.parentElement; var top = sc ? sc.getBoundingClientRect().top : s.top, fh = document.elementFromPoint(f.left + 8, f.top + 4); return JSON.stringify({ inner: H, kb: kb, sheet: [s.top, s.bottom].map(Math.round), scrollerTop: Math.round(Math.max(top, s.top)), field: [f.top, f.bottom].map(Math.round), fieldHit: !!fh && fh.matches('.review-sheet .ann-draft textarea'), save: [br.top, br.bottom].map(Math.round), saveHit: !!hit && b.contains(hit), focused: !!document.activeElement && document.activeElement.matches('.review-sheet .ann-draft textarea') }); })()";
     let read = |tab: &headless_chrome::Tab| -> serde_json::Value {
         serde_json::from_str(eval(tab, geometry).as_str().unwrap_or("{}")).unwrap()
     };
@@ -209,7 +209,7 @@ fn a_note_stays_above_the_keyboard(tab: &headless_chrome::Tab) {
         "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - window.__kb; } }); visualViewport.dispatchEvent(new Event('resize')); return true; })()",
     );
     let visible = format!(
-        "(function(){{ var g = {geometry}; g = JSON.parse(g); var top = g.sheet[0], bottom = g.inner - g.kb; return g.focused && g.sheet[1] <= bottom + 1 && g.field[0] >= top && g.field[1] <= bottom && g.save[0] >= top && g.save[1] <= bottom && g.saveHit; }})()"
+        "(function(){{ var g = {geometry}; g = JSON.parse(g); var top = g.scrollerTop, bottom = g.inner - g.kb; return g.focused && g.sheet[1] <= bottom + 1 && g.field[0] >= top && g.field[1] <= bottom && g.save[0] >= top && g.save[1] <= bottom && g.saveHit && g.fieldHit; }})()"
     );
     until(
         tab,
@@ -1524,7 +1524,7 @@ fn a_phone_pane_leaves_mdrevs_toolbar_its_own_layout() {
 }
 
 /// #s627: on a phone held upright, the review sheet keeps a note started low on the screen above
-/// the keyboard, as the native app's sheet does at a desktop's width (that case's last steps).
+/// the keyboard, as the native app's sheet does at a desktop's width (that case's later steps).
 #[test]
 #[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn a_phone_review_sheet_keeps_a_note_above_the_keyboard() {
