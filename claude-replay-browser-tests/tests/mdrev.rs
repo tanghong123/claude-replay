@@ -1592,6 +1592,7 @@ fn a_phone_review_sheet_in_a_host_s_pane_keeps_a_note_above_the_keyboard() {
         "",
         false,
         40,
+        None,
     );
 }
 
@@ -1609,6 +1610,28 @@ fn a_phone_review_sheet_in_a_host_page_scrolled_past_the_pane_keeps_a_note_above
         "(function(){ document.body.style.height = '2000px'; var p = document.getElementById('hostPane'); p.style.position = 'absolute'; p.style.top = '40px'; p.style.bottom = 'auto'; p.style.height = innerHeight + 'px'; scrollTo(0, 100); return true; })()",
         false,
         -60,
+        None,
+    );
+}
+
+/// #s627's review of 2d15a5b6: a host whose bar grows while the sheet is open, so the pane, the view
+/// and the sheet move 30px down with no scroll and no viewport event. The view's top is read again
+/// as the reader starts typing. Red on 2d15a5b6, which kept the top it read as the sheet opened and
+/// left the foot 30px under the keyboard.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
+fn a_phone_review_sheet_in_a_host_that_moves_its_pane_keeps_a_note_above_the_keyboard() {
+    host_review_sheet_keeps_a_note_above_the_keyboard(
+        "mdrev-sheet-keyboard-host-moved",
+        3350,
+        (402, 874),
+        "",
+        false,
+        40,
+        Some((
+            "(function(){ document.querySelector('.host-bar').style.height = '70px'; document.getElementById('hostPane').style.top = '70px'; return true; })()",
+            70,
+        )),
     );
 }
 
@@ -1626,13 +1649,15 @@ fn a_phone_held_sideways_reviews_in_a_host_s_expanded_pane_with_a_note_above_the
         "",
         true,
         0,
+        None,
     );
 }
 
 /// The host page's half of the #s627 cases: a phone of `size` in the session-view host page (the
 /// host's 40px bar over its pane), `page` run on the host's page once the view is in its pane, the
 /// guide opened in the pane (expanded with ⤢ when `expand`), its Review sheet drawn from `sheet_top`,
-/// then a note low in it with the keyboard up. Held sideways the part left above the keyboard is
+/// `after_open`'s script run on the host's page with the sheet open (the sheet then drawn from its
+/// top), then a note low in it with the keyboard up. Held sideways the part left above the keyboard is
 /// shorter than the note's card, so only the field is asked to show there.
 fn host_review_sheet_keeps_a_note_above_the_keyboard(
     name: &str,
@@ -1641,6 +1666,7 @@ fn host_review_sheet_keeps_a_note_above_the_keyboard(
     page: &str,
     expand: bool,
     sheet_top: i64,
+    after_open: Option<(&str, i64)>,
 ) {
     let _serial = serial();
     let (base, stores, repo, state) = shared_review_world(name);
@@ -1707,6 +1733,16 @@ fn host_review_sheet_keeps_a_note_above_the_keyboard(
         Duration::from_secs(30),
         "JSON.stringify({ sheet: (function(){ var s = document.querySelector('.review-sheet'); return s ? [s.getBoundingClientRect().top, s.getBoundingClientRect().bottom].map(Math.round) : null; })(), text: (document.querySelector('.review-sheet') || {innerText: 'no sheet'}).innerText.slice(0, 120) })",
     );
+    if let Some((script, top)) = after_open {
+        eval(&tab, script);
+        until(
+            &tab,
+            &format!("Math.round(document.querySelector('.review-sheet').getBoundingClientRect().top) === {top}"),
+            "the review sheet moved with the host's pane",
+            Duration::from_secs(10),
+            "Math.round(document.querySelector('.review-sheet').getBoundingClientRect().top)",
+        );
+    }
     a_note_stays_above_the_keyboard(&tab, height > width);
 }
 
