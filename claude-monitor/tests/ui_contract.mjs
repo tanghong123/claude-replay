@@ -5026,6 +5026,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /^const writeOn = \(\) => controlState\.write && \(!merged \|\| !writeNeedNow\(\)\);$/m, "its write mode, over several machines while writing needs nothing more for the open session (#s595, #s577)");
   assert.match(appSource, /^  if \(merged && place\(indexState\.selected\)\?\.machine !== viewMachine\) return "session";$/m, "which is the machine the view reads, holding the selection: with none, writing needs a session");
   assert.match(appSource, /^  const handle = merged \? handleOf\(viewMachine\) : controlState;$/m, "…and on it, that machine's handle says whether this reader's writes reach it");
+  assert.match(appSource, /^  return handle\.writes \? "" : handle\.writeNeed \|\| "monitor";$/m, "…by its writes, and else the reason it gives");
   assert.match(viewSource, /const controlActions = \{ write: options\.write, selectedId, selectedRow, /, "the compose box gets the host's write and the app's selection through the view");
   assert.match(storeSource, /writeOn\(\) \{ return !!this\.actions\.write\?\.on\(\); \}/, "with no write option, writing is never on");
   assert.match(storeSource, /answer = this\.actions\.write\?\.confirm\(\{ title: GRANT_TITLE, text, passcode \}\);/, "and the grant is the host's confirm");
