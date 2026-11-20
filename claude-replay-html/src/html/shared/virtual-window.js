@@ -1047,9 +1047,10 @@ class VirtualWindow {
       return;
     }
     // A transaction can meet the rubber band's spring-back before its event does (a turn that landed
-    // under the finger renders as the band settles): no move of the reader's here either (#s524).
+    // under the finger renders as the band settles): no move of the reader's here either (#s524), and
+    // it keeps following whatever the gap (#s631).
     const spring = this.springsBack(top);
-    const verdict = classifyScroll(true, true, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal, top < belief && !spring && !this.echoesAfterInput(top));
+    const verdict = spring ? "none" : classifyScroll(true, true, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal, top < belief && !this.echoesAfterInput(top));
     this.trace("follow:unheard", { verdict, belief, spring, top: Math.round(top), gap: Math.round(gap) });
     if (verdict !== "unfollow") return;
     this.following = false;
@@ -1058,7 +1059,10 @@ class VirtualWindow {
 
   /** Is a move up to `top` the rubber band springing back (#s524)? While a stretch past the end lasts
    *  (`springEnd`), a move that stays at or below its lowest end is: the band rises to that end and
-   *  no further. One test for the scroll handler and a transaction that meets the move first. */
+   *  no further. One test for the scroll handler and a transaction that meets the move first. A
+   *  follower stays one through it whatever the gap (#s631): the gap grew only because records
+   *  landed under the finger, whose tail placement waits for the touch to end (#372), and the band
+   *  moving toward the end it knew is not the reader leaving. Only a move above that end is. */
   springsBack(top) {
     return this.springEnd != null && top >= this.springEnd - 0.5;
   }
@@ -2279,10 +2283,12 @@ class VirtualWindow {
     // the band springs back to the one it knew); above it, the stretch is over.
     if (gap < -1) this.springEnd = this.springEnd == null ? top + gap : Math.min(this.springEnd, top + gap);
     else if (this.springEnd != null && top < this.springEnd - 0.5) this.springEnd = null;
-    // A move up that stays at or below that end is the rubber band springing back.
+    // A move up that stays at or below that end is the rubber band springing back, and a follower
+    // keeps following through it whatever the gap (#s631): a turn that landed under the finger made the
+    // gap, its tail placement waits for the touch, and the band is not the reader leaving.
     const spring = this.springsBack(top);
     const up = before != null && top < before - 0.5 && !spring;
-    const verdict = classifyScroll(this.following, user, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal, up);
+    const verdict = this.following && spring ? "none" : classifyScroll(this.following, user, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal, up);
     this.trace("scroll", { user, up, spring, verdict, gap: Math.round(gap), lag: Math.round(at - this.lastInputStamp) });
     if (verdict === "follow" || verdict === "unfollow") {
       this.following = verdict === "follow";
