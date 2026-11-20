@@ -571,8 +571,15 @@ export class Preview {
       const typing = !!at && (takesKeyboard(at) || at.localName === "iframe");
       const field = typing && sheet.contains(at) ? at : null;
       const height = fitSheetAboveKeyboard(sheet, field, viewport, applied, typing);
-      if (field && height && (height !== fitted || field !== fittedField)) revealInSheet(sheet, field);
-      fitted = height; fittedField = field;
+      // A host may shorten the page itself for the keyboard: the iOS app's web view is made shorter,
+      // the visual viewport with it, and no keyboard covers the page to fit the sheet above (measured
+      // on the iPad Simulator, iPadOS 26.5: the page 1344px tall, then 941, the note's field focused
+      // before it shrank at 1247px under the sheet's new foot, and iOS scrolls no scroller inside a
+      // fixed layer to it). So with nothing fitted, the field is brought into view the same way,
+      // again only when the visible height or the field changes.
+      const band = height || (field ? `page ${Math.round(viewport ? viewport.height : innerHeight)}` : "");
+      if (field && band && (band !== fitted || field !== fittedField)) revealInSheet(sheet, field);
+      fitted = band; fittedField = field;
     };
     const fitSoon = () => queueMicrotask(fit);
     // Focus going from one field of the sheet to another: the focusin that follows refits, and the

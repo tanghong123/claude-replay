@@ -152,21 +152,13 @@ fn lengthen_guide(repo: &Path) {
     }
 }
 
-/// #s627: a note started on a line low in the open review sheet, then an on-screen keyboard over the
-/// window's foot (the visual viewport shortened, as iOS's keyboard does and as the phone keyboard
-/// cases shadow it): the sheet ends at the keyboard's top (neither under it nor short of it, which a
-/// foot measured from the wrong box gives), and the note's field and its Save are in view
-/// and are what a tap there hits; where the part left above the keyboard is shorter than the note's
-/// card (a phone held sideways), the field alone, as the fit brings in what fits (`save_in_view`
-/// false). The keyboard put away, the sheet is where it was again (the window,
-/// in the app; a host's pane). Red on
-/// 54b26c5f, where the field stayed under the keyboard (the iPad Simulator walk saw it at 1279pt
-/// under a keyboard from 1028pt, its Save past the window's foot).
-fn a_note_stays_above_the_keyboard(
-    tab: &headless_chrome::Tab,
-    save_in_view: bool,
-    while_typing: Option<(&str, i64, i64)>,
-) {
+/// The note's place, field and Save, the sheet's, and what a tap there hits, as JSON (`kb`: the
+/// keyboard a case emulates over the window's foot, 0 for none).
+const NOTE_GEOMETRY: &str = "(function(){ var H = innerHeight, kb = window.__kb || 0, s = document.querySelector('.review-sheet').getBoundingClientRect(), f = document.querySelector('.review-sheet .ann-draft textarea').getBoundingClientRect(), b = document.querySelector('.review-sheet .ann-draft .ann-composer-row button.primary'), br = b.getBoundingClientRect(), hit = document.elementFromPoint(br.left + br.width / 2, br.top + br.height / 2), sc = document.querySelector('.review-sheet .ann-draft textarea').parentElement; while (sc && !(/(auto|scroll)/.test(getComputedStyle(sc).overflowY) && sc.scrollHeight > sc.clientHeight)) sc = sc.parentElement; var top = sc ? sc.getBoundingClientRect().top : s.top, fh = document.elementFromPoint(f.left + 8, f.top + 4); return JSON.stringify({ inner: H, kb: kb, sheet: [s.top, s.bottom].map(Math.round), scrollerTop: Math.round(Math.max(top, s.top)), field: [f.top, f.bottom].map(Math.round), fieldHit: !!fh && fh.matches('.review-sheet .ann-draft textarea'), save: [br.top, br.bottom].map(Math.round), saveHit: !!hit && b.contains(hit), focused: !!document.activeElement && document.activeElement.matches('.review-sheet .ann-draft textarea') }); })()";
+
+/// #s627: a line in the lower part of the open review sheet selected, and a note started on it, its
+/// field taking the focus.
+fn start_a_note_low(tab: &headless_chrome::Tab) {
     let line = eval(
         tab,
         "(function(){ var H = innerHeight, ps = [...document.querySelectorAll('.review-sheet .doc p')]; var p = ps.find(function(p){ var r = p.getBoundingClientRect(); return r.top > H * 0.62 && r.bottom < H * 0.9 && /^Berth/.test(p.textContent); }); if (!p) return 'none: ' + ps.map(function(p){ return Math.round(p.getBoundingClientRect().top); }).join(','); var w = document.createTreeWalker(p, NodeFilter.SHOW_TEXT); var n = w.nextNode(); var r = document.createRange(); r.setStart(n, 0); r.setEnd(n, Math.min(n.data.length, 12)); var s = getSelection(); s.removeAllRanges(); s.addRange(r); document.dispatchEvent(new Event('selectionchange')); return p.textContent.slice(0, 12); })()",
@@ -194,9 +186,27 @@ fn a_note_stays_above_the_keyboard(
         Duration::from_secs(20),
         "(document.activeElement || {}).className || (document.activeElement || {}).tagName",
     );
-    let geometry = "(function(){ var H = innerHeight, kb = window.__kb || 0, s = document.querySelector('.review-sheet').getBoundingClientRect(), f = document.querySelector('.review-sheet .ann-draft textarea').getBoundingClientRect(), b = document.querySelector('.review-sheet .ann-draft .ann-composer-row button.primary'), br = b.getBoundingClientRect(), hit = document.elementFromPoint(br.left + br.width / 2, br.top + br.height / 2), sc = document.querySelector('.review-sheet .ann-draft textarea').parentElement; while (sc && !(/(auto|scroll)/.test(getComputedStyle(sc).overflowY) && sc.scrollHeight > sc.clientHeight)) sc = sc.parentElement; var top = sc ? sc.getBoundingClientRect().top : s.top, fh = document.elementFromPoint(f.left + 8, f.top + 4); return JSON.stringify({ inner: H, kb: kb, sheet: [s.top, s.bottom].map(Math.round), scrollerTop: Math.round(Math.max(top, s.top)), field: [f.top, f.bottom].map(Math.round), fieldHit: !!fh && fh.matches('.review-sheet .ann-draft textarea'), save: [br.top, br.bottom].map(Math.round), saveHit: !!hit && b.contains(hit), focused: !!document.activeElement && document.activeElement.matches('.review-sheet .ann-draft textarea') }); })()";
+}
+
+/// #s627: a note started on a line low in the open review sheet, then an on-screen keyboard over the
+/// window's foot (the visual viewport shortened, as iOS's keyboard does and as the phone keyboard
+/// cases shadow it): the sheet ends at the keyboard's top (neither under it nor short of it, which a
+/// foot measured from the wrong box gives), and the note's field and its Save are in view
+/// and are what a tap there hits; where the part left above the keyboard is shorter than the note's
+/// card (a phone held sideways), the field alone, as the fit brings in what fits (`save_in_view`
+/// false). The keyboard put away, the sheet is where it was again (the window,
+/// in the app; a host's pane). Red on
+/// 54b26c5f, where the field stayed under the keyboard (the iPad Simulator walk saw it at 1279pt
+/// under a keyboard from 1028pt, its Save past the window's foot).
+fn a_note_stays_above_the_keyboard(
+    tab: &headless_chrome::Tab,
+    save_in_view: bool,
+    while_typing: Option<(&str, i64, i64)>,
+) {
+    start_a_note_low(tab);
+    let geometry = NOTE_GEOMETRY;
     let read = |tab: &headless_chrome::Tab| -> serde_json::Value {
-        serde_json::from_str(eval(tab, geometry).as_str().unwrap_or("{}")).unwrap()
+        serde_json::from_str(eval(tab, NOTE_GEOMETRY).as_str().unwrap_or("{}")).unwrap()
     };
     // The keyboard about to rise: the field and its Save lie under where it will be, or the steps
     // below would pass without the fix. It rises as iOS 26 reports it, with `visualViewport.offsetTop`
@@ -2302,6 +2312,113 @@ fn an_ipad_app_review_sheet_follows_the_page_moving_under_it_while_the_reader_ty
     );
     let moved = "(function(){ document.documentElement.style.height = '3000px'; document.body.style.height = '3000px'; scrollTo(0, 60); return scrollY; })()";
     a_note_stays_above_the_keyboard(&tab, true, Some((moved, -60, -60)));
+}
+
+/// #s627, the iOS app: its web view is made shorter for the keyboard, so the page itself shrinks and the
+/// visual viewport with it, and no keyboard covers the page to fit the sheet above. Measured on the iPad
+/// Simulator (iPadOS 26.5, the app at 4e8f0164): the page 1344px tall, then 941 with the keyboard up,
+/// the visual viewport the same; the note's field, focused before the page shrank, at 1247px under the
+/// sheet's new foot, which nothing scrolled the sheet to. Here an iPad held upright, its page shortened
+/// by a keyboard's height while the note's field has the focus: the field and its Save come into view
+/// in the sheet and are what a tap there hits. Red on 4e8f0164.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
+fn an_ipad_app_whose_page_shrinks_for_the_keyboard_brings_the_note_into_view() {
+    let _serial = serial();
+    let (base, stores, repo, state) = shared_review_world("mdrev-native-sheet-shrinks");
+    lengthen_guide(&repo);
+    let m = Monitor::spawn_with(
+        Kind::V1,
+        3354,
+        &base,
+        Some(&stores),
+        true,
+        &[("MDREV_STATE_DIR", &state.display().to_string())],
+    );
+    let (_browser, tab) = chrome_tab();
+    let (width, height) = (1032, 1344);
+    harness::phone(&tab, width, height);
+    m.pair(&tab);
+    let mut answers = harness::kit_bundle();
+    answers.push(harness::Answer {
+        pattern: "*/kit-native-review*".into(),
+        path: "/kit-native-review".into(),
+        content_type: "text/html; charset=utf-8".into(),
+        body: NATIVE_REVIEW_HOST.replace("{{KIT}}", &m.url("kit/")),
+    });
+    answers.push(harness::Answer {
+        pattern: "*/kit/native-review.js*".into(),
+        path: "/kit/native-review.js".into(),
+        content_type: "text/javascript; charset=utf-8".into(),
+        body: NATIVE_REVIEW_SCRIPT
+            .replace("{{MDREV}}", claude_monitor::kit::MDREV)
+            .replace("{{MERMAID}}", claude_replay_html::mermaid_runtime_path()),
+    });
+    harness::answer_and_relay_in_browser(
+        &tab,
+        answers,
+        vec![harness::Relay {
+            prefix: "/kit/vendor".into(),
+            port: m.port,
+            token: m.token(),
+        }],
+    );
+    m.open(&tab, &format!("kit-native-review?session={SID}"));
+    until(
+        &tab,
+        "!!(window.__host && (window.__host.mounted || window.__host.error)) && !!document.querySelector('[data-reference-path]')",
+        "the app from the kit, the session's stamped path drawn",
+        Duration::from_secs(30),
+        "JSON.stringify({ host: window.__host || null, transcript: (document.querySelector('#sessionView .transcript') || {}).innerText })",
+    );
+    eval(
+        &tab,
+        "Object.defineProperty(Navigator.prototype, 'languages', { configurable: true, get: () => ['en-US'] }); 'ok'",
+    );
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1') && (function(){ var b = document.querySelector('.preview-review'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+        "the guide in the pane, with its Review control",
+        Duration::from_secs(30),
+        PANE,
+    );
+    harness::click_when_settled(&tab, ".preview-review", "the pane's Review control");
+    until(
+        &tab,
+        "!!document.querySelector('.review-sheet .mdrev-host h1') && !!document.querySelector('.review-sheet .doc p')",
+        "the review sheet, its document drawn",
+        Duration::from_secs(30),
+        "(document.querySelector('.review-sheet') || {innerText: 'no sheet'}).innerText.slice(0, 200)",
+    );
+    start_a_note_low(&tab);
+    // The keyboard's height as the walk measured it (1344 to 941): the field and its Save lie below
+    // where the page will end, or the step below would pass without the fix.
+    let shrunk = height - 403;
+    let before: serde_json::Value =
+        serde_json::from_str(eval(&tab, NOTE_GEOMETRY).as_str().unwrap_or("{}")).unwrap();
+    assert!(
+        before["field"][1].as_i64().unwrap_or(0) > i64::from(shrunk),
+        "the note's field lies below where the page will end: {before}"
+    );
+    harness::phone(&tab, width, shrunk);
+    until(
+        &tab,
+        &format!("innerHeight === {shrunk} && visualViewport.height === {shrunk}"),
+        "the page and its visual viewport shortened, as the app's web view is",
+        Duration::from_secs(5),
+        NOTE_GEOMETRY,
+    );
+    let visible = format!(
+        "(function(){{ var g = JSON.parse({NOTE_GEOMETRY}); var top = g.scrollerTop, bottom = g.inner; return g.focused && g.sheet[1] <= bottom && g.field[0] >= top && g.field[1] <= bottom && g.fieldHit && g.save[0] >= top && g.save[1] <= bottom && g.saveHit; }})()"
+    );
+    until(
+        &tab,
+        &visible,
+        "the note's field and its Save in view in the shortened page",
+        Duration::from_secs(5),
+        NOTE_GEOMETRY,
+    );
 }
 
 /// The review of 491330b6 (#s627): a pinch while the reader types on a phone reader. iOS lifts the
