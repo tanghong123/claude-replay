@@ -418,11 +418,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// image block whose bytes are missing is no attachment. A stream from before it holds the earlier
 /// pops, whether it was written at v86 or v87.
 ///
+/// v89: #s617 — a Claude prompt of pictures alone, sent directly or picked up mid-turn, folds to the
+/// person's turn with empty words before its images, where a v88 stream holds the images alone in the
+/// agent's running turn.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 88;
+pub const FOLD_VERSION: u16 = 89;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

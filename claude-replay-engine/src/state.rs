@@ -501,7 +501,8 @@ fn pulse_within(adapter: &dyn TranscriptAdapter, path: &Path, window: u64) -> Op
             } => Some(raw),
             _ => None,
         };
-        if let Some(t) = delivered {
+        // Empty words (a prompt of pictures alone, #s617) name no queued prompt, as in the fold.
+        if let Some(t) = delivered.filter(|t| !t.trim().is_empty()) {
             if let Some(i) = queue.iter().position(|(q, _)| q == t.trim()) {
                 queue.remove(i);
             }

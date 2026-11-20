@@ -514,6 +514,8 @@ body.selecting #toolmenu, body.selecting #agentmenu {
 .uturn.fold { overflow: hidden; }
 .caret { font-family: var(--mono); color: var(--muted); font-weight: 700; flex: none; margin-top: 1px; }
 .uturn-body { flex: 1; min-width: 0; }
+/* #s617: a prompt of pictures alone names them in the card; the pictures follow as their blocks. */
+.uturn-images { color: var(--muted); font-family: var(--mono); font-size: 12.5px; }
 /* A long user message is clamped to CLAMP_LINES with a bottom fade + expander. */
 .uturn-md.clamped { overflow: hidden; position: relative; }
 .uturn-md.clamped::after {

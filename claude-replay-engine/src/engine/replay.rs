@@ -430,8 +430,13 @@ impl<'a> Replayer<'a> {
                     // whether or not a dequeue op was recorded. (A jdi restart re-delivers queued
                     // prompts in a fresh process without ever writing the dequeue; those stale
                     // items used to sit in the queue forever, breaking FIFO for every later pop
-                    // AND pinning the durability frontier for the rest of the session.)
-                    if let Some(pos) = self.queue.iter().position(|q| q.content == text.trim()) {
+                    // AND pinning the durability frontier for the rest of the session.) A prompt of
+                    // pictures alone (#s617) has empty words, which name no queued prompt: matched,
+                    // it would take the slot a content-less enqueue holds (#s608).
+                    let named = Some(text.trim()).filter(|t| !t.is_empty());
+                    if let Some(pos) =
+                        named.and_then(|t| self.queue.iter().position(|q| q.content == t))
+                    {
                         let item = self.queue.remove(pos);
                         if let Some(mi) = item.marker_idx {
                             self.suppress.push(mi);
@@ -697,12 +702,16 @@ impl<'a> Replayer<'a> {
                     // item (suppressing its marker) or the popped item's note; emit only
                     // if the prompt is new.
                     let t = text.trim();
+                    // #s617: a pickup of pictures alone (empty words) takes no queued prompt.
                     // A pending prompt's `⧗ queued:` marker is consumed by its pickup; the
                     // pickup itself ALWAYS renders its turn. A prompt that also arrived as a
                     // real `user` event earlier was submitted twice by the human (measured:
                     // 3 of 1859 enqueues, 3s-6m30s apart — a person retyping, not one
                     // submission logged twice), so both submissions are shown.
-                    if let Some(pos) = self.queue.iter().position(|q| q.content == t) {
+                    if let Some(pos) = (!t.is_empty())
+                        .then(|| self.queue.iter().position(|q| q.content == t))
+                        .flatten()
+                    {
                         let item = self.queue.remove(pos);
                         if let Some(mi) = item.marker_idx {
                             self.suppress.push(mi);

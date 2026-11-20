@@ -1220,7 +1220,7 @@ assert.equal(richProjection.units[2].views[0].view.interaction.answers[0].label,
   assert.equal(viewRecord({ kind: "attachment", id: "c", head: { att_kind: "edited", att_name: "x.rs" }, body: [] }).name, "changed on disk", "…and inside a group of steps its row says what it is");
   const componentsSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
   assert.match(componentsSrc, /function renderPromptAttachments\(attachments = \[\]\) \{\n  attachments = attachments\.filter\(view => !isChangedNotice\(view\)\);/, "the prompt's cards leave the notice out");
-  assert.equal((componentsSrc.match(/\$\{promptNoticesHtml\(unit\.attachments\)\}<\/div>`;/g) || []).length, 4, "…and every kind of prompt turn draws its notices last");
+  assert.equal((componentsSrc.match(/\$\{promptNoticesHtml\(unit\.attachments\)\}<\/div>`;/g) || []).length, 5, "…and every kind of prompt turn draws its notices last (#s617: a message of pictures alone is one)");
 }
 const incrementalPrompt = new Projection();
 const promptRecords = [{ kind: "user", id: "late-prompt", turn: 1, body: [{ p: "md", h: "<p>Prompt</p>" }] }];
@@ -3576,7 +3576,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 {
   const components174 = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
   const stamped = [...components174.matchAll(/<div class="turn [^"]*"[^>]*?data-record-id="\$\{escapeText\(unit\.view\?\.id \|\| ""\)\}"/g)];
-  assert.equal(stamped.length, 5, "the five prose turn wrappers — slash command, another session's message (#s79), a relayed message from the person (#s272), user, assistant — each stamp the record id the classic page has always carried");
+  assert.equal(stamped.length, 6, "the six prose turn wrappers — slash command, another session's message (#s79), a relayed message from the person (#s272), a message of pictures alone (#s617), user, assistant — each stamp the record id the classic page has always carried");
   assert.match(components174, /data-record-id="\$\{escapeText\(key\)\}"/, "…and a tool rendering still stamps its own, on the `.renderer` inside the turn");
   // The painter that means "a tool head" must stay scoped to one, or widening the attribute
   // silently widens what it paints.

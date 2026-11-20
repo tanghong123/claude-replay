@@ -635,6 +635,14 @@ fn render_one(b: &Block, width: usize, hl: Hl) -> Vec<Line<'static>> {
             // near-white text; `fill_bg` extends the background across the row.
             let base = Style::default().fg(theme::user_fg()).bg(theme::user_bg());
             let caret = base.fg(theme::user_marker());
+            // A prompt of pictures alone (#s617): its words are empty, and the turn still has its
+            // caret, naming what was sent; the images follow it as their own lines.
+            if t.trim().is_empty() {
+                out.push(Line::from(vec![
+                    Span::styled("❯ ", caret),
+                    Span::styled("[image]", caret),
+                ]));
+            }
             // Pasted text (#s79) keeps its lines; its fence lines become a dim label and a rule.
             let mut paste: Option<&str> = None;
             for (i, line) in t.lines().enumerate() {
@@ -1269,9 +1277,14 @@ fn render_header(b: &Block) -> Line<'static> {
     match b {
         Block::UserText(t) | Block::UserReply { text: t, .. } => {
             let base = Style::default().fg(theme::user_fg()).bg(theme::user_bg());
+            // #s617: pictures alone are named, as `render_one` draws them.
+            let (first, style) = match t.lines().next() {
+                _ if t.trim().is_empty() => ("[image]", base.fg(theme::user_marker())),
+                line => (line.unwrap_or(""), base),
+            };
             Line::from(vec![
                 Span::styled("❯ ", base.fg(theme::user_marker())),
-                Span::styled(t.lines().next().unwrap_or("").to_string(), base),
+                Span::styled(first.to_string(), style),
             ])
         }
         Block::QueueEvent { text } => Line::styled(
@@ -2615,6 +2628,21 @@ mod tests {
                 "user line missing bg: {line:?}"
             );
         }
+    }
+
+    /// #s617: a prompt of pictures alone has empty words, and still draws its `❯` line naming what
+    /// was sent, the same line `render_header` gives, on the user background.
+    #[test]
+    fn a_prompt_of_pictures_alone_draws_its_caret_line() {
+        let b = Block::UserText(String::new());
+        let lines = render_one(&b, 80, Hl::Styled);
+        assert_eq!(texts(&lines), vec!["❯ [image]".to_string()]);
+        assert_eq!(texts(&[render_header(&b)]), texts(&lines));
+        assert!(lines[0]
+            .spans
+            .iter()
+            .all(|s| s.style.bg == Some(theme::user_bg())));
+        assert_eq!(body_len(&b), 0);
     }
 
     /// #s79: another session's message is its own card — `⇄` and the sender in the peer hue, the

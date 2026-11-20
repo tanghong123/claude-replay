@@ -224,7 +224,10 @@ pub fn corpus_for(kind: BlockKind) -> Vec<Block> {
              # not a heading — pasted text is never Markdown\n\
              ```"
                 .into(),
-        )],
+        ),
+        // A prompt of pictures alone (#s617): the person's turn with empty words, which carries no
+        // body part at all; its pictures follow it as attachments.
+        Block::UserText(String::new())],
         // Another session's message (#s79): Markdown prose with a list and inline code, under
         // its sender.
         Peer => vec![Block::PeerText {
@@ -540,6 +543,11 @@ pub fn audit_jsonl() -> String {
     // labelled `pasted`, so it renders inside the md part as a verbatim, labelled card.
     push(json!({"type":"user","cwd":"/w","timestamp":stamp(),
         "message":{"role":"user","content":"and it logged:\n\n<pasted_content id=\"a1\">\n# not a heading\nerror: 3 cells failed\n</pasted_content id=\"a1\">"}}));
+    // user / (no part) — a prompt of a picture alone (#s617): the person's turn with empty words,
+    // drawn as its picture on the person's side; a one-pixel PNG, so both pages load its bytes.
+    push(json!({"type":"user","cwd":"/w","timestamp":stamp(),
+        "message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png",
+            "data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="}}]}}));
     // peer / md — another session's message (#s79), as Claude Code records one between turns.
     push(
         json!({"type":"user","cwd":"/w","timestamp":stamp(),"isMeta":true,"promptSource":"system","turnOrigin":"peer",

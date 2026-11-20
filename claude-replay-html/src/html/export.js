@@ -600,7 +600,12 @@
       if (inbox) ub.appendChild(inboxHead(inbox));
       if (inbox && inbox.reply_to) ub.appendChild(inboxQuote(inbox.reply_to));
       var md = el("div", "uturn-md");
-      if (rawFor(b) && typeof b.src === "string") {
+      // A prompt of pictures alone (#s617): nothing was typed, so the card names what was sent, as
+      // the TUI's caret line does; the pictures follow it as their own blocks, as a prompt's do.
+      var imagesAlone = !inbox && typeof b.src === "string" && !b.src.trim();
+      if (imagesAlone) {
+        md.appendChild(el("span", "uturn-images", b.label || "[image]"));
+      } else if (rawFor(b) && typeof b.src === "string") {
         md.appendChild(el("pre", "raw", b.src));   // textContent — exactly what was typed
       } else {
         body.forEach(function (p) { renderPart(p, md); });
@@ -610,7 +615,7 @@
       card.appendChild(ub);
       if (b.ts) card.appendChild(el("span", "ts", fmtTime(b.ts)));
       if (b.dur) card.appendChild(turnDur(b.dur));
-      if (typeof b.src === "string") card.appendChild(rawToggle(b));
+      if (typeof b.src === "string" && !imagesAlone) card.appendChild(rawToggle(b));
       card.appendChild(anchor(b.id));
       return card;
     }
