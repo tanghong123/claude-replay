@@ -3487,7 +3487,9 @@ fn turn_on_route(
                 PageRedeem::Paired => {
                     p.display.withdraw();
                     // The file is written and the latch set in one turn: a take-up of the file
-                    // between the two would say the pairing command paired the gate.
+                    // between the two would say the pairing command paired the gate. Every request
+                    // to the unpaired gate waits for this turn: the token file's lock (which
+                    // `--pair` holds only while it writes) and two syncs, once.
                     let _turn = latch.turning();
                     let token = match file.read_or_create() {
                         Ok(t) if !t.is_empty() => t,
@@ -6408,6 +6410,8 @@ mod tests {
         path: std::path::PathBuf,
         fail: bool,
         turned: std::sync::Mutex<Vec<TurnedOn>>,
+        /// How long `read_or_create` takes after it has written the file.
+        slow_ms: std::sync::atomic::AtomicU64,
     }
 
     impl TokenFile for FakeTokenFile {
@@ -6425,6 +6429,8 @@ mod tests {
                 return Ok(t);
             }
             std::fs::write(&self.path, "minted-token")?;
+            let slow = self.slow_ms.load(std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(slow));
             Ok("minted-token".into())
         }
         fn turned_on(&self, how: TurnedOn) {
@@ -6457,6 +6463,7 @@ mod tests {
             path: dir.join("auth-token"),
             fail,
             turned: Default::default(),
+            slow_ms: Default::default(),
         });
         let handler: RouteHandler =
             std::sync::Arc::new(|_: &Request| HttpResponse::html("the monitor".to_string()));
@@ -6475,6 +6482,47 @@ mod tests {
         let latch = gate.latch();
         let port = spawn_listener_gated(0, handler, gate).unwrap();
         (port, display, file, latch, dir)
+    }
+
+    /// #s619 review: the page's pairing writes the token file and sets the latch in one turn. A
+    /// request whose take-up of the file comes between the two waits for the turn, and the monitor
+    /// says the page paired it, not its pairing command.
+    #[test]
+    fn a_request_reading_the_file_mid_pairing_waits_for_the_page_s_turn() {
+        let (port, display, file, latch, _dir) = turning_on_gate("turn-on-race", false, false);
+        file.slow_ms.store(600, std::sync::atomic::Ordering::SeqCst);
+        let here = format!("Host: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\n");
+        let ask = send_raw(
+            port,
+            &format!("POST /api/pair/ask HTTP/1.1\r\n{here}"),
+            "",
+            true,
+        );
+        assert!(ask.contains(r#""shown":"dialog""#), "{ask}");
+        let code = display.shown.lock().unwrap()[0].clone();
+        let pair = format!("POST /api/pair HTTP/1.1\r\n{here}");
+        let pairing = std::thread::spawn(move || send_raw(port, &pair, &code, true));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !file.path.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the page never wrote the file"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            !latch.is_paired(),
+            "between the file's write and the latch's set"
+        );
+        let _other = send_raw(
+            port,
+            &format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"),
+            "",
+            true,
+        );
+        let right = pairing.join().unwrap();
+        assert!(right.starts_with("HTTP/1.1 200"), "{right}");
+        assert_eq!(*file.turned.lock().unwrap(), vec![TurnedOn::FromThePage]);
     }
 
     /// #s619: on an unpaired monitor `/pair` says, before it asks, that pairing this browser pairs

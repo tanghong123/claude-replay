@@ -116,6 +116,15 @@ fn read_token_at(path: &std::path::Path, legacy: &std::path::Path) -> Option<Str
     read_one_token(path).or_else(|| read_one_token(legacy))
 }
 
+/// Why the monitor's token file holds no token this can read, when something is there: the
+/// monitor then runs unpaired, and says so as it starts rather than quietly (#s619 re-review).
+pub fn token_file_problem() -> Option<String> {
+    match token_in(&token_path()) {
+        TokenIn::Unreadable(why) => Some(why),
+        TokenIn::Token(_) | TokenIn::None => None,
+    }
+}
+
 /// The token one file holds, trimmed; None for a file absent, unreadable or empty.
 fn read_one_token(path: &std::path::Path) -> Option<String> {
     match token_in(path) {
@@ -148,7 +157,20 @@ fn token_in(path: &std::path::Path) -> TokenIn {
             TokenIn::Unreadable(e.to_string())
         };
     }
-    let meta = match std::fs::metadata(path) {
+    // Opened without blocking and judged by the handle itself: a FIFO put there between a look
+    // at the path and the open would otherwise hold up the open (#s619 re-review).
+    let mut open = std::fs::OpenOptions::new();
+    open.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        open.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = match open.open(path) {
+        Ok(f) => f,
+        Err(e) => return TokenIn::Unreadable(e.to_string()),
+    };
+    let meta = match file.metadata() {
         Ok(m) => m,
         Err(e) => return TokenIn::Unreadable(e.to_string()),
     };
@@ -159,12 +181,7 @@ fn token_in(path: &std::path::Path) -> TokenIn {
         return TokenIn::Unreadable(format!("over {TOKEN_FILE_MAX} bytes"));
     }
     let mut text = String::new();
-    let read = std::fs::File::open(path).and_then(|f| {
-        f.take(TOKEN_FILE_MAX + 1)
-            .read_to_string(&mut text)
-            .map(|_| ())
-    });
-    if let Err(e) = read {
+    if let Err(e) = file.take(TOKEN_FILE_MAX + 1).read_to_string(&mut text) {
         return TokenIn::Unreadable(e.to_string());
     }
     let t = text.trim();
@@ -3291,6 +3308,11 @@ mod tests {
     #[test]
     fn a_token_file_this_cannot_read_is_left_as_it_is() {
         use std::os::unix::fs::PermissionsExt;
+        // Modes stop no root: there is nothing to show as root.
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        if unsafe { libc::geteuid() } == 0 {
+            return;
+        }
         let dir = std::env::temp_dir().join(format!("cm-tok-odd-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let state = dir.join("state");
