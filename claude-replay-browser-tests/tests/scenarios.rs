@@ -21876,3 +21876,93 @@ fn app_shell_a_markdown_link_runs_no_script() {
     let page = open(Surface::AppShell, &fx, 2905);
     scenario_a_markdown_link_runs_no_script(&page._browser, &page.tab, Surface::AppShell);
 }
+
+/// #s626. A reader's scroll past the window, into a pad, left its window to a timer (`onScroll`),
+/// and the observer delivers after the frame's scroll events: a size report in that frame (records
+/// an update had just mounted, reporting for the first time) found the reader in the pad and mounted
+/// the window INSIDE its delivery (`transact`'s #s277 branch). The fresh records' heights differ
+/// from their estimates, so the content's height moved under observers whose turn in that round had
+/// passed, and Chrome reported "ResizeObserver loop completed with undelivered notifications", which
+/// a host page counting its errors counts. Made in one frame here: an update mounts records already
+/// measured, and right after it, before the next frame, the reader scrolls far into records never
+/// measured. A reader's scroll lands between tasks, never inside a frame's callbacks, so where the
+/// update ran inside one the scroll waits for the next task.
+fn scenario_a_far_scroll_beside_a_size_report_raises_no_loop_notice(
+    tab: &headless_chrome::Tab,
+    surface: Surface,
+) {
+    let s = surface.scroller();
+    let root = surface.turns_root();
+    let wheel_target = match surface {
+        Surface::Classic => "window",
+        Surface::AppShell => s,
+    };
+    let records = match surface {
+        Surface::Classic => "#stream .blk",
+        Surface::AppShell => ".virtual-window > *",
+    };
+    eval(
+        tab,
+        "window.__loopNotices = []; addEventListener('error', function (e) { if (!e.error && /^ResizeObserver loop/.test(String(e.message))) window.__loopNotices.push(Math.round(performance.now())); }); 'ok'",
+    );
+    // Off the tail, with records above measured: the next update mounts measured records back.
+    harness::scroll_by(tab, surface, -4000);
+    settle();
+    harness::scroll_by(tab, surface, -1500);
+    settle();
+    eval(
+        tab,
+        &format!(
+            "(function () {{ var s = {s}, r = {root}; var raf = window.requestAnimationFrame; window.__inFrame = false; window.requestAnimationFrame = function (cb) {{ return raf.call(window, function (ts) {{ window.__inFrame = true; try {{ cb(ts); }} finally {{ window.__inFrame = false; }} }}); }}; var far = function () {{ {wheel_target}.dispatchEvent(new WheelEvent('wheel', {{ deltaY: -9000, bubbles: true }})); s.scrollTo({{ top: Math.max(0, s.scrollTop - 9000), behavior: 'instant' }}); window.__farTop = s.scrollTop; }}; var mo = new MutationObserver(function () {{ mo.disconnect(); if (window.__inFrame) setTimeout(far, 0); else far(); }}); mo.observe(r, {{ childList: true, subtree: true }}); return 'armed'; }})()"
+        ),
+    );
+    // The update that mounts them back, then the far scroll.
+    harness::scroll_by(tab, surface, 1500);
+    settle();
+    settle();
+    assert!(
+        eval(tab, "window.__farTop === undefined ? -1 : window.__farTop")
+            .as_f64()
+            .unwrap_or(-1.0)
+            >= 0.0,
+        "{surface:?}: the update mounted records and the far scroll followed it"
+    );
+    harness::until(
+        tab,
+        &format!("(function () {{ var s = {s}; var b = s === document.scrollingElement ? {{ top: 0, bottom: innerHeight }} : s.getBoundingClientRect(); var top = Math.max(0, b.top), bottom = Math.min(innerHeight, b.bottom); return [].some.call(document.querySelectorAll('{records}'), function (e) {{ var q = e.getBoundingClientRect(); return q.height > 0 && q.bottom > top && q.top < bottom; }}); }})()"),
+        "content on screen after the far scroll",
+        Duration::from_secs(10),
+        "JSON.stringify((window.__viewportTrace || []).slice(-12).map(function (e) { return [e.event, e.fresh, e.lo, e.hi]; }))",
+    );
+    let notices = eval(tab, "JSON.stringify(window.__loopNotices)");
+    let violations = eval(tab, "JSON.stringify(window.__viewportViolations || [])");
+    assert_eq!(
+        notices.as_str(),
+        Some("[]"),
+        "{surface:?}: a far scroll in the frame of a size report raised a ResizeObserver loop notice (#s626); trace: {}",
+        eval(tab, "JSON.stringify((window.__viewportTrace || []).slice(-16).map(function (e) { return [e.seq, e.event, e.fresh, e.lo, e.hi]; }))")
+    );
+    assert_eq!(
+        violations.as_str(),
+        Some("[]"),
+        "{surface:?}: the engine's invariants held"
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn classic_a_far_scroll_beside_a_size_report_raises_no_loop_notice() {
+    let _serial = serial();
+    let fx = fixture_process_tail("scenario-s626-classic", 160, 4);
+    let page = open_with(Surface::Classic, &fx, 3148, "trace=viewport");
+    scenario_a_far_scroll_beside_a_size_report_raises_no_loop_notice(&page.tab, Surface::Classic);
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_a_far_scroll_beside_a_size_report_raises_no_loop_notice() {
+    let _serial = serial();
+    let fx = fixture_process_tail("scenario-s626-app", 160, 4);
+    let page = open_with(Surface::AppShell, &fx, 3149, "trace=viewport");
+    scenario_a_far_scroll_beside_a_size_report_raises_no_loop_notice(&page.tab, Surface::AppShell);
+}

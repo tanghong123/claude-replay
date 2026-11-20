@@ -2196,9 +2196,20 @@ class VirtualWindow {
     // rather than per event. Nothing is owed and nothing is dropped (#138): a correction that
     // reads where they are now replays nothing.
     this.afterScroll();
+    // A scroll past the window, into a pad, gets its window now, in this event, not after the
+    // frame (#s626). The observer delivers after the frame's scroll events: a size report in this
+    // frame found the reader in the pad and mounted the window inside its delivery, which moved the
+    // content's height under observers whose turn had passed, and Chrome reported a ResizeObserver
+    // loop. Mounted here, the frame's layout and its reports take the new window in one round.
+    if (!this.viewportMounted()) {
+      this.pendingScroll = false;
+      this.updateWindow();
+      return;
+    }
     if (this.pendingScroll) return;
     this.pendingScroll = true;
     setTimeout(() => {
+      if (!this.pendingScroll) return;
       this.pendingScroll = false;
       this.updateWindow();
     }, 0);
