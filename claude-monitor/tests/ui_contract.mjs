@@ -3533,6 +3533,47 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
       at(955, 45);
       assert.equal(vw.following, false, "…and a nudge up from it afterwards lets go (#s524)");
     }
+    // The old end does not outlive its spring-back (the review of b5328437): a spring-back only rises,
+    // so once the reader moves back DOWN inside the content a move up is theirs again. A turn of 200
+    // lands under the finger, the band springs back past the hold (lets go), the reader scrolls down to
+    // the new end (follows), then nudges up 30.
+    {
+      const top = { at: 1000 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1000, recentWrites: [{ top: 1000, at: now - 3000 }], topSeen: 1000 });
+      const at = (t, g) => { top.at = t; gap.at = g; vw.markIntent(performance.now()); vw.onScroll({ timeStamp: performance.now() }); };
+      at(1020, -20); at(1045, -45);
+      at(1030, 170); at(1010, 190); at(1000, 200);
+      at(1100, 100); at(1180, 20); at(1200, 0);
+      assert.equal(vw.following, true, "back down at the raised end, the view follows again");
+      at(1170, 30);
+      assert.equal(vw.following, false, "…and a nudge up from it lets go: the old end ended with the spring-back (#s524)");
+    }
+    // …and after a small turn, a spring-back that kept following, then a drag down to the new end and
+    // up 25: the reader's, as at any end.
+    {
+      const top = { at: 1000 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1000, recentWrites: [{ top: 1000, at: now - 3000 }], topSeen: 1000 });
+      const at = (t, g) => { top.at = t; gap.at = g; vw.markIntent(performance.now()); vw.onScroll({ timeStamp: performance.now() }); };
+      at(1020, -20); at(1045, -45);
+      at(1030, 10); at(1010, 30); at(1000, 40);
+      assert.equal(vw.following, true, "the spring-back to the old end keeps following");
+      at(1020, 20); at(1040, 0); at(1015, 25);
+      assert.equal(vw.following, false, "…and once the reader has come back down, a move up 25 lets go (#s524)");
+    }
+    // A transaction that meets the spring-back before its event (the turn under the finger rendering
+    // as the band settles) reads it as the scroll handler does: no move of the reader's.
+    {
+      const top = { at: 1000 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1000, recentWrites: [{ top: 1000, at: now - 3000 }], topSeen: 1000 });
+      const at = (t, g) => { top.at = t; gap.at = g; vw.markIntent(performance.now()); vw.onScroll({ timeStamp: performance.now() }); };
+      at(1020, -20); at(1045, -45); at(1035, 5);
+      top.at = 1020; gap.at = 20;
+      vw.confirmFollow(1020);
+      assert.equal(vw.following, true, "a transaction that meets the spring-back unheard keeps following (#s524)");
+      top.at = 990; gap.at = 50;
+      vw.confirmFollow(990);
+      assert.equal(vw.following, false, "…and one that meets a move above the old end lets go");
+    }
   }
   assert.match(engine, /this\.wrote = \{ from, to, last: from \};\n\s*this\.recentWrites = \[\];\n\s*this\.echoAfterInput = null;/, "a smooth write ends the echo kept after the reader's input (#s524)");
   assert.match(engine, /this\.latestHeard = false;\n(?:\s*\/\/.*\n)*\s*this\.echoAfterInput = null;/, "…and so does an instant one: it starts the writes `echoOf` knows again");

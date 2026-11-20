@@ -121,7 +121,10 @@ Three things are the reader's, and only the reader's:
   A move up that ends a stretch past the end is the rubber band springing back, not the reader: up
   to the lowest end seen while the view was past it (`springEnd`), it is no move up, so a turn that
   lands under the finger and leaves the spring-back short of the new end keeps the pin within the
-  hold, as it did before #s524. Any write of the engine's, or a move above that end, ends it.
+  hold, as it did before #s524. A transaction that meets the spring-back before its event reads it
+  the same way. A spring-back only rises, and only to that end, so any write of the engine's, a move
+  above that end, or a move down once the view is back inside the content ends it: a reader who
+  came back down to a raised end and then moves up is leaving it.
   One commanded move is held to the acquire rule even while following: a TURN STEP (`[`/`]`, `pin: "acquire"`, #s487, the owner's
   #s502) keeps the pin only where it lands at the true end, as a jump to the end would take it. A
   step back from the end of a session whose last turns are short lands within the hold slack, and a

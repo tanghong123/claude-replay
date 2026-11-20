@@ -478,7 +478,9 @@ class VirtualWindow {
     // end, a fling's bounce), the lowest such end of that stretch; null otherwise. A move up that stays
     // at or below it is the rubber band springing back, not the reader leaving the end (#s524): a turn
     // that lands under the finger raises the end, and the spring-back then ends above the new one.
-    // Cleared once an event reads the view above it, and by any write of the engine's.
+    // A spring-back only rises, and only to that end: cleared once an event reads the view above it,
+    // or moving DOWN back inside the content (a reader who came back to a raised end and then moves
+    // up is leaving it), and by any write of the engine's.
     this.springEnd = null;
     // The viewport trace (#192): every decision the engine makes, with the geometry it saw, in a
     // ring buffer the reader can copy out of a bug report — `copy(window.__viewportTrace)` — and
@@ -1038,8 +1040,12 @@ class VirtualWindow {
       this.trace("follow:unheard", { verdict: "wait", belief, top: Math.round(top), gap: Math.round(gap) });
       return;
     }
-    const verdict = classifyScroll(true, true, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal, top < belief && !this.echoesAfterInput(top));
-    this.trace("follow:unheard", { verdict, belief, top: Math.round(top), gap: Math.round(gap) });
+    // A transaction can meet the rubber band's spring-back before its event does (a turn that landed
+    // under the finger renders as the band settles): a move up that stays at or below that stretch's
+    // end is no move of the reader's here either (`springEnd`, #s524).
+    const spring = this.springEnd != null && top >= this.springEnd - 0.5;
+    const verdict = classifyScroll(true, true, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal, top < belief && !spring && !this.echoesAfterInput(top));
+    this.trace("follow:unheard", { verdict, belief, spring, top: Math.round(top), gap: Math.round(gap) });
     if (verdict !== "unfollow") return;
     this.following = false;
     this.followChanged();
@@ -2253,9 +2259,10 @@ class VirtualWindow {
     const at = event && event.timeStamp ? event.timeStamp : performance.now();
     const user = this.dragging || at - this.lastInputStamp < this.userIntentMs;
     const gap = this.gapToBottom();
-    // Past the end, the end as it stands now; above the lowest end of that stretch, the stretch is over.
+    // Past the end, the end as it stands now. Back inside the content, a move above the lowest end of
+    // that stretch, or any move down (a spring-back only rises), ends it.
     if (gap < -1) this.springEnd = this.springEnd == null ? top + gap : Math.min(this.springEnd, top + gap);
-    else if (this.springEnd != null && top < this.springEnd - 0.5) this.springEnd = null;
+    else if (this.springEnd != null && (top < this.springEnd - 0.5 || (before != null && top > before + 0.5))) this.springEnd = null;
     // A move up that stays at or below that end is the rubber band springing back (`springEnd`).
     const spring = this.springEnd != null;
     const up = before != null && top < before - 0.5 && !spring;
