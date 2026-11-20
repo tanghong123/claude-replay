@@ -43,6 +43,20 @@ const refusal = (title, message) => Object.assign(new Error(message), { title })
 const NO_KEYBOARD_INPUTS = new Set(["button", "checkbox", "radio", "range", "color", "file", "image", "reset", "submit", "hidden"]);
 const takesKeyboard = at => at?.localName === "input" ? !NO_KEYBOARD_INPUTS.has(at.type)
   : at?.localName === "textarea" || at?.localName === "select" || !!at?.isContentEditable;
+/** The element whose box a fixed layer inside `layer` is placed in: its nearest ancestor that contains
+ *  fixed layers (a transform, a filter, a perspective, layout or paint containment, a size container,
+ *  or a `will-change` of one of them), or null for the window. */
+function fixedBlock(layer) {
+  for (let at = layer.parentElement; at; at = at.parentElement) {
+    const style = getComputedStyle(at);
+    if (style.transform !== "none" || style.perspective !== "none" || style.filter !== "none"
+      || (style.backdropFilter && style.backdropFilter !== "none")
+      || /\b(layout|paint|strict|content)\b/.test(style.contain || "")
+      || /\b(size|inline-size)\b/.test(style.containerType || "")
+      || /\b(transform|perspective|filter)\b/.test(style.willChange || "")) return at;
+  }
+  return null;
+}
 /** #s627: the review sheet ends above an on-screen keyboard while a field inside it has the focus.
  *  iOS covers the foot of what is drawn with its keyboard and never shortens a fixed layer for it,
  *  and it lifts a focused field by scrolling the page, which the sheet (fixed over the whole app, its
@@ -55,8 +69,9 @@ const takesKeyboard = at => at?.localName === "input" ? !NO_KEYBOARD_INPUTS.has(
  *  keyboard up iOS 26 reports it equal to the page's own offset (338 with the sheet drawn at the
  *  screen's top, measured on the iPhone 17 Pro Simulator), and on a phone the ride moves the app (or
  *  a host's box) back over that offset, so what is visible starts at the top as drawn. The sheet's
- *  foot is raised to the visible part's foot, measured from its containing block's top (the window's
- *  in the app, a host's pane under the host's bar), and the scroller holding the field brings into view the field with what belongs to it:
+ *  foot is raised to the visible part's foot, measured from the top of the box it is placed in (the
+ *  window, the view in a host's pane, or what the ride's transform makes its box), and the scroller
+ *  holding the field brings into view the field with what belongs to it:
  *  its largest ancestor under the scroller that fits in what stays visible (mdrev's note card: the
  *  quote, the field, the share box and Save), or the field's top where nothing does. Without a field
  *  the sheet is as its rules draw it. Returns the height it fitted the sheet to, as a string, so a
@@ -66,7 +81,7 @@ const takesKeyboard = at => at?.localName === "input" ? !NO_KEYBOARD_INPUTS.has(
  *  A pinch zoom is not a keyboard: while the scale is off 1 the sheet is as its rules draw it, as the
  *  ride leaves the pan to the reader. Raised, the sheet drops its foot's safe-area padding, which
  *  only the screen's edge needs. */
-function fitSheetAboveKeyboard(sheet, field, viewport, applied) {
+function fitSheetAboveKeyboard(sheet, field, viewport, applied, typing) {
   // The sheet as its rules draw it, from the box drawn now plus what was applied, so the sheet never
   // grows back for a measure (a scroller grown for a moment would clamp the reader's place), and its
   // inset from its containing block's top as the rules set it. Its height and insets alone, never its
@@ -74,13 +89,19 @@ function fitSheetAboveKeyboard(sheet, field, viewport, applied) {
   const box = sheet.getBoundingClientRect(), style = getComputedStyle(sheet);
   const drawn = box.height + applied.bottom;
   const ruledTop = parseFloat(style.top) || 0, ruledBottom = (parseFloat(style.bottom) || 0) - applied.bottom;
-  // The containing block's top below the window's: a view that contains its layers (`pl-boxed`: a
-  // host's pane under the host's bar) has its own box as the block, its gap to the window's top kept
-  // from before the ride moved it (`--pane-y`, pane-layout.js); in the app the block starts at the
-  // window's top. What the keyboard covers is the ride's own measure, the layout viewport's height
-  // less the visible one's: nothing on a desktop, so a sheet taller than the window is left alone.
-  const holder = sheet.parentElement;
-  const blockTop = holder?.classList.contains("pl-boxed") ? parseFloat(holder.style.getPropertyValue("--pane-y")) || 0 : 0;
+  // The top of the box the sheet is placed in, below the visible part's top (#s627's review). The box
+  // is found as the browser finds it, not by a class: a view in a host's pane contains its layers
+  // (`pl-boxed`), but not while a phone held sideways expands the pane (its containment is then the
+  // inline size's alone), and the ride's transform makes the box it moves the sheet's box. Each is the
+  // view or around it, and the ride moves them together, so the box's top is measured from the view's
+  // and the view's own top is the one it rests at: read while no field takes the keyboard (as the ride
+  // keeps `pageRest`), unclamped, since a host page scrolled past the view's top puts it above the
+  // window's. In the app the view rests at the window's top and every box starts there. What the
+  // keyboard covers is the ride's own measure, the layout viewport's height less the visible one's:
+  // nothing on a desktop, so a sheet taller than the window is left alone.
+  const holder = sheet.parentElement, block = fixedBlock(sheet);
+  if (!typing || applied.rest == null) applied.rest = holder ? holder.getBoundingClientRect().top : 0;
+  const blockTop = block ? applied.rest + block.getBoundingClientRect().top - holder.getBoundingClientRect().top : 0;
   const covered = viewport ? (viewRoot.styleRoot()?.clientHeight || 0) - viewport.height : 0;
   let want = 0;
   if (field && covered > 0.5 && Math.abs((viewport.scale || 1) - 1) < 0.01) {
@@ -532,13 +553,15 @@ export class Preview {
     // band changes height (the keyboard rising or changing), never for a pan of the same band.
     const viewport = window.visualViewport;
     let fitted = "", fittedField = null;
-    const applied = { bottom: 0 };
+    // `rest`: the view's top as it rests, read while no field takes the keyboard (`fitSheetAboveKeyboard`).
+    const applied = { bottom: 0, rest: null };
     const fit = () => {
       if (this.reviewSheet !== state) return;
       let at = viewRoot.active();
       while (at?.shadowRoot?.activeElement) at = at.shadowRoot.activeElement;
-      const field = at && sheet.contains(at) && takesKeyboard(at) ? at : null;
-      const height = fitSheetAboveKeyboard(sheet, field, viewport, applied);
+      const typing = !!at && takesKeyboard(at);
+      const field = typing && sheet.contains(at) ? at : null;
+      const height = fitSheetAboveKeyboard(sheet, field, viewport, applied, typing);
       if (field && height && (height !== fitted || field !== fittedField)) revealInSheet(sheet, field);
       fitted = height; fittedField = field;
     };
@@ -555,6 +578,7 @@ export class Preview {
       this.reviewSheet = null;
       viewport?.removeEventListener("resize", fit);
       viewport?.removeEventListener("scroll", fit);
+      removeEventListener("scroll", fit);
       sheet.removeEventListener("focusin", fitSoon);
       sheet.removeEventListener("focusout", fitAfterLeaving);
       removeEventListener("keydown", onKey, true);
@@ -585,6 +609,8 @@ export class Preview {
     addEventListener("focusin", onFocus, true);
     viewport?.addEventListener("resize", fit);
     viewport?.addEventListener("scroll", fit);
+    // A host page scrolled while the sheet is open moves the view: its resting top is read again.
+    addEventListener("scroll", fit, { passive: true });
     sheet.addEventListener("focusin", fitSoon);
     sheet.addEventListener("focusout", fitAfterLeaving);
     closeBtn.onclick = close;

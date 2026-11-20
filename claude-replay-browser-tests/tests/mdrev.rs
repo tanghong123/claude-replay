@@ -154,12 +154,15 @@ fn lengthen_guide(repo: &Path) {
 
 /// #s627: a note started on a line low in the open review sheet, then an on-screen keyboard over the
 /// window's foot (the visual viewport shortened, as iOS's keyboard does and as the phone keyboard
-/// cases shadow it): the sheet ends above the keyboard, and the note's field and its Save are in view
-/// and are what a tap there hits. The keyboard put away, the sheet is where it was again (the window,
+/// cases shadow it): the sheet ends at the keyboard's top (neither under it nor short of it, which a
+/// foot measured from the wrong box gives), and the note's field and its Save are in view
+/// and are what a tap there hits; where the part left above the keyboard is shorter than the note's
+/// card (a phone held sideways), the field alone, as the fit brings in what fits (`save_in_view`
+/// false). The keyboard put away, the sheet is where it was again (the window,
 /// in the app; a host's pane). Red on
 /// 54b26c5f, where the field stayed under the keyboard (the iPad Simulator walk saw it at 1279pt
 /// under a keyboard from 1028pt, its Save past the window's foot).
-fn a_note_stays_above_the_keyboard(tab: &headless_chrome::Tab) {
+fn a_note_stays_above_the_keyboard(tab: &headless_chrome::Tab, save_in_view: bool) {
     let line = eval(
         tab,
         "(function(){ var H = innerHeight, ps = [...document.querySelectorAll('.review-sheet .doc p')]; var p = ps.find(function(p){ var r = p.getBoundingClientRect(); return r.top > H * 0.62 && r.bottom < H * 0.9 && /^Berth/.test(p.textContent); }); if (!p) return 'none: ' + ps.map(function(p){ return Math.round(p.getBoundingClientRect().top); }).join(','); var w = document.createTreeWalker(p, NodeFilter.SHOW_TEXT); var n = w.nextNode(); var r = document.createRange(); r.setStart(n, 0); r.setEnd(n, Math.min(n.data.length, 12)); var s = getSelection(); s.removeAllRanges(); s.addRange(r); document.dispatchEvent(new Event('selectionchange')); return p.textContent.slice(0, 12); })()",
@@ -216,12 +219,16 @@ fn a_note_stays_above_the_keyboard(tab: &headless_chrome::Tab) {
         "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - window.__kb; } }); Object.defineProperty(visualViewport, 'offsetTop', { configurable: true, get: function () { return window.__kb; } }); visualViewport.dispatchEvent(new Event('resize')); return true; })()",
     );
     let visible = format!(
-        "(function(){{ var g = {geometry}; g = JSON.parse(g); var top = g.scrollerTop, bottom = g.inner - g.kb; return g.focused && g.sheet[1] <= bottom + 1 && g.field[0] >= top && g.field[1] <= bottom && g.save[0] >= top && g.save[1] <= bottom && g.saveHit && g.fieldHit; }})()"
+        "(function(){{ var g = {geometry}; g = JSON.parse(g); var top = g.scrollerTop, bottom = g.inner - g.kb; return g.focused && Math.abs(g.sheet[1] - bottom) <= 1 && g.field[0] >= top && g.field[1] <= bottom && g.fieldHit && (!{save_in_view} || (g.save[0] >= top && g.save[1] <= bottom && g.saveHit)); }})()"
     );
     until(
         tab,
         &visible,
-        "the sheet ending above the keyboard, the note's field and its Save in view",
+        if save_in_view {
+            "the sheet ending above the keyboard, the note's field and its Save in view"
+        } else {
+            "the sheet ending above the keyboard, the note's field in view"
+        },
         Duration::from_secs(5),
         geometry,
     );
@@ -1568,7 +1575,7 @@ fn a_phone_review_sheet_keeps_a_note_above_the_keyboard() {
         Duration::from_secs(30),
         "(document.querySelector('.review-sheet') || {innerText: 'no sheet'}).innerText.slice(0, 200)",
     );
-    a_note_stays_above_the_keyboard(&tab);
+    a_note_stays_above_the_keyboard(&tab, true);
 }
 
 /// #s627: in a host's pane under the host's bar (the kit's session view in a page of its own), the
@@ -1578,19 +1585,76 @@ fn a_phone_review_sheet_keeps_a_note_above_the_keyboard() {
 #[test]
 #[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn a_phone_review_sheet_in_a_host_s_pane_keeps_a_note_above_the_keyboard() {
+    host_review_sheet_keeps_a_note_above_the_keyboard(
+        "mdrev-sheet-keyboard-host",
+        3347,
+        (402, 874),
+        "",
+        false,
+        40,
+    );
+}
+
+/// #s627's review of 799df8f4: a host page that scrolls the pane with it, scrolled past the pane's
+/// top (here 60px above the window's). The sheet is drawn in the view's box, from there, so its foot
+/// is measured from the view's own top, above the window's. Red on 799df8f4, which read that top from
+/// `--pane-y`, a gap clamped at 0, and left the foot 60px above the keyboard.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
+fn a_phone_review_sheet_in_a_host_page_scrolled_past_the_pane_keeps_a_note_above_the_keyboard() {
+    host_review_sheet_keeps_a_note_above_the_keyboard(
+        "mdrev-sheet-keyboard-host-scrolled",
+        3348,
+        (402, 874),
+        "(function(){ document.body.style.height = '2000px'; var p = document.getElementById('hostPane'); p.style.position = 'absolute'; p.style.top = '40px'; p.style.bottom = 'auto'; p.style.height = innerHeight + 'px'; scrollTo(0, 100); return true; })()",
+        false,
+        -60,
+    );
+}
+
+/// #s627's review of 799df8f4: a phone held sideways in a host's pane, the pane expanded (⤢). There
+/// the view contains only its inline size, so the sheet is placed in the window, over the host's bar,
+/// whatever class the view wears. Red on 799df8f4, which took the view's `pl-boxed` for its box and
+/// put the foot the bar's height above the keyboard.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
+fn a_phone_held_sideways_reviews_in_a_host_s_expanded_pane_with_a_note_above_the_keyboard() {
+    host_review_sheet_keeps_a_note_above_the_keyboard(
+        "mdrev-sheet-keyboard-host-sideways",
+        3349,
+        (874, 402),
+        "",
+        true,
+        0,
+    );
+}
+
+/// The host page's half of the #s627 cases: a phone of `size` in the session-view host page (the
+/// host's 40px bar over its pane), `page` run on the host's page once the view is in its pane, the
+/// guide opened in the pane (expanded with ⤢ when `expand`), its Review sheet drawn from `sheet_top`,
+/// then a note low in it with the keyboard up. Held sideways the part left above the keyboard is
+/// shorter than the note's card, so only the field is asked to show there.
+fn host_review_sheet_keeps_a_note_above_the_keyboard(
+    name: &str,
+    port: u16,
+    (width, height): (u32, u32),
+    page: &str,
+    expand: bool,
+    sheet_top: i64,
+) {
     let _serial = serial();
-    let (base, stores, repo, state) = shared_review_world("mdrev-sheet-keyboard-host");
+    let (base, stores, repo, state) = shared_review_world(name);
     lengthen_guide(&repo);
     let m = Monitor::spawn_with(
         Kind::V1,
-        3347,
+        port,
         &base,
         Some(&stores),
         true,
         &[("MDREV_STATE_DIR", &state.display().to_string())],
     );
     let (_browser, tab) = chrome_tab();
-    harness::phone(&tab, 402, 874);
+    harness::phone(&tab, width, height);
     m.pair(&tab);
     harness::open_host_page(
         &tab,
@@ -1608,6 +1672,9 @@ fn a_phone_review_sheet_in_a_host_s_pane_keeps_a_note_above_the_keyboard() {
         &tab,
         "Object.defineProperty(Navigator.prototype, 'languages', { configurable: true, get: () => ['en-US'] }); 'ok'",
     );
+    if !page.is_empty() {
+        eval(&tab, page);
+    }
     open_guide(&tab, &repo);
     until(
         &tab,
@@ -1616,18 +1683,31 @@ fn a_phone_review_sheet_in_a_host_s_pane_keeps_a_note_above_the_keyboard() {
         Duration::from_secs(30),
         PANE,
     );
+    if expand {
+        eval(
+            &tab,
+            "document.querySelector('#preview .preview-expand').click(); 'ok'",
+        );
+        until(
+            &tab,
+            "document.getElementById('sessionView').classList.contains('preview-full') && !/\\blayout\\b/.test(getComputedStyle(document.getElementById('sessionView')).contain)",
+            "the pane expanded, the view containing its inline size alone",
+            Duration::from_secs(10),
+            "document.getElementById('sessionView').className + ' | ' + getComputedStyle(document.getElementById('sessionView')).contain",
+        );
+    }
     eval(
         &tab,
         "document.querySelector('.preview-review').click(); 'ok'",
     );
     until(
         &tab,
-        "!!document.querySelector('.review-sheet .mdrev-host h1') && !!document.querySelector('.review-sheet .doc p') && Math.round(document.querySelector('.review-sheet').getBoundingClientRect().top) === 40",
-        "the review sheet drawn inside the host's pane, its document drawn",
+        &format!("!!document.querySelector('.review-sheet .mdrev-host h1') && !!document.querySelector('.review-sheet .doc p') && Math.round(document.querySelector('.review-sheet').getBoundingClientRect().top) === {sheet_top}"),
+        "the review sheet drawn where the host's page places it, its document drawn",
         Duration::from_secs(30),
         "JSON.stringify({ sheet: (function(){ var s = document.querySelector('.review-sheet'); return s ? [s.getBoundingClientRect().top, s.getBoundingClientRect().bottom].map(Math.round) : null; })(), text: (document.querySelector('.review-sheet') || {innerText: 'no sheet'}).innerText.slice(0, 120) })",
     );
-    a_note_stays_above_the_keyboard(&tab);
+    a_note_stays_above_the_keyboard(&tab, height > width);
 }
 
 /// #s12, the owner chose it: on a phone, where a tab of its own has no way back (#335), shared review
@@ -1967,7 +2047,7 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
     );
     // #s627: a note low on the screen keeps above an on-screen keyboard (the iPad's case).
     eval(&tab, "window.__step = 'a note above the keyboard'; 'ok'");
-    a_note_stays_above_the_keyboard(&tab);
+    a_note_stays_above_the_keyboard(&tab, true);
     // Closed by Escape with the focus inside mdrev's document (its heading made focusable, so the
     // unmount takes the focused element with it, as it takes a note field or one of mdrev's own
     // buttons), the focus still goes back to Review.
