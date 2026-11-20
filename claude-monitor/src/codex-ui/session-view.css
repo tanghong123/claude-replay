@@ -1539,7 +1539,8 @@
 :where(#sessionView.pl-max-w-620) .spot-link{right:0;--spot-top:-5px}
 :where(#sessionView.pl-max-w-620) .turn.user .spot-link{--spot-top:-12px}
 :where(#sessionView.pl-max-w-620) .turn.proposed-plan>.spot-link{right:7px;--spot-top:8px}
-:where(#sessionView) .turn.user.user-images-alone .prompt-attachments{margin-top:0}
+:where(#sessionView) .turn.user.user-images-alone .prompt-attachments{display:flex;flex-wrap:wrap;justify-content:flex-end;margin-top:0}
+:where(#sessionView) .turn.user.user-images-alone .prompt-attachments>*{flex:0 1 auto;max-width:min(100%,316px)}
 :where(#sessionView.pl-max-w-620) .turn.user .user-prompt{max-width:90%}
 :where(#sessionView.pl-max-w-620) .prompt-attachments{grid-template-columns:1fr}
 :where(#sessionView.pl-max-w-620) .turn.proposed-plan>.body{padding:13px 12px 15px}
