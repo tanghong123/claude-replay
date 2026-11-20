@@ -1715,6 +1715,7 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
     );
     // The focus stays inside: one moved to a control under the sheet (Tab past its first control,
     // or a script) is put back, and the same keys still move nothing.
+    eval(&tab, "window.__step = 'the focus put back'; 'ok'");
     eval(
         &tab,
         "window.__keys = []; document.querySelector('.preview-review').focus(); 'ok'",

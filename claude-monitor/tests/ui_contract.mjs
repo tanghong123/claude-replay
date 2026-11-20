@@ -1644,7 +1644,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // room changes (the magnifier gives way, the keyboard, a pane), through the view's own observer.
   assert.match(viewSource, /const SEARCH_PLACEHOLDERS = \["Search this session", "Search"\];/, "the shorter texts, longest first");
   assert.match(viewSource, /input\.placeholder = \[hint, \.\.\.SEARCH_PLACEHOLDERS\]\.find\(fits\) \|\| SEARCH_PLACEHOLDERS\[SEARCH_PLACEHOLDERS\.length - 1\];\n    input\.style\.width = `\$\{room\}px`;\n    searchField\.scrollLeft = chips \? searchField\.scrollWidth : 0;/, "an empty field fills its room, from its start");
-  assert.match(viewSource, /\nconst searchFit = new ResizeObserver\(\(\) => fitSearchField\(\)\);\nsearchFit\.observe\(searchField\);\n/, "the field is fitted again as the strip's room changes");
+  // At once in a phone's open box, which follows the keyboard; elsewhere at the next frame, since that
+  // fit writes the cluster's floor and the heading's classes, above the field in the page, and a write
+  // there inside the delivery raised a "ResizeObserver loop" error event a host's page receives (#s624).
+  assert.match(viewSource, /\nlet searchFitFrame = 0;\nconst searchFit = new ResizeObserver\(\(\) => \{\n  if \(viewRoot\.\$\("\.header-searchbox"\)\?\.classList\.contains\("phone-open"\)\) \{ fitSearchField\(\); return; \}\n  if \(!searchFitFrame\) searchFitFrame = requestAnimationFrame\(\(\) => \{ searchFitFrame = 0; fitSearchField\(\); \}\);\n\}\);\nsearchFit\.observe\(searchField\);\n/, "the field is fitted again as the strip's room changes: at once in a phone's open box, at the next frame elsewhere");
   // And as the bar's room changes with no window resize (the pane opening, its drag): a floor fitted
   // to the old room held the box past the session's column (#s520, train2's review).
   assert.match(viewSource, /\nconst searchBar = viewRoot\.\$\("\.workspace>\.topbar"\);\nif \(searchBar\) searchFit\.observe\(searchBar\);\n/, "the field is fitted again as the bar's room changes");

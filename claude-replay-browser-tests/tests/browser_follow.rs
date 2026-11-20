@@ -14415,6 +14415,232 @@ fn a_narrow_session_column_keeps_a_held_query_whole_and_the_chip_whole_or_its_do
     drop(monitor);
 }
 
+/// What #s624's case records of the search box. Installed before the page's scripts, beside the
+/// notice counter (`window.__loops`, each notice by the step the case set, `window.__step`):
+/// - `window.__reports`: every size report a page's ResizeObserver delivers, as the step, its
+///   target's id (or first class) and width (the constructor is wrapped; the observers work as
+///   before);
+/// - `window.__frames`, from `window.__record()` or a `/` keydown once `window.__arm` is set (seen
+///   first, at the window in the capture phase): six entries, one a frame, of the strip the fit's
+///   observer watches (`#searchField`, its width), the cluster's floor, the cluster's width and the
+///   heading's two classes the fit decides, `|`-joined. Each is read at the start of a frame, before
+///   the frame callbacks the page asked for since the one before (the fit's, `fitHeadingSoon`'s), so
+///   it is what the frame before it painted, unless a task between the two frames changed the page
+///   (none in this case's steps): the first is the first frame drawn after the key or the change.
+const HELD_QUERY_SCRIPT: &str = "window.__loops = []; addEventListener('error', function (e) { if (!e.error && /^ResizeObserver loop/.test(String(e.message))) window.__loops.push(window.__step || null); }); window.__reports = []; (function () { var RO = window.ResizeObserver; window.ResizeObserver = function (callback) { return new RO(function (entries, observer) { entries.forEach(function (e) { var t = e.target; window.__reports.push(String(window.__step) + ' ' + (t.id ? '#' + t.id : '.' + String(t.className).split(' ')[0]) + ':' + Math.round(e.contentRect.width)); }); return callback.call(this, entries, observer); }); }; window.ResizeObserver.prototype = RO.prototype; })(); window.__sig = function () { var c = document.querySelector('.workspace>.topbar>.header-search-cluster'), f = document.getElementById('searchField'), crumb = document.getElementById('sessionCrumb'), h = crumb && crumb.parentElement; return [f ? Math.round(f.getBoundingClientRect().width) : -1, c ? c.style.getPropertyValue('--search-floor') : '?', c ? Math.round(c.getBoundingClientRect().width) : -1, h ? ['crumb-off', 'chip-dot'].filter(function (k) { return h.classList.contains(k); }).join(' ') : '?'].join('|'); }; window.__record = function () { var out = window.__frames = []; requestAnimationFrame(function () { (function next() { requestAnimationFrame(function () { out.push(window.__sig()); if (out.length < 6) next(); }); })(); }); }; addEventListener('keydown', function (e) { if (e.key !== '/' || !window.__arm) return; window.__arm = false; window.__record(); }, true);";
+
+/// #s624: at a desktop's width, the right pane shut and open, a query held in the search box, taken
+/// up again by /, then emptied with the focus taken from the field in one go, as a host's script may:
+/// the browser raises no "ResizeObserver loop" notice at the window, where a host page's error handler
+/// receives it as an error (the native app's sheet case found one). Red before #s624 on each such
+/// emptying with the pane open (at 1400px the shut pane leaves the box its room, and stays here as the
+/// other layout's check): the strip's new size went to the field's own observer, whose fit wrote the
+/// cluster's floor and the heading's classes, both above the field in the page, inside that delivery
+/// (measured: the cluster 252px then 246px within the frame), so the browser put the cluster's report
+/// off a frame with that notice. The fit now waits for the next frame, so the box settles one frame
+/// after such a change (measured: the strip 172px and the cluster 252px in the first frame drawn, 166px
+/// and 246px from the next on); the case holds that it then holds still, and the reports show the
+/// move. And / on the held query draws the box as at rest from the first frame after the key and
+/// holds it (measured: it gives the observers no size report at all here).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_held_query_emptied_beside_the_open_pane_raises_no_resize_observer_loop() {
+    let _serial = serial();
+    let base = base("held-query-loop");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000624".to_string();
+    let mut jsonl = harness::long_session(6, harness::Shape::default());
+    jsonl.push_str("{\"type\":\"custom-title\",\"customTitle\":\"Harbour tide table notes\"}\n");
+    stores.claude_session(&sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3624, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    {
+        use headless_chrome::protocol::cdp::Page;
+        tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+            source: HELD_QUERY_SCRIPT.to_string(),
+            world_name: None,
+            include_command_line_api: None,
+            run_immediately: None,
+        })
+        .expect("the notice counter and the recorders are installed");
+    }
+    harness::resize(&tab, 1400.0, 900.0);
+    tab.navigate_to(&monitor.url(&format!("?ui=app&session={sid}")))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    harness::until(
+        &tab,
+        "!!document.querySelector('.virtual-window .turn.user') && document.getElementById('sessionTitle').textContent === 'Harbour tide table notes'",
+        "the app shell to mount the fixture",
+        Duration::from_secs(30),
+        "document.body.innerText.slice(0, 200)",
+    );
+    let field = "(document.activeElement || {}).id === 'transcriptSearchInput'";
+    // Escape releases the search and keeps its query in the field: the box at rest with a held query.
+    let held = "(function(){ var c = document.querySelector('.workspace>.topbar>.header-search-cluster'); return !c.matches(':focus-within') && !c.classList.contains('search-held') && document.getElementById('transcriptSearchInput').value.indexOf('needle') >= 0; })()";
+    let frames_of = |tab: &headless_chrome::Tab, what: &str| -> Vec<String> {
+        harness::until(
+            tab,
+            "!!window.__frames && window.__frames.length >= 6",
+            &format!("six frames recorded after {what}"),
+            Duration::from_secs(10),
+            "JSON.stringify(window.__frames)",
+        );
+        let frames = harness::eval(tab, "JSON.stringify(window.__frames)");
+        serde_json::from_str(frames.as_str().unwrap_or("[]")).unwrap_or_default()
+    };
+    let strip = |sig: &str| {
+        sig.split('|')
+            .next()
+            .unwrap_or("")
+            .parse::<f64>()
+            .unwrap_or(-1.0)
+    };
+    let set_step = |tab: &headless_chrome::Tab, step: &str| {
+        harness::eval(tab, &format!("window.__step = {step:?}; 'ok'"));
+    };
+    for open in [false, true] {
+        let toggle = format!("(function(){{ var v = document.getElementById('sessionView'); if (v.classList.contains('preview-off') === {open}) document.getElementById('previewBtn').click(); return true; }})()");
+        harness::eval(&tab, &toggle);
+        harness::until(
+            &tab,
+            &format!(
+                "document.getElementById('sessionView').classList.contains('preview-off') === {}",
+                !open
+            ),
+            "the pane as the round wants it",
+            Duration::from_secs(10),
+            "document.getElementById('sessionView').className",
+        );
+        harness::until_preview_parked(&tab);
+        for round in 0..2 {
+            let step = format!("{} pane, round {round}", if open { "open" } else { "shut" });
+            set_step(&tab, &format!("{step}: find"));
+            tab.press_key("/").unwrap();
+            harness::until(
+                &tab,
+                field,
+                "/ to open find",
+                Duration::from_secs(5),
+                "(document.activeElement || {}).id",
+            );
+            tab.type_str("needle").unwrap();
+            harness::until(
+                &tab,
+                "document.getElementById('transcriptSearchInput').value.indexOf('needle') >= 0",
+                "the query typed",
+                Duration::from_secs(5),
+                "document.getElementById('transcriptSearchInput').value",
+            );
+            harness::eval(&tab, TWO_FRAMES);
+            tab.press_key("Escape").unwrap();
+            harness::until(
+                &tab,
+                held,
+                "Escape to hold the query",
+                Duration::from_secs(5),
+                "document.querySelector('.header-search-cluster').className",
+            );
+            harness::eval(&tab, TWO_FRAMES);
+
+            // / takes the held query up again: drawn as at rest from the first frame after the key.
+            let taken = format!("{step}: / with the query held");
+            set_step(&tab, &taken);
+            let rest = harness::eval(
+                &tab,
+                "window.__arm = true; window.__frames = null; window.__sig()",
+            );
+            let rest = rest.as_str().unwrap_or("").to_string();
+            tab.press_key("/").unwrap();
+            harness::until(
+                &tab,
+                field,
+                "/ to take the held query up again",
+                Duration::from_secs(5),
+                "(document.activeElement || {}).id",
+            );
+            let frames = frames_of(&tab, "/");
+            assert!(
+                frames.len() == 6 && strip(&rest) > 0.0 && frames.iter().all(|f| *f == rest),
+                "{taken}: the box in use drawn as at rest from the first frame after / (strip|floor|cluster|heading): {rest} at rest, then {frames:?}"
+            );
+
+            // The query emptied and the focus taken from the field in one go: the strip's new size
+            // goes to the fit's observer, which raised the notice before #s624 with the pane open.
+            let emptied = format!("{step}: the query emptied and the field left");
+            set_step(&tab, &emptied);
+            let before = harness::eval(&tab, "(function(){ var b = window.__sig(); window.__record(); var i = document.getElementById('transcriptSearchInput'); i.value = ''; i.dispatchEvent(new Event('input', { bubbles: true })); i.blur(); return b; })()");
+            let before = before.as_str().unwrap_or("").to_string();
+            let frames = frames_of(&tab, "the emptying");
+            // It settles in the frame after the first: the first frame drawn is the one before the
+            // observer's fit, which waits for the next. A fit going back and forth from frame to
+            // frame raises no notice, and would show here.
+            assert!(
+                frames.len() == 6 && strip(&frames[5]) > 0.0 && frames[1..].iter().all(|f| *f == frames[5]),
+                "{emptied}: the box settles one frame after the emptying and holds (strip|floor|cluster|heading): {before} before, then {frames:?}"
+            );
+            if open {
+                // Not vacuous: where the notice came, the pane was open, the emptying gave the search
+                // fit's observer the strip's new size, and after that report the cluster above the
+                // strip was resized again: before #s624 by the search fit inside that delivery (the
+                // write that raised the notice), now by the next frame's fits (the heading's and the
+                // search's, both through `fitHeading`; which fit moves it is read from the code).
+                // Measured order, before: cluster 252, strip 172, strip 166, cluster 246; now:
+                // cluster 252, strip 172, cluster 246, strip 166. Read from the reports, which hold
+                // either way, where the frames differ (before #s624 the fit was drawn in the first
+                // frame). With the pane shut the strip is reported too, and nothing after it
+                // (measured now: cluster 400, strip 206).
+                assert_eq!(
+                    harness::eval(
+                        &tab,
+                        "document.getElementById('sessionView').classList.contains('preview-off')"
+                    ),
+                    false,
+                    "{emptied}: the pane open"
+                );
+                let reports = harness::eval(
+                    &tab,
+                    &format!("JSON.stringify(window.__reports.filter(function (r) {{ return r.indexOf({emptied:?} + ' ') === 0; }}))"),
+                );
+                let reports = reports.as_str().unwrap_or("").to_string();
+                assert!(
+                    reports.contains(" #searchField:"),
+                    "{emptied}: the strip's new size reported to the fit's observer: {reports}"
+                );
+                let list: Vec<String> = serde_json::from_str(&reports).unwrap_or_default();
+                let strip_at = list.iter().position(|r| r.contains(" #searchField:"));
+                let cluster_of = |r: &String| {
+                    r.split(" .header-search-cluster:")
+                        .nth(1)
+                        .map(str::to_string)
+                };
+                // A report of the cluster before the strip's, so the one after it is a new width,
+                // not a change of height alone.
+                let resized_after = strip_at.is_some_and(|at| {
+                    let Some(last) = list[..at].iter().rev().find_map(cluster_of) else {
+                        return false;
+                    };
+                    list[at + 1..]
+                        .iter()
+                        .filter_map(cluster_of)
+                        .any(|w| w != last)
+                });
+                assert!(
+                    resized_after,
+                    "{emptied}: after the strip's report, the cluster above it resized to a new width: {reports}"
+                );
+            }
+        }
+    }
+    let loops = harness::eval(&tab, "JSON.stringify(window.__loops)");
+    assert_eq!(
+        loops.as_str().unwrap_or(""),
+        "[]",
+        "no ResizeObserver loop notice as a held query is taken up and emptied, by step"
+    );
+}
+
 /// #s581 (Hong: "when the pane is too narrow to hold all of the agent name, agent type, and repo
 /// name, give room to agent name, and show agent type and repo name in the drop down menu when user
 /// clicks the agent name"): where the bar holds the session's name beside its crumb (the agent and the

@@ -2373,24 +2373,31 @@ impl Drop for Chrome {
 /// The ResizeObserver loop notices a host page kept apart from its errors (`host.loops`, `tab.loops`,
 /// #s596), said as the case's browser ends: the browser's report that a size observation waited for
 /// the next frame is no throw and fails nothing, but it can mean a layout feedback loop, so a run
-/// that passes still says where one came (#s624). Written to stderr itself, past libtest's capture of
-/// a passing case's `eprintln!`. Each tab is asked on a thread of its own and given 2 s: a tab that
-/// does not answer is left to the SIGTERM that follows, which also ends the question.
+/// that passes still says where one came (#s624). It reads the page each tab shows as the browser
+/// ends: a page the case reloaded or left took its own list with it. Written to stderr itself, past
+/// libtest's capture of a passing case's `eprintln!`, one line per tab that kept any, counted by the
+/// step the case set (`window.__step`) with the first and last time in the order kept; and one line
+/// counting the tabs that did not answer in time. A tab whose page could not be read at all (gone,
+/// crashed) says nothing, and nor does one no thread could be started for. The list of tabs is taken
+/// first, under headless_chrome's own lock; then every tab is asked at once, each on a thread of its
+/// own, against one deadline of 2 s from the last ask: a tab that has not answered by then is left to
+/// the SIGTERM that follows, which also ends the question. The time it takes is a `CR_PROFILE` row of
+/// its own.
 fn report_loop_notices(browser: &headless_chrome::Browser) {
+    let t0 = Instant::now();
     let tabs: Vec<std::sync::Arc<headless_chrome::Tab>> = match browser.get_tabs().lock() {
         Ok(tabs) => tabs.clone(),
         Err(_) => return,
     };
     let case = std::thread::current().name().unwrap_or("?").to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut asked = 0;
     for tab in tabs {
-        let (tx, rx) = std::sync::mpsc::channel();
+        let tx = tx.clone();
         // A builder, not `spawn`: this runs in a drop, perhaps as a failed case unwinds, where a panic
         // (a box too loaded to start a thread) would abort the whole test binary.
         let started = std::thread::Builder::new().spawn(move || {
-            let found = tab.evaluate(
-                "(function () { var l = [].concat((window.__host && window.__host.loops) || [], (window.__tab && window.__tab.loops) || []); return l.length ? location.href + ': ' + JSON.stringify(l) : ''; })()",
-                false,
-            );
+            let found = tab.evaluate(LOOP_NOTICES, false);
             let _ = tx.send(
                 found
                     .ok()
@@ -2398,21 +2405,44 @@ fn report_loop_notices(browser: &headless_chrome::Browser) {
                     .and_then(|v| v.as_str().map(str::to_string)),
             );
         });
-        if started.is_err() {
-            return;
+        if started.is_ok() {
+            asked += 1;
         }
-        let Ok(Some(text)) = rx.recv_timeout(Duration::from_secs(2)) else {
-            continue;
-        };
-        if text.is_empty() {
-            continue;
-        }
-        // The page names its own address: the tab's record of it sits behind a lock this drop must
-        // not panic on.
-        let line = format!("harness: ResizeObserver loop notices in {case} at {text} (#s624)\n");
-        let _ = std::io::stderr().write_all(line.as_bytes());
     }
+    drop(tx);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    let mut answered = 0;
+    while answered < asked {
+        let left = deadline.saturating_duration_since(Instant::now());
+        match rx.recv_timeout(left) {
+            Ok(text) => {
+                answered += 1;
+                // The page names its own address: the tab's record of it sits behind a lock this
+                // drop must not panic on.
+                if let Some(text) = text.filter(|text| !text.is_empty()) {
+                    let line = format!(
+                        "harness: ResizeObserver loop notices in {case} at {text} (#s624)\n"
+                    );
+                    let _ = std::io::stderr().write_all(line.as_bytes());
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let line = format!(
+                    "harness: {} of {asked} tabs did not answer in 2 s in {case}, so any loop notices they kept go unsaid (#s624)\n",
+                    asked - answered
+                );
+                let _ = std::io::stderr().write_all(line.as_bytes());
+                break;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+        }
+    }
+    profile("loop notices read", t0.elapsed());
 }
+
+/// What a page says of its kept loop notices: '' with none, else its address and the notices
+/// counted by step, with the first and last time each came (a real loop can come every frame).
+const LOOP_NOTICES: &str = "(function () { var l = [].concat((window.__host && window.__host.loops) || [], (window.__tab && window.__tab.loops) || []); if (!l.length) return ''; var by = {}; l.forEach(function (n) { var k = String(n.step); var e = by[k] || (by[k] = { step: n.step, count: 0, first: n.t, last: n.t }); e.count += 1; e.last = n.t; }); return location.href + ': ' + JSON.stringify(Object.keys(by).map(function (k) { return by[k]; })); })()";
 
 /// The profile directory `pid` was launched with: the harness's own record of its launches, else
 /// the process's `--user-data-dir` (a case that launches with headless_chrome's own temporary
