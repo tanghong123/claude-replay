@@ -478,9 +478,10 @@ class VirtualWindow {
     // end, a fling's bounce), the lowest such end of that stretch; null otherwise. A move up that stays
     // at or below it is the rubber band springing back, not the reader leaving the end (#s524): a turn
     // that lands under the finger raises the end, and the spring-back then ends above the new one.
-    // A spring-back only rises, and only to that end: cleared once an event reads the view above it,
-    // or moving DOWN back inside the content (a reader who came back to a raised end and then moves
-    // up is leaving it), and by any write of the engine's.
+    // It lasts for the gesture that made it: cleared once an event reads the view above it, when the
+    // reader comes to rest (`rest`, which the app shell runs once a touch glide is still), when a new
+    // touch or key starts another gesture, and by any write of the engine's. A finger that pulls on
+    // after the turn landed is still the same stretch (`springsBack`).
     this.springEnd = null;
     // The viewport trace (#192): every decision the engine makes, with the geometry it saw, in a
     // ring buffer the reader can copy out of a bug report — `copy(window.__viewportTrace)` — and
@@ -534,6 +535,9 @@ class VirtualWindow {
     const noteIntent = event => {
       if (event.type === "keydown" && event.target && (/^(INPUT|TEXTAREA)$/.test(event.target.tagName) || event.target.isContentEditable)) return;
       if (event.type === "pointermove" && !event.buttons) return;
+      // A first finger down or a key starts a new gesture: a stretch past the end before it is over
+      // (`springEnd`, #s524). A second finger joins the gesture it lands in.
+      if ((event.type === "touchstart" && event.touches && event.touches.length === 1) || event.type === "keydown") this.springEnd = null;
       this.markIntent(event.timeStamp);
       this.noteInput(event);
     };
@@ -1041,14 +1045,20 @@ class VirtualWindow {
       return;
     }
     // A transaction can meet the rubber band's spring-back before its event does (a turn that landed
-    // under the finger renders as the band settles): a move up that stays at or below that stretch's
-    // end is no move of the reader's here either (`springEnd`, #s524).
-    const spring = this.springEnd != null && top >= this.springEnd - 0.5;
+    // under the finger renders as the band settles): no move of the reader's here either (#s524).
+    const spring = this.springsBack(top);
     const verdict = classifyScroll(true, true, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal, top < belief && !spring && !this.echoesAfterInput(top));
     this.trace("follow:unheard", { verdict, belief, spring, top: Math.round(top), gap: Math.round(gap) });
     if (verdict !== "unfollow") return;
     this.following = false;
     this.followChanged();
+  }
+
+  /** Is a move up to `top` the rubber band springing back (#s524)? While a stretch past the end lasts
+   *  (`springEnd`), a move that stays at or below its lowest end is: the band rises to that end and
+   *  no further. One test for the scroll handler and a transaction that meets the move first. */
+  springsBack(top) {
+    return this.springEnd != null && top >= this.springEnd - 0.5;
   }
 
   /** The offset as it is, taken as the engine's belief, with nothing left waiting on an event about
@@ -1171,6 +1181,10 @@ class VirtualWindow {
       this.knowOffset();
     }
     this.unheard = null;
+    // At rest, a stretch past the end is over: its spring-back is done, and a tail placement that
+    // finds nothing to write leaves no old end behind (#s524). After the unheard wait, whose event
+    // may be the spring-back's last.
+    this.springEnd = null;
     if (!this.pendingTail && !this.estimatesPending) return;
     this.trace("rest", { tail: this.pendingTail, estimates: this.estimatesPending });
     if (this.estimatesPending) {
@@ -2259,12 +2273,12 @@ class VirtualWindow {
     const at = event && event.timeStamp ? event.timeStamp : performance.now();
     const user = this.dragging || at - this.lastInputStamp < this.userIntentMs;
     const gap = this.gapToBottom();
-    // Past the end, the end as it stands now. Back inside the content, a move above the lowest end of
-    // that stretch, or any move down (a spring-back only rises), ends it.
+    // Past the end, the lowest end of this stretch (a turn landing under the finger raises the end, and
+    // the band springs back to the one it knew); above it, the stretch is over.
     if (gap < -1) this.springEnd = this.springEnd == null ? top + gap : Math.min(this.springEnd, top + gap);
-    else if (this.springEnd != null && (top < this.springEnd - 0.5 || (before != null && top > before + 0.5))) this.springEnd = null;
-    // A move up that stays at or below that end is the rubber band springing back (`springEnd`).
-    const spring = this.springEnd != null;
+    else if (this.springEnd != null && top < this.springEnd - 0.5) this.springEnd = null;
+    // A move up that stays at or below that end is the rubber band springing back.
+    const spring = this.springsBack(top);
     const up = before != null && top < before - 0.5 && !spring;
     const verdict = classifyScroll(this.following, user, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal, up);
     this.trace("scroll", { user, up, spring, verdict, gap: Math.round(gap), lag: Math.round(at - this.lastInputStamp) });

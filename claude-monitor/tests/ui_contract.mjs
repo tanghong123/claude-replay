@@ -2713,7 +2713,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // is then never seen at all because the gap it measures is 0.
   assert.match(src, /confirmFollow\(top\) \{/, "a transaction checks the flag against the offset (#213)");
   assert.match(src, /const belief = this\.topBelief\(\);\n\s*if \(belief == null \|\| Math\.abs\(top - belief\) <= 1\) return;/, "…against the engine's BELIEF, not the gap — a gap alone would unfollow on every growth, which adds content below without moving the offset");
-  assert.match(src, /const gap = this\.gapToBottom\(\);\n\s*if \(!this\.readerOwnsPosition\(\)\) \{\n\s*if \(!this\.unheard\) this\.unheard = \{ at: performance\.now\(\) \};\n[^\n]*\n\s*return;\n\s*\}\n\s*const verdict = classifyScroll\(true, true, gap, this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal, top < belief && !this\.echoesAfterInput\(top\)\);/, "…classified as the late event would classify it while the reader is moving the view; otherwise the late event decides, its stamp being the move's (#s481)");
+  assert.match(src, /const gap = this\.gapToBottom\(\);\n\s*if \(!this\.readerOwnsPosition\(\)\) \{\n\s*if \(!this\.unheard\) this\.unheard = \{ at: performance\.now\(\) \};\n[^\n]*\n\s*return;\n\s*\}\n(?:\s*\/\/.*\n)*\s*const spring = this\.springsBack\(top\);\n\s*const verdict = classifyScroll\(true, true, gap, this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal, top < belief && !spring && !this\.echoesAfterInput\(top\)\);/, "…classified as the late event would classify it while the reader is moving the view; otherwise the late event decides, its stamp being the move's (#s481)");
   assert.match(src, /tailWaits\(options\) \{\n\s*return !options\.commanded && \(this\.readerOwnsPosition\(\) \|\| !!this\.unheard\);/, "…and until it does, the tail waits");
   assert.match(src, /if \(this\.tailWaits\(options\)\) \{ this\.defer\("tail"\);/, "…which `placeAfter` asks");
   assert.match(src, /&& !!this\.unheard && !options\.commanded && !this\.dragging && !this\.inFlight\(\);\n(?:\s*\/\/.*\n)*\s*if \(holdTail\) p0 = this\.captureDomAnchor\(\) \|\| this\.modelAnchor\(\);/, "…while the follower is held by what is on screen until the event comes: a prepend under an unheard move left the reader on turn 7 of 60 (#s431); never under a held thumb (I14) or a smooth write in flight (§4.10), and a measure that heard nothing new stays quiet for it too (#127)");
@@ -3533,23 +3533,26 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
       at(955, 45);
       assert.equal(vw.following, false, "…and a nudge up from it afterwards lets go (#s524)");
     }
-    // The old end does not outlive its spring-back (the review of b5328437): a spring-back only rises,
-    // so once the reader moves back DOWN inside the content a move up is theirs again. A turn of 200
-    // lands under the finger, the band springs back past the hold (lets go), the reader scrolls down to
-    // the new end (follows), then nudges up 30.
+    // The old end lasts for its gesture and no longer (the reviews of b5328437 and e34ab1ab): once the
+    // reader has come to rest (`rest`, which the app shell runs when a touch glide is still), a move up
+    // is theirs again. A turn of 200 lands under the finger, the band springs back past the hold (lets
+    // go), the view comes to rest, the reader scrolls down to the new end (follows), then nudges up 30.
     {
       const top = { at: 1000 }, gap = { at: 0 };
       const vw = following(top, gap, { wrote: 1000, recentWrites: [{ top: 1000, at: now - 3000 }], topSeen: 1000 });
       const at = (t, g) => { top.at = t; gap.at = g; vw.markIntent(performance.now()); vw.onScroll({ timeStamp: performance.now() }); };
+      const still = () => { vw.lastUserInput = -Infinity; vw.rest(); };
       at(1020, -20); at(1045, -45);
       at(1030, 170); at(1010, 190); at(1000, 200);
+      still();
+      assert.equal(vw.springEnd, null, "at rest, the stretch past the end is over");
       at(1100, 100); at(1180, 20); at(1200, 0);
       assert.equal(vw.following, true, "back down at the raised end, the view follows again");
       at(1170, 30);
-      assert.equal(vw.following, false, "…and a nudge up from it lets go: the old end ended with the spring-back (#s524)");
+      assert.equal(vw.following, false, "…and a nudge up from it lets go: the old end ended with its gesture (#s524)");
     }
-    // …and after a small turn, a spring-back that kept following, then a drag down to the new end and
-    // up 25: the reader's, as at any end.
+    // …and after a small turn, a spring-back that kept following, the view at rest, then a drag down to
+    // the new end and up 25: the reader's, as at any end.
     {
       const top = { at: 1000 }, gap = { at: 0 };
       const vw = following(top, gap, { wrote: 1000, recentWrites: [{ top: 1000, at: now - 3000 }], topSeen: 1000 });
@@ -3557,9 +3560,22 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
       at(1020, -20); at(1045, -45);
       at(1030, 10); at(1010, 30); at(1000, 40);
       assert.equal(vw.following, true, "the spring-back to the old end keeps following");
+      vw.lastUserInput = -Infinity; vw.rest();
       at(1020, 20); at(1040, 0); at(1015, 25);
-      assert.equal(vw.following, false, "…and once the reader has come back down, a move up 25 lets go (#s524)");
+      assert.equal(vw.following, false, "…and once the gesture is over, a move up 25 lets go (#s524)");
     }
+    // A finger that pulls on after the turn landed is the same stretch: the view is inside the raised
+    // content now, but the band still springs back to the end it knew, and keeps following.
+    {
+      const top = { at: 1000 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1000, recentWrites: [{ top: 1000, at: now - 3000 }], topSeen: 1000 });
+      const at = (t, g) => { top.at = t; gap.at = g; vw.markIntent(performance.now()); vw.onScroll({ timeStamp: performance.now() }); };
+      at(1020, -20); at(1045, -45);
+      at(1050, 10);
+      at(1035, 25); at(1020, 40); at(1005, 55); at(1000, 60);
+      assert.equal(vw.following, true, "a pull that goes on after a turn landed under the finger still springs back as the band (#s524)");
+    }
+    assert.match(engine, /if \(\(event\.type === "touchstart" && event\.touches && event\.touches\.length === 1\) \|\| event\.type === "keydown"\) this\.springEnd = null;\n\s*this\.markIntent\(event\.timeStamp\);/, "a first finger down or a key starts a new gesture, ending a stretch past the end (#s524)");
     // A transaction that meets the spring-back before its event (the turn under the finger rendering
     // as the band settles) reads it as the scroll handler does: no move of the reader's.
     {
