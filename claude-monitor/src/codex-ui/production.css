@@ -333,9 +333,10 @@ body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){displa
 /* #167. Hidden at rest, revealed on the block the pointer is over — the owner asked for the chip, not for a column of them ("too many #s"). Because #162 gave each control a real SLOT, revealing costs NO reflow: the space is already held, so nothing moves when the pointer arrives. Both controls now follow one rule. */.spot-link{opacity:0;border-color:var(--line);background:var(--bg);color:var(--faint)}.turn:hover>.spot-link,.turn:focus-within>.spot-link,.spot-link:focus-visible{opacity:1}.spot-link:hover,.spot-link:focus-visible{border-color:color-mix(in srgb,var(--primary) 22%,var(--line));background:color-mix(in srgb,var(--primary-soft) 42%,var(--bg));color:var(--primary);transform:translateY(-1px)}.spot-link:focus-visible{outline:2px solid color-mix(in srgb,var(--primary) 48%,transparent);outline-offset:2px}.spot-link.copied{opacity:1;border-color:color-mix(in srgb,var(--success) 26%,var(--line));background:var(--success-soft);color:var(--success);transform:none}.turn.source-flash>.spot-link{opacity:1}@media(hover:none){.spot-link{opacity:1}}@media(max-width:620px){.spot-link{right:0;--spot-top:-5px}.turn.user .spot-link{--spot-top:-12px}.turn.proposed-plan>.spot-link{right:7px;--spot-top:8px}}
 /* #s617: a prompt of pictures alone is its pictures on the person's side, with no bubble above them.
    Its pictures wrap from the person's edge instead of filling the two-track grid a worded prompt's
-   attachments share. On a desktop, and on a phone held sideways (its 500px column), that grid put a
-   lone picture in its left track and spread two across the whole column, on the agent's side (the
-   w617 walk). A picture is at most a track's width, (640 - 8) / 2. */
+   attachments share. That grid put a lone picture in its left track, short of the edge, and on a
+   phone held sideways (its 500px column) it spread two across the whole column (the w617 walk). Each
+   picture, with its reveal or download button when it has one, is at most half the widest prompt,
+   (640 - 8) / 2. */
 .turn.user.user-images-alone .prompt-attachments{display:flex;flex-wrap:wrap;justify-content:flex-end;margin-top:0}
 .turn.user.user-images-alone .prompt-attachments>*{flex:0 1 auto;max-width:min(100%,316px)}
 @media(max-width:620px){.turn.user .user-prompt{max-width:90%}.prompt-attachments{grid-template-columns:1fr}.turn.proposed-plan>.body{padding:13px 12px 15px}}
