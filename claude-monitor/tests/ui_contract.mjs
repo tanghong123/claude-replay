@@ -3466,6 +3466,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
       slacks: { acquire: 2, hold: 80, heal: 80 }, following: true, position: null, dragging: false,
       unheard: null, latestHeard: false, userIntentMs: 600, lastInputStamp: 0, pendingScroll: true,
       trace: () => {}, followChanged: () => {}, scheduleRemember: () => {}, afterScroll: () => {}, convergeBottom: () => {},
+      // The window covers the reader: these cases are the follow decision, and the scroll event's own
+      // mount of a window the reader scrolled past (#s626) is held by its own cases.
+      viewportMounted: () => true,
     }, fields);
     const now = performance.now();
     // A tail write no scroll event reported (1400; the last event read 1000), then one Arrow Up 40px.
