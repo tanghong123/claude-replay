@@ -2503,12 +2503,20 @@ fn an_ipad_app_whose_page_shrinks_for_the_keyboard_brings_the_note_into_view() {
     );
     // Once: the key is set again at the return, so the page's next event at the same height leaves a
     // reader who scrolls away again where they are.
+    let revealed = eval(&tab, &format!("Math.round({scroller}.scrollTop)"))
+        .as_i64()
+        .unwrap();
     let again = eval(
         &tab,
         &format!("(function(){{ var sc = {scroller}; sc.scrollTop = Math.max(0, sc.scrollTop - 300); return Math.round(sc.scrollTop); }})()"),
     )
     .as_i64()
     .unwrap();
+    assert!(
+        again < revealed && eval(&tab, &visible) == false,
+        "scrolled away again ({revealed} to {again}), the note's card is out of view: {}",
+        eval(&tab, NOTE_GEOMETRY)
+    );
     assert_eq!(
         eval(
             &tab,
@@ -2654,7 +2662,11 @@ fn a_phone_review_sheet_brings_a_note_at_the_documents_end_back_above_the_keyboa
         eval(&tab, two_frames);
         place()
     };
-    assert_eq!(at_end, end, "the sheet scrolled to the document's end");
+    // A scroll position can be a fraction of a pixel at a device scale of 3, so the end is read to 1px.
+    assert!(
+        (at_end - end).abs() <= 1,
+        "the sheet scrolled to the document's end ({at_end} of {end})"
+    );
     until(
         &tab,
         &visible,
