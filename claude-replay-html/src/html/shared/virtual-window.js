@@ -2214,6 +2214,16 @@ class VirtualWindow {
       this.trace("scroll:echo", { top: Math.round(top), to: Math.round(this.wrote) });
       return;
     }
+    // The same echo after the reader's input made the engine forget its writes (`keepBelief`, #s524):
+    // nothing to classify and no belief to move, or a move up merged into the later write's event
+    // would read as one down from the echo, and an echo beyond the hold would let go of the end.
+    // Any other event ends it, as one that reports the latest write ends `echoOf`'s (`latestHeard`):
+    // what comes after it is the reader's.
+    if (this.echoesAfterInput(top, event && event.timeStamp ? event.timeStamp : performance.now())) {
+      this.trace("scroll:echo", { top: Math.round(top), afterInput: true });
+      return;
+    }
+    this.echoAfterInput = null;
     this.topSeen = top;
     // The event a transaction's unheard move waited for (`confirmFollow`): whatever wrote since,
     // what it says is classified below, and what waited for it may run.
@@ -2234,11 +2244,7 @@ class VirtualWindow {
     this.releaseHold();
     const at = event && event.timeStamp ? event.timeStamp : performance.now();
     const user = this.dragging || at - this.lastInputStamp < this.userIntentMs;
-    // Any event of the reader's that is no echo ends the echo kept after their input, as one that
-    // reports the latest write ends `echoOf`'s (`latestHeard`): what comes after it is theirs.
-    const echoed = this.echoesAfterInput(top, at);
-    if (!echoed) this.echoAfterInput = null;
-    const up = before != null && top < before - 0.5 && !echoed;
+    const up = before != null && top < before - 0.5;
     const verdict = classifyScroll(this.following, user, this.gapToBottom(), this.slacks.acquire, this.slacks.hold, this.slacks.heal, up);
     this.trace("scroll", { user, up, verdict, gap: Math.round(this.gapToBottom()), lag: Math.round(at - this.lastInputStamp) });
     if (verdict === "follow" || verdict === "unfollow") {
