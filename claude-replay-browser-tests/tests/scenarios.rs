@@ -903,9 +903,12 @@ fn arrow_up(tab: &headless_chrome::Tab, surface: Surface) {
 /// the live end who presses Arrow Up once, or turns the wheel one small step up, has moved 40px: inside
 /// the 80px hold (#103, #127), which used to keep the pin, so the next growth carried them back down
 /// (measured on both builds in the #s505 WebKit pass: scrollTop 0, -9, -35 and back to 0). Now the move
-/// up lets go, the page says so, and the growth that follows leaves the reader where they went. A real
-/// scroll away lets go as it always did, and the hold still keeps the pin against what no input moved
-/// (`classifyScroll`'s node cases hold that half).
+/// up lets go, the page says so, and the growth that follows leaves the reader where they went. The
+/// third press comes after a growth the reader FOLLOWED: the engine placed them at the new end, a write
+/// the browser may never report, and the move up is read from that placement, not from the last
+/// scroll event's offset (the review of 00f405f6). A real scroll away lets go as it always did, and
+/// the hold still keeps the pin against what no input moved (`classifyScroll`'s node cases hold that
+/// half).
 fn scenario_a_scroll_up_at_the_live_end_stays_up(
     tab: &headless_chrome::Tab,
     surface: Surface,
@@ -917,22 +920,84 @@ fn scenario_a_scroll_up_at_the_live_end_stays_up(
             .as_f64()
             .unwrap_or(-1.0)
     };
-    for (k, how) in ["one Arrow Up", "one 40px wheel step up"]
-        .iter()
-        .enumerate()
+    // Lines for the growth the third press follows first, dated after the script's own.
+    let followed: Vec<String> = (0..2)
+        .flat_map(|k| {
+            vec![
+                user_at(
+                    &format!("followed question {k}: {}", "keep going. ".repeat(8)),
+                    &now_minus(24 - k * 8),
+                ),
+                assistant_at(
+                    &format!(
+                        "followed answer {k}: {}",
+                        "streamed prose for the tail. ".repeat(12)
+                    ),
+                    &now_minus(20 - k * 8),
+                ),
+            ]
+        })
+        .collect();
+    // And the growth after that press, dated after both.
+    let after: Vec<String> = (0..2)
+        .flat_map(|k| {
+            vec![
+                user_at(
+                    &format!("late question {k}: {}", "keep going. ".repeat(8)),
+                    &now_minus(7 - k * 3),
+                ),
+                assistant_at(
+                    &format!(
+                        "late answer {k}: {}",
+                        "streamed prose for the tail. ".repeat(12)
+                    ),
+                    &now_minus(6 - k * 3),
+                ),
+            ]
+        })
+        .collect();
+    for (k, how) in [
+        "one Arrow Up",
+        "one 40px wheel step up",
+        "one Arrow Up after a growth it followed",
+    ]
+    .iter()
+    .enumerate()
     {
         jump_to_end(tab, surface);
         await_tail(tab, surface, "the reader to be back at the live end");
         settle();
+        if k == 2 {
+            // The engine follows a growth: its tail placement, not the reader, moves the offset.
+            let before = top();
+            let growth = LiveGrowth::start(
+                fx.path.clone(),
+                followed.clone(),
+                Duration::from_millis(600),
+            );
+            assert_eq!(
+                growth.finish(Duration::from_secs(30)),
+                4,
+                "the driver appended the followed growth"
+            );
+            std::thread::sleep(Duration::from_millis(4000));
+            await_tail(tab, surface, "the followed growth to be placed at the end");
+            settle();
+            assert!(
+                top() > before + 40.0 && is_following(tab, surface),
+                "{how}: the engine followed the growth to the new end ({before} -> {})",
+                top()
+            );
+        }
         assert!(
             at_tail(tab, surface) && is_following(tab, surface),
             "{how}: following the live end to begin with"
         );
         let end = top();
-        if k == 0 {
-            arrow_up(tab, surface);
-        } else {
+        if k == 1 {
             scroll_by(tab, surface, -40);
+        } else {
+            arrow_up(tab, surface);
         }
         settle();
         settle();
@@ -947,7 +1012,11 @@ fn scenario_a_scroll_up_at_the_live_end_stays_up(
         );
         let growth = LiveGrowth::start(
             fx.path.clone(),
-            growth_script().into_iter().skip(4 * k).take(4).collect(),
+            if k < 2 {
+                growth_script().into_iter().skip(4 * k).take(4).collect()
+            } else {
+                after.clone()
+            },
             Duration::from_millis(1200),
         );
         assert_eq!(
