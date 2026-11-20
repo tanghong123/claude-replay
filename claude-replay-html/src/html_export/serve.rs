@@ -7408,8 +7408,8 @@ mod tests {
     }
     /// #s617: a committed prompt of pictures alone keeps its name. The live store renders each
     /// committed block alone, so the pictures after it come in through `put_with_next`, as the
-    /// accumulator drains a turn; a block put without them is named by nothing (empty, never a
-    /// count it cannot see).
+    /// accumulator drains a turn; the count serves that one record and is cleared after it, so an
+    /// empty prompt put alone is named by nothing (never a count it cannot see).
     #[test]
     fn a_committed_prompt_of_pictures_alone_is_named_by_its_pictures() {
         use crate::engine::BlockStore;
@@ -7451,8 +7451,17 @@ mod tests {
         for (i, b) in drained.iter().enumerate() {
             store.put_with_next(b.clone(), i, &[], &[], &drained[i + 1..]);
         }
-        // Put alone, an empty prompt sees nothing after it and claims no picture.
-        store.put(Block::UserText(String::new()), drained.len(), &[], &[]);
+        // A count given for one record serves only that one: the empty prompt put alone after it
+        // claims no picture.
+        let at = drained.len();
+        store.put_with_next(
+            Block::UserText(String::new()),
+            at,
+            &[],
+            &[],
+            &[image(), image()],
+        );
+        store.put(Block::UserText(String::new()), at + 1, &[], &[]);
         let bytes = store.read_range(0, store.log_len());
         let labels: Vec<String> = std::str::from_utf8(&bytes)
             .unwrap()
@@ -7461,7 +7470,59 @@ mod tests {
             .filter(|r| r["kind"] == "user")
             .map(|r| r["label"].as_str().unwrap_or("").to_string())
             .collect();
-        assert_eq!(labels, vec!["words", "[2 images]", "[image]", ""]);
+        assert_eq!(
+            labels,
+            vec!["words", "[2 images]", "[image]", "[2 images]", ""]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #s617, the live path whole: the accumulator folds a transcript into the record store as a
+    /// live session does, a turn committing once the next one opens, and each committed prompt
+    /// of pictures alone keeps its name, read back from the log the page pulls.
+    #[test]
+    fn a_live_session_commits_a_prompt_of_pictures_alone_with_its_name() {
+        let dir = std::env::temp_dir().join(format!("cr-records-617-live-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("t.records");
+        let _ = std::fs::remove_file(&path);
+        let store = super::super::record_store::RecordStore::open_append(
+            &path,
+            FoldPolicy::default(),
+            "/r".into(),
+            crate::Transcript::open(Agent::CLAUDE, path.clone()),
+        )
+        .unwrap();
+        let image =
+            r#"{"type":"image","source":{"type":"base64","media_type":"image/png","data":"Zm9v"}}"#;
+        let lines = [
+            r#"{"type":"user","timestamp":"2026-11-20T09:00:00.000Z","message":{"content":"first turn"}}"#.to_string(),
+            r#"{"type":"assistant","timestamp":"2026-11-20T09:00:01.000Z","message":{"content":[{"type":"text","text":"ok"}]}}"#.to_string(),
+            format!(r#"{{"type":"user","timestamp":"2026-11-20T09:00:02.000Z","message":{{"content":[{image},{image}]}}}}"#),
+            r#"{"type":"assistant","timestamp":"2026-11-20T09:00:03.000Z","message":{"content":[{"type":"text","text":"two ridges"}]}}"#.to_string(),
+            format!(r#"{{"type":"user","timestamp":"2026-11-20T09:00:04.000Z","message":{{"content":[{image}]}}}}"#),
+            r#"{"type":"assistant","timestamp":"2026-11-20T09:00:05.000Z","message":{"content":[{"type":"text","text":"a dune"}]}}"#.to_string(),
+            r#"{"type":"user","timestamp":"2026-11-20T09:00:06.000Z","message":{"content":"last turn"}}"#.to_string(),
+        ];
+        let mut acc = claude_replay_core::SessionAccumulator::with_store(
+            crate::adapter(Agent::CLAUDE),
+            store,
+        );
+        let mut offset = 0;
+        for line in &lines {
+            acc.advance_at(offset, line);
+            offset += line.len() as u64 + 1;
+        }
+        let store = acc.store();
+        let bytes = store.read_range(0, store.log_len());
+        let labels: Vec<String> = std::str::from_utf8(&bytes)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .filter(|r| r["kind"] == "user")
+            .map(|r| r["label"].as_str().unwrap_or("").to_string())
+            .collect();
+        assert_eq!(labels, vec!["first turn", "[2 images]", "[image]"]);
         let _ = std::fs::remove_dir_all(&dir);
     }
     /// The artifact route's containment rule. `/file` is the only route that reads an

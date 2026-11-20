@@ -468,7 +468,6 @@ impl<S: BlockStore> SessionAccumulator<S> {
             let durs_for_put: &[Option<u64>] = &durs;
             // Each block goes in told the blocks after it in this drain (`put_with_next`, #s617),
             // taken out of the drain in turn so none is copied.
-            let mut drained = drained;
             for i in 0..drained.len() {
                 let b = std::mem::replace(&mut drained[i], Block::UserText(String::new()));
                 self.committed_meta.push(&b);

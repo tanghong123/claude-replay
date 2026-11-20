@@ -4826,7 +4826,7 @@ pub(crate) fn decode_line_known(
                     if p.trim().is_empty() {
                         // #s617: a mid-turn message of pictures alone is the person's turn too.
                         if !meta
-                            && human_origin(a)
+                            && a.is_some_and(relayable)
                             && relayable(&v)
                             && images_alone(images.iter().copied())
                         {
@@ -6412,7 +6412,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                             }
                         } else if a.and_then(|a| a.get("isMeta")).and_then(Value::as_bool)
                             != Some(true)
-                            && human_origin(a)
+                            && a.is_some_and(relayable)
                             && relayable(&v)
                             && images_alone(images.iter().copied())
                         {
@@ -6875,13 +6875,6 @@ fn images_alone<'a>(blocks: impl IntoIterator<Item = &'a Value>) -> bool {
         }
     }
     any
-}
-
-/// Whether a `queued_command` is the person's own (#s617): its origin absent or human. Another
-/// session's message (#s79), a task's notification or any other origin is never their turn.
-fn human_origin(a: Option<&Value>) -> bool {
-    a.and_then(|a| a.get("origin"))
-        .is_none_or(|o| o.get("kind").and_then(Value::as_str) == Some("human"))
 }
 
 /// A `queued_command`'s prompt: its text and its image blocks. The client writes it as a string,
