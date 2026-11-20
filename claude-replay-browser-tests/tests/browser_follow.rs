@@ -30696,8 +30696,9 @@ fn a_press_on_the_transcript_s_scrollbar_does_not_focus_it() {
 /// moving away: the view let go and stayed above the end as turns kept coming. Chrome does not
 /// stretch past the end, so the case reports the band's offsets as iOS does (the scroller's
 /// `scrollTop` reads past its maximum while the band holds it) with a finger's touches around them.
-/// The view keeps following and lands at the new end once still. A reader who drags up from the end
-/// while a turn lands still leaves it (#s524).
+/// The view keeps following and lands at the new end once still. A finger past the end that reads on
+/// down into the turn that landed, past the band's reach by more than the hold, is reading: it lets go
+/// and stays where it read.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_spring_back_after_a_turn_landed_under_the_finger_keeps_following() {
@@ -30804,20 +30805,14 @@ fn a_phone_spring_back_after_a_turn_landed_under_the_finger_keeps_following() {
         "(function(){ var s = document.querySelector('.transcript'); return JSON.stringify({ gap: Math.round(s.scrollHeight - s.clientHeight - s.scrollTop), following: document.getElementById('jumpToBottom').getAttribute('aria-hidden') }); })()",
     );
     std::thread::sleep(Duration::from_millis(1500));
-    // A drag up from the end while a turn lands is the reader's: it lets go, and the turn leaves them there.
-    let went = harness::eval(
+    // A finger past the end when a turn far beyond the hold lands, which then reads down into the turn,
+    // past the furthest the band reached by more than the hold, and back up a little: reading, as a
+    // reader who never pulled past the end would be. It lets go, and at rest the turn leaves the
+    // reader where they read, not at the new end (the review of 80ce7dcc).
+    harness::eval(
         &tab,
-        r#"(function(){
-        var s = document.querySelector('.transcript');
-        window.__oldMax = s.scrollHeight - s.clientHeight;
-        __finger('touchstart', 400); __finger('touchmove', 450);
-        s.scrollTop = s.scrollTop - 150; s.dispatchEvent(new Event('scroll'));
-        return s.scrollTop;
-    })()"#,
-    )
-    .as_f64()
-    .expect("the offset dragged to");
-    let seen = harness::view_anchor(&tab, harness::Surface::AppShell);
+        "(function(){ var s = document.querySelector('.transcript'); window.__oldMax = s.scrollHeight - s.clientHeight; __finger('touchstart', 500); [20, 45, 69].forEach(function (over, k) { __finger('touchmove', 480 - 20 * k); __bandAt(__oldMax + over); }); return 1; })()",
+    );
     let growth = harness::LiveGrowth::start(path.clone(), turn(1), Duration::from_millis(150));
     assert_eq!(
         growth.finish(Duration::from_secs(20)),
@@ -30831,9 +30826,22 @@ fn a_phone_spring_back_after_a_turn_landed_under_the_finger_keeps_following() {
         Duration::from_secs(20),
         "(function(){ var s = document.querySelector('.transcript'); return Math.round(s.scrollHeight - s.clientHeight - window.__oldMax); })()",
     );
+    let read = harness::probe(
+        &tab,
+        &format!(
+            r#"(function(){{
+        var s = document.querySelector('.transcript');
+        window.__band = null;
+        __finger('touchmove', 100); s.scrollTop = __oldMax + 400; s.dispatchEvent(new Event('scroll'));
+        __finger('touchmove', 160); s.scrollTop = __oldMax + 340; s.dispatchEvent(new Event('scroll'));
+        return {{ following: {following}, top: s.scrollTop }};
+    }})()"#
+        ),
+    );
+    let seen = harness::view_anchor(&tab, harness::Surface::AppShell);
     harness::eval(
         &tab,
-        "(function(){ __finger('touchend', 450); return 1; })()",
+        "(function(){ __finger('touchend', 160); return 1; })()",
     );
     std::thread::sleep(Duration::from_millis(2500));
     let after = harness::probe(
@@ -30842,13 +30850,12 @@ fn a_phone_spring_back_after_a_turn_landed_under_the_finger_keeps_following() {
     );
     assert_eq!(
         after["following"], false,
-        "a drag up from the end while a turn lands lets go (#s524): {after}"
+        "a finger that reads down into a turn that landed under it, past the band's reach, lets go (#s631): as it read {read}, then {after}"
     );
     let still = harness::view_anchor(&tab, harness::Surface::AppShell);
     assert!(
         still.0 == seen.0 && (still.1 - seen.1).abs() <= 2.0,
-        "…and the turn leaves the reader where they went (the same unit at the same place: {seen:?} then {still:?}; the offset {went} then {}): {after}",
-        after["top"]
+        "…and at rest the reader stays where they read (the same unit at the same place: {seen:?} then {still:?}): {after}"
     );
     drop(m);
 }

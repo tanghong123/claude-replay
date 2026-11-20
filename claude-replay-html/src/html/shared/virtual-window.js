@@ -482,8 +482,10 @@ class VirtualWindow {
     // reader comes to rest (`rest`, which the app shell runs once a touch glide is still), when a new
     // first finger, a key or a wheel up starts another gesture (a wheel down does not), and by any
     // write of the engine's. A finger that pulls on after the turn landed is still the same stretch
-    // (`springsBack`).
+    // (`springsBack`), as far as the furthest the band reached (`springPeak`) and the hold beyond it;
+    // further down it is reading into what landed, and the stretch is over (#s631).
     this.springEnd = null;
+    this.springPeak = null;
     // The viewport trace (#192): every decision the engine makes, with the geometry it saw, in a
     // ring buffer the reader can copy out of a bug report — `copy(window.__viewportTrace)` — and
     // on the console under one prefix. On by the page's URL or storage; `options.trace` overrides.
@@ -539,7 +541,7 @@ class VirtualWindow {
       // A first finger down, a key or a wheel up starts a new gesture: a stretch past the end before it
       // is over (`springEnd`, #s524). A second finger joins the gesture it lands in; a wheel down may be
       // the momentum that pulled past the end (the band's spring-back is the browser's, with no wheel).
-      if ((event.type === "touchstart" && event.touches && event.touches.length === 1) || event.type === "keydown" || (event.type === "wheel" && event.deltaY < 0)) this.springEnd = null;
+      if ((event.type === "touchstart" && event.touches && event.touches.length === 1) || event.type === "keydown" || (event.type === "wheel" && event.deltaY < 0)) this.springEnd = this.springPeak = null;
       this.markIntent(event.timeStamp);
       this.noteInput(event);
     };
@@ -786,7 +788,7 @@ class VirtualWindow {
       this.wrote = { from, to, last: from };
       this.recentWrites = [];
       this.echoAfterInput = null;
-      this.springEnd = null;
+      this.springEnd = this.springPeak = null;
     } else {
       this.frame.scrollTo(want);
       this.wrote = this.frame.scrollTop();
@@ -796,7 +798,7 @@ class VirtualWindow {
       this.latestHeard = false;
       // A write after the reader's input starts the writes `echoOf` knows again (#s524).
       this.echoAfterInput = null;
-      this.springEnd = null;
+      this.springEnd = this.springPeak = null;
       // The browser may keep less than asked at either end of the page; I7 is checked only when it
       // kept the write (§4.12).
       this.lastWrite = { want, got: this.wrote };
@@ -1062,9 +1064,11 @@ class VirtualWindow {
    *  no further. One test for the scroll handler and a transaction that meets the move first. A
    *  follower stays one through it whatever the gap (#s631): the gap grew only because records
    *  landed under the finger, whose tail placement waits for the touch to end (#372), and the band
-   *  moving toward the end it knew is not the reader leaving. Only a move above that end is. */
+   *  moving toward the end it knew is not the reader leaving. Only a move above that end is, and one
+   *  below the furthest the band reached by more than the hold (`springPeak`): that finger is
+   *  reading into what landed, as a reader who never pulled past the end would be. */
   springsBack(top) {
-    return this.springEnd != null && top >= this.springEnd - 0.5;
+    return this.springEnd != null && top >= this.springEnd - 0.5 && top <= this.springPeak + this.slacks.hold;
   }
 
   /** The offset as it is, taken as the engine's belief, with nothing left waiting on an event about
@@ -1190,7 +1194,7 @@ class VirtualWindow {
     // At rest, a stretch past the end is over: its spring-back is done, and a tail placement that
     // finds nothing to write leaves no old end behind (#s524). After the unheard wait, whose event
     // may be the spring-back's last.
-    this.springEnd = null;
+    this.springEnd = this.springPeak = null;
     if (!this.pendingTail && !this.estimatesPending) return;
     this.trace("rest", { tail: this.pendingTail, estimates: this.estimatesPending });
     if (this.estimatesPending) {
@@ -2280,9 +2284,12 @@ class VirtualWindow {
     const user = this.dragging || at - this.lastInputStamp < this.userIntentMs;
     const gap = this.gapToBottom();
     // Past the end, the lowest end of this stretch (a turn landing under the finger raises the end, and
-    // the band springs back to the one it knew); above it, the stretch is over.
-    if (gap < -1) this.springEnd = this.springEnd == null ? top + gap : Math.min(this.springEnd, top + gap);
-    else if (this.springEnd != null && top < this.springEnd - 0.5) this.springEnd = null;
+    // the band springs back to the one it knew) and the furthest the band reached; above that end, or
+    // below that reach by more than the hold (reading into what landed, #s631), the stretch is over.
+    if (gap < -1) {
+      this.springEnd = this.springEnd == null ? top + gap : Math.min(this.springEnd, top + gap);
+      this.springPeak = this.springPeak == null ? top : Math.max(this.springPeak, top);
+    } else if (this.springEnd != null && !this.springsBack(top)) this.springEnd = this.springPeak = null;
     // A move up that stays at or below that end is the rubber band springing back, and a follower
     // keeps following through it whatever the gap (#s631): a turn that landed under the finger made the
     // gap, its tail placement waits for the touch, and the band is not the reader leaving.
