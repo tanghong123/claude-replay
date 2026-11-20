@@ -7438,7 +7438,7 @@ mod tests {
                 },
             })
         };
-        let drained = vec![
+        let drained = [
             Block::UserText("words".into()),
             Block::AssistantText("first".into()),
             Block::UserText(String::new()),

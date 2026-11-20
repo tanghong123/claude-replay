@@ -20357,7 +20357,7 @@ fn scenario_a_message_of_pictures_alone_is_the_persons_turn(
         serde_json::from_str(eval(tab, labels).as_str().unwrap_or("[]")).unwrap_or_default();
     assert_eq!(
         rows.len(),
-        fx.turns,
+        fx.turns as usize,
         "{surface:?}: both messages of pictures alone are turns: {rows:?}"
     );
     let last_two: Vec<&String> = rows.iter().rev().take(2).rev().collect();
