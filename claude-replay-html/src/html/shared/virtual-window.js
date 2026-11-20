@@ -263,15 +263,19 @@ const UNHEARD_MS = 2000;
  *  for some) must hold nothing past it. */
 const ECHO_MS = 120;
 
-/** Rule 7, the #103 hysteresis: what a scroll means. A scroll with the reader's input behind it
- *  DECIDES following — acquiring the pin needs the true end (`acquire`), keeping it only the old
- *  slack (`hold`); a scroll with no input behind it is displacement, and a followed view that
- *  has drifted more than `heal` from the end is put back. Returns `"follow"`, `"unfollow"`,
- *  `"heal"` or `"none"`. The two pages pass different slacks on purpose — the app shell decides
- *  on the true end in both directions today, the classic page holds at 80px. */
-function classifyScroll(following, userIntent, gap, acquire, hold, heal) {
+/** Rule 7, the #103 hysteresis as the owner's #s542 amends it: what a scroll means. A scroll with
+ *  the reader's input behind it DECIDES following. Acquiring the pin needs the true end
+ *  (`acquire`), and so does keeping it through a move UP the reader made (`up`: "A scroll up I make
+ *  keeps following only at the end", #s524: one Arrow Up at the live end was carried back down by
+ *  the next growth); any other move of theirs keeps it within the old slack (`hold`), so a reader
+ *  near the end does not lose follow to a small move down. A scroll with no input behind it is
+ *  displacement, and a followed view that has drifted more than `heal` from the end is put back.
+ *  Returns `"follow"`, `"unfollow"`, `"heal"` or `"none"`. Both pages pass the same slacks today:
+ *  `acquire` 2px, `hold` and `heal` 80px (the app shell's ACQUIRE_SLACK and HOLD_SLACK in
+ *  viewport.js, the classic page's PIN_SLACK and BOTTOM_SLACK in export.js). */
+function classifyScroll(following, userIntent, gap, acquire, hold, heal, up = false) {
   if (userIntent) {
-    const next = following ? gap <= hold : gap <= acquire;
+    const next = following && !up ? gap <= hold : gap <= acquire;
     if (next === following) return "none";
     return next ? "follow" : "unfollow";
   }
@@ -469,6 +473,17 @@ class VirtualWindow {
     // one is the browser catching up, not the reader (`echoOf`).
     this.recentWrites = [];
     this.latestHeard = false;
+    this.echoAfterInput = null;
+    // The end as it stood while a scroll event last read the view PAST it (a touch pulling past the
+    // end, a fling's bounce), the lowest such end of that stretch; null otherwise. A move up that stays
+    // at or below it is the rubber band springing back, not the reader leaving the end (#s524): a turn
+    // that lands under the finger raises the end, and the spring-back then ends above the new one.
+    // It lasts for the gesture that made it: cleared once an event reads the view above it, when the
+    // reader comes to rest (`rest`, which the app shell runs once a touch glide is still), when a new
+    // first finger, a key or a wheel up starts another gesture (a wheel down does not), and by any
+    // write of the engine's. A finger that pulls on after the turn landed is still the same stretch
+    // (`springsBack`).
+    this.springEnd = null;
     // The viewport trace (#192): every decision the engine makes, with the geometry it saw, in a
     // ring buffer the reader can copy out of a bug report — `copy(window.__viewportTrace)` — and
     // on the console under one prefix. On by the page's URL or storage; `options.trace` overrides.
@@ -521,6 +536,10 @@ class VirtualWindow {
     const noteIntent = event => {
       if (event.type === "keydown" && event.target && (/^(INPUT|TEXTAREA)$/.test(event.target.tagName) || event.target.isContentEditable)) return;
       if (event.type === "pointermove" && !event.buttons) return;
+      // A first finger down, a key or a wheel up starts a new gesture: a stretch past the end before it
+      // is over (`springEnd`, #s524). A second finger joins the gesture it lands in; a wheel down may be
+      // the momentum that pulled past the end (the band's spring-back is the browser's, with no wheel).
+      if ((event.type === "touchstart" && event.touches && event.touches.length === 1) || event.type === "keydown" || (event.type === "wheel" && event.deltaY < 0)) this.springEnd = null;
       this.markIntent(event.timeStamp);
       this.noteInput(event);
     };
@@ -766,6 +785,8 @@ class VirtualWindow {
       this.frame.scrollTo(to, true);
       this.wrote = { from, to, last: from };
       this.recentWrites = [];
+      this.echoAfterInput = null;
+      this.springEnd = null;
     } else {
       this.frame.scrollTo(want);
       this.wrote = this.frame.scrollTop();
@@ -773,6 +794,9 @@ class VirtualWindow {
       this.recentWrites = this.recentWrites.filter(write => now - write.at < ECHO_MS);
       this.recentWrites.push({ top: this.wrote, at: now });
       this.latestHeard = false;
+      // A write after the reader's input starts the writes `echoOf` knows again (#s524).
+      this.echoAfterInput = null;
+      this.springEnd = null;
       // The browser may keep less than asked at either end of the page; I7 is checked only when it
       // kept the write (§4.12).
       this.lastWrite = { want, got: this.wrote };
@@ -930,9 +954,45 @@ class VirtualWindow {
     this.lastUserInput = performance.now();
     this.lastInputStamp = stamp || performance.now();
     // The reader touched something: whatever the engine last wrote, the next scroll event is theirs,
-    // and a landing they asked for is theirs to leave (§4.10).
+    // and a landing they asked for is theirs to leave (§4.10). Where it last put the offset stays its
+    // belief, which that event is read against (`keepBelief`).
+    this.keepBelief();
     this.forgetWrites();
     this.releaseHold();
+  }
+
+  /** Keep where the engine last put the offset as its belief while it forgets the write (#s524): the
+   *  reader's next scroll is read against it, to know whether they moved up (`onScroll`,
+   *  `confirmFollow`). A tail placement no scroll event reported (Chrome reports none for some
+   *  writes, and a late or merged event says nothing) would otherwise leave the belief at the last
+   *  event's offset, below which a move up from the new end reads as a move down. It counts only
+   *  where the engine keeps no position (a follower): `topBelief` reads a kept position first. While
+   *  a smooth write travels, it is where the write was last seen on its path, which the input stops.
+   *  And while the browser may still report an earlier instant write (#s568), the writes it may
+   *  report are kept with the time they may come by (`echoAfterInput`): the input made the engine
+   *  forget them, so `echoOf` no longer knows the echo, and read against the latest write it would be
+   *  a move up the reader never made. A later call, with the writes already forgotten, keeps both. */
+  keepBelief() {
+    const wrote = this.wrote;
+    const belief = wrote && typeof wrote === "object" ? wrote.last : this.topBelief();
+    if (belief != null) this.topSeen = belief;
+    if (wrote == null) return;
+    const writes = this.recentWrites || [], latest = writes[writes.length - 1];
+    this.echoAfterInput = typeof wrote === "number" && !this.latestHeard && latest && writes.length >= 2
+      && Math.abs(latest.top - wrote) <= 1 && performance.now() - latest.at <= ECHO_MS
+      ? { tops: writes.slice(0, -1).map(write => write.top), until: latest.at + ECHO_MS }
+      : null;
+  }
+
+  /** Is `top`, read after the reader's input made the engine forget its writes, the browser still on
+   *  its way to the latest of them by an earlier one (#s568's echo, kept by `keepBelief`)? As `echoOf`
+   *  asks it: at an earlier write's offset, the event stamped and delivered within `ECHO_MS` of the
+   *  latest write, never in a drag, and only until an event that is no echo comes (`onScroll`) or the
+   *  engine writes again. A move up that lands anywhere else is the reader's. */
+  echoesAfterInput(top, at = performance.now()) {
+    const echo = this.echoAfterInput;
+    if (!echo || this.dragging || at > echo.until || performance.now() > echo.until) return false;
+    return echo.tops.some(t => Math.abs(top - t) <= 1);
   }
 
   /** A position a command set is held — placed again by every later transaction — until the
@@ -986,11 +1046,21 @@ class VirtualWindow {
       this.trace("follow:unheard", { verdict: "wait", belief, top: Math.round(top), gap: Math.round(gap) });
       return;
     }
-    const verdict = classifyScroll(true, true, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal);
-    this.trace("follow:unheard", { verdict, belief, top: Math.round(top), gap: Math.round(gap) });
+    // A transaction can meet the rubber band's spring-back before its event does (a turn that landed
+    // under the finger renders as the band settles): no move of the reader's here either (#s524).
+    const spring = this.springsBack(top);
+    const verdict = classifyScroll(true, true, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal, top < belief && !spring && !this.echoesAfterInput(top));
+    this.trace("follow:unheard", { verdict, belief, spring, top: Math.round(top), gap: Math.round(gap) });
     if (verdict !== "unfollow") return;
     this.following = false;
     this.followChanged();
+  }
+
+  /** Is a move up to `top` the rubber band springing back (#s524)? While a stretch past the end lasts
+   *  (`springEnd`), a move that stays at or below its lowest end is: the band rises to that end and
+   *  no further. One test for the scroll handler and a transaction that meets the move first. */
+  springsBack(top) {
+    return this.springEnd != null && top >= this.springEnd - 0.5;
   }
 
   /** The offset as it is, taken as the engine's belief, with nothing left waiting on an event about
@@ -1113,6 +1183,10 @@ class VirtualWindow {
       this.knowOffset();
     }
     this.unheard = null;
+    // At rest, a stretch past the end is over: its spring-back is done, and a tail placement that
+    // finds nothing to write leaves no old end behind (#s524). After the unheard wait, whose event
+    // may be the spring-back's last.
+    this.springEnd = null;
     if (!this.pendingTail && !this.estimatesPending) return;
     this.trace("rest", { tail: this.pendingTail, estimates: this.estimatesPending });
     if (this.estimatesPending) {
@@ -1141,6 +1215,7 @@ class VirtualWindow {
     if (this.dragging) return;
     this.dragging = true;
     this.dragStarted = Math.round(performance.now());
+    this.keepBelief();
     this.position = null;
     this.forgetWrites();
     this.unheard = null;
@@ -2152,6 +2227,13 @@ class VirtualWindow {
   onScroll(event) {
     // Hidden, an offset the box lost is no move of the reader's (`laidOut`).
     if (!this.laidOut()) return;
+    // Where the engine believed the offset was before this event, read from what it knows (no
+    // layout read): a move up from there is the reader's move up, which keeps following only at
+    // the true end (#s524, the owner's #s542). The reader's input has usually made the engine forget
+    // its writes by now, and `keepBelief` kept where they put the offset; an event read while a
+    // smooth write travels (no input forgot it) is read against where it was last seen on its path.
+    // With no belief yet (the first scroll after a load) the move is not taken as one up.
+    const before = this.wrote && typeof this.wrote === "object" ? this.wrote.last : this.topBelief();
     // One read, for the classification, kept as the engine's belief of the offset for the history
     // (`topBelief`): the reader's own scroll is the one move the engine does not make.
     const top = this.frame.scrollTop();
@@ -2162,6 +2244,16 @@ class VirtualWindow {
       this.trace("scroll:echo", { top: Math.round(top), to: Math.round(this.wrote) });
       return;
     }
+    // The same echo after the reader's input made the engine forget its writes (`keepBelief`, #s524):
+    // nothing to classify and no belief to move, or a move up merged into the later write's event
+    // would read as one down from the echo, and an echo beyond the hold would let go of the end.
+    // Any other event ends it, as one that reports the latest write ends `echoOf`'s (`latestHeard`):
+    // what comes after it is the reader's.
+    if (this.echoesAfterInput(top, event && event.timeStamp ? event.timeStamp : performance.now())) {
+      this.trace("scroll:echo", { top: Math.round(top), afterInput: true });
+      return;
+    }
+    this.echoAfterInput = null;
     this.topSeen = top;
     // The event a transaction's unheard move waited for (`confirmFollow`): whatever wrote since,
     // what it says is classified below, and what waited for it may run.
@@ -2182,8 +2274,16 @@ class VirtualWindow {
     this.releaseHold();
     const at = event && event.timeStamp ? event.timeStamp : performance.now();
     const user = this.dragging || at - this.lastInputStamp < this.userIntentMs;
-    const verdict = classifyScroll(this.following, user, this.gapToBottom(), this.slacks.acquire, this.slacks.hold, this.slacks.heal);
-    this.trace("scroll", { user, verdict, gap: Math.round(this.gapToBottom()), lag: Math.round(at - this.lastInputStamp) });
+    const gap = this.gapToBottom();
+    // Past the end, the lowest end of this stretch (a turn landing under the finger raises the end, and
+    // the band springs back to the one it knew); above it, the stretch is over.
+    if (gap < -1) this.springEnd = this.springEnd == null ? top + gap : Math.min(this.springEnd, top + gap);
+    else if (this.springEnd != null && top < this.springEnd - 0.5) this.springEnd = null;
+    // A move up that stays at or below that end is the rubber band springing back.
+    const spring = this.springsBack(top);
+    const up = before != null && top < before - 0.5 && !spring;
+    const verdict = classifyScroll(this.following, user, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal, up);
+    this.trace("scroll", { user, up, spring, verdict, gap: Math.round(gap), lag: Math.round(at - this.lastInputStamp) });
     if (verdict === "follow" || verdict === "unfollow") {
       this.following = verdict === "follow";
       this.followChanged();

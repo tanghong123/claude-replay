@@ -2755,7 +2755,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // is then never seen at all because the gap it measures is 0.
   assert.match(src, /confirmFollow\(top\) \{/, "a transaction checks the flag against the offset (#213)");
   assert.match(src, /const belief = this\.topBelief\(\);\n\s*if \(belief == null \|\| Math\.abs\(top - belief\) <= 1\) return;/, "…against the engine's BELIEF, not the gap — a gap alone would unfollow on every growth, which adds content below without moving the offset");
-  assert.match(src, /const gap = this\.gapToBottom\(\);\n\s*if \(!this\.readerOwnsPosition\(\)\) \{\n\s*if \(!this\.unheard\) this\.unheard = \{ at: performance\.now\(\) \};\n[^\n]*\n\s*return;\n\s*\}\n\s*const verdict = classifyScroll\(true, true, gap, this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal\);/, "…classified as the late event would classify it while the reader is moving the view; otherwise the late event decides, its stamp being the move's (#s481)");
+  assert.match(src, /const gap = this\.gapToBottom\(\);\n\s*if \(!this\.readerOwnsPosition\(\)\) \{\n\s*if \(!this\.unheard\) this\.unheard = \{ at: performance\.now\(\) \};\n[^\n]*\n\s*return;\n\s*\}\n(?:\s*\/\/.*\n)*\s*const spring = this\.springsBack\(top\);\n\s*const verdict = classifyScroll\(true, true, gap, this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal, top < belief && !spring && !this\.echoesAfterInput\(top\)\);/, "…classified as the late event would classify it while the reader is moving the view; otherwise the late event decides, its stamp being the move's (#s481)");
   assert.match(src, /tailWaits\(options\) \{\n\s*return !options\.commanded && \(this\.readerOwnsPosition\(\) \|\| !!this\.unheard\);/, "…and until it does, the tail waits");
   assert.match(src, /if \(this\.tailWaits\(options\)\) \{ this\.defer\("tail"\);/, "…which `placeAfter` asks");
   assert.match(src, /&& !!this\.unheard && !options\.commanded && !this\.dragging && !this\.inFlight\(\);\n(?:\s*\/\/.*\n)*\s*if \(holdTail\) p0 = this\.captureDomAnchor\(\) \|\| this\.modelAnchor\(\);/, "…while the follower is held by what is on screen until the event comes: a prepend under an unheard move left the reader on turn 7 of 60 (#s431); never under a held thumb (I14) or a smooth write in flight (§4.10), and a measure that heard nothing new stays quiet for it too (#127)");
@@ -3446,6 +3446,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(classifyScroll(true, true, 40, 2, 2, 80), "unfollow", "held at the true end, a nudge drops the tail — what #127 fixed");
   assert.equal(classifyScroll(true, true, 40, 2, 80, 80), "none", "the classic page holds through a nudge");
   assert.equal(classifyScroll(true, false, 120, 2, 2, 80), "heal", "displacement while pinned is healed");
+  // #s524, the owner's #s542: "A scroll up I make keeps following only at the end".
+  assert.equal(classifyScroll(true, true, 40, 2, 80, 80, true), "unfollow", "a move up the reader makes inside the hold slack drops the pin");
+  assert.equal(classifyScroll(true, true, 1, 2, 80, 80, true), "none", "…except at the true end");
+  assert.equal(classifyScroll(true, true, 40, 2, 80, 80, false), "none", "any other move of theirs keeps it within the hold slack");
+  assert.equal(classifyScroll(true, false, 40, 2, 80, 80, true), "none", "and a move up with no input behind it is displacement, healed past `heal` alone");
   assert.equal(classifyScroll(false, false, 900, 2, 2, 80), "none", "…and means nothing when unpinned");
   const vp = readFileSync(new URL("../../claude-monitor/src/codex-ui/viewport.js", import.meta.url), "utf8");
   assert.match(vp, /from "\.\/shared\/virtual-window\.js";/, "the app shell drives the module");
@@ -3453,7 +3458,186 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // the anchor, the observers, the follow state, the thumb and the converge run from one place.
   const engine = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
   assert.match(engine, /this\.prefix = prefixSums\(this\.count, index => this\.heightOf\(index\)\);/);
-  assert.match(engine, /const verdict = classifyScroll\(this\.following, user, this\.gapToBottom\(\), this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal\);/);
+  // …held by what the engine does (the reviews of 00f405f6 and 044a4cdb, #s524): a reader's scroll read
+  // against where the engine last put the offset, kept across the input that made it forget its writes.
+  {
+    const following = (top, gap, fields) => Object.assign(Object.create(VirtualWindow.prototype), {
+      laidOut: () => true, frame: { scrollTop: () => top.at }, gapToBottom: () => gap.at,
+      slacks: { acquire: 2, hold: 80, heal: 80 }, following: true, position: null, dragging: false,
+      unheard: null, latestHeard: false, userIntentMs: 600, lastInputStamp: 0, pendingScroll: true,
+      trace: () => {}, followChanged: () => {}, scheduleRemember: () => {}, afterScroll: () => {}, convergeBottom: () => {},
+    }, fields);
+    const now = performance.now();
+    // A tail write no scroll event reported (1400; the last event read 1000), then one Arrow Up 40px.
+    {
+      const top = { at: 1400 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1400, recentWrites: [{ top: 1400, at: now - 500 }], topSeen: 1000 });
+      vw.markIntent(performance.now());
+      assert.equal(vw.topBelief(), 1400, "the input keeps the unreported write as the engine's belief (#s524)");
+      top.at = 1360; gap.at = 40;
+      vw.onScroll({ timeStamp: performance.now() });
+      assert.equal(vw.following, false, "…so one Arrow Up from that end reads as a move up and lets go (#s524)");
+    }
+    // Two tail writes within ECHO_MS, neither reported, then a touch: the browser's echo of the earlier
+    // one is not a move up; the later write's own event keeps following; a move up from it lets go.
+    {
+      const top = { at: 1430 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1430, recentWrites: [{ top: 1400, at: now - 10 }, { top: 1430, at: now - 5 }], topSeen: 1000 });
+      vw.markIntent(performance.now());
+      vw.markIntent(performance.now());
+      assert.equal(vw.topBelief(), 1430, "the belief is the latest write (#s524)");
+      top.at = 1400; gap.at = 30;
+      vw.onScroll({ timeStamp: performance.now() });
+      assert.equal(vw.following, true, "…and the echo of the earlier one, which input made the engine forget, keeps following (#s568), through a second input");
+      top.at = 1430; gap.at = 0;
+      vw.onScroll({ timeStamp: performance.now() });
+      assert.equal(vw.following, true, "…and so does the later write's own event");
+      top.at = 1400; gap.at = 30;
+      vw.onScroll({ timeStamp: performance.now() });
+      assert.equal(vw.following, false, "…and a move up from it lets go, even onto the earlier write: once an event that is no echo came, none is coming (the review of bf2a7642)");
+    }
+    // An echo moves no belief: the later write's event, merged with the reader's wheel up and reporting
+    // 15px under it, is read against the later write and lets go (the review of 69b59992).
+    {
+      const top = { at: 1430 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1430, recentWrites: [{ top: 1400, at: now - 10 }, { top: 1430, at: now - 5 }], topSeen: 1000 });
+      vw.markIntent(performance.now());
+      top.at = 1400; gap.at = 30;
+      vw.onScroll({ timeStamp: performance.now() });
+      assert.equal(vw.topBelief(), 1430, "an echo after the input leaves the belief at the latest write (#s524)");
+      top.at = 1415; gap.at = 15;
+      vw.onScroll({ timeStamp: performance.now() });
+      assert.equal(vw.following, false, "…so a move up merged into the later write's event lets go");
+    }
+    // And an echo is classified as nothing: one beyond the hold does not let go of the end.
+    {
+      const top = { at: 1430 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1430, recentWrites: [{ top: 1300, at: now - 10 }, { top: 1430, at: now - 5 }], topSeen: 1000 });
+      vw.markIntent(performance.now());
+      top.at = 1300; gap.at = 130;
+      vw.onScroll({ timeStamp: performance.now() });
+      assert.equal(vw.following, true, "an echo 130px from the end, past the hold, keeps following (#s524)");
+      top.at = 1430; gap.at = 0;
+      vw.onScroll({ timeStamp: performance.now() });
+      assert.equal(vw.following, true, "…and the later write's event after it too");
+    }
+    // Only an earlier write's offset is an echo: one Arrow Up from the latest write, landing between
+    // the two, is the reader's (the review of b6ab925b).
+    {
+      const top = { at: 1430 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1430, recentWrites: [{ top: 1370, at: now - 10 }, { top: 1430, at: now - 5 }], topSeen: 1000 });
+      vw.markIntent(performance.now());
+      top.at = 1390; gap.at = 40;
+      vw.onScroll({ timeStamp: performance.now() });
+      assert.equal(vw.following, false, "a move up that lands on no earlier write lets go, an echo still possible (#s524)");
+    }
+    // And only within ECHO_MS of the latest write: older writes echo nothing, so a move up to one of
+    // them is the reader's.
+    {
+      const top = { at: 1430 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1430, recentWrites: [{ top: 1400, at: now - 210 }, { top: 1430, at: now - 200 }], topSeen: 1000 });
+      vw.markIntent(performance.now());
+      top.at = 1400; gap.at = 30;
+      vw.onScroll({ timeStamp: performance.now() });
+      assert.equal(vw.following, false, "past ECHO_MS a move up to an earlier write's offset lets go (#s524)");
+    }
+    // …and an event stamped after the echo's time is no echo either, though the input came in time.
+    {
+      const top = { at: 1430 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1430, recentWrites: [{ top: 1400, at: now - 10 }, { top: 1430, at: now - 5 }], topSeen: 1000 });
+      vw.markIntent(performance.now());
+      top.at = 1400; gap.at = 30;
+      vw.onScroll({ timeStamp: performance.now() + 200 });
+      assert.equal(vw.following, false, "an event stamped past ECHO_MS of the latest write is the reader's (#s524)");
+    }
+    // A touch pulls the view past the live end, a turn of 40px lands under the finger (its placement
+    // waits for the touch), and the rubber band springs back to the old end, now 40px above the new
+    // one: moves up, but not the reader's, so the view keeps following as main's hold did (the
+    // #s524 walk on an iPhone; 98dd9583 let go here).
+    {
+      const top = { at: 1000 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1000, recentWrites: [{ top: 1000, at: now - 3000 }], topSeen: 1000 });
+      const at = (t, g) => { top.at = t; gap.at = g; vw.markIntent(performance.now()); vw.onScroll({ timeStamp: performance.now() }); };
+      at(1020, -20); at(1045, -45);
+      at(1035, 5); at(1020, 20); at(1000, 40);
+      assert.equal(vw.following, true, "a spring-back to the old end after a turn landed under the finger keeps following (#s524)");
+      at(990, 50);
+      assert.equal(vw.following, false, "…and a move on up, above the old end, is the reader's and lets go");
+    }
+    // Without a turn the spring-back ends at the end itself, and a later nudge up from there lets go:
+    // the old end is behind it once the view goes above it.
+    {
+      const top = { at: 1000 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1000, recentWrites: [{ top: 1000, at: now - 3000 }], topSeen: 1000 });
+      const at = (t, g) => { top.at = t; gap.at = g; vw.markIntent(performance.now()); vw.onScroll({ timeStamp: performance.now() }); };
+      at(1030, -30); at(1010, -10); at(1000, 0);
+      assert.equal(vw.following, true, "a bounce at the end keeps following");
+      at(955, 45);
+      assert.equal(vw.following, false, "…and a nudge up from it afterwards lets go (#s524)");
+    }
+    // The old end lasts for its gesture and no longer (the reviews of b5328437 and e34ab1ab): once the
+    // reader has come to rest (`rest`, which the app shell runs when a touch glide is still), a move up
+    // is theirs again. A turn of 200 lands under the finger, the band springs back past the hold (lets
+    // go), the view comes to rest, the reader scrolls down to the new end (follows), then nudges up 30.
+    {
+      const top = { at: 1000 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1000, recentWrites: [{ top: 1000, at: now - 3000 }], topSeen: 1000 });
+      const at = (t, g) => { top.at = t; gap.at = g; vw.markIntent(performance.now()); vw.onScroll({ timeStamp: performance.now() }); };
+      const still = () => { vw.lastUserInput = -Infinity; vw.rest(); };
+      at(1020, -20); at(1045, -45);
+      at(1030, 170); at(1010, 190); at(1000, 200);
+      still();
+      assert.equal(vw.springEnd, null, "at rest, the stretch past the end is over");
+      at(1100, 100); at(1180, 20); at(1200, 0);
+      assert.equal(vw.following, true, "back down at the raised end, the view follows again");
+      at(1170, 30);
+      assert.equal(vw.following, false, "…and a nudge up from it lets go: the old end ended with its gesture (#s524)");
+    }
+    // …and after a small turn, a spring-back that kept following, the view at rest, then a drag down to
+    // the new end and up 25: the reader's, as at any end.
+    {
+      const top = { at: 1000 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1000, recentWrites: [{ top: 1000, at: now - 3000 }], topSeen: 1000 });
+      const at = (t, g) => { top.at = t; gap.at = g; vw.markIntent(performance.now()); vw.onScroll({ timeStamp: performance.now() }); };
+      at(1020, -20); at(1045, -45);
+      at(1030, 10); at(1010, 30); at(1000, 40);
+      assert.equal(vw.following, true, "the spring-back to the old end keeps following");
+      vw.lastUserInput = -Infinity; vw.rest();
+      at(1020, 20); at(1040, 0); at(1015, 25);
+      assert.equal(vw.following, false, "…and once the gesture is over, a move up 25 lets go (#s524)");
+    }
+    // A finger that pulls on after the turn landed is the same stretch: the view is inside the raised
+    // content now, but the band still springs back to the end it knew, and keeps following.
+    {
+      const top = { at: 1000 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1000, recentWrites: [{ top: 1000, at: now - 3000 }], topSeen: 1000 });
+      const at = (t, g) => { top.at = t; gap.at = g; vw.markIntent(performance.now()); vw.onScroll({ timeStamp: performance.now() }); };
+      at(1020, -20); at(1045, -45);
+      at(1050, 10);
+      at(1035, 25); at(1020, 40); at(1005, 55); at(1000, 60);
+      assert.equal(vw.following, true, "a pull that goes on after a turn landed under the finger still springs back as the band (#s524)");
+    }
+    assert.match(engine, /if \(\(event\.type === "touchstart" && event\.touches && event\.touches\.length === 1\) \|\| event\.type === "keydown" \|\| \(event\.type === "wheel" && event\.deltaY < 0\)\) this\.springEnd = null;\n\s*this\.markIntent\(event\.timeStamp\);/, "a first finger down, a key or a wheel up starts a new gesture, ending a stretch past the end (#s524)");
+    // A transaction that meets the spring-back before its event (the turn under the finger rendering
+    // as the band settles) reads it as the scroll handler does: no move of the reader's.
+    {
+      const top = { at: 1000 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1000, recentWrites: [{ top: 1000, at: now - 3000 }], topSeen: 1000 });
+      const at = (t, g) => { top.at = t; gap.at = g; vw.markIntent(performance.now()); vw.onScroll({ timeStamp: performance.now() }); };
+      at(1020, -20); at(1045, -45); at(1035, 5);
+      top.at = 1020; gap.at = 20;
+      vw.confirmFollow(1020);
+      assert.equal(vw.following, true, "a transaction that meets the spring-back unheard keeps following (#s524)");
+      top.at = 990; gap.at = 50;
+      vw.confirmFollow(990);
+      assert.equal(vw.following, false, "…and one that meets a move above the old end lets go");
+    }
+  }
+  assert.match(engine, /this\.wrote = \{ from, to, last: from \};\n\s*this\.recentWrites = \[\];\n\s*this\.echoAfterInput = null;/, "a smooth write ends the echo kept after the reader's input (#s524)");
+  assert.match(engine, /this\.latestHeard = false;\n(?:\s*\/\/.*\n)*\s*this\.echoAfterInput = null;/, "…and so does an instant one: it starts the writes `echoOf` knows again");
+  assert.match(engine, /if \(this\.echoesAfterInput\(top, event && event\.timeStamp \? event\.timeStamp : performance\.now\(\)\)\) \{\n\s*this\.trace\("scroll:echo", \{ top: Math\.round\(top\), afterInput: true \}\);\n\s*return;\n\s*\}\n\s*this\.echoAfterInput = null;\n\s*this\.topSeen = top;/, "an echo after the reader's input is skipped as `echoOf`'s is, and any other event ends it (#s524)");
+  assert.match(engine, /const up = before != null && top < before - 0\.5 && !spring;\n\s*const verdict = classifyScroll\(this\.following, user, gap, this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal, up\);/, "a move up the reader makes is told apart from the rest, the rubber band's spring-back included (#s524)");
+  assert.equal((engine.match(/this\.echoAfterInput = null;\n\s*this\.springEnd = null;/g) || []).length, 2, "a write of the engine's, smooth or instant, ends a spring-back's old end (#s524)");
 
   assert.match(vp, /slacks: \{ acquire: ACQUIRE_SLACK, hold: HOLD_SLACK, heal: HOLD_SLACK \},/, "both pages now acquire at the true end and hold through a nudge (#127)");
   assert.doesNotMatch(vp, /new ResizeObserver|addEventListener\("scroll"/, "the observers and the scroll listener are the engine's now");
@@ -4342,7 +4526,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(engine, /if \(last && last\.until != null && last\.kind === kind && \(last\.key == null \? null : last\.key\) === key && t - last\.until <= HISTORY_COALESCE_MS\) \{/, "…coalesced per gesture");
   assert.match(engine, /const key = kind === "key" \? \(event\.key === " " \? "Space" : String\(event\.key\)\.length > 1 \? String\(event\.key\) : "char"\) : null;/, "a key is named only when it is not a character — the history carries no content");
   assert.match(engine, /if \(event\.type === "keydown" && event\.target && \(\/\^\(INPUT\|TEXTAREA\)\$\/\.test\(event\.target\.tagName\) \|\| event\.target\.isContentEditable\)\) return;/, "…and a key in a field or an editable element is not the reader's input at all");
-  assert.match(engine, /const top = this\.frame\.scrollTop\(\);\n(?:\s*\/\/.*\n)*\s*if \(this\.echoOf\(top, [^\n]*\n[^\n]*\n\s*return;\n\s*\}\n\s*this\.topSeen = top;\n(?:\s*\/\/.*\n)*\s*const waited = this\.unheard;\n\s*if \(this\.unheard\) \{ this\.unheard = null; if \(this\.pendingTail \|\| this\.estimatesPending\) this\.armRest\(\); \}\n(?:\s*\/\/.*\n)*\s*if \(!\(waited && waited\.held\) && this\.ownScroll\(top\)\) \{/, "the scroll handler's one read is kept as the engine's belief of the offset, and every event it hears ends a wait for a late one before the own-write test (#s481), which the event a held follower waited for skips: it is the move's, at the offset the hold wrote (#s431)");
+  assert.match(engine, /const top = this\.frame\.scrollTop\(\);\n(?:\s*\/\/.*\n)*\s*if \(this\.echoOf\(top, [^\n]*\n[^\n]*\n\s*return;\n\s*\}\n(?:\s*\/\/.*\n)*\s*if \(this\.echoesAfterInput\([^\n]*\n[^\n]*\n\s*return;\n\s*\}\n\s*this\.echoAfterInput = null;\n\s*this\.topSeen = top;\n(?:\s*\/\/.*\n)*\s*const waited = this\.unheard;\n\s*if \(this\.unheard\) \{ this\.unheard = null; if \(this\.pendingTail \|\| this\.estimatesPending\) this\.armRest\(\); \}\n(?:\s*\/\/.*\n)*\s*if \(!\(waited && waited\.held\) && this\.ownScroll\(top\)\) \{/, "the scroll handler's one read is kept as the engine's belief of the offset, and every event it hears ends a wait for a late one before the own-write test (#s481), which the event a held follower waited for skips: it is the move's, at the offset the hold wrote (#s431)");
   assert.match(engine, /if \(p && p\.at != null\) return Math\.round\(p\.at\);\n\s*if \(typeof this\.wrote === "number"\) return Math\.round\(this\.wrote\);/, "…after P's own offset and what the engine last wrote");
   assert.match(engine, /if \(options\.intent\) this\.markIntent\(\);\n(?:\s*\/\/.*\n)*\s*this\.record\("actions", \{ kind: cause, index:/, "a commanded move is an action with its target");
   assert.match(engine, /this\.record\("actions", \{ kind: "follow", intent: !!options\.intent \}\);/, "…and so is the end");
