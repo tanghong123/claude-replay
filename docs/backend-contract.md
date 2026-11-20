@@ -79,8 +79,11 @@ The tiers say what a host must serve:
 - **Pairing belongs to the listener, not to the routes.** The monitor's listener checks every
   request before a route sees it. A request it refuses gets 401: an HTML page load gets a page
   that reloads itself once and then says how to pair; anything else gets plain text. The page reads
-  a 401 as "not paired". `/pair` and `/api/pair` are the listener's own and not part of this
-  contract. A host puts its own sign-in in front instead. That sign-in must refuse a request
+  a 401 as "not paired". `/pair`, `/api/pair` and `/api/pair/ask` are the listener's own and not
+  part of this contract: a browser on the monitor's own machine asks `/api/pair/ask` for a code,
+  which the monitor shows only on that machine (a dialog on a Mac, or `agent-monitor --pair-code`
+  in a terminal) and never in a reply, and redeems it at `/api/pair` (#s618,
+  `design/pair-from-the-page.md`). A host puts its own sign-in in front instead. That sign-in must refuse a request
   another site started, whatever its method: `/api/ignore` and a stamped `/__reveal` act on a
   GET, and a request another site makes (an image, say) carries no `Origin` for the routes' own
   origin check to see. The monitor's `SameSite=Strict` cookie is what refuses it there.

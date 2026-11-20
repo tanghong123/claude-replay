@@ -395,6 +395,24 @@ refresh in the background, so asking again after the reply could name the other,
 `deny_mutation` marks its check in a thread-local the gate reads after the route, since the route
 runs on its connection's thread and `Request` (built by other crates too) gains no field; the line
 is said once the reply is written. A refused read that is not a page load stays quiet.
+**A browser on this machine pairs from the page** (#s618, `design/pair-from-the-page.md`, Hong's
+choice A on #s605, stage 1 of 2: a PAIRED monitor). `/pair` loaded as the machine's own (a loopback
+peer, its own `Host` present, its own `Origin` or none, no relay's headers, the header section
+whole with no line past the cap: `local_asker` in `serve.rs`) offers "Show a code" and refuses to be
+framed; `POST /api/pair/ask` mints a page code and the
+host's `CodeDisplay` shows it ON THIS MACHINE only (`pair_dialog.rs`: osascript's `display dialog`,
+its script on STDIN, so the code is in no process's arguments), or where none can show it waits for
+`agent-monitor --pair-code`, which prints only to a terminal. The reply says where, never the code;
+nothing logs it. Page codes live in `<state>/page-codes`, apart from the phone's, with their own
+misses and a file lock beside it (`--pair-code` is a second process): one at a time, an ask every
+10 s, an hour's rest after three go unused, cleared at start (where it cannot be, no page pairing
+that run). A code pairs only once its use is SAVED: unsaved, a right code reads as a miss and stays
+good, and a miss burns nothing, so a guess bound never rests on a write that failed (a right PHONE
+code too pairs only once saved, on every gate with phone codes); a lock file that cannot be taken changes nothing at
+all. A display started for a code used meanwhile is taken down. A code a link carries (`/pair#code=…`,
+posted `?from=link`) is a phone code, never judged against a page code. The gate is unchanged without
+`with_page_pairing`. No test raises a real dialog: the harness sets `AGENT_MONITOR_PAIR_DIALOG=0`
+and the cases read the code from the monitor's state dir; the dialog's own tests run a stand-in.
 **The page saves to a Home Screen as itself** (#320): the tab icon's green mark, square and opaque
 (`claude-monitor/src/icons/`, rendered from `app-icon.svg` by `scripts/render-app-icon.sh`), named by
 the app shell's head with a manifest and the label "Agent Monitor"; iOS also asks the root
@@ -1586,15 +1604,24 @@ to the owner; the owner hears of a disagreement only when a second round still h
 that cannot land fast-forward gets main merged into its branch first, then lands fast-forward: never
 a server-side merge commit.
 
-**Still the owner's.** Review it, then bring it to the owner in one line instead of landing:
-- releases, version numbers and the Homebrew formulas;
-- CI, workflow and gate configuration (`.github/`, `scripts/gate/`, `.gitleaks.toml`);
-- authentication, pairing, the file gate and its capability stamps, secret masking, and anything
-  that opens a port or a network path;
-- vendored releases (`vendor/`) and new dependencies;
-- the public contract: CLI flags, the `--json` streams, the on-disk formats other tools read;
-- removing a feature, or a design change beyond one component;
-- a UI change not yet walked on the iOS Simulator.
+**Still the owner's** (narrowed by the owner's ruling of 2026-11-20 on aries#s264: a reviewed,
+green change lands unless it loosens access or a check, changes auth, secrets or a contract beyond
+what the owner decided, or removes a feature). Review it, then bring it to the owner in one line
+instead of landing:
+- a change that loosens access or a check: one that opens a port or a network path, widens what an
+  unpaired or remote client reaches, or loosens or removes a check in CI, a workflow or a gate
+  (`.github/`, `scripts/gate/`, `.gitleaks.toml`) on a contract that is not changing. A change
+  that only tightens access is the agent's;
+- authentication, pairing, the file gate and its capability stamps, or secret masking, changed
+  beyond what the owner decided;
+- the public contract (CLI flags, the `--json` streams, the on-disk formats other tools read),
+  changed beyond what the owner decided;
+- removing a feature;
+- releases, version numbers and the Homebrew formulas, which keep this repository's own rule.
+
+**The owner's choice on a change covers landing it as chosen** (the same ruling): once an
+independent reviewer approved the exact head and CI is green on it, note the decision on the change
+and land it, with no second request to land.
 
 **A first-time contributor's** fork PR needs its workflow runs approved in the GitHub UI: approve
 them only after reading the diff for changes to workflows or anything that reaches secrets, which is

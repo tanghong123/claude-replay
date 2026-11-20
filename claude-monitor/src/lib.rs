@@ -20,6 +20,7 @@ pub mod index;
 // their links to the crate root, where `files` is not in scope).
 pub mod kit;
 pub mod layout;
+pub mod pair_dialog;
 pub mod pair_phone;
 pub mod root_claim;
 pub mod routes;
