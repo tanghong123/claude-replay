@@ -109,6 +109,17 @@ export function machineShortLabel(label, labels = []) {
   return clash ? text : short;
 }
 
+const clockTime = iso => { const at = iso ? new Date(iso) : null; return at && !Number.isNaN(at.getTime()) ? at.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""; };
+/** How a machine of a merged source answers, in words, or "" while it answers (#s541, #s561): the
+ *  list puts it beside the machine's head and on its greyed rows, and ⌘K on that machine's rows
+ *  (#s603). `entry` is one of the merged source's `machines`. */
+export function machineNote(entry) {
+  if (entry?.state === "stale") return `not answering${entry.since ? ` since ${clockTime(entry.since)}` : ""}${entry.error ? ` (${entry.error})` : ""}`;
+  if (entry?.state === "failed") return `no answer${entry.error ? ` (${entry.error})` : ""}`;
+  if (entry?.state === "waiting") return "waiting for its first answer";
+  return "";
+}
+
 /**
  * The list arranged machine first (#s561, Group by machine): one section per machine of a merged
  * source, each holding that machine's own agents and their projects (`agents` is the grouped tree,

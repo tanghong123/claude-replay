@@ -1466,6 +1466,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .search-result-stale .result-copy b,.search-result-stale .result-copy small{opacity:.55}
 .search-result-stale .result-kind{opacity:.5}
 .result-why{flex:none;margin-left:auto;color:var(--faint);font:10px var(--mono);white-space:nowrap}
+/* #s603 — over several machines, a ⌘K row of a machine that is not answering, greyed as the list
+   greys that machine's rows (.tree-row.machine-stale), its note in the list's amber for that machine. */
+.search-result-machine-stale .result-copy b,.search-result-machine-stale .result-copy small{opacity:.55}
+.search-result-machine-stale .result-kind{opacity:.5}
+.search-result-machine-stale .result-why{color:var(--amber)}
 
 /* #300 — the collapsed rail's flyout: beside the 64px rail, over the transcript, holding either one
    agent's projects and sessions (the tree's own rows) or the sidebar's filter sheet. It keeps inside
