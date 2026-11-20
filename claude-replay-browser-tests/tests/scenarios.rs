@@ -7458,6 +7458,45 @@ fn scenario_a_call_stopped_before_it_ran_says_why(
             "with the record opened, a stopped call's word has a box: {drawn}"
         );
     }
+    // #s628 (settled on #s622 under Hong's #s599 ruling): in a view 620px wide or less, where the
+    // design demo hides every call's state word, a call stopped before it ran keeps its word, as
+    // a pill and alone (no line count beside it), and a failed and a done call show none. The
+    // classic page has no such narrow rule.
+    if surface == Surface::AppShell {
+        harness::resize(tab, 600.0, 900.0);
+        harness::until(
+            tab,
+            "!!document.querySelector('#sessionView.pl-max-w-620')",
+            "the session view to read as 620px wide or less",
+            Duration::from_secs(20),
+            "(document.querySelector('#sessionView') || {}).className + ' ' + Math.round((document.querySelector('#sessionView') || document.body).getBoundingClientRect().width)",
+        );
+        settle();
+        let narrow = probe(
+            tab,
+            "(function(){ var row = t => [...document.querySelectorAll('.renderer[data-renderer-kind]')].find(r => ((r.querySelector('.renderer-target') || {}).textContent || '') === t); var pill = r => r && r.querySelector(':scope > .renderer-head > .renderer-state'); var said = t => { var r = row(t), c = pill(r), b = c && c.getBoundingClientRect(), h = r && r.querySelector(':scope > .renderer-head'), title = r && r.querySelector(':scope > .renderer-head > .renderer-title'), tb = title && title.getBoundingClientRect(), hb = h && h.getBoundingClientRect(); return { t: t, shown: c && b.width > 0 ? c.innerText.trim() : '', w: b ? Math.round(b.width) : -1, overlap: !!(tb && b && b.width > 0 && tb.right > b.left + 0.5), titleCut: !!(title && title.scrollWidth > title.clientWidth + 1), inside: !!(b && hb && (b.width === 0 || b.right <= hb.right + 0.5)) }; }; var done = [...document.querySelectorAll('.renderer[data-state=\"completed\"] > .renderer-head > .renderer-state')].map(c => c.getBoundingClientRect().width).filter(w => w > 0).length; return { calls: ['echo b-hook', 'echo b-decl', 'echo b-fail'].map(said), doneShown: done, doneRows: document.querySelectorAll('.renderer[data-state=\"completed\"]').length }; })()",
+        );
+        let calls = narrow["calls"].as_array().cloned().unwrap_or_default();
+        let shown: Vec<&str> = calls
+            .iter()
+            .map(|c| c["shown"].as_str().unwrap_or("?"))
+            .collect();
+        assert_eq!(
+            shown,
+            vec!["blocked", "declined", ""],
+            "a narrow row keeps blocked and declined, alone, and a failed call stays wordless: {narrow}"
+        );
+        for call in &calls {
+            assert!(
+                call["overlap"] == false && call["titleCut"] == false && call["inside"] == true,
+                "the pill sits beside a whole title, inside its row: {narrow}"
+            );
+        }
+        assert!(
+            narrow["doneRows"].as_u64().unwrap_or(0) > 0 && narrow["doneShown"] == 0,
+            "a done call stays wordless on a narrow row: {narrow}"
+        );
+    }
 }
 
 #[test]

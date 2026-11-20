@@ -358,6 +358,8 @@ function rendererRecord(record, renderer, name) {
     t: renderer === "thinking" ? "thinking" : renderer === "activity" ? "activity" : renderer === "task" ? "task" : renderer === "agent" ? "agent" : "tool",
     renderer, id: record.id, name: displayName(name), summary: head.target || head.preview || head.summary || "",
     state: th.state, error: th.failed, running: false, duration: th.duration, exit: th.exit, pill: stateLabel(th),
+    // #s628: a failure's own word, which a narrow row keeps for a call stopped before it ran.
+    word: th.state === "failed" ? th.status || "failed" : "",
     change: change.map(c => ({ kind: c.c, text: c.x })),
     html: partsHtml((record.body || []).filter(p => p.p !== "blocks")), raw: record,
     parts: (record.body || []).filter(p => p.p !== "blocks"),

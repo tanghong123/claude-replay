@@ -6,7 +6,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { RecordStore } from "../../claude-monitor/src/codex-ui/record-store.js";
-import { PROMPT_CLAMP_LINES, PROMPT_MIN_HIDDEN, promptExpanderHtml, promptHiddenLines, rawTurnHtml, rendererStartsClosed, changeBadgeHtml, groupImageRuns, imageRunHtml, imageThumbHtml, isChangedNotice, promptNoticesHtml } from "../../claude-monitor/src/codex-ui/components.js";
+import { PROMPT_CLAMP_LINES, PROMPT_MIN_HIDDEN, promptExpanderHtml, promptHiddenLines, rawTurnHtml, rendererStartsClosed, changeBadgeHtml, statePillHtml, groupImageRuns, imageRunHtml, imageThumbHtml, isChangedNotice, promptNoticesHtml } from "../../claude-monitor/src/codex-ui/components.js";
 import { attachmentCapability, canReveal, referenceAction, revealQuery, stampQuery } from "../../claude-replay-html/src/html/shared/capabilities.js";
 import { costDisplay, reportedCostDisplay } from "../../claude-replay-html/src/html/shared/cost-display.js";
 import { fleetGroups } from "../../claude-replay-html/src/html/shared/fleet.js";
@@ -3122,7 +3122,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.doesNotMatch(vm, /fail\|error|running\|active|lines\$\/|\.find\(x => \//, "the state is not a regex over chip text");
   assert.match(vm, /from "\.\/shared\/tool-head\.js"/);
   const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
-  assert.match(comp, /\$\{escapeText\(view\.state \? view\.pill : status === "completed" \? "" : status\)\}/, "the pill shows the module's label");
+  assert.match(comp, /\$\{view\.state \? statePillHtml\(view\.pill, view\.word\) : escapeText\(status === "completed" \? "" : status\)\}/, "the pill shows the module's label (its word apart, #s628)");
   // #129: the head's click cycle. From folded: the output, then the whole command, then the
   // command folds back, then the output. A target that already fits keeps the plain toggle.
   let step = 0;
@@ -4434,6 +4434,34 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.match(css, /\.renderer-change>\.sandbox\{color:var\(--amber\);background:var\(--amber-bg\)/, "in the amber the shell keeps for what wants noticing");
   console.log("#s381 sandbox mark cases passed");
+}
+
+// ── #s628: on a narrow row a call stopped before it ran keeps its word ─────────────────────────
+{
+  // Settled on #s622 under Hong's #s599 ruling ("New word: blocked, reason kept"): a view 620px wide
+  // or less hides every call's state word, as the demo does, so blocked and declined keep theirs
+  // there, alone; failed and done stay wordless.
+  const tool = (id, chips) => viewRecord({ t: "block", id, kind: "bash", tool: "Bash", fold: true, open: 0, head: { name: "Bash", target: "echo " + id, chips }, body: [] });
+  const blocked = tool("b1", [{ x: "1 lines" }, { c: "fail", x: "blocked" }]);
+  const declined = tool("b2", [{ c: "fail", x: "declined · 42ms" }]);
+  const failed = tool("b3", [{ c: "fail", x: "exit 1 · 2.50s" }]);
+  const done = tool("b4", [{ x: "exit 0" }]);
+  assert.deepEqual([blocked.word, declined.word, failed.word, done.word], ["blocked", "declined", "failed", ""], "a failure carries its own word, a call that ran well none");
+  assert.equal(blocked.pill, "1 lines · blocked", "the pill says what it always said");
+  assert.equal(statePillHtml(blocked.pill, blocked.word), '<span class="renderer-state-more">1 lines · </span>blocked', "the word stands apart from the chips before it");
+  assert.equal(statePillHtml(declined.pill, declined.word), 'declined<span class="renderer-state-more"> · 42ms</span>', "…and after it");
+  assert.equal(statePillHtml("blocked", "blocked"), "blocked", "a word alone needs nothing apart");
+  assert.equal(statePillHtml(done.pill, done.word), "exit 0", "a pill with no word is its text");
+  assert.equal(statePillHtml("a<b", ""), "a&lt;b", "escaped as ever");
+  for (const pill of [blocked.pill, declined.pill, failed.pill]) {
+    const word = pill === blocked.pill ? "blocked" : pill === declined.pill ? "declined" : "failed";
+    assert.equal(statePillHtml(pill, word).replace(/<[^>]+>/g, ""), pill, `the pill's text is unchanged: ${pill}`);
+  }
+  const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  assert.match(comp, /data-state="\$\{escapeText\(status\)\}"\$\{view\.word \? ` data-state-word="\$\{escapeText\(view\.word\)\}"` : ""\}/, "the row names its word for the narrow rule");
+  const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
+  assert.match(css, /@media\(max-width:620px\)\{\.renderer:is\(\[data-state-word="blocked"\],\[data-state-word="declined"\]\)>\.renderer-head>\.renderer-state\{display:block\}\.renderer-state-more\{display:none\}\}/, "a narrow row keeps blocked and declined, alone, and nothing else");
+  console.log("#s628 narrow state word cases passed");
 }
 
 // ── #228: an image is one click away, and the enlarged view zooms ───────────────────────────

@@ -1282,6 +1282,13 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .renderer-change>.del{color:var(--red);background:var(--red-bg)}
 /* #s381: a Bash call that ran outside the sandbox its session ran with, beside the counts. */
 .renderer-change>.sandbox{color:var(--amber);background:var(--amber-bg);font-weight:560}
+/* #s628 (settled on #s622 under Hong's #s599 ruling, "New word: blocked, reason kept"): a narrow
+   view (620px or less: a phone, an iPad upright) hides every call's state word, as the design demo
+   does, so a call a hook, a rule or auto mode stopped before it ran, or one the person declined
+   before it ran, read exactly like one that ran and failed until it was opened. Those two keep
+   their word, as a pill and alone: the rest of the chips (a line count, a duration) give way.
+   Failed and done stay wordless there, as the demo has them. */
+@media(max-width:620px){.renderer:is([data-state-word="blocked"],[data-state-word="declined"])>.renderer-head>.renderer-state{display:block}.renderer-state-more{display:none}}
 /* #s381: a target shown in full (#129's third step) takes the head's width, and the badge goes on
    a line of its own under it. Beside the badge the target had only what the badge left: at an
    iPhone's 402px, "outside the sandbox" (130px) left the whole of "Listed 1 directory, ran 1 shell

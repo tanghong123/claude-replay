@@ -199,11 +199,11 @@ function renderRenderer(view, index, state, inherited) {
     : `<span class="renderer-target"><bdi dir="ltr">${escapeText(view.summary || "")}</bdi></span>`;
   const head = noninteractive
     ? `<div class="renderer-head" aria-label="${escapeText(title)}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${targetHtml}${openFilesHtml(view)}${changeBadgeHtml(view.change)}<span class="renderer-state"></span></div>`
-    : `<button class="renderer-head" type="button" aria-expanded="${!closed}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${targetHtml}${openFilesHtml(view)}${changeBadgeHtml(view.change)}<span class="renderer-state" title="${escapeText(status)}">${escapeText(view.state ? view.pill : status === "completed" ? "" : status)}</span></button>`;
+    : `<button class="renderer-head" type="button" aria-expanded="${!closed}"><span class="renderer-chevron"></span><span class="renderer-title">${escapeText(title)}</span>${targetHtml}${openFilesHtml(view)}${changeBadgeHtml(view.change)}<span class="renderer-state" title="${escapeText(view.word || status)}">${view.state ? statePillHtml(view.pill, view.word) : escapeText(status === "completed" ? "" : status)}</span></button>`;
   const toolName = view.t === "tool" ? ` data-tool-name="${escapeText(view.name)}"` : "";
   // The tool `o(…)` asks of this record (#367) — session-view.js `toolNameOf`'s reading, for marks and dimming.
   const searchTool = /^(bash|read|write|edit|skill|tool)$/.test(view.raw?.kind || "") ? ` data-search-tool="${escapeText(view.raw.tool || view.raw.head?.name || "")}"` : "";
-  return `<div class="turn assistant renderer-turn"${view.run ? ` data-run="${escapeText(view.run)}"` : ""} data-kind="${escapeText(view.t)}" data-record-kind="${escapeText(view.raw?.kind || view.renderer)}"${toolName}${searchTool} data-block-index="${escapeText(index)}"><div class="renderer ${noninteractive ? "noninteractive" : closed ? "closed" : ""}" data-renderer data-record-id="${escapeText(key)}" data-renderer-kind="${escapeText(view.renderer)}" data-state="${escapeText(status)}"${state.fullTargets?.has(key) ? ' data-target="full"' : ""}>${head}${view.id ? `<button class="spot-link renderer-spot" type="button" data-spot-link="${escapeText(view.id)}" aria-label="Copy a link to this call" title="Copy a link to this call"><span aria-hidden="true">#</span></button>` : ""}${view.children?.length ? `<button class="renderer-children-toggle" type="button" data-renderer-children-bulk aria-pressed="false" title="Expand all nested levels">${svg("expandStack")}</button>` : ""}${noninteractive ? "" : `<div class="renderer-body"><div class="renderer-output">${bodyMarkup}</div>${children}</div>`}${view.run ? fleetHtml(view.run, state) : ""}</div></div>`;
+  return `<div class="turn assistant renderer-turn"${view.run ? ` data-run="${escapeText(view.run)}"` : ""} data-kind="${escapeText(view.t)}" data-record-kind="${escapeText(view.raw?.kind || view.renderer)}"${toolName}${searchTool} data-block-index="${escapeText(index)}"><div class="renderer ${noninteractive ? "noninteractive" : closed ? "closed" : ""}" data-renderer data-record-id="${escapeText(key)}" data-renderer-kind="${escapeText(view.renderer)}" data-state="${escapeText(status)}"${view.word ? ` data-state-word="${escapeText(view.word)}"` : ""}${state.fullTargets?.has(key) ? ' data-target="full"' : ""}>${head}${view.id ? `<button class="spot-link renderer-spot" type="button" data-spot-link="${escapeText(view.id)}" aria-label="Copy a link to this call" title="Copy a link to this call"><span aria-hidden="true">#</span></button>` : ""}${view.children?.length ? `<button class="renderer-children-toggle" type="button" data-renderer-children-bulk aria-pressed="false" title="Expand all nested levels">${svg("expandStack")}</button>` : ""}${noninteractive ? "" : `<div class="renderer-body"><div class="renderer-output">${bodyMarkup}</div>${children}</div>`}${view.run ? fleetHtml(view.run, state) : ""}</div></div>`;
 }
 
 /** The fleet a workflow call launched (#119), as the classic page's `fillFleet` draws it: one
@@ -257,6 +257,19 @@ function besideHtml(view, h, capability) {
 export const changeBadgeHtml = change => change?.length
   ? `<span class="renderer-change">${change.map(c => `<span class="${c.kind === "del" ? "del" : c.kind === "sandbox" ? "sandbox" : "add"}">${escapeText(c.text)}</span>`).join("")}</span>`
   : "";
+
+/** A call's state pill (#s628): a failure's own word (failed, blocked, declined, …) is drawn apart
+ *  from the rest of its chips, which go in `renderer-state-more`, so a narrow row that keeps the
+ *  word (a call stopped before it ran, settled on #s622 under Hong's #s599 ruling) shows the word
+ *  alone, never "1 lines · blocked". The pill's text is what it always was. */
+export function statePillHtml(pill, word) {
+  const text = String(pill || "");
+  const parts = text.split(" · ");
+  const at = word ? parts.indexOf(word) : -1;
+  if (at < 0) return escapeText(text);
+  const before = parts.slice(0, at).join(" · "), after = parts.slice(at + 1).join(" · ");
+  return `${before ? `<span class="renderer-state-more">${escapeText(before)} · </span>` : ""}${escapeText(word)}${after ? `<span class="renderer-state-more"> · ${escapeText(after)}</span>` : ""}`;
+}
 
 function renderProcess(unit, state) {
   const key = unit.key;
