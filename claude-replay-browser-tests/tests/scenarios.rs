@@ -20437,17 +20437,52 @@ fn scenario_a_message_of_pictures_alone_is_the_persons_turn(
                 Duration::from_secs(20),
                 "JSON.stringify([...document.querySelectorAll('.turn.user')].slice(-3).map(function (t) { return t.className + ' | ' + t.innerHTML.slice(0, 160); }))",
             );
-            let turns = probe(
-                tab,
-                "(function () { var all = [...document.querySelectorAll('.turn.user')]; var words = all[all.length - 3].querySelector('.user-prompt').getBoundingClientRect(), col = document.querySelector('#sessionView .transcript').getBoundingClientRect(); return all.slice(-2).map(function (t) { var p = t.querySelector('.user-prompt').getBoundingClientRect(); return { alone: t.classList.contains('user-images-alone'), bubble: !!t.querySelector('.body'), raw: !!t.querySelector('[data-raw-toggle]'), pictures: t.querySelectorAll('.prompt-image-thumb img').length, right: Math.abs(Math.round(p.right - words.right)) <= 1, rightHalf: p.left + p.right > col.left + col.right }; }); })()",
-            );
+            // Each picture is measured, not the box around them (the w617 walk). The box was the
+            // grid's two tracks wide, so it sat at the edge while a lone picture stood in its left
+            // track; held sideways it filled the whole column with the pictures spread across it.
+            // Each ROW of pictures ends at the edge a worded prompt's bubble keeps, and the pictures
+            // together lie on the person's half of the transcript, inside its column, with no picture
+            // ending left of the column's middle (two pictures spread across it did).
+            let pictures = "(function () { var v = document.getElementById('sessionView'), all = [...document.querySelectorAll('#sessionView .turn.user')]; \
+                var edge = all[all.length - 3].querySelector('.user-prompt').getBoundingClientRect().right, \
+                    col = document.querySelector('#sessionView .transcript').getBoundingClientRect(), \
+                    inner = document.querySelector('#sessionView .transcript-inner').getBoundingClientRect(); \
+                return JSON.stringify({ w: innerWidth, phone: v.classList.contains('pl-phone'), column: Math.round(inner.width), turns: all.slice(-2).map(function (t) { \
+                  var items = [...t.querySelectorAll('.prompt-attachments > *')].map(function (e) { return e.getBoundingClientRect(); }), rows = {}; \
+                  items.forEach(function (b) { var k = Math.round(b.top); rows[k] = Math.max(rows[k] === undefined ? -Infinity : rows[k], b.right); }); \
+                  var left = Math.min.apply(null, items.map(function (b) { return b.left; })), right = Math.max.apply(null, items.map(function (b) { return b.right; })); \
+                  return { alone: t.classList.contains('user-images-alone'), bubble: !!t.querySelector('.body'), raw: !!t.querySelector('[data-raw-toggle]'), \
+                    pictures: t.querySelectorAll('.prompt-image-thumb img').length, \
+                    rowsAtEdge: items.length > 0 && Object.keys(rows).every(function (k) { return Math.abs(rows[k] - edge) <= 1; }), \
+                    rightHalf: left + right > col.left + col.right, \
+                    endRight: items.length > 0 && items.every(function (b) { return b.right > (inner.left + inner.right) / 2; }), \
+                    inColumn: left >= inner.left - 1 && right <= inner.right + 1 }; }) }); })()";
+            let want = serde_json::json!([
+                { "alone": true, "bubble": false, "raw": false, "pictures": 2, "rowsAtEdge": true, "rightHalf": true, "endRight": true, "inColumn": true },
+                { "alone": true, "bubble": false, "raw": false, "pictures": 1, "rowsAtEdge": true, "rightHalf": true, "endRight": true, "inColumn": true },
+            ]);
+            let read = |tab: &headless_chrome::Tab| -> serde_json::Value {
+                serde_json::from_str(eval(tab, pictures).as_str().unwrap_or("null"))
+                    .unwrap_or(serde_json::Value::Null)
+            };
+            let desk = read(tab);
+            // Held sideways a phone's reading column is 500px, which the grid's two tracks filled.
+            // The view takes its phone layout a frame or more after the emulation, so a read counts
+            // only once the view wears its phone class and its column is 500px. Both widths are
+            // read before either is asserted, so a failure shows both.
+            harness::phone(tab, 874, 402);
+            let mut side = serde_json::Value::Null;
+            for _ in 0..40 {
+                side = read(tab);
+                if side["phone"] == true && side["column"] == 500 && side["turns"] == want {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
             assert_eq!(
-                turns,
-                serde_json::json!([
-                    { "alone": true, "bubble": false, "raw": false, "pictures": 2, "right": true, "rightHalf": true },
-                    { "alone": true, "bubble": false, "raw": false, "pictures": 1, "right": true, "rightHalf": true },
-                ]),
-                "{surface:?}: the pictures sit on the person's side, at the edge a prompt's bubble keeps, with no empty bubble and nothing typed to show raw"
+                serde_json::json!({ "desktop": desk["turns"], "sideways": { "phone": side["phone"], "column": side["column"], "turns": side["turns"] } }),
+                serde_json::json!({ "desktop": want, "sideways": { "phone": true, "column": 500, "turns": want } }),
+                "{surface:?}: at a desktop's width and on a phone held sideways, the pictures sit on the person's side, each row at the edge a prompt's bubble keeps, with no empty bubble and nothing typed to show raw: desktop {desk}, sideways {side}"
             );
         }
     }
