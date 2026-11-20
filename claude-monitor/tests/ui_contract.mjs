@@ -3416,6 +3416,44 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // the anchor, the observers, the follow state, the thumb and the converge run from one place.
   const engine = readFileSync(new URL("../../claude-replay-html/src/html/shared/virtual-window.js", import.meta.url), "utf8");
   assert.match(engine, /this\.prefix = prefixSums\(this\.count, index => this\.heightOf\(index\)\);/);
+  // …held by what the engine does (the reviews of 00f405f6 and 044a4cdb, #s524): a reader's scroll read
+  // against where the engine last put the offset, kept across the input that made it forget its writes.
+  {
+    const following = (top, gap, fields) => Object.assign(Object.create(VirtualWindow.prototype), {
+      laidOut: () => true, frame: { scrollTop: () => top.at }, gapToBottom: () => gap.at,
+      slacks: { acquire: 2, hold: 80, heal: 80 }, following: true, position: null, dragging: false,
+      unheard: null, latestHeard: false, userIntentMs: 600, lastInputStamp: 0, pendingScroll: true,
+      trace: () => {}, followChanged: () => {}, scheduleRemember: () => {}, afterScroll: () => {}, convergeBottom: () => {},
+    }, fields);
+    const now = performance.now();
+    // A tail write no scroll event reported (1400; the last event read 1000), then one Arrow Up 40px.
+    {
+      const top = { at: 1400 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1400, recentWrites: [{ top: 1400, at: now - 500 }], topSeen: 1000 });
+      vw.markIntent(performance.now());
+      assert.equal(vw.topBelief(), 1400, "the input keeps the unreported write as the engine's belief (#s524)");
+      top.at = 1360; gap.at = 40;
+      vw.onScroll({ timeStamp: performance.now() });
+      assert.equal(vw.following, false, "…so one Arrow Up from that end reads as a move up and lets go (#s524)");
+    }
+    // Two tail writes within ECHO_MS, neither reported, then a touch: the browser's echo of the earlier
+    // one is not a move up; the later write's own event keeps following; a move up from it lets go.
+    {
+      const top = { at: 1430 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1430, recentWrites: [{ top: 1400, at: now - 10 }, { top: 1430, at: now - 5 }], topSeen: 1000 });
+      vw.markIntent(performance.now());
+      assert.equal(vw.topBelief(), 1400, "while an echo may come, the belief is the lowest unreported write (#s524, #s568)");
+      top.at = 1400; gap.at = 30;
+      vw.onScroll({ timeStamp: performance.now() });
+      assert.equal(vw.following, true, "…so the echo of the earlier write keeps following");
+      top.at = 1430; gap.at = 0;
+      vw.onScroll({ timeStamp: performance.now() });
+      assert.equal(vw.following, true, "…and so does the later write's own event");
+      top.at = 1390; gap.at = 40;
+      vw.onScroll({ timeStamp: performance.now() });
+      assert.equal(vw.following, false, "…and a move up from it lets go");
+    }
+  }
   assert.match(engine, /const up = before != null && top < before - 0\.5;\n\s*const verdict = classifyScroll\(this\.following, user, this\.gapToBottom\(\), this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal, up\);/, "a move up the reader makes is told apart from the rest (#s524)");
 
   assert.match(vp, /slacks: \{ acquire: ACQUIRE_SLACK, hold: HOLD_SLACK, heal: HOLD_SLACK \},/, "both pages now acquire at the true end and hold through a nudge (#127)");

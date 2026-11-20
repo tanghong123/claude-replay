@@ -945,11 +945,20 @@ class VirtualWindow {
    *  reader's next scroll is read against it, to know whether they moved up (`onScroll`,
    *  `confirmFollow`). A tail placement no scroll event reported (Chrome reports none for some
    *  writes, and a late or merged event says nothing) would otherwise leave the belief at the last
-   *  event's offset, below which a move up from the new end reads as a move down. While a smooth
-   *  write travels, it is where the write was last seen on its path, which the reader's input stops. */
+   *  event's offset, below which a move up from the new end reads as a move down. It counts only
+   *  where the engine keeps no position (a follower): `topBelief` reads a kept position first. While
+   *  a smooth write travels, it is where the write was last seen on its path, which the input stops.
+   *  While the browser may still report an earlier instant write (#s568: writes within `ECHO_MS` of
+   *  each other, the latest unreported), it is the lowest of them: the echo comes after the input
+   *  made the engine forget its writes, so `echoOf` no longer knows it, and read against the latest
+   *  write it would be a move up the reader never made. */
   keepBelief() {
     const wrote = this.wrote;
-    const belief = wrote && typeof wrote === "object" ? wrote.last : this.topBelief();
+    let belief = wrote && typeof wrote === "object" ? wrote.last : this.topBelief();
+    const writes = this.recentWrites || [];
+    const latest = writes[writes.length - 1];
+    if (belief != null && typeof wrote === "number" && !this.latestHeard && writes.length >= 2 && performance.now() - latest.at <= ECHO_MS)
+      belief = Math.min(belief, ...writes.map(write => Math.round(write.top)));
     if (belief != null) this.topSeen = belief;
   }
 
@@ -2174,9 +2183,9 @@ class VirtualWindow {
     // Where the engine believed the offset was before this event, read from what it knows (no
     // layout read): a move up from there is the reader's move up, which keeps following only at
     // the true end (#s524, the owner's #s542). The reader's input has usually made the engine forget
-    // its writes by now, and `keepBelief` kept where they put the offset; an event with no input
-    // behind it, read while a smooth write travels, is read against where it was last seen on its
-    // path. With no belief yet (the first scroll after a load) the move is not taken as one up.
+    // its writes by now, and `keepBelief` kept where they put the offset; an event read while a
+    // smooth write travels (no input forgot it) is read against where it was last seen on its path.
+    // With no belief yet (the first scroll after a load) the move is not taken as one up.
     const before = this.wrote && typeof this.wrote === "object" ? this.wrote.last : this.topBelief();
     // One read, for the classification, kept as the engine's belief of the offset for the history
     // (`topBelief`): the reader's own scroll is the one move the engine does not make.

@@ -920,7 +920,9 @@ fn scenario_a_scroll_up_at_the_live_end_stays_up(
             .as_f64()
             .unwrap_or(-1.0)
     };
-    // Lines for the growth the third press follows first, dated after the script's own.
+    // Every growth's lines are made here, from one clock: the script's, then the growth the third
+    // press follows first, then the growth after that press, each dated after the one before.
+    let script = growth_script();
     let followed: Vec<String> = (0..2)
         .flat_map(|k| {
             vec![
@@ -1013,7 +1015,7 @@ fn scenario_a_scroll_up_at_the_live_end_stays_up(
         let growth = LiveGrowth::start(
             fx.path.clone(),
             if k < 2 {
-                growth_script().into_iter().skip(4 * k).take(4).collect()
+                script.iter().skip(4 * k).take(4).cloned().collect()
             } else {
                 after.clone()
             },
