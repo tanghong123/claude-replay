@@ -7461,13 +7461,16 @@ fn scenario_a_call_stopped_before_it_ran_says_why(
     // #s628 (settled on #s622 under Hong's #s599 ruling): in a view 620px wide or less, where the
     // design demo hides every call's state word, a call stopped before it ran keeps its word, as
     // a pill and alone (no line count beside it), and a failed and a done call show none. The
-    // classic page has no such narrow rule.
+    // classic page has no such narrow rule. The width classes read a phone reader's view as it is
+    // and a desktop's as a window with the sidebar beside it (pane-layout.js), so the narrow rule
+    // holds in a phone's reader: a mouse window of 480px, which headless Chrome reaches only
+    // emulated, gives one.
     if surface == Surface::AppShell {
-        harness::resize(tab, 600.0, 900.0);
+        harness::mouse_window(tab, 480, 900);
         harness::until(
             tab,
             "!!document.querySelector('#sessionView.pl-max-w-620')",
-            "the session view to read as 620px wide or less",
+            "the session view to read as 620px wide or less (a phone's reader)",
             Duration::from_secs(20),
             "(document.querySelector('#sessionView') || {}).className + ' ' + Math.round((document.querySelector('#sessionView') || document.body).getBoundingClientRect().width)",
         );
