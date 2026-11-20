@@ -720,7 +720,12 @@ mod tests {
         let legacy: RouteHandler = Arc::new(move |request: &Request| {
             claude_replay_html::service_routes(None, &fallback, request)
         });
-        let serve = handler(legacy, runtime, index, true);
+        let serve = handler(
+            legacy,
+            runtime,
+            index,
+            claude_replay_html::PairLatch::with_token("t"),
+        );
         let ask = |name: &str| -> Option<HttpResponse> {
             match serve(&Request {
                 method: "GET",
