@@ -247,7 +247,7 @@ fn a_note_stays_above_the_keyboard(
         until(
             tab,
             &format!("Math.round(document.querySelector('.review-sheet').getBoundingClientRect().top) === {}", rest_top + moves),
-            "the sheet moved with the host's pane while the reader types",
+            "the sheet moved as the script moved it while the reader types",
             Duration::from_secs(5),
             geometry,
         );
@@ -258,7 +258,7 @@ fn a_note_stays_above_the_keyboard(
         until(
             tab,
             &visible,
-            "the sheet still ending above the keyboard once the host moved its pane",
+            "the sheet still ending above the keyboard once something moved under it",
             Duration::from_secs(5),
             geometry,
         );

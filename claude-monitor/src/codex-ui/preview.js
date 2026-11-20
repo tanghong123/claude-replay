@@ -87,10 +87,10 @@ function fitSheetAboveKeyboard(sheet, field, viewport, applied, typing) {
   // is the box's top, whatever made the box (the view containing its layers in a host's pane, the
   // ride's transform, a host's own transform or filter, or nothing: the window), in any engine. The
   // view's top is read where it rests as the reader starts typing (the first fit of it, before iOS
-  // lifts anything), and not again until the field lets go of the focus (as the ride keeps
-  // `pageRest`), so a pinch or a change of the view's family mid-typing reads no rest mid-lift. Where
-  // the ride holds the view (a phone reader on a touch screen, as `ride` in session-view.js decides;
-  // it lets go during a pinch and holds again after), the view is taken to stay at that rest as the
+  // lifts anything), and not again until a fit finds no field focused, so a pinch or a change of the
+  // view's family mid-typing reads no rest mid-lift. Where the ride holds the view (a phone reader,
+  // `pl-phone`, on a touch screen, `pointer:coarse`: where `ride` in session-view.js holds it; it lets
+  // go during a pinch and holds again after), the view is taken to stay at that rest as the
   // reader sees it, whichever way iOS's lift moves the page (a scroll, or the visible part panned, its
   // `offsetTop` the page's offset): the box is placed against that rest by its offset from the view,
   // which neither moves. Only the view's place in the page's layout is read again, which neither
