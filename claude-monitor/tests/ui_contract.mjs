@@ -3508,11 +3508,37 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
       vw.onScroll({ timeStamp: performance.now() + 200 });
       assert.equal(vw.following, false, "an event stamped past ECHO_MS of the latest write is the reader's (#s524)");
     }
+    // A touch pulls the view past the live end, a turn of 40px lands under the finger (its placement
+    // waits for the touch), and the rubber band springs back to the old end, now 40px above the new
+    // one: moves up, but not the reader's, so the view keeps following as main's hold did (the
+    // #s524 walk on an iPhone; 98dd9583 let go here).
+    {
+      const top = { at: 1000 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1000, recentWrites: [{ top: 1000, at: now - 3000 }], topSeen: 1000 });
+      const at = (t, g) => { top.at = t; gap.at = g; vw.markIntent(performance.now()); vw.onScroll({ timeStamp: performance.now() }); };
+      at(1020, -20); at(1045, -45);
+      at(1035, 5); at(1020, 20); at(1000, 40);
+      assert.equal(vw.following, true, "a spring-back to the old end after a turn landed under the finger keeps following (#s524)");
+      at(990, 50);
+      assert.equal(vw.following, false, "…and a move on up, above the old end, is the reader's and lets go");
+    }
+    // Without a turn the spring-back ends at the end itself, and a later nudge up from there lets go:
+    // the old end is behind it once the view goes above it.
+    {
+      const top = { at: 1000 }, gap = { at: 0 };
+      const vw = following(top, gap, { wrote: 1000, recentWrites: [{ top: 1000, at: now - 3000 }], topSeen: 1000 });
+      const at = (t, g) => { top.at = t; gap.at = g; vw.markIntent(performance.now()); vw.onScroll({ timeStamp: performance.now() }); };
+      at(1030, -30); at(1010, -10); at(1000, 0);
+      assert.equal(vw.following, true, "a bounce at the end keeps following");
+      at(955, 45);
+      assert.equal(vw.following, false, "…and a nudge up from it afterwards lets go (#s524)");
+    }
   }
   assert.match(engine, /this\.wrote = \{ from, to, last: from \};\n\s*this\.recentWrites = \[\];\n\s*this\.echoAfterInput = null;/, "a smooth write ends the echo kept after the reader's input (#s524)");
   assert.match(engine, /this\.latestHeard = false;\n(?:\s*\/\/.*\n)*\s*this\.echoAfterInput = null;/, "…and so does an instant one: it starts the writes `echoOf` knows again");
   assert.match(engine, /if \(this\.echoesAfterInput\(top, event && event\.timeStamp \? event\.timeStamp : performance\.now\(\)\)\) \{\n\s*this\.trace\("scroll:echo", \{ top: Math\.round\(top\), afterInput: true \}\);\n\s*return;\n\s*\}\n\s*this\.echoAfterInput = null;\n\s*this\.topSeen = top;/, "an echo after the reader's input is skipped as `echoOf`'s is, and any other event ends it (#s524)");
-  assert.match(engine, /const up = before != null && top < before - 0\.5;\n\s*const verdict = classifyScroll\(this\.following, user, this\.gapToBottom\(\), this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal, up\);/, "a move up the reader makes is told apart from the rest (#s524)");
+  assert.match(engine, /const up = before != null && top < before - 0\.5 && !spring;\n\s*const verdict = classifyScroll\(this\.following, user, gap, this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal, up\);/, "a move up the reader makes is told apart from the rest, the rubber band's spring-back included (#s524)");
+  assert.equal((engine.match(/this\.echoAfterInput = null;\n\s*this\.springEnd = null;/g) || []).length, 2, "a write of the engine's, smooth or instant, ends a spring-back's old end (#s524)");
 
   assert.match(vp, /slacks: \{ acquire: ACQUIRE_SLACK, hold: HOLD_SLACK, heal: HOLD_SLACK \},/, "both pages now acquire at the true end and hold through a nudge (#127)");
   assert.doesNotMatch(vp, /new ResizeObserver|addEventListener\("scroll"/, "the observers and the scroll listener are the engine's now");

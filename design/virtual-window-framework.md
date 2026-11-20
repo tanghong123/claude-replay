@@ -118,6 +118,10 @@ Three things are the reader's, and only the reader's:
   scroll with no input behind it that leaves the tail is healed, not honoured).
   Follow is DROPPED only by the reader: their scroll past the hold slack, or up from the true end
   (#s524), or their reshape of the page (#185: growth they asked for is not the tail moving away).
+  A move up that ends a stretch past the end is the rubber band springing back, not the reader: up
+  to the lowest end seen while the view was past it (`springEnd`), it is no move up, so a turn that
+  lands under the finger and leaves the spring-back short of the new end keeps the pin within the
+  hold, as it did before #s524. Any write of the engine's, or a move above that end, ends it.
   One commanded move is held to the acquire rule even while following: a TURN STEP (`[`/`]`, `pin: "acquire"`, #s487, the owner's
   #s502) keeps the pin only where it lands at the true end, as a jump to the end would take it. A
   step back from the end of a session whose last turns are short lands within the hold slack, and a

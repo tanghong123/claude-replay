@@ -474,6 +474,12 @@ class VirtualWindow {
     this.recentWrites = [];
     this.latestHeard = false;
     this.echoAfterInput = null;
+    // The end as it stood while a scroll event last read the view PAST it (a touch pulling past the
+    // end, a fling's bounce), the lowest such end of that stretch; null otherwise. A move up that stays
+    // at or below it is the rubber band springing back, not the reader leaving the end (#s524): a turn
+    // that lands under the finger raises the end, and the spring-back then ends above the new one.
+    // Cleared once an event reads the view above it, and by any write of the engine's.
+    this.springEnd = null;
     // The viewport trace (#192): every decision the engine makes, with the geometry it saw, in a
     // ring buffer the reader can copy out of a bug report — `copy(window.__viewportTrace)` — and
     // on the console under one prefix. On by the page's URL or storage; `options.trace` overrides.
@@ -772,6 +778,7 @@ class VirtualWindow {
       this.wrote = { from, to, last: from };
       this.recentWrites = [];
       this.echoAfterInput = null;
+      this.springEnd = null;
     } else {
       this.frame.scrollTo(want);
       this.wrote = this.frame.scrollTop();
@@ -781,6 +788,7 @@ class VirtualWindow {
       this.latestHeard = false;
       // A write after the reader's input starts the writes `echoOf` knows again (#s524).
       this.echoAfterInput = null;
+      this.springEnd = null;
       // The browser may keep less than asked at either end of the page; I7 is checked only when it
       // kept the write (§4.12).
       this.lastWrite = { want, got: this.wrote };
@@ -2244,9 +2252,15 @@ class VirtualWindow {
     this.releaseHold();
     const at = event && event.timeStamp ? event.timeStamp : performance.now();
     const user = this.dragging || at - this.lastInputStamp < this.userIntentMs;
-    const up = before != null && top < before - 0.5;
-    const verdict = classifyScroll(this.following, user, this.gapToBottom(), this.slacks.acquire, this.slacks.hold, this.slacks.heal, up);
-    this.trace("scroll", { user, up, verdict, gap: Math.round(this.gapToBottom()), lag: Math.round(at - this.lastInputStamp) });
+    const gap = this.gapToBottom();
+    // Past the end, the end as it stands now; above the lowest end of that stretch, the stretch is over.
+    if (gap < -1) this.springEnd = this.springEnd == null ? top + gap : Math.min(this.springEnd, top + gap);
+    else if (this.springEnd != null && top < this.springEnd - 0.5) this.springEnd = null;
+    // A move up that stays at or below that end is the rubber band springing back (`springEnd`).
+    const spring = this.springEnd != null;
+    const up = before != null && top < before - 0.5 && !spring;
+    const verdict = classifyScroll(this.following, user, gap, this.slacks.acquire, this.slacks.hold, this.slacks.heal, up);
+    this.trace("scroll", { user, up, spring, verdict, gap: Math.round(gap), lag: Math.round(at - this.lastInputStamp) });
     if (verdict === "follow" || verdict === "unfollow") {
       this.following = verdict === "follow";
       this.followChanged();
