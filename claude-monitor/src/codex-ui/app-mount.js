@@ -764,16 +764,22 @@ var mobileShell;
 // why under it (`writeReason`), the first thing missing as the server named it (`data-write`): a
 // switch that turned on and could not send looked like a broken one. A click on it, or on ⓘ, opens
 // the longer help.
+// `here` is the help for a reader at the monitor's own machine, who pairs from the page
+// (design/pair-from-the-page.md, #s618 and #s619): its button opens `/pair`, where the monitor shows
+// a code on this machine to type in. On a monitor not yet paired that pairs the monitor too, which
+// the help says before the button, as `/pair` says again before it asks.
 const WRITE_NEED = {
   monitor: {
     line: "Needs a paired monitor: <code>agent-monitor --pair</code>",
-    help: "<b>Write mode needs a paired monitor</b><p>Stop the monitor and run this in a terminal:</p><code>agent-monitor --pair</code>",
+    help: "<b>Write mode needs a paired monitor</b><p>Run this in a terminal on the monitor's machine:</p><code>agent-monitor --pair</code>",
+    here: "<b>Write mode needs a paired monitor</b><p>Pairing this browser pairs the monitor too: from then on it requires pairing for every browser and tool that reaches it.</p><p class='write-pair'></p><p>Or run this in a terminal on this machine:</p><code>agent-monitor --pair</code>",
   },
   browser: {
     line: "This browser is not paired with the monitor",
     // A monitor a LaunchAgent starts prints no address to its log (#s204): `--pair` in a terminal
     // hands off to the running monitor and prints the address that carries the token.
     help: "<b>This browser is not paired</b><p>The monitor is paired, but this browser holds no pairing token, so the monitor would refuse what it sends. Run this in a terminal on this machine: it prints the address that pairs a browser, and opens it in the default one.</p><code>agent-monitor --pair</code>",
+    here: "<b>This browser is not paired</b><p>The monitor is paired, but this browser holds no pairing token, so the monitor would refuse what it sends. The monitor shows a code on this machine to type into its page.</p><p class='write-pair'></p><p>Or run this in a terminal on this machine: it prints the address that pairs a browser, and opens it in the default one.</p><code>agent-monitor --pair</code>",
   },
   host: {
     line: "This page only reads sessions",
@@ -820,8 +826,19 @@ function paintWrite() {
 function showPairHelp() {
   const help = page.byId("writeHelp");
   const need = writeNeedWords();
-  help.innerHTML = need ? need.help
+  // The server whose writes the help is about: the open session's machine's over several.
+  const handle = handleOf(viewMachine);
+  const here = need?.here && handle.local;
+  help.innerHTML = need ? (here ? need.here : need.help)
     : "<b>Monitor is paired</b><p>With write mode on, a writable session shows a compose box. A live terminal still needs its own grant.</p>";
+  if (here) {
+    const go = document.createElement("button");
+    go.type = "button";
+    go.className = "smallbtn primary";
+    go.textContent = "Pair this browser";
+    go.onclick = () => location.assign(`${handle.base || ""}/pair`);
+    help.querySelector(".write-pair").append(go);
+  }
   help.hidden = false; help.classList.add("show");
 }
 page.byId("writeSwitch").onclick = () => {
