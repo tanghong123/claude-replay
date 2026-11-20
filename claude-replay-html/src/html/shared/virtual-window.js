@@ -771,6 +771,7 @@ class VirtualWindow {
       this.frame.scrollTo(to, true);
       this.wrote = { from, to, last: from };
       this.recentWrites = [];
+      this.echoAfterInput = null;
     } else {
       this.frame.scrollTo(want);
       this.wrote = this.frame.scrollTop();
@@ -778,6 +779,8 @@ class VirtualWindow {
       this.recentWrites = this.recentWrites.filter(write => now - write.at < ECHO_MS);
       this.recentWrites.push({ top: this.wrote, at: now });
       this.latestHeard = false;
+      // A write after the reader's input starts the writes `echoOf` knows again (#s524).
+      this.echoAfterInput = null;
       // The browser may keep less than asked at either end of the page; I7 is checked only when it
       // kept the write (§4.12).
       this.lastWrite = { want, got: this.wrote };
@@ -968,7 +971,8 @@ class VirtualWindow {
   /** Is `top`, read after the reader's input made the engine forget its writes, the browser still on
    *  its way to the latest of them by an earlier one (#s568's echo, kept by `keepBelief`)? As `echoOf`
    *  asks it: at an earlier write's offset, the event stamped and delivered within `ECHO_MS` of the
-   *  latest write, never in a drag. A move up that lands anywhere else is the reader's. */
+   *  latest write, never in a drag, and only until an event that is no echo comes (`onScroll`) or the
+   *  engine writes again. A move up that lands anywhere else is the reader's. */
   echoesAfterInput(top, at = performance.now()) {
     const echo = this.echoAfterInput;
     if (!echo || this.dragging || at > echo.until || performance.now() > echo.until) return false;
@@ -2230,7 +2234,11 @@ class VirtualWindow {
     this.releaseHold();
     const at = event && event.timeStamp ? event.timeStamp : performance.now();
     const user = this.dragging || at - this.lastInputStamp < this.userIntentMs;
-    const up = before != null && top < before - 0.5 && !this.echoesAfterInput(top, at);
+    // Any event of the reader's that is no echo ends the echo kept after their input, as one that
+    // reports the latest write ends `echoOf`'s (`latestHeard`): what comes after it is theirs.
+    const echoed = this.echoesAfterInput(top, at);
+    if (!echoed) this.echoAfterInput = null;
+    const up = before != null && top < before - 0.5 && !echoed;
     const verdict = classifyScroll(this.following, user, this.gapToBottom(), this.slacks.acquire, this.slacks.hold, this.slacks.heal, up);
     this.trace("scroll", { user, up, verdict, gap: Math.round(this.gapToBottom()), lag: Math.round(at - this.lastInputStamp) });
     if (verdict === "follow" || verdict === "unfollow") {

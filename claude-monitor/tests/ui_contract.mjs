@@ -3450,9 +3450,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
       top.at = 1430; gap.at = 0;
       vw.onScroll({ timeStamp: performance.now() });
       assert.equal(vw.following, true, "…and so does the later write's own event");
-      top.at = 1390; gap.at = 40;
+      top.at = 1400; gap.at = 30;
       vw.onScroll({ timeStamp: performance.now() });
-      assert.equal(vw.following, false, "…and a move up from it lets go");
+      assert.equal(vw.following, false, "…and a move up from it lets go, even onto the earlier write: once an event that is no echo came, none is coming (the review of bf2a7642)");
     }
     // Only an earlier write's offset is an echo: one Arrow Up from the latest write, landing between
     // the two, is the reader's (the review of b6ab925b).
@@ -3484,7 +3484,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
       assert.equal(vw.following, false, "an event stamped past ECHO_MS of the latest write is the reader's (#s524)");
     }
   }
-  assert.match(engine, /const up = before != null && top < before - 0\.5 && !this\.echoesAfterInput\(top, at\);\n\s*const verdict = classifyScroll\(this\.following, user, this\.gapToBottom\(\), this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal, up\);/, "a move up the reader makes is told apart from the rest (#s524)");
+  assert.match(engine, /this\.wrote = \{ from, to, last: from \};\n\s*this\.recentWrites = \[\];\n\s*this\.echoAfterInput = null;/, "a smooth write ends the echo kept after the reader's input (#s524)");
+  assert.match(engine, /this\.latestHeard = false;\n(?:\s*\/\/.*\n)*\s*this\.echoAfterInput = null;/, "…and so does an instant one: it starts the writes `echoOf` knows again");
+  assert.match(engine, /const echoed = this\.echoesAfterInput\(top, at\);\n\s*if \(!echoed\) this\.echoAfterInput = null;\n\s*const up = before != null && top < before - 0\.5 && !echoed;\n\s*const verdict = classifyScroll\(this\.following, user, this\.gapToBottom\(\), this\.slacks\.acquire, this\.slacks\.hold, this\.slacks\.heal, up\);/, "a move up the reader makes is told apart from the rest (#s524)");
 
   assert.match(vp, /slacks: \{ acquire: ACQUIRE_SLACK, hold: HOLD_SLACK, heal: HOLD_SLACK \},/, "both pages now acquire at the true end and hold through a nudge (#127)");
   assert.doesNotMatch(vp, /new ResizeObserver|addEventListener\("scroll"/, "the observers and the scroll listener are the engine's now");
