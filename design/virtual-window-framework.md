@@ -124,7 +124,8 @@ Three things are the reader's, and only the reader's:
   hold, as it did before #s524. A transaction that meets the spring-back before its event reads it
   the same way (`springsBack`). The old end lasts for the gesture that made it, a finger that pulls on
   after the turn landed included: the reader coming to rest (`rest`, which the app shell runs once a
-  touch glide is still), a new first finger or a key, any write of the engine's, or a move above that
+  touch glide is still), a new first finger, a key or a wheel up (not a wheel down, which may be the
+  momentum that pulled past the end), any write of the engine's, or a move above that
   end ends it, so a reader who comes back down to a raised end later and moves up is leaving it.
   One commanded move is held to the acquire rule even while following: a TURN STEP (`[`/`]`, `pin: "acquire"`, #s487, the owner's
   #s502) keeps the pin only where it lands at the true end, as a jump to the end would take it. A

@@ -480,8 +480,9 @@ class VirtualWindow {
     // that lands under the finger raises the end, and the spring-back then ends above the new one.
     // It lasts for the gesture that made it: cleared once an event reads the view above it, when the
     // reader comes to rest (`rest`, which the app shell runs once a touch glide is still), when a new
-    // touch or key starts another gesture, and by any write of the engine's. A finger that pulls on
-    // after the turn landed is still the same stretch (`springsBack`).
+    // first finger, a key or a wheel up starts another gesture (a wheel down does not), and by any
+    // write of the engine's. A finger that pulls on after the turn landed is still the same stretch
+    // (`springsBack`).
     this.springEnd = null;
     // The viewport trace (#192): every decision the engine makes, with the geometry it saw, in a
     // ring buffer the reader can copy out of a bug report — `copy(window.__viewportTrace)` — and
@@ -535,9 +536,10 @@ class VirtualWindow {
     const noteIntent = event => {
       if (event.type === "keydown" && event.target && (/^(INPUT|TEXTAREA)$/.test(event.target.tagName) || event.target.isContentEditable)) return;
       if (event.type === "pointermove" && !event.buttons) return;
-      // A first finger down or a key starts a new gesture: a stretch past the end before it is over
-      // (`springEnd`, #s524). A second finger joins the gesture it lands in.
-      if ((event.type === "touchstart" && event.touches && event.touches.length === 1) || event.type === "keydown") this.springEnd = null;
+      // A first finger down, a key or a wheel up starts a new gesture: a stretch past the end before it
+      // is over (`springEnd`, #s524). A second finger joins the gesture it lands in; a wheel down may be
+      // the momentum that pulled past the end (the band's spring-back is the browser's, with no wheel).
+      if ((event.type === "touchstart" && event.touches && event.touches.length === 1) || event.type === "keydown" || (event.type === "wheel" && event.deltaY < 0)) this.springEnd = null;
       this.markIntent(event.timeStamp);
       this.noteInput(event);
     };

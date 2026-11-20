@@ -3575,7 +3575,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
       at(1035, 25); at(1020, 40); at(1005, 55); at(1000, 60);
       assert.equal(vw.following, true, "a pull that goes on after a turn landed under the finger still springs back as the band (#s524)");
     }
-    assert.match(engine, /if \(\(event\.type === "touchstart" && event\.touches && event\.touches\.length === 1\) \|\| event\.type === "keydown"\) this\.springEnd = null;\n\s*this\.markIntent\(event\.timeStamp\);/, "a first finger down or a key starts a new gesture, ending a stretch past the end (#s524)");
+    assert.match(engine, /if \(\(event\.type === "touchstart" && event\.touches && event\.touches\.length === 1\) \|\| event\.type === "keydown" \|\| \(event\.type === "wheel" && event\.deltaY < 0\)\) this\.springEnd = null;\n\s*this\.markIntent\(event\.timeStamp\);/, "a first finger down, a key or a wheel up starts a new gesture, ending a stretch past the end (#s524)");
     // A transaction that meets the spring-back before its event (the turn under the finger rendering
     // as the band settles) reads it as the scroll handler does: no move of the reader's.
     {
