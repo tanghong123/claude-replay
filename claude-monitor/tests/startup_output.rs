@@ -261,10 +261,7 @@ fn a_pair_handed_to_an_unpaired_monitor_pairs_it_at_once() {
     assert_paired_now(port, &token);
     let served = wait_for(&log, "agent-monitor is now paired");
     drop(serving);
-    assert!(
-        served.contains("`agent-monitor --pair` wrote its token"),
-        "{served}"
-    );
+    assert!(served.contains("its token file appeared"), "{served}");
     assert!(
         !handoff.contains("was started without this token") && !handoff.contains("Restart"),
         "the hand-off said the running monitor needs a restart: {handoff}"

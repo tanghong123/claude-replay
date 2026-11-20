@@ -422,7 +422,11 @@ browser and tool. A confirmed code's use is saved first; then the token file is 
 (`control::read_or_create_token_at`: 0600, one lock beside it, written whole by a rename, never
 rotated, the one path `--pair` takes too, so two pairings at once end with one token); then the
 gate's `PairLatch` takes THAT token; and only then is the cookie set. A token that cannot be saved
-leaves the monitor unpaired and sets no cookie. The latch is set once and every holder reads it per
+leaves the monitor unpaired and sets no cookie, and a file at the token path that holds no token it
+can read (not a regular file, over 4 KiB, unreadable, not one word a cookie can carry) is an error,
+never replaced. Each request reads the latch ONCE and is ruled by that answer throughout, so a
+pairing on another thread cannot let it pass the unpaired leg and then skip the relay check; the
+file's write and the latch's set are one turn, which a take-up of the file waits for. The latch is set once and every holder reads it per
 request, so the switch needs no restart: the gate requires the token (with
 `AGENT_MONITOR_TOKEN_ONLY`, read for every gate now, the token alone), the page says paired
 (`routes::Frontend.paired` and native mode's page read the latch), `/pair` answers as a paired

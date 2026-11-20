@@ -2004,31 +2004,44 @@ pub trait CodeDisplay: Send + Sync {
 /// The gate's token, set at most once (#s619, `design/pair-from-the-page.md` §4.6): from the start
 /// for a paired gate, or once a running unpaired gate is paired. Every clone of the gate, and every
 /// clone the host holds, shares the one latch, so the page, the relay clock and the gate all see
-/// the switch at once; a request is ruled wholly before it or wholly after it.
+/// the switch at once. A request reads it once and is ruled by that answer throughout.
 #[derive(Clone, Default)]
-pub struct PairLatch(std::sync::Arc<std::sync::OnceLock<std::sync::Arc<str>>>);
+pub struct PairLatch(std::sync::Arc<LatchInner>);
+
+#[derive(Default)]
+struct LatchInner {
+    token: std::sync::OnceLock<std::sync::Arc<str>>,
+    /// Held while the token file is written or read to set the latch, so the page's pairing and a
+    /// take-up of the file never race to say which paired the gate (#s619 review).
+    turning: std::sync::Mutex<()>,
+}
 
 impl PairLatch {
     /// A latch already holding `token`: a gate paired from the start.
     pub fn with_token(token: impl Into<std::sync::Arc<str>>) -> Self {
         let latch = Self::default();
-        let _ = latch.0.set(token.into());
+        let _ = latch.0.token.set(token.into());
         latch
     }
 
     /// Whether the gate is paired now.
     pub fn is_paired(&self) -> bool {
-        self.0.get().is_some()
+        self.0.token.get().is_some()
     }
 
     fn token(&self) -> Option<&str> {
-        self.0.get().map(|t| &**t)
+        self.0.token.get().map(|t| &**t)
     }
 
     /// Hold `token` unless a token is held already; true when this call set it. The gate sets it
     /// as it is paired; a host has no use for it but in its tests.
     pub fn set(&self, token: &str) -> bool {
-        self.0.set(std::sync::Arc::from(token)).is_ok()
+        self.0.token.set(std::sync::Arc::from(token)).is_ok()
+    }
+
+    /// The one turn at setting the latch from the token file.
+    fn turning(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.0.turning.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -2196,8 +2209,8 @@ impl AuthGate {
 
     /// The unverifiable loopback leg of an unpaired gate: admitted only while no relay reaches
     /// the port (#s422). A paired gate never admits it.
-    fn unverified_admits(&self) -> bool {
-        if self.token.is_paired() {
+    fn unverified_admits(&self, held: Option<&str>) -> bool {
+        if held.is_some() {
             return false;
         }
         let relayed = self.relay.as_ref().is_some_and(|relayed| relayed());
@@ -2306,8 +2319,8 @@ impl AuthGate {
     /// Whether a refused page load is offered pairing: a paired gate with phone codes offers it to
     /// anyone; an unpaired gate that may be paired while it runs (#s619) only to this machine's own
     /// request, the only one its pairing routes answer.
-    fn offers_pairing(&self, local: bool) -> bool {
-        if self.token.is_paired() {
+    fn offers_pairing(&self, held: Option<&str>, local: bool) -> bool {
+        if held.is_some() {
             self.pair_codes.is_some()
         } else {
             local && self.turning_on.is_some() && self.page_pairing.is_some()
@@ -2324,6 +2337,12 @@ impl AuthGate {
         let Some(file) = self.turning_on.as_ref() else {
             return;
         };
+        // After a pairing from the page that is writing the file and setting the latch, never
+        // between the two.
+        let _turn = self.token.turning();
+        if self.token.is_paired() {
+            return;
+        }
         if let Some(token) = file.read().filter(|t| !t.is_empty()) {
             if self.token.set(&token) {
                 file.turned_on(TurnedOn::ByTheFile);
@@ -2331,17 +2350,10 @@ impl AuthGate {
         }
     }
 
-    /// Whether `presented` is the configured token — the "authenticated" test a WRITE
-    /// needs (#133), STRICTER than [`decide`](Self::decide): same-user loopback admits a
-    /// READ but never a write. Always false on an unpaired monitor (no token).
-    fn token_ok(&self, presented: Option<&str>) -> bool {
-        matches!((self.token.token(), presented),
-            (Some(t), Some(p)) if ct_eq(t.as_bytes(), p.as_bytes()))
-    }
-
     /// Rule on a request. `peer`/`local` are the accepted stream's ends; `presented` is the
     /// token extracted from the request (query/header/cookie), and `from_cookie` says it
     /// arrived as a cookie already (so no Set-Cookie is needed).
+    #[cfg(test)]
     fn decide(
         &self,
         peer: std::net::SocketAddr,
@@ -2349,9 +2361,24 @@ impl AuthGate {
         presented: Option<&str>,
         from_cookie: bool,
     ) -> Access {
+        self.decide_held(self.token.token(), peer, local, presented, from_cookie)
+    }
+
+    /// [`decide`](Self::decide) against `held`, the token the gate held when the request's ruling
+    /// began (#s619): the latch can be set while a request is ruled on, and every step of one
+    /// ruling must see the same answer, or a request could pass the unpaired leg and then skip the
+    /// unpaired gate's relay check.
+    fn decide_held(
+        &self,
+        held: Option<&str>,
+        peer: std::net::SocketAddr,
+        local: std::net::SocketAddr,
+        presented: Option<&str>,
+        from_cookie: bool,
+    ) -> Access {
         // A valid token admits regardless of peer identity (the phone/remote path, and
         // the shared-Mac path). Constant-time compare: loopback is where timing leaks.
-        if let (Some(tok), Some(p)) = (self.token.token(), presented) {
+        if let (Some(tok), Some(p)) = (held, presented) {
             if ct_eq(tok.as_bytes(), p.as_bytes()) {
                 return if from_cookie {
                     Access::Ok
@@ -2365,7 +2392,7 @@ impl AuthGate {
             return Access::Denied;
         }
         // A paired gate told to admit the token alone has no same-user leg (#366).
-        if self.token_only && self.token.is_paired() {
+        if self.token_only && held.is_some() {
             return Access::Denied;
         }
         let same_user = match (peer, local) {
@@ -2376,11 +2403,11 @@ impl AuthGate {
                     // brings other machines' connections in from the loopback (#s422). A paired
                     // monitor on macOS refuses an unverifiable peer that lacks the token — the
                     // whole point of pairing a shared Mac.
-                    None => self.unverified_admits(),
+                    None => self.unverified_admits(held),
                 }
             }
             // v6 loopback: unverified; same-machine only when unpaired and unrelayed (#s422).
-            _ => self.unverified_admits(),
+            _ => self.unverified_admits(held),
         };
         if same_user {
             Access::Ok
@@ -2388,6 +2415,13 @@ impl AuthGate {
             Access::Denied
         }
     }
+}
+
+/// Whether `presented` is `held`, the gate's token, compared in constant time: the
+/// "authenticated" test a WRITE needs (#133), STRICTER than [`AuthGate::decide_held`]: same-user
+/// loopback admits a READ but never a write. Always false on an unpaired gate (no token).
+fn token_matches(held: Option<&str>, presented: Option<&str>) -> bool {
+    matches!((held, presented), (Some(t), Some(p)) if ct_eq(t.as_bytes(), p.as_bytes()))
 }
 
 /// Constant-time byte compare — no early exit, so a near-miss token cannot be timed out
@@ -3002,22 +3036,28 @@ fn serve_connection_timed<R: Into<HttpReply>>(
     // #196 §4.2: same-user OR a valid token (query / Authorization: Bearer / cmauth cookie) —
     // except a GET of a path the host made public (#320), which needs neither.
     gate.take_up_the_file();
-    let own_cookie = gate.token.token().map(cookie_name);
+    // The token this request is ruled by, read ONCE (#s619 review): a page code or `--pair` may
+    // pair the gate on another thread while this request is ruled on, and every step below must
+    // see the same answer.
+    let held = gate.token.token();
+    let own_cookie = held.map(cookie_name);
     let (presented, from) = extract_token(query, &headers, own_cookie.as_deref());
     let from_cookie = matches!(from, Some(TokenFrom::Cookie | TokenFrom::LegacyCookie));
     // #350: a browser let in by the old shared cookie is given this gate's own as well.
-    let migrate = from == Some(TokenFrom::LegacyCookie) && gate.token_ok(presented.as_deref());
+    let migrate =
+        from == Some(TokenFrom::LegacyCookie) && token_matches(held, presented.as_deref());
     let peer = stream.peer_addr().ok();
     let local = stream.local_addr().ok();
     let public = method == "GET" && gate.public.contains(&name);
     let access = match (peer, local) {
         _ if public => Access::Ok,
-        (Some(p), Some(l)) => gate.decide(p, l, presented.as_deref(), from_cookie),
+        (Some(p), Some(l)) => gate.decide_held(held, p, l, presented.as_deref(), from_cookie),
         // No socket identity to check — deny unless a token was presented and matches.
         _ => match presented.as_deref() {
             Some(_)
                 if matches!(
-                    gate.decide(
+                    gate.decide_held(
+                        held,
                         ([127, 0, 0, 1], 0).into(),
                         ([127, 0, 0, 1], 0).into(),
                         presented.as_deref(),
@@ -3038,7 +3078,7 @@ fn serve_connection_timed<R: Into<HttpReply>>(
     // `Forwarded`, `Tailscale-User-Login`), and a `Host` that is not a loopback name. Either is
     // refused, and the refusal names pairing. A raw TCP relay (`tailscale serve --tcp`) sends no
     // headers and is not caught here: the relay check is (#s422, `unverified_admits`).
-    let access = if !gate.token.is_paired()
+    let access = if held.is_none()
         && gate.trusted_hosts.is_some()
         && !public
         && !matches!(access, Access::Denied)
@@ -3091,11 +3131,9 @@ fn serve_connection_timed<R: Into<HttpReply>>(
 
     // #s619: an unpaired gate that may be paired while it runs answers the pairing routes to this
     // machine's own requests, for page codes only; anyone else's goes to the gate as before.
-    if let (None, Some(file), Some(pairing)) = (
-        gate.token.token(),
-        gate.turning_on.as_deref(),
-        gate.page_pairing.as_ref(),
-    ) {
+    if let (None, Some(file), Some(pairing)) =
+        (held, gate.turning_on.as_deref(), gate.page_pairing.as_ref())
+    {
         if !denied_large_body && pairing_name && is_local {
             let call = PageCall {
                 pairing,
@@ -3113,7 +3151,7 @@ fn serve_connection_timed<R: Into<HttpReply>>(
 
     // #11: a small pairing POST is the way IN, so answer it before enforcing the gate
     // verdict. Large denied requests still reach the refusal without reading their body.
-    if let (Some(tok), Some(codes)) = (gate.token.token(), gate.pair_codes.as_deref()) {
+    if let (Some(tok), Some(codes)) = (held, gate.pair_codes.as_deref()) {
         let page = gate.page_pairing.as_ref();
         let asks = page.is_some() && name == "api/pair/ask";
         if !denied_large_body && (name == "pair" || name == "api/pair" || asks) {
@@ -3155,7 +3193,7 @@ fn serve_connection_timed<R: Into<HttpReply>>(
             name,
             query,
             body: &body,
-            authenticated: gate.token_ok(presented.as_deref()),
+            authenticated: token_matches(held, presented.as_deref()),
             origin_ok: !public && foreign.is_none(),
             masked: super::mask::policy().masks(host_is_local(header_value(&headers, "host"))),
         }
@@ -3184,7 +3222,7 @@ fn serve_connection_timed<R: Into<HttpReply>>(
             say_refusal(refusal_line(now(), name, token_said(from), &headers));
             let refusal = HttpResponse::refusal_page_with_pairing(
                 gate.refusal,
-                gate.offers_pairing(is_local),
+                gate.offers_pairing(held, is_local),
             );
             (refusal.into(), None, false)
         }
@@ -3448,6 +3486,9 @@ fn turn_on_route(
             match super::pairing::redeem_page_code(&p.codes, &typed, super::pairing::now_secs()) {
                 PageRedeem::Paired => {
                     p.display.withdraw();
+                    // The file is written and the latch set in one turn: a take-up of the file
+                    // between the two would say the pairing command paired the gate.
+                    let _turn = latch.turning();
                     let token = match file.read_or_create() {
                         Ok(t) if !t.is_empty() => t,
                         Ok(_) | Err(_) => {
