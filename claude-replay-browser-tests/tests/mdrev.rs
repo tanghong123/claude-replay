@@ -2320,7 +2320,9 @@ fn an_ipad_app_review_sheet_follows_the_page_moving_under_it_while_the_reader_ty
 /// the visual viewport the same; the note's field, focused before the page shrank, at 1247px under the
 /// sheet's new foot, which nothing scrolled the sheet to. Here an iPad held upright, its page shortened
 /// by a keyboard's height while the note's field has the focus: the field and its Save come into view
-/// in the sheet and are what a tap there hits. Red on 4e8f0164.
+/// in the sheet and are what a tap there hits. Red on 4e8f0164. Then the reader scrolls the sheet away
+/// while typing: neither the page's next event at the same height nor a pinch and back moves the
+/// sheet (the review of b1496fab: its key read the visual viewport's height, which a pinch changes).
 #[test]
 #[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn an_ipad_app_whose_page_shrinks_for_the_keyboard_brings_the_note_into_view() {
@@ -2383,6 +2385,13 @@ fn an_ipad_app_whose_page_shrinks_for_the_keyboard_brings_the_note_into_view() {
         Duration::from_secs(30),
         PANE,
     );
+    // The web view's frame changing is said on the window: the visual viewport's own resize events,
+    // which Chrome sends with it, are held back from the sheet (this listener goes in before the sheet
+    // opens, so it runs before the sheet's), so the sheet must hear the window's.
+    eval(
+        &tab,
+        "(function(){ visualViewport.addEventListener('resize', function (e) { if (e.isTrusted) e.stopImmediatePropagation(); }); return true; })()",
+    );
     harness::click_when_settled(&tab, ".preview-review", "the pane's Review control");
     until(
         &tab,
@@ -2398,8 +2407,9 @@ fn an_ipad_app_whose_page_shrinks_for_the_keyboard_brings_the_note_into_view() {
     let before: serde_json::Value =
         serde_json::from_str(eval(&tab, NOTE_GEOMETRY).as_str().unwrap_or("{}")).unwrap();
     assert!(
-        before["field"][1].as_i64().unwrap_or(0) > i64::from(shrunk),
-        "the note's field lies below where the page will end: {before}"
+        before["field"][1].as_i64().unwrap_or(0) > i64::from(shrunk)
+            && before["save"][1].as_i64().unwrap_or(0) > i64::from(shrunk),
+        "the note's field and its Save lie below where the page will end: {before}"
     );
     harness::phone(&tab, width, shrunk);
     until(
@@ -2410,7 +2420,7 @@ fn an_ipad_app_whose_page_shrinks_for_the_keyboard_brings_the_note_into_view() {
         NOTE_GEOMETRY,
     );
     let visible = format!(
-        "(function(){{ var g = JSON.parse({NOTE_GEOMETRY}); var top = g.scrollerTop, bottom = g.inner; return g.focused && g.sheet[1] <= bottom && g.field[0] >= top && g.field[1] <= bottom && g.fieldHit && g.save[0] >= top && g.save[1] <= bottom && g.saveHit; }})()"
+        "(function(){{ var g = JSON.parse({NOTE_GEOMETRY}); var top = g.scrollerTop, bottom = g.inner; return g.focused && g.field[0] >= top && g.field[1] <= bottom && g.fieldHit && g.save[0] >= top && g.save[1] <= bottom && g.saveHit; }})()"
     );
     until(
         &tab,
@@ -2418,6 +2428,42 @@ fn an_ipad_app_whose_page_shrinks_for_the_keyboard_brings_the_note_into_view() {
         "the note's field and its Save in view in the shortened page",
         Duration::from_secs(5),
         NOTE_GEOMETRY,
+    );
+    // The reader scrolls the sheet up while typing, to read the line again: the page's next event at
+    // the same height, then a pinch in and back out, leave the sheet where they put it.
+    let scroller = "(function(){ var sc = document.querySelector('.review-sheet .ann-draft textarea').parentElement; while (sc && !(/(auto|scroll)/.test(getComputedStyle(sc).overflowY) && sc.scrollHeight > sc.clientHeight)) sc = sc.parentElement; return sc; })()";
+    let away = eval(
+        &tab,
+        &format!("(function(){{ var sc = {scroller}; sc.scrollTop = Math.max(0, sc.scrollTop - 300); return Math.round(sc.scrollTop); }})()"),
+    )
+    .as_i64()
+    .unwrap();
+    let left_alone = |step: &str, script: &str| {
+        eval(&tab, script);
+        // The fit answers the event as it is dispatched; two frames let anything it queued land.
+        eval(
+            &tab,
+            "new Promise(function (done) { requestAnimationFrame(function () { requestAnimationFrame(function () { done(true); }); }); })",
+        );
+        let at = eval(&tab, &format!("Math.round({scroller}.scrollTop)"))
+            .as_i64()
+            .unwrap();
+        assert_eq!(
+            at, away,
+            "the sheet left where the reader scrolled it after {step}"
+        );
+    };
+    left_alone(
+        "the page's event at the same height",
+        "(function(){ visualViewport.dispatchEvent(new Event('resize')); return true; })()",
+    );
+    left_alone(
+        "a pinch in",
+        "(function(){ var h = visualViewport.height; Object.defineProperty(visualViewport, 'scale', { configurable: true, get: function () { return 2; } }); Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return h / 2; } }); visualViewport.dispatchEvent(new Event('resize')); return true; })()",
+    );
+    left_alone(
+        "the pinch back out",
+        "(function(){ delete visualViewport.scale; delete visualViewport.height; visualViewport.dispatchEvent(new Event('resize')); return true; })()",
     );
 }
 

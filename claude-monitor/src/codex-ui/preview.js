@@ -67,9 +67,9 @@ function layoutTop(element) {
  *  holding the field brings into view the field with what belongs to it:
  *  its largest ancestor under the scroller that fits in what stays visible (mdrev's note card: the
  *  quote, the field, the share box and Save), or the field's top where nothing does. Without a field
- *  the sheet is as its rules draw it. Returns the height it fitted the sheet to, as a string, so a
- *  caller reveals again only when that or the field changed and leaves a reader who scrolled the
- *  sheet while typing alone. A sheet that would keep under 120px (an iPhone held sideways in Safari,
+ *  the sheet is as its rules draw it. Returns the height it fitted the sheet to, as a string ("" for
+ *  none), which the caller keys its reveal on, so a reader who scrolled the sheet while typing is left
+ *  alone. A sheet that would keep under 120px (an iPhone held sideways in Safari,
  *  its bars and the keyboard leaving about 16px) is not fitted: its head alone would not fit there.
  *  A pinch zoom is not a keyboard: while the scale is off 1 the sheet is as its rules draw it, as the
  *  ride leaves the pan to the reader. Raised, the sheet drops its foot's safe-area padding, which
@@ -556,8 +556,9 @@ export class Preview {
     const state = { sheet, handle: null, close: null };
     this.reviewSheet = state;
     // #s627: the sheet keeps above an on-screen keyboard while a field inside it has the focus, and
-    // brings the field (mdrev's note card) into view: again when the field changes or the visible
-    // band changes height (the keyboard rising or changing), never for a pan of the same band.
+    // brings the field (mdrev's note card) into view: again when the field changes, or what it is
+    // keyed on (`fitted`: the height the sheet was fitted to, else the page's own height) changes,
+    // never for a pan of the same band and never during a pinch.
     const viewport = window.visualViewport;
     let fitted = "", fittedField = null;
     // `rest` and `laidAt`: the view's top as it rested and its place in the layout then, and whether
@@ -571,13 +572,18 @@ export class Preview {
       const typing = !!at && (takesKeyboard(at) || at.localName === "iframe");
       const field = typing && sheet.contains(at) ? at : null;
       const height = fitSheetAboveKeyboard(sheet, field, viewport, applied, typing);
+      // A pinch is the reader's: the reveal's key and field stay as they were, so nothing scrolls the
+      // sheet while zoomed, nor as the scale comes back to 1 onto the same band.
+      if (viewport && Math.abs((viewport.scale || 1) - 1) >= 0.01) return;
       // A host may shorten the page itself for the keyboard: the iOS app's web view is made shorter,
       // the visual viewport with it, and no keyboard covers the page to fit the sheet above (measured
       // on the iPad Simulator, iPadOS 26.5: the page 1344px tall, then 941, the note's field focused
       // before it shrank at 1247px under the sheet's new foot, and iOS scrolls no scroller inside a
-      // fixed layer to it). So with nothing fitted, the field is brought into view the same way,
-      // again only when the visible height or the field changes.
-      const band = height || (field ? `page ${Math.round(viewport ? viewport.height : innerHeight)}` : "");
+      // fixed layer to it). So with nothing fitted, the reveal is keyed on the page's own height (the
+      // layout's, which a pinch leaves alone): the field is brought into view as the field takes the
+      // focus (nothing moves for one already in view) and again whenever the page's height changes.
+      const page = viewRoot.styleRoot()?.clientHeight || innerHeight;
+      const band = height || (field ? `page ${Math.round(page)}` : "");
       if (field && band && (band !== fitted || field !== fittedField)) revealInSheet(sheet, field);
       fitted = band; fittedField = field;
     };
@@ -594,6 +600,7 @@ export class Preview {
       this.reviewSheet = null;
       viewport?.removeEventListener("resize", fit);
       viewport?.removeEventListener("scroll", fit);
+      removeEventListener("resize", fit);
       sheet.removeEventListener("focusin", fitSoon);
       sheet.removeEventListener("focusout", fitAfterLeaving);
       removeEventListener("keydown", onKey, true);
@@ -624,6 +631,8 @@ export class Preview {
     addEventListener("focusin", onFocus, true);
     viewport?.addEventListener("resize", fit);
     viewport?.addEventListener("scroll", fit);
+    // A host shortening the page itself (the iOS app's web view) may say so on the window alone.
+    addEventListener("resize", fit);
     sheet.addEventListener("focusin", fitSoon);
     sheet.addEventListener("focusout", fitAfterLeaving);
     closeBtn.onclick = close;
