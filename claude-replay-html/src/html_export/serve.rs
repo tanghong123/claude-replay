@@ -1939,8 +1939,14 @@ pub struct AuthGate {
     /// Our effective uid; a loopback peer with this uid is same-user (Linux). `None` when
     /// it could not be read.
     euid: Option<u32>,
-    /// The bearer token when paired; `None` = unpaired (D3b behavior).
-    token: Option<std::sync::Arc<str>>,
+    /// The bearer token once paired; empty = unpaired (D3b behavior). Set at most once, from the
+    /// start or while the gate runs (#s619).
+    token: PairLatch,
+    /// Where the host keeps its token, for an unpaired gate that may be paired while it runs
+    /// (#s619): a page code redeemed here creates it, and one the host's own pairing command
+    /// writes is taken up at the next request. None unless
+    /// [`with_turning_on`](Self::with_turning_on) gives it.
+    turning_on: Option<std::sync::Arc<dyn TokenFile>>,
     /// Where one-time pairing codes live (#11), when the host offers phone pairing: a PAIRED
     /// gate with this set answers `/pair` and `/api/pair` before deciding anything else.
     pair_codes: Option<std::sync::Arc<std::path::Path>>,
@@ -1969,8 +1975,9 @@ pub struct AuthGate {
     /// A PAIRED gate that admits the token alone (#366): the same-user loopback leg is off, so
     /// the owner's own browser needs the cookie too — on Linux as on macOS, where the peer
     /// cannot be verified anyway. Set by `AGENT_MONITOR_TOKEN_ONLY` (any value but `0`) when the
-    /// gate is made with a token; it only ever refuses more, and an unpaired gate ignores it.
-    /// The browser suite sets it, so a case's unpaired browser is refused on every platform.
+    /// gate is made; it only ever refuses more, and an unpaired gate ignores it until it is
+    /// paired (#s619). The browser suite sets it, so a case's unpaired browser is refused on
+    /// every platform.
     token_only: bool,
     /// Optional body budgets belong to installed host routes, not default reader paths.
     body_limits: Vec<(&'static str, usize)>,
@@ -1992,6 +1999,60 @@ pub trait CodeDisplay: Send + Sync {
     fn show(&self, code: &str, secs: u64, port: u16, ignored: Box<dyn FnOnce() + Send>) -> bool;
     /// Take down whatever is showing: its code was used, burned or replaced.
     fn withdraw(&self);
+}
+
+/// The gate's token, set at most once (#s619, `design/pair-from-the-page.md` §4.6): from the start
+/// for a paired gate, or once a running unpaired gate is paired. Every clone of the gate, and every
+/// clone the host holds, shares the one latch, so the page, the relay clock and the gate all see
+/// the switch at once; a request is ruled wholly before it or wholly after it.
+#[derive(Clone, Default)]
+pub struct PairLatch(std::sync::Arc<std::sync::OnceLock<std::sync::Arc<str>>>);
+
+impl PairLatch {
+    /// A latch already holding `token`: a gate paired from the start.
+    pub fn with_token(token: impl Into<std::sync::Arc<str>>) -> Self {
+        let latch = Self::default();
+        let _ = latch.0.set(token.into());
+        latch
+    }
+
+    /// Whether the gate is paired now.
+    pub fn is_paired(&self) -> bool {
+        self.0.get().is_some()
+    }
+
+    fn token(&self) -> Option<&str> {
+        self.0.get().map(|t| &**t)
+    }
+
+    /// Hold `token` unless a token is held already; true when this call set it. The gate sets it
+    /// as it is paired; a host has no use for it but in its tests.
+    pub fn set(&self, token: &str) -> bool {
+        self.0.set(std::sync::Arc::from(token)).is_ok()
+    }
+}
+
+/// Where a host keeps its pairing token, for a gate that may be paired while it runs (#s619). The
+/// file is the root of trust (its mode makes it this user's): the gate holds what the file holds,
+/// never a token of its own making.
+pub trait TokenFile: Send + Sync {
+    /// The token the file holds now, if it holds one. Read afresh each time: the host's own
+    /// pairing command may have written it since.
+    fn read(&self) -> Option<String>;
+    /// The file's token, created (mode 0600) only where none is there, and whole or not at all:
+    /// two pairings at once end with one token.
+    fn read_or_create(&self) -> std::io::Result<String>;
+    /// Said once, as the gate turns paired.
+    fn turned_on(&self, how: TurnedOn);
+}
+
+/// What paired a running gate (#s619).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TurnedOn {
+    /// A code shown on this machine, typed into its page.
+    FromThePage,
+    /// The token file appeared: the host's own pairing command wrote it.
+    ByTheFile,
 }
 
 /// The page codes' file, their display, and the host's terminal command, together.
@@ -2053,14 +2114,15 @@ impl AuthGate {
     pub fn same_user() -> Self {
         Self {
             euid: current_euid(),
-            token: None,
+            token: PairLatch::default(),
+            turning_on: None,
             pair_codes: None,
             refusal: DEFAULT_REFUSAL,
             pair_command: super::pairing::DEFAULT_PAIR_COMMAND,
             public: &[],
             trusted_hosts: None,
             relay: None,
-            token_only: false,
+            token_only: token_only_from_env(),
             body_limits: Vec::new(),
             page_pairing: None,
         }
@@ -2071,14 +2133,15 @@ impl AuthGate {
     pub fn with_token(token: impl Into<std::sync::Arc<str>>) -> Self {
         Self {
             euid: current_euid(),
-            token: Some(token.into()),
+            token: PairLatch::with_token(token),
+            turning_on: None,
             pair_codes: None,
             refusal: DEFAULT_REFUSAL,
             pair_command: super::pairing::DEFAULT_PAIR_COMMAND,
             public: &[],
             trusted_hosts: None,
             relay: None,
-            token_only: std::env::var_os("AGENT_MONITOR_TOKEN_ONLY").is_some_and(|v| v != "0"),
+            token_only: token_only_from_env(),
             body_limits: Vec::new(),
             page_pairing: None,
         }
@@ -2134,7 +2197,7 @@ impl AuthGate {
     /// The unverifiable loopback leg of an unpaired gate: admitted only while no relay reaches
     /// the port (#s422). A paired gate never admits it.
     fn unverified_admits(&self) -> bool {
-        if self.token.is_some() {
+        if self.token.is_paired() {
             return false;
         }
         let relayed = self.relay.as_ref().is_some_and(|relayed| relayed());
@@ -2202,7 +2265,8 @@ impl AuthGate {
     fn for_test(token: Option<&str>) -> Self {
         Self {
             euid: Some(u32::MAX), // never a real uid → same-user never matches
-            token: token.map(std::sync::Arc::from),
+            token: token.map(PairLatch::with_token).unwrap_or_default(),
+            turning_on: None,
             pair_codes: None,
             refusal: DEFAULT_REFUSAL,
             pair_command: super::pairing::DEFAULT_PAIR_COMMAND,
@@ -2218,14 +2282,60 @@ impl AuthGate {
     /// Whether a token is configured (the binary uses this to decide the pre-pair
     /// warning and whether to print a tokened URL).
     pub fn is_paired(&self) -> bool {
-        self.token.is_some()
+        self.token.is_paired()
+    }
+
+    /// The gate's latch (#s619): the host reads it to know when a running gate has been paired
+    /// (the page it serves, its relay clock).
+    pub fn latch(&self) -> PairLatch {
+        self.token.clone()
+    }
+
+    /// Let this gate be paired while it runs (#s619, `design/pair-from-the-page.md` §4.6), with the
+    /// host's token `file`. Unpaired, it then answers `/pair`, `/api/pair/ask` and `/api/pair` to
+    /// this machine's own requests, for page codes only (which need
+    /// [`with_page_pairing`](Self::with_page_pairing)): the confirmed code creates the token file
+    /// and the gate requires the token from that moment, with no restart. A token file the host's
+    /// own pairing command writes is taken up at the next request. A no-op on a gate paired from
+    /// the start.
+    pub fn with_turning_on(mut self, file: std::sync::Arc<dyn TokenFile>) -> Self {
+        self.turning_on = Some(file);
+        self
+    }
+
+    /// Whether a refused page load is offered pairing: a paired gate with phone codes offers it to
+    /// anyone; an unpaired gate that may be paired while it runs (#s619) only to this machine's own
+    /// request, the only one its pairing routes answer.
+    fn offers_pairing(&self, local: bool) -> bool {
+        if self.token.is_paired() {
+            self.pair_codes.is_some()
+        } else {
+            local && self.turning_on.is_some() && self.page_pairing.is_some()
+        }
+    }
+
+    /// While unpaired, take up a token the host's file holds now (#s619): its own pairing command
+    /// (`agent-monitor --pair`) wrote it, and opens the page with it at once, so the request that
+    /// brings it must find the gate paired.
+    fn take_up_the_file(&self) {
+        if self.token.is_paired() {
+            return;
+        }
+        let Some(file) = self.turning_on.as_ref() else {
+            return;
+        };
+        if let Some(token) = file.read().filter(|t| !t.is_empty()) {
+            if self.token.set(&token) {
+                file.turned_on(TurnedOn::ByTheFile);
+            }
+        }
     }
 
     /// Whether `presented` is the configured token — the "authenticated" test a WRITE
     /// needs (#133), STRICTER than [`decide`](Self::decide): same-user loopback admits a
     /// READ but never a write. Always false on an unpaired monitor (no token).
     fn token_ok(&self, presented: Option<&str>) -> bool {
-        matches!((self.token.as_deref(), presented),
+        matches!((self.token.token(), presented),
             (Some(t), Some(p)) if ct_eq(t.as_bytes(), p.as_bytes()))
     }
 
@@ -2241,7 +2351,7 @@ impl AuthGate {
     ) -> Access {
         // A valid token admits regardless of peer identity (the phone/remote path, and
         // the shared-Mac path). Constant-time compare: loopback is where timing leaks.
-        if let (Some(tok), Some(p)) = (self.token.as_deref(), presented) {
+        if let (Some(tok), Some(p)) = (self.token.token(), presented) {
             if ct_eq(tok.as_bytes(), p.as_bytes()) {
                 return if from_cookie {
                     Access::Ok
@@ -2255,7 +2365,7 @@ impl AuthGate {
             return Access::Denied;
         }
         // A paired gate told to admit the token alone has no same-user leg (#366).
-        if self.token_only && self.token.is_some() {
+        if self.token_only && self.token.is_paired() {
             return Access::Denied;
         }
         let same_user = match (peer, local) {
@@ -2304,6 +2414,11 @@ pub fn mint_token() -> Option<String> {
         .read_exact(&mut buf)
         .ok()?;
     Some(buf.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// `AGENT_MONITOR_TOKEN_ONLY` (any value but `0`): a paired gate admits the token alone (#366).
+fn token_only_from_env() -> bool {
+    std::env::var_os("AGENT_MONITOR_TOKEN_ONLY").is_some_and(|v| v != "0")
 }
 
 /// Our effective uid, dependency-free. Linux: the effective field of `/proc/self/status`'s
@@ -2886,7 +3001,8 @@ fn serve_connection_timed<R: Into<HttpReply>>(
 
     // #196 §4.2: same-user OR a valid token (query / Authorization: Bearer / cmauth cookie) —
     // except a GET of a path the host made public (#320), which needs neither.
-    let own_cookie = gate.token.as_deref().map(cookie_name);
+    gate.take_up_the_file();
+    let own_cookie = gate.token.token().map(cookie_name);
     let (presented, from) = extract_token(query, &headers, own_cookie.as_deref());
     let from_cookie = matches!(from, Some(TokenFrom::Cookie | TokenFrom::LegacyCookie));
     // #350: a browser let in by the old shared cookie is given this gate's own as well.
@@ -2922,7 +3038,7 @@ fn serve_connection_timed<R: Into<HttpReply>>(
     // `Forwarded`, `Tailscale-User-Login`), and a `Host` that is not a loopback name. Either is
     // refused, and the refusal names pairing. A raw TCP relay (`tailscale serve --tcp`) sends no
     // headers and is not caught here: the relay check is (#s422, `unverified_admits`).
-    let access = if gate.token.is_none()
+    let access = if !gate.token.is_paired()
         && gate.trusted_hosts.is_some()
         && !public
         && !matches!(access, Access::Denied)
@@ -2961,22 +3077,46 @@ fn serve_connection_timed<R: Into<HttpReply>>(
         reader.read_exact(&mut body)?;
     }
 
+    // #s618: a page code is asked for and redeemed only by this machine's own request.
+    let port = local.map_or(0, |l| l.port());
+    let is_local = local_asker(
+        peer,
+        &headers,
+        port,
+        headers_whole,
+        past_cap > 0 || relayed_past_cap,
+    );
+    let from_link = query.split('&').any(|kv| kv == "from=link");
+    let pairing_name = name == "pair" || name == "api/pair" || name == "api/pair/ask";
+
+    // #s619: an unpaired gate that may be paired while it runs answers the pairing routes to this
+    // machine's own requests, for page codes only; anyone else's goes to the gate as before.
+    if let (None, Some(file), Some(pairing)) = (
+        gate.token.token(),
+        gate.turning_on.as_deref(),
+        gate.page_pairing.as_ref(),
+    ) {
+        if !denied_large_body && pairing_name && is_local {
+            let call = PageCall {
+                pairing,
+                local: true,
+                port,
+                from_link,
+            };
+            let (r, cookie) = turn_on_route(&method, name, &body, &gate.token, file, call);
+            let head = response_head(&r, &cookie);
+            return stream
+                .write_all(head.as_bytes())
+                .and_then(|_| stream.write_all(&r.body));
+        }
+    }
+
     // #11: a small pairing POST is the way IN, so answer it before enforcing the gate
     // verdict. Large denied requests still reach the refusal without reading their body.
-    if let (Some(tok), Some(codes)) = (gate.token.as_deref(), gate.pair_codes.as_deref()) {
+    if let (Some(tok), Some(codes)) = (gate.token.token(), gate.pair_codes.as_deref()) {
         let page = gate.page_pairing.as_ref();
         let asks = page.is_some() && name == "api/pair/ask";
         if !denied_large_body && (name == "pair" || name == "api/pair" || asks) {
-            // #s618: a page code is asked for and redeemed only by this machine's own request.
-            let port = local.map_or(0, |l| l.port());
-            let is_local = local_asker(
-                peer,
-                &headers,
-                port,
-                headers_whole,
-                past_cap > 0 || relayed_past_cap,
-            );
-            let from_link = query.split('&').any(|kv| kv == "from=link");
             let page = page.map(|pairing| PageCall {
                 pairing,
                 local: is_local,
@@ -3044,7 +3184,7 @@ fn serve_connection_timed<R: Into<HttpReply>>(
             say_refusal(refusal_line(now(), name, token_said(from), &headers));
             let refusal = HttpResponse::refusal_page_with_pairing(
                 gate.refusal,
-                gate.token.is_some() && gate.pair_codes.is_some(),
+                gate.offers_pairing(is_local),
             );
             (refusal.into(), None, false)
         }
@@ -3257,6 +3397,100 @@ fn json_status(code: &'static str, body: String) -> HttpResponse {
 /// `POST /api/pair/ask` (#s618): a browser on this machine asks for a page code, which the host
 /// shows on this machine only. The reply says where it was shown, never the code. `phone_command`
 /// is the host's command for a phone's code, named to a browser that may not ask.
+/// The pairing routes of an unpaired gate that may be paired while it runs (#s619,
+/// `design/pair-from-the-page.md` §4.6), answered only to this machine's own request. `/pair` says
+/// what pairing does here before it asks; `/api/pair/ask` shows a page code as on a paired gate;
+/// `/api/pair` redeems a page code and nothing else (no phone code is good before the token
+/// exists, and a code a link carried is never judged against a page code). A redeemed code's use
+/// is saved first, then the token file is read or created, then the gate holds that token, and
+/// only then is the cookie set: a token file that cannot be written leaves the gate unpaired and
+/// sets no cookie.
+fn turn_on_route(
+    method: &str,
+    name: &str,
+    body: &[u8],
+    latch: &PairLatch,
+    file: &dyn TokenFile,
+    call: PageCall<'_>,
+) -> (HttpResponse, String) {
+    use super::pairing::PageRedeem;
+    let wrong = || {
+        (
+            json_status(
+                "403 Forbidden",
+                r#"{"ok":false,"message":"wrong, used or expired code"}"#.into(),
+            ),
+            String::new(),
+        )
+    };
+    match (name, method) {
+        ("pair", "GET") => {
+            let mut r = HttpResponse::html(super::pairing::pair_page_turning_on(
+                call.pairing.code_command,
+            ));
+            r.headers = vec![
+                "Content-Security-Policy: frame-ancestors 'none'".into(),
+                "X-Frame-Options: DENY".into(),
+            ];
+            (r, String::new())
+        }
+        ("api/pair/ask", "POST") => (ask_route(Some(call), ""), String::new()),
+        ("api/pair/ask", _) => (
+            HttpResponse::method_not_allowed("POST /api/pair/ask"),
+            String::new(),
+        ),
+        ("api/pair", "POST") => {
+            if call.from_link {
+                return wrong();
+            }
+            let p = call.pairing;
+            let typed = String::from_utf8_lossy(body);
+            match super::pairing::redeem_page_code(&p.codes, &typed, super::pairing::now_secs()) {
+                PageRedeem::Paired => {
+                    p.display.withdraw();
+                    let token = match file.read_or_create() {
+                        Ok(t) if !t.is_empty() => t,
+                        Ok(_) | Err(_) => {
+                            eprintln!(
+                                "pairing from the page: the token could not be saved, so the \
+                                 monitor stays unpaired"
+                            );
+                            return (
+                                json_status(
+                                    "500 Internal Server Error",
+                                    r#"{"ok":false,"message":"The monitor could not save its pairing token, so it is not paired."}"#.into(),
+                                ),
+                                String::new(),
+                            );
+                        }
+                    };
+                    if latch.set(&token) {
+                        file.turned_on(TurnedOn::FromThePage);
+                    }
+                    // The gate holds what it holds: the file's token, unless another pairing
+                    // got there first, which read the same file.
+                    let held = latch.token().unwrap_or(&token).to_string();
+                    (
+                        HttpResponse::json(r#"{"ok":true}"#.into()),
+                        set_cookie_line(&held),
+                    )
+                }
+                PageRedeem::Missed { burned } => {
+                    if burned {
+                        p.display.withdraw();
+                    }
+                    wrong()
+                }
+                PageRedeem::NoneWaiting => wrong(),
+            }
+        }
+        _ => (
+            HttpResponse::method_not_allowed("GET /pair, POST /api/pair"),
+            String::new(),
+        ),
+    }
+}
+
 fn ask_route(page: Option<PageCall<'_>>, phone_command: &str) -> HttpResponse {
     use super::pairing::PageAsk;
     let Some(PageCall {
@@ -6124,6 +6358,321 @@ mod tests {
         assert!(!ask.contains("\"shown\""), "{ask}");
         assert!(display.shown.lock().unwrap().is_empty());
         assert!(!dir.join("page-codes").exists(), "nothing minted");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A token file for the turning-on cases (#s619): a file in the case's dir, which can be told to
+    /// fail its create as an unwritable state dir would, and which records each turn.
+    struct FakeTokenFile {
+        path: std::path::PathBuf,
+        fail: bool,
+        turned: std::sync::Mutex<Vec<TurnedOn>>,
+    }
+
+    impl TokenFile for FakeTokenFile {
+        fn read(&self) -> Option<String> {
+            std::fs::read_to_string(&self.path)
+                .ok()
+                .map(|t| t.trim().to_string())
+                .filter(|t| !t.is_empty())
+        }
+        fn read_or_create(&self) -> std::io::Result<String> {
+            if self.fail {
+                return Err(std::io::Error::other("the state dir is not writable"));
+            }
+            if let Some(t) = self.read() {
+                return Ok(t);
+            }
+            std::fs::write(&self.path, "minted-token")?;
+            Ok("minted-token".into())
+        }
+        fn turned_on(&self, how: TurnedOn) {
+            self.turned.lock().unwrap().push(how);
+        }
+    }
+
+    /// An UNPAIRED test gate that may be paired while it runs, as the monitor makes it (#s619): its
+    /// port, display, token file, latch and dir. A relay reaches its port when `relayed` says so.
+    #[allow(clippy::type_complexity)]
+    fn turning_on_gate(
+        tag: &str,
+        fail: bool,
+        relayed: bool,
+    ) -> (
+        u16,
+        std::sync::Arc<FakeDisplay>,
+        std::sync::Arc<FakeTokenFile>,
+        PairLatch,
+        std::path::PathBuf,
+    ) {
+        let dir = page_pairing_dir(tag);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let display = std::sync::Arc::new(FakeDisplay {
+            can_show: true,
+            ..FakeDisplay::default()
+        });
+        let file = std::sync::Arc::new(FakeTokenFile {
+            path: dir.join("auth-token"),
+            fail,
+            turned: Default::default(),
+        });
+        let handler: RouteHandler =
+            std::sync::Arc::new(|_: &Request| HttpResponse::html("the monitor".to_string()));
+        let trusted: HostCheck = std::sync::Arc::new(|h: &str| h == "box.tail0.ts.net:2727");
+        let relay: RelayCheck = std::sync::Arc::new(move || relayed);
+        let gate = AuthGate::for_test(None)
+            .with_turning_on(file.clone())
+            .with_pair_codes(dir.join("pair-codes"))
+            .with_page_pairing(
+                dir.join("page-codes"),
+                display.clone(),
+                "agent-monitor --pair-code",
+            )
+            .with_trusted_hosts(trusted)
+            .with_relay_check(relay);
+        let latch = gate.latch();
+        let port = spawn_listener_gated(0, handler, gate).unwrap();
+        (port, display, file, latch, dir)
+    }
+
+    /// #s619: on an unpaired monitor `/pair` says, before it asks, that pairing this browser pairs
+    /// the monitor; the code confirmed in the page creates the token file, the gate requires that
+    /// token from the next request on, and `/pair` answers as a paired monitor's does.
+    #[test]
+    fn an_unpaired_monitor_is_paired_by_a_code_confirmed_in_its_page() {
+        let (port, display, file, latch, dir) = turning_on_gate("turn-on", false, false);
+        let here = format!("Host: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\n");
+        let page = send_raw(
+            port,
+            &format!("GET /pair HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"),
+            "",
+            true,
+        );
+        assert!(page.starts_with("HTTP/1.1 200"), "{page}");
+        let (lead, ask_button) = (
+            page.find("Pairing this browser pairs the monitor too")
+                .expect("the page says what pairing does here"),
+            page.find("id=\"ask\"").expect("the page asks"),
+        );
+        assert!(lead < ask_button, "it says so before it asks");
+        assert!(
+            page.contains("requires pairing for every browser and tool that reaches it")
+                && page.contains("<code>agent-monitor --pair</code>"),
+            "{page}"
+        );
+        assert!(
+            page.contains("Content-Security-Policy: frame-ancestors 'none'")
+                && page.contains("X-Frame-Options: DENY"),
+            "the page that asks is never framed: {page}"
+        );
+        let ask = send_raw(
+            port,
+            &format!("POST /api/pair/ask HTTP/1.1\r\n{here}"),
+            "",
+            true,
+        );
+        assert!(ask.contains(r#""shown":"dialog""#), "{ask}");
+        let code = display.shown.lock().unwrap()[0].clone();
+        assert!(!ask.contains(&code), "never in the reply");
+        let pair = format!("POST /api/pair HTTP/1.1\r\n{here}");
+        let wrong = send_raw(port, &pair, "ZZZZ-ZZZZ", true);
+        assert!(
+            wrong.starts_with("HTTP/1.1 403") && !wrong.contains("Set-Cookie"),
+            "{wrong}"
+        );
+        assert!(
+            !latch.is_paired() && !file.path.exists(),
+            "a miss mints nothing"
+        );
+        let right = send_raw(port, &pair, &code, true);
+        assert!(right.starts_with("HTTP/1.1 200"), "{right}");
+        let named = cookie_name("minted-token");
+        assert!(
+            right.contains(&format!("Set-Cookie: {named}=minted-token;")),
+            "the cookie carries the token the file holds: {right}"
+        );
+        assert_eq!(std::fs::read_to_string(&file.path).unwrap(), "minted-token");
+        assert!(latch.is_paired(), "the running gate is paired");
+        assert_eq!(*file.turned.lock().unwrap(), vec![TurnedOn::FromThePage]);
+        assert!(display.withdrawn.load(std::sync::atomic::Ordering::SeqCst) >= 1);
+        // From the next request on, the token is required, on every platform.
+        let bare = send_raw(
+            port,
+            &format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"),
+            "",
+            true,
+        );
+        assert!(bare.starts_with("HTTP/1.1 401"), "{bare}");
+        let home = send_raw(
+            port,
+            &format!(
+                "GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nCookie: {named}=minted-token\r\n"
+            ),
+            "",
+            true,
+        );
+        assert!(
+            home.starts_with("HTTP/1.1 200") && home.contains("the monitor"),
+            "{home}"
+        );
+        // `/pair` answers as a paired monitor's does, and the used code pairs nothing again.
+        let paired_page = send_raw(
+            port,
+            &format!("GET /pair HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"),
+            "",
+            true,
+        );
+        assert!(
+            paired_page.contains("Pairing lets this browser read the monitor")
+                && !paired_page.contains("pairs the monitor too"),
+            "{paired_page}"
+        );
+        let twice = send_raw(port, &pair, &code, true);
+        assert!(twice.starts_with("HTTP/1.1 403"), "{twice}");
+        assert_eq!(file.turned.lock().unwrap().len(), 1, "it turns on once");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #s619: a token the host's own pairing command (`agent-monitor --pair`) writes while an
+    /// unpaired monitor runs is taken up by the request that brings it, which the monitor answers
+    /// with the redirect that sets its cookie (what `running_takes_token` reads), and the gate
+    /// requires it from then on.
+    #[test]
+    fn an_unpaired_monitor_takes_up_the_token_its_pairing_command_wrote() {
+        let (port, _display, file, latch, dir) = turning_on_gate("take-up", false, false);
+        let bare = format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n");
+        let _ = send_raw(port, &bare, "", true);
+        assert!(!latch.is_paired(), "no file, no pairing");
+        std::fs::write(&file.path, "cli-token\n").unwrap();
+        let opened = send_raw(
+            port,
+            &format!("GET /?token=cli-token HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n"),
+            "",
+            true,
+        );
+        assert!(opened.starts_with("HTTP/1.1 302"), "{opened}");
+        assert!(
+            opened.contains(&format!(
+                "Set-Cookie: {}=cli-token;",
+                cookie_name("cli-token")
+            )),
+            "{opened}"
+        );
+        assert!(latch.is_paired());
+        assert_eq!(*file.turned.lock().unwrap(), vec![TurnedOn::ByTheFile]);
+        let refused = send_raw(port, &bare, "", true);
+        assert!(refused.starts_with("HTTP/1.1 401"), "{refused}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #s619: a confirmed code whose token cannot be saved sets no cookie and leaves the monitor
+    /// unpaired: no browser holds a token the file does not.
+    #[test]
+    fn an_unpaired_monitor_stays_unpaired_when_its_token_cannot_be_saved() {
+        let (port, display, file, latch, dir) = turning_on_gate("unsaved", true, false);
+        let here = format!("Host: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\n");
+        let _ = send_raw(
+            port,
+            &format!("POST /api/pair/ask HTTP/1.1\r\n{here}"),
+            "",
+            true,
+        );
+        let code = display.shown.lock().unwrap()[0].clone();
+        let right = send_raw(
+            port,
+            &format!("POST /api/pair HTTP/1.1\r\n{here}"),
+            &code,
+            true,
+        );
+        assert!(
+            right.starts_with("HTTP/1.1 500") && !right.contains("Set-Cookie"),
+            "{right}"
+        );
+        assert!(right.contains("not paired"), "{right}");
+        assert!(!latch.is_paired() && file.turned.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #s619: an unpaired monitor is paired only by a page code, from this machine's own request: a
+    /// phone code left in its file, a code a link carried, and anyone else's request pair nothing,
+    /// mint nothing and show nothing; a refused page load is offered pairing only here.
+    #[test]
+    fn an_unpaired_monitor_is_paired_by_no_code_but_one_shown_here() {
+        let (port, display, file, latch, dir) = turning_on_gate("only-here", false, true);
+        let here = format!("Host: 127.0.0.1:{port}\r\nOrigin: http://127.0.0.1:{port}\r\n");
+        let pair = format!("POST /api/pair HTTP/1.1\r\n{here}");
+        let phone = super::super::pairing::mint_pair_code(
+            &dir.join("pair-codes"),
+            super::super::pairing::now_secs(),
+        )
+        .unwrap();
+        let left = send_raw(port, &pair, &phone, true);
+        assert!(
+            left.starts_with("HTTP/1.1 403") && !left.contains("Set-Cookie"),
+            "a phone code pairs no unpaired monitor: {left}"
+        );
+        // From another machine, through a relay's headers or by a tailnet name: never the routes.
+        for (what, head) in [
+            (
+                "relayed",
+                format!("POST /api/pair/ask HTTP/1.1\r\n{here}X-Forwarded-For: 100.64.0.9\r\n"),
+            ),
+            (
+                "tailnet name",
+                "POST /api/pair/ask HTTP/1.1\r\nHost: box.tail0.ts.net:2727\r\n".to_string(),
+            ),
+        ] {
+            let ask = send_raw(port, &head, "", true);
+            assert!(!ask.contains("\"shown\""), "{what}: {ask}");
+        }
+        assert!(display.shown.lock().unwrap().is_empty(), "nothing shown");
+        let ask = send_raw(
+            port,
+            &format!("POST /api/pair/ask HTTP/1.1\r\n{here}"),
+            "",
+            true,
+        );
+        assert!(ask.contains(r#""shown":"dialog""#), "{ask}");
+        let code = display.shown.lock().unwrap()[0].clone();
+        let linked = send_raw(
+            port,
+            &format!("POST /api/pair?from=link HTTP/1.1\r\n{here}"),
+            &code,
+            true,
+        );
+        assert!(
+            linked.starts_with("HTTP/1.1 403") && !linked.contains("Set-Cookie"),
+            "a code a link carried is never a page code: {linked}"
+        );
+        assert!(!latch.is_paired() && !file.path.exists(), "nothing minted");
+        // A relay reaches the port, so this machine's own browser is refused (#s422): its page
+        // load is offered pairing, and another device's is not.
+        let accept = "Accept: text/html\r\n";
+        let refused_here = send_raw(
+            port,
+            &format!("GET / HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\n{accept}"),
+            "",
+            true,
+        );
+        assert!(
+            refused_here.starts_with("HTTP/1.1 401") && refused_here.contains("href=\"/pair\""),
+            "{refused_here}"
+        );
+        let refused_there = send_raw(
+            port,
+            &format!("GET / HTTP/1.1\r\nHost: box.tail0.ts.net:2727\r\n{accept}"),
+            "",
+            true,
+        );
+        assert!(
+            refused_there.starts_with("HTTP/1.1 401") && !refused_there.contains("href=\"/pair\""),
+            "{refused_there}"
+        );
+        // The code the link carried was not spent: typed here, it pairs.
+        let right = send_raw(port, &pair, &code, true);
+        assert!(right.starts_with("HTTP/1.1 200"), "{right}");
+        assert!(latch.is_paired());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

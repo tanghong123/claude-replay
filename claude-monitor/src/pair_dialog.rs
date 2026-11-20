@@ -196,25 +196,19 @@ impl CodeDisplay for PairDialog {
     }
 }
 
-/// The page codes' file for a paired monitor that is starting, with any code a run before left
+/// The page codes' file for a monitor that is starting, with any code a run before left
 /// cleared, since nothing shows it any more. None when they could not be cleared: the monitor
-/// then offers no page pairing for this run.
+/// then offers no page pairing for this run. The state dir is made first: a monitor that has never
+/// been paired may start before anything else has written there (#s619).
 pub fn page_codes_at_start(state_dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    std::fs::create_dir_all(state_dir).ok()?;
     let path = state_dir.join(PAGE_CODES_FILE);
     claude_replay_html::pairing::clear_page_codes(&path).then_some(path)
 }
 
-/// `agent-monitor --pair-code`: print the page code waiting, or a new one, to a terminal only.
-pub fn print_code(
-    state_dir: &std::path::Path,
-    paired: bool,
-    stdout_terminal: bool,
-) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        paired,
-        "This monitor is not paired, so there is nothing to pair a browser to. Run \
-         `agent-monitor --pair` first."
-    );
+/// `agent-monitor --pair-code`: print the page code waiting, or a new one, to a terminal only. On a
+/// monitor not yet paired, the code typed into its page pairs the monitor too (#s619).
+pub fn print_code(state_dir: &std::path::Path, stdout_terminal: bool) -> anyhow::Result<()> {
     anyhow::ensure!(
         stdout_terminal,
         "--pair-code prints its code only to a terminal, never into a pipe or a log."
@@ -454,11 +448,9 @@ mod tests {
     }
 
     #[test]
-    fn pair_code_prints_only_to_a_terminal_and_only_when_paired() {
+    fn pair_code_prints_only_to_a_terminal() {
         let dir = std::env::temp_dir().join(format!("cm-pair-code-{}", std::process::id()));
-        let unpaired = print_code(&dir, false, true).unwrap_err().to_string();
-        assert!(unpaired.contains("agent-monitor --pair"), "{unpaired}");
-        let piped = print_code(&dir, true, false).unwrap_err().to_string();
+        let piped = print_code(&dir, false).unwrap_err().to_string();
         assert!(piped.contains("only to a terminal"), "{piped}");
         assert!(
             !dir.join(PAGE_CODES_FILE).exists(),
