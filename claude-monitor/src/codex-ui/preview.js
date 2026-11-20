@@ -43,6 +43,13 @@ const refusal = (title, message) => Object.assign(new Error(message), { title })
 const NO_KEYBOARD_INPUTS = new Set(["button", "checkbox", "radio", "range", "color", "file", "image", "reset", "submit", "hidden"]);
 const takesKeyboard = at => at?.localName === "input" ? !NO_KEYBOARD_INPUTS.has(at.type)
   : at?.localName === "textarea" || at?.localName === "select" || !!at?.isContentEditable;
+/** An element's place in the page's layout: its offsets up to the box that places it, which a
+ *  transform and a scroll of the page leave alone, and a host moving it does not. */
+function layoutTop(element) {
+  let top = 0;
+  for (let at = element; at; at = at.offsetParent) top += at.offsetTop;
+  return top;
+}
 /** #s627: the review sheet ends above an on-screen keyboard while a field inside it has the focus.
  *  iOS covers the foot of what is drawn with its keyboard and never shortens a fixed layer for it,
  *  and it lifts a focused field by scrolling the page, which the sheet (fixed over the whole app, its
@@ -78,21 +85,24 @@ function fitSheetAboveKeyboard(sheet, field, viewport, applied, typing) {
   // The top of the box the sheet is placed in, below the visible part's top (#s627's reviews). The
   // browser is asked, not told: the sheet's own top less what its rules put between it and that box
   // is the box's top, whatever made the box (the view containing its layers in a host's pane, the
-  // ride's transform, a host's own transform or filter, or nothing: the window), in any engine. While
-  // the ride holds the page still (a phone reader on a touch screen at a scale of 1, as `ride` in
-  // session-view.js decides), iOS's lift moves the page and the ride moves it back, so the box is
-  // taken against the view's top as it rested: read at every fit the ride does not hold, and so at
-  // the first fit of the reader's typing, before iOS lifts anything (a host may have moved the view
-  // since the sheet opened). Elsewhere what is drawn is where it is seen. In the app the box starts at
-  // the window's top. What the keyboard covers is the ride's own measure, the layout viewport's height
-  // less the visible one's: nothing on a desktop, so a sheet taller than the window is left alone.
+  // ride's transform, a host's own transform or filter, or nothing: the window), in any engine. As
+  // the reader starts typing (the first fit of it, before iOS lifts anything) the view's top is read
+  // where it rests. From then until the keyboard goes, the view is taken to stay there as the reader
+  // sees it, which is the ride's whole work on a phone reader whichever way iOS's lift moves the
+  // page (a scroll, or the visible part panned, its `offsetTop` the page's offset): the box is placed
+  // against that rest by its offset from the view, which neither moves. Only the view's place in the
+  // page's layout is read again, which neither iOS's lift nor the ride's transform changes and a host
+  // moving its pane does. A pinch while typing changes neither. In the app the box starts at the
+  // window's top, as walked on the iPhone and iPad Simulators. What the keyboard covers is the
+  // ride's own measure, the layout viewport's height less the visible one's: nothing on a desktop, so
+  // a sheet taller than the window is left alone.
   const holder = sheet.parentElement, holderTop = holder ? holder.getBoundingClientRect().top : 0;
-  const held = typing && applied.typing && Math.abs((viewport?.scale || 1) - 1) < 0.01 && !!holder?.classList.contains("pl-phone")
-    && typeof matchMedia === "function" && matchMedia("(pointer:coarse)").matches;
-  if (!held) applied.rest = holderTop;
+  const laidAt = holder ? layoutTop(holder) : 0;
+  const held = typing && applied.typing;
+  if (!held) { applied.rest = holderTop; applied.laidAt = laidAt; }
   applied.typing = typing;
   const placedAt = box.top - ruledTop - (parseFloat(style.marginTop) || 0);
-  const blockTop = placedAt + (held ? applied.rest - holderTop : 0);
+  const blockTop = placedAt + (held ? applied.rest + laidAt - applied.laidAt - holderTop : 0);
   const covered = viewport ? (viewRoot.styleRoot()?.clientHeight || 0) - viewport.height : 0;
   let want = 0;
   if (field && covered > 0.5 && Math.abs((viewport.scale || 1) - 1) < 0.01) {
@@ -544,9 +554,9 @@ export class Preview {
     // band changes height (the keyboard rising or changing), never for a pan of the same band.
     const viewport = window.visualViewport;
     let fitted = "", fittedField = null;
-    // `rest`: the view's top as it rested, and whether the last fit found the reader typing
-    // (`fitSheetAboveKeyboard`).
-    const applied = { bottom: 0, rest: 0, typing: false };
+    // `rest` and `laidAt`: the view's top as it rested and its place in the layout then, and whether
+    // the last fit found the reader typing (`fitSheetAboveKeyboard`).
+    const applied = { bottom: 0, rest: 0, laidAt: 0, typing: false };
     const fit = () => {
       if (this.reviewSheet !== state) return;
       let at = viewRoot.active();

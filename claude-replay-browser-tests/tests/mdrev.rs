@@ -162,7 +162,11 @@ fn lengthen_guide(repo: &Path) {
 /// in the app; a host's pane). Red on
 /// 54b26c5f, where the field stayed under the keyboard (the iPad Simulator walk saw it at 1279pt
 /// under a keyboard from 1028pt, its Save past the window's foot).
-fn a_note_stays_above_the_keyboard(tab: &headless_chrome::Tab, save_in_view: bool) {
+fn a_note_stays_above_the_keyboard(
+    tab: &headless_chrome::Tab,
+    save_in_view: bool,
+    while_typing: Option<(&str, i64)>,
+) {
     let line = eval(
         tab,
         "(function(){ var H = innerHeight, ps = [...document.querySelectorAll('.review-sheet .doc p')]; var p = ps.find(function(p){ var r = p.getBoundingClientRect(); return r.top > H * 0.62 && r.bottom < H * 0.9 && /^Berth/.test(p.textContent); }); if (!p) return 'none: ' + ps.map(function(p){ return Math.round(p.getBoundingClientRect().top); }).join(','); var w = document.createTreeWalker(p, NodeFilter.SHOW_TEXT); var n = w.nextNode(); var r = document.createRange(); r.setStart(n, 0); r.setEnd(n, Math.min(n.data.length, 12)); var s = getSelection(); s.removeAllRanges(); s.addRange(r); document.dispatchEvent(new Event('selectionchange')); return p.textContent.slice(0, 12); })()",
@@ -232,6 +236,32 @@ fn a_note_stays_above_the_keyboard(tab: &headless_chrome::Tab, save_in_view: boo
         Duration::from_secs(5),
         geometry,
     );
+    // A host moving its pane while the reader types (`while_typing`: its script, and how far it moves
+    // the sheet's top) is heard by no viewport event. The next one (the keyboard's, here its height
+    // told again) fits the sheet where it is now.
+    let mut rest_top = rest_top;
+    if let Some((script, moves)) = while_typing {
+        eval(tab, script);
+        until(
+            tab,
+            &format!("Math.round(document.querySelector('.review-sheet').getBoundingClientRect().top) === {}", rest_top + moves),
+            "the sheet moved with the host's pane while the reader types",
+            Duration::from_secs(5),
+            geometry,
+        );
+        eval(
+            tab,
+            "(function(){ visualViewport.dispatchEvent(new Event('resize')); return true; })()",
+        );
+        until(
+            tab,
+            &visible,
+            "the sheet still ending above the keyboard once the host moved its pane",
+            Duration::from_secs(5),
+            geometry,
+        );
+        rest_top += moves;
+    }
     // The keyboard put away: the field leaves the focus and the visual viewport is the window again.
     eval(
         tab,
@@ -1575,7 +1605,7 @@ fn a_phone_review_sheet_keeps_a_note_above_the_keyboard() {
         Duration::from_secs(30),
         "(document.querySelector('.review-sheet') || {innerText: 'no sheet'}).innerText.slice(0, 200)",
     );
-    a_note_stays_above_the_keyboard(&tab, true);
+    a_note_stays_above_the_keyboard(&tab, true, None);
 }
 
 /// #s627: in a host's pane under the host's bar (the kit's session view in a page of its own), the
@@ -1585,15 +1615,16 @@ fn a_phone_review_sheet_keeps_a_note_above_the_keyboard() {
 #[test]
 #[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn a_phone_review_sheet_in_a_host_s_pane_keeps_a_note_above_the_keyboard() {
-    host_review_sheet_keeps_a_note_above_the_keyboard(
-        "mdrev-sheet-keyboard-host",
-        3347,
-        (402, 874),
-        "",
-        false,
-        40,
-        None,
-    );
+    host_review_sheet_keeps_a_note_above_the_keyboard(HostSheet {
+        name: "mdrev-sheet-keyboard-host",
+        port: 3347,
+        size: (402, 874),
+        page: "",
+        expand: false,
+        sheet_top: 40,
+        after_open: None,
+        while_typing: None,
+    });
 }
 
 /// #s627's review of 799df8f4: a host page that scrolls the pane with it, scrolled past the pane's
@@ -1603,15 +1634,16 @@ fn a_phone_review_sheet_in_a_host_s_pane_keeps_a_note_above_the_keyboard() {
 #[test]
 #[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn a_phone_review_sheet_in_a_host_page_scrolled_past_the_pane_keeps_a_note_above_the_keyboard() {
-    host_review_sheet_keeps_a_note_above_the_keyboard(
-        "mdrev-sheet-keyboard-host-scrolled",
-        3348,
-        (402, 874),
-        "(function(){ document.body.style.height = '2000px'; var p = document.getElementById('hostPane'); p.style.position = 'absolute'; p.style.top = '40px'; p.style.bottom = 'auto'; p.style.height = innerHeight + 'px'; scrollTo(0, 100); return true; })()",
-        false,
-        -60,
-        None,
-    );
+    host_review_sheet_keeps_a_note_above_the_keyboard(HostSheet {
+        name: "mdrev-sheet-keyboard-host-scrolled",
+        port: 3348,
+        size: (402, 874),
+        page: "(function(){ document.body.style.height = '2000px'; var p = document.getElementById('hostPane'); p.style.position = 'absolute'; p.style.top = '40px'; p.style.bottom = 'auto'; p.style.height = innerHeight + 'px'; scrollTo(0, 100); return true; })()",
+        expand: false,
+        sheet_top: -60,
+        after_open: None,
+        while_typing: None,
+    });
 }
 
 /// #s627's review of 2d15a5b6: a host whose bar grows while the sheet is open, so the pane, the view
@@ -1621,18 +1653,43 @@ fn a_phone_review_sheet_in_a_host_page_scrolled_past_the_pane_keeps_a_note_above
 #[test]
 #[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn a_phone_review_sheet_in_a_host_that_moves_its_pane_keeps_a_note_above_the_keyboard() {
-    host_review_sheet_keeps_a_note_above_the_keyboard(
-        "mdrev-sheet-keyboard-host-moved",
-        3350,
-        (402, 874),
-        "",
-        false,
-        40,
-        Some((
+    host_review_sheet_keeps_a_note_above_the_keyboard(HostSheet {
+        name: "mdrev-sheet-keyboard-host-moved",
+        port: 3350,
+        size: (402, 874),
+        page: "",
+        expand: false,
+        sheet_top: 40,
+        after_open: Some((
             "(function(){ document.querySelector('.host-bar').style.height = '70px'; document.getElementById('hostPane').style.top = '70px'; return true; })()",
             70,
         )),
-    );
+        while_typing: None,
+    });
+}
+
+/// #s627's review of 24854d37: a host whose bar grows while the reader types, so the view moves 30px
+/// down with no scroll and no viewport event, and the next viewport event refits the sheet. The view's
+/// place in the page's layout is read again at each fit, so the host's move counts and iOS's lift does
+/// not. Red on 24854d37, which held the view's top as it rested and left the foot 30px under the
+/// keyboard.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
+fn a_phone_review_sheet_in_a_host_that_moves_its_pane_while_the_reader_types_keeps_the_note_above_the_keyboard(
+) {
+    host_review_sheet_keeps_a_note_above_the_keyboard(HostSheet {
+        name: "mdrev-sheet-keyboard-host-moved-typing",
+        port: 3351,
+        size: (402, 874),
+        page: "",
+        expand: false,
+        sheet_top: 40,
+        after_open: None,
+        while_typing: Some((
+            "(function(){ document.querySelector('.host-bar').style.height = '70px'; document.getElementById('hostPane').style.top = '70px'; return true; })()",
+            30,
+        )),
+    });
 }
 
 /// #s627's review of 799df8f4: a phone held sideways in a host's pane, the pane expanded (⤢). There
@@ -1642,32 +1699,51 @@ fn a_phone_review_sheet_in_a_host_that_moves_its_pane_keeps_a_note_above_the_key
 #[test]
 #[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn a_phone_held_sideways_reviews_in_a_host_s_expanded_pane_with_a_note_above_the_keyboard() {
-    host_review_sheet_keeps_a_note_above_the_keyboard(
-        "mdrev-sheet-keyboard-host-sideways",
-        3349,
-        (874, 402),
-        "",
-        true,
-        0,
-        None,
-    );
+    host_review_sheet_keeps_a_note_above_the_keyboard(HostSheet {
+        name: "mdrev-sheet-keyboard-host-sideways",
+        port: 3349,
+        size: (874, 402),
+        page: "",
+        expand: true,
+        sheet_top: 0,
+        after_open: None,
+        while_typing: None,
+    });
 }
 
-/// The host page's half of the #s627 cases: a phone of `size` in the session-view host page (the
-/// host's 40px bar over its pane), `page` run on the host's page once the view is in its pane, the
-/// guide opened in the pane (expanded with ⤢ when `expand`), its Review sheet drawn from `sheet_top`,
-/// `after_open`'s script run on the host's page with the sheet open (the sheet then drawn from its
-/// top), then a note low in it with the keyboard up. Held sideways the part left above the keyboard is
-/// shorter than the note's card, so only the field is asked to show there.
-fn host_review_sheet_keeps_a_note_above_the_keyboard(
-    name: &str,
+/// One host page case of #s627: a phone of `size` in the session-view host page (the host's 40px bar
+/// over its pane).
+struct HostSheet<'a> {
+    name: &'a str,
     port: u16,
-    (width, height): (u32, u32),
-    page: &str,
+    size: (u32, u32),
+    /// Run on the host's page once the view is in its pane ("" for nothing).
+    page: &'a str,
+    /// The pane expanded (⤢) before the Review sheet opens.
     expand: bool,
+    /// Where the Review sheet is drawn from once it opens.
     sheet_top: i64,
-    after_open: Option<(&str, i64)>,
-) {
+    /// A script run on the host's page with the sheet open, and the top the sheet is then drawn from.
+    after_open: Option<(&'a str, i64)>,
+    /// A script run on the host's page with the keyboard up and the note in view, and how far it
+    /// moves the sheet's top.
+    while_typing: Option<(&'a str, i64)>,
+}
+
+/// The host page's half of the #s627 cases (`HostSheet`): the guide opened in the pane, its Review
+/// sheet, then a note low in it with the keyboard up. Held sideways the part left above the keyboard
+/// is shorter than the note's card, so only the field is asked to show there.
+fn host_review_sheet_keeps_a_note_above_the_keyboard(case: HostSheet) {
+    let HostSheet {
+        name,
+        port,
+        size: (width, height),
+        page,
+        expand,
+        sheet_top,
+        after_open,
+        ..
+    } = case;
     let _serial = serial();
     let (base, stores, repo, state) = shared_review_world(name);
     lengthen_guide(&repo);
@@ -1743,7 +1819,7 @@ fn host_review_sheet_keeps_a_note_above_the_keyboard(
             "Math.round(document.querySelector('.review-sheet').getBoundingClientRect().top)",
         );
     }
-    a_note_stays_above_the_keyboard(&tab, height > width);
+    a_note_stays_above_the_keyboard(&tab, height > width, case.while_typing);
 }
 
 /// #s12, the owner chose it: on a phone, where a tab of its own has no way back (#335), shared review
@@ -2083,7 +2159,7 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
     );
     // #s627: a note low on the screen keeps above an on-screen keyboard (the iPad's case).
     eval(&tab, "window.__step = 'a note above the keyboard'; 'ok'");
-    a_note_stays_above_the_keyboard(&tab, true);
+    a_note_stays_above_the_keyboard(&tab, true, None);
     // Closed by Escape with the focus inside mdrev's document (its heading made focusable, so the
     // unmount takes the focused element with it, as it takes a note field or one of mdrev's own
     // buttons), the focus still goes back to Review.
