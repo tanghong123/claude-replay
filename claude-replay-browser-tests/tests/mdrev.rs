@@ -236,9 +236,10 @@ fn a_note_stays_above_the_keyboard(
         Duration::from_secs(5),
         geometry,
     );
-    // A host moving its pane while the reader types (`while_typing`: its script, and how far it moves
-    // the sheet's top and its bottom) is heard by no viewport event. The next one (the keyboard's, here its height
-    // told again) fits the sheet where it is now.
+    // Something moving under the sheet while the reader types (`while_typing`: its script, and how far
+    // it moves the sheet's top and its bottom): a host moving its pane, which no viewport event tells,
+    // the page scrolling, or a pinch and back. The keyboard's next event (here its height told again)
+    // fits the sheet where it is now.
     let mut rest_top = rest_top;
     let mut rest_bottom = rest_bottom;
     if let Some((script, moves, bottom_moves)) = while_typing {
@@ -2216,7 +2217,7 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
     );
 }
 
-/// #s627's fourth review: on a touch screen whose view is no phone reader (an iPad at full width, where
+/// The review of ceaf2b7a (#s627): on a touch screen whose view is no phone reader (an iPad at full width, where
 /// only the native app offers the sheet), nothing holds the view still while the reader types, so the
 /// sheet's box is read where it is at every fit. The page scrolls 60px as the reader types (as iOS's
 /// lift may move it), the view and the sheet with it, and the keyboard's next event fits the sheet's
@@ -2301,6 +2302,72 @@ fn an_ipad_app_review_sheet_follows_the_page_moving_under_it_while_the_reader_ty
     );
     let moved = "(function(){ document.documentElement.style.height = '3000px'; document.body.style.height = '3000px'; scrollTo(0, 60); return scrollY; })()";
     a_note_stays_above_the_keyboard(&tab, true, Some((moved, -60, -60)));
+}
+
+/// The review of 491330b6 (#s627): a pinch while the reader types on a phone reader. iOS lifts the
+/// page by scrolling it (here 120px, the document made taller so it can) and the ride moves the view
+/// back over the scroll; a pinch makes the ride let go, so the view sits 120px up until the scale is 1
+/// again and the ride holds it once more. The view's rest is read as typing starts and not during the
+/// pinch, so back at a scale of 1 the sheet's foot meets the keyboard's top. Red on 491330b6, which read
+/// the rest again during the pinch and left the foot 120px under the keyboard.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
+fn a_phone_review_sheet_keeps_a_note_above_the_keyboard_through_a_pinch_while_the_reader_types() {
+    let _serial = serial();
+    let (base, stores, repo, state) = shared_review_world("mdrev-sheet-pinch");
+    lengthen_guide(&repo);
+    let m = Monitor::spawn_with(
+        Kind::V1,
+        3353,
+        &base,
+        Some(&stores),
+        true,
+        &[("MDREV_STATE_DIR", &state.display().to_string())],
+    );
+    let (_browser, tab) = chrome_tab();
+    harness::phone(&tab, 440, 956);
+    open_shell(&m, &tab);
+    assert_eq!(
+        eval(
+            &tab,
+            "matchMedia('(pointer: coarse)').matches && document.getElementById('sessionView').classList.contains('pl-phone')"
+        ),
+        true,
+        "a phone reader on a touch screen, where the ride holds the view"
+    );
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1') && (function(){ var b = document.querySelector('.preview-review'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+        "the guide in the pane, with its Review control",
+        Duration::from_secs(30),
+        PANE,
+    );
+    eval(
+        &tab,
+        "document.querySelector('.preview-review').click(); 'ok'",
+    );
+    until(
+        &tab,
+        "!!document.querySelector('.review-sheet .mdrev-host h1') && !!document.querySelector('.review-sheet .doc p')",
+        "the review sheet, its document drawn",
+        Duration::from_secs(30),
+        "(document.querySelector('.review-sheet') || {innerText: 'no sheet'}).innerText.slice(0, 200)",
+    );
+    // iOS's lift as a scroll of the page, heard by the ride at once; then a pinch and back. What the
+    // view's top read at each step is kept, so the case shows the scenario happened.
+    let pinched = "(function(){ var top = function () { return Math.round(document.getElementById('sessionView').getBoundingClientRect().top); }; var seen = { rest: top() }; document.documentElement.style.height = '3000px'; document.body.style.height = '3000px'; scrollTo(0, 120); dispatchEvent(new Event('scroll')); visualViewport.dispatchEvent(new Event('resize')); seen.lifted = top(); seen.scrolled = scrollY; Object.defineProperty(visualViewport, 'scale', { configurable: true, get: function () { return 1.6; } }); visualViewport.dispatchEvent(new Event('resize')); seen.pinched = top(); delete visualViewport.scale; visualViewport.dispatchEvent(new Event('resize')); seen.back = top(); window.__pinch = seen; return true; })()";
+    a_note_stays_above_the_keyboard(&tab, true, Some((pinched, 0, 0)));
+    let seen = eval(&tab, "JSON.stringify(window.__pinch)");
+    let seen: serde_json::Value = serde_json::from_str(seen.as_str().unwrap_or("{}")).unwrap();
+    let rest = seen["rest"].as_i64().unwrap_or(i64::MIN);
+    assert!(
+        seen["scrolled"] == 120
+            && seen["lifted"].as_i64() == Some(rest)
+            && seen["pinched"].as_i64() == Some(rest - 120)
+            && seen["back"].as_i64() == Some(rest),
+        "the page lifted 120px, the ride holding the view at its rest, letting go during the pinch and holding it again after: {seen}"
+    );
 }
 
 // ── #s13: every text file through mdrev, as source code when it is not Markdown ──────────────
