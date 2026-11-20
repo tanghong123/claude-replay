@@ -36,7 +36,8 @@ The tiers say what a host must serve:
 
 - **core**: the parts show nothing without it;
 - **optional**: a feature goes away (each section says which);
-- **write**: sending, granting and answering; a host that serves none of these says it is not paired;
+- **write**: sending, granting and answering; a host that serves none of these says so on its page
+  (`<body data-write="host">`, "The page's facts" below);
 - **page**: the detached tabs: the server's own page for a tab of its own, and the Markdown tab's
   mdrev prefix (a host may serve the kit's `mountDetached` at a route of its own instead);
 - **native**: Codex native mode, which is outside contract 1 (see "Codex native mode").
@@ -167,11 +168,14 @@ A `Row` (the fields the page reads; the server sends a few more for other reader
 | `injectable` | `true`, optional | a send may type into the pane |
 | `sendsImages` | `true`, optional | the pane takes images |
 | `consented` | bool, optional | a standing grant covers the pane |
+| `sendBlock` | string, optional, open set | why a live row takes no message from the page, a lasting fact about the session: `project-busy`, `unsupported-agent`, `unproven-pane`, `no-pane`, `herdr-codex`, `pane-shared`, `not-foreground`, `other-terminal`, `parked`. Absent when the row takes one, and for a refusal another control answers (a grant still to give); a conversation continued in another session the page reads off `continuedIn` |
+| `pid` | number, optional | the process the row is linked to; the page reads a live row by it |
+| `continuedIn` | string, optional | the session this conversation went on in; such a row is finished and takes no resume |
 | `dialog` | `"question"`, `"permission"` or `"plan"`, optional | a dialog the page can answer |
 | `cost`, `costPartial`, `costOwn`, `costSubs` | number or `true`, optional | the cost, its own and its sub-agents' |
 
 Also sent, for the attention report and the fleet page rather than the parts: `conf`, `visited`,
-`continuedIn`, `ambig`, `pid`, `pidSource`, `sock`, `turns`, `tools`, `subs`, `child`,
+`ambig`, `pidSource`, `sock`, `turns`, `tools`, `subs`, `child`,
 `costSubsPartial` and `stateSource`. They are part of the contract all the same: removing one
 moves the version.
 
@@ -388,10 +392,19 @@ A `dialog` is `{kind: "question", "permission" or "plan", fingerprint, title, te
 multi, choices: [{n, label, description, checked?, freeText?}], tabs?: [{label, done}], plan?}`.
 An answer names the fingerprint, and is refused when the pane shows another dialog.
 
-The page offers writes only when its server says it is paired (`<body data-paired="true">`), and
-only for a row whose facts allow it (`injectable`, `state`, `projActive`, `agent`). **A host that
-serves no writes says it is not paired**, and the page then draws no compose box and no answer
-buttons.
+### The page's facts
+
+The page offers writes only when its server says this reader's writes reach it, as
+`<body data-write>`: `open`, or what is missing, in the order a reader can act on it: `host` (the
+server serves no writes), `monitor` (the monitor is not paired) or `browser` (it is, and this
+request carried no token: a paired monitor on Linux lets a same-user browser read without one). The
+page names the reason beside its Write mode switch, and draws no compose box and no answer buttons
+until it is `open`. `<body data-paired>` still says whether the server gates its readers.
+
+With writing open, a row takes a message when its facts allow it (`injectable`, `state`,
+`projActive`, `agent`, `continuedIn`). A row that does not keeps a greyed compose button with the
+reason: its `sendBlock` for a live row, else the page's own reading of `agent`, `pid`,
+`continuedIn`, `state` and `projActive`.
 
 ## The detached tabs
 
@@ -540,7 +553,8 @@ A host that serves the monitor's page, or mounts its parts, supplies these with 
 
 | What | Read for | Without it |
 |---|---|---|
-| `<body data-paired>` | whether writes are offered, and whether an HTML file is framed in the pane | no compose box, no answers, no framed pages |
+| `<body data-paired>` | whether the server gates its readers: whether an HTML file is framed in the pane, and whether writes are offered where the page carries no `data-write` | no framed pages; with no `data-write` either, no compose box and no answers |
+| `<body data-write>` | whether this reader's writes are admitted (`open`), else what is missing: `monitor` (not paired), `browser` (this browser holds no token) or `host` (the host serves no writes) | writing follows `data-paired` |
 | `<body data-contract>` | the contract version | the page cannot say which version it reads |
 | `<body data-version>` | the build, shown in the brand | `vdev` |
 | `<body data-mdrev>` | the pinned mdrev release | Markdown shows as text |

@@ -2294,3 +2294,24 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    line of its own after the times. */
 #sessionView .turn-notice{flex:0 0 100%;order:3;margin:6px 0 0;color:var(--faint);font:12px/1.45 var(--sans);text-align:left}
 #sessionView .turn-notice-file{padding:0;border:0;background:none;color:var(--sub);font:inherit;cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px}
+/* #s577: Write mode where it cannot work. Where this reader's writes cannot reach the monitor (not
+   paired, this browser holding no token, a page that only reads), the sidebar's switch is greyed and
+   one line under it says why, with the command; the row and ⓘ open the longer help. The collapsed
+   rail's ✎ is greyed the same and says it in its title. */
+.write-control.disabled .mode-switch{opacity:.42;cursor:default}
+.write-control.disabled .icon{opacity:.6}
+.sidebar .write-reason{margin:-3px 10px 6px 38px;color:var(--faint);font-size:11.5px;line-height:1.4;overflow-wrap:anywhere}
+.sidebar .write-reason[hidden]{display:none}
+.sidebar .write-reason code{font:11px var(--mono);color:var(--sub);white-space:nowrap}
+.sidebar-mini-button.disabled{opacity:.5}
+/* …and with write mode on, a session the box cannot write to keeps its compose button greyed, with
+   the reason beside it on a desktop (the demo hid the notice, which said only "not writable"). On a
+   phone ✎ in the dock is greyed and a tap says why: the bottom centre is the jump to the latest's. */
+#sessionView .compose-fab.disabled{background:var(--hover);color:var(--faint);box-shadow:none;cursor:help}
+#sessionView .compose-fab.disabled .fab-dot{display:none}
+#sessionView .empty-compose.show{display:block!important;left:auto;right:70px;bottom:24px;transform:none;max-width:min(560px,calc(100% - 100px));padding:7px 13px;border-radius:14px;color:var(--sub);line-height:1.4;z-index:23}
+@media(max-width:760px),(pointer:coarse) and (max-height:500px){
+  #sessionView .empty-compose.show{display:none!important}
+  #sessionView .phone-dock>.dock-compose.blocked{color:var(--faint)}
+  #sessionView .phone-dock>.dock-compose.blocked .icon{opacity:.55}
+}

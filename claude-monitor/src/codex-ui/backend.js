@@ -38,8 +38,12 @@ function loopbackBase(base) {
  *    loaded (#s352) moves it with `mdrevMoved`, which `onMdrevMoved` hears when given.
  *  - `paired`: whether that server gates its readers behind pairing, which decides what an agent's
  *    page may run in the artifact pane (#s429: read from the handle, not the page).
+ *  - `write`: whether this reader's writes reach that server's sessions (#s577): "open", else what
+ *    is missing — "monitor" (the server is not paired), "browser" (it is, and this reader holds no
+ *    token) or "host" (the server serves no writes). By default it follows `paired`, as writing
+ *    did before the server said more.
  *  - `version`: the server's own version, when it says (a saved viewport history names it). */
-export function backendHandle({ base = "", credentials = "same-origin", local, mdrev, mdrevVersion = "", onMdrevMoved, paired = false, version = null } = {}) {
+export function backendHandle({ base = "", credentials = "same-origin", local, mdrev, mdrevVersion = "", onMdrevMoved, paired = false, write, version = null } = {}) {
   const root = String(base || "").replace(/\/+$/, "");
   const mdrevRoot = mdrev == null ? root : String(mdrev).replace(/\/+$/, "");
   const join = (prefix, path) => {
@@ -48,10 +52,15 @@ export function backendHandle({ base = "", credentials = "same-origin", local, m
   };
   const near = local != null ? !!local : root === "" || root.startsWith("/") ? revealHere() : loopbackBase(root);
   let pinned = typeof mdrevVersion === "function" ? null : String(mdrevVersion || "");
+  const gate = ["open", "monitor", "browser", "host"].includes(write) ? write : paired ? "open" : "monitor";
   return Object.freeze({
     base: root,
     local: near,
     paired: !!paired,
+    /** Whether this reader's writes reach the server's sessions (#s577). */
+    writes: gate === "open",
+    /** What writing still needs ("monitor", "browser", "host"), or "" when it is open. */
+    writeNeed: gate === "open" ? "" : gate,
     version: version || null,
     /** The mdrev release this server serves now. */
     mdrevVersion: () => (pinned == null ? String(mdrevVersion() || "") : pinned),
@@ -86,13 +95,14 @@ export function pageBase(href = typeof location === "undefined" ? "" : location.
 }
 
 /** The handle for the server that served this page, with what the page says of it: whether it is
- *  paired (`data-paired` on the page's body), its version (`data-version`) and its pinned mdrev (`data-mdrev`), which the page
+ *  paired (`data-paired` on the page's body), whether this reader may write (`data-write`, #s577), its version (`data-version`) and its pinned mdrev (`data-mdrev`), which the page
  *  keeps, so a move the page finds (#s352) is written there too. */
 export function pageHandle() {
   const facts = () => page.body()?.dataset || {};
   return backendHandle({
     base: pageBase(),
     paired: facts().paired === "true",
+    write: facts().write,
     version: facts().version || null,
     mdrevVersion: () => facts().mdrev || "",
     onMdrevMoved: version => { const body = page.body(); if (body) body.dataset.mdrev = version; },

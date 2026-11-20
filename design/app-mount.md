@@ -129,8 +129,9 @@ The mount takes either `backend`, one handle (the monitor's page), or `machines`
 - **The keymap** looks up each of the view's keys on the view mounted now, at the moment of the key,
   never a copy taken at the first mount. The wide phone's column gives back the pane list it
   borrowed from the view, and shows the Sessions tab, before the view is unmounted.
-- **Write mode** reads `paired` from the open row's machine (`locate`), and repaints on each remount;
-  with no row open, the switch is off and says to open a session. The help that names
+- **Write mode** reads the open row's machine (`locate`): its handle's `writes`, which follows
+  `paired` unless the handle says otherwise, and repaints on each remount; with no row open, the
+  switch is off and says to open a session (#s577's `writeNeedNow`). The help that names
   `agent-monitor --pair` shows only for an unpaired machine, of which iOS has none.
 - **⌘K's rows** name their machine.
 - **mdrev** loads once, from `assets` (below), which `machines` requires: the mount refuses

@@ -383,6 +383,21 @@ fn run_sized(mobile: bool, unix: bool, width: u32, height: u32) {
         false
     );
     if mobile {
+        // #s577: native mode keeps the ordinary controls' attributes from when it started, and the
+        // ordinary box greys its compose button for a session it cannot write to. In native mode's
+        // view that state is not the dock's: its ✎ is never greyed from it.
+        eval(
+            &tab,
+            "(()=>{const f=document.getElementById('composeFab'); window.fabClass=f.className; window.fabDisabled=f.getAttribute('aria-disabled'); f.classList.add('show','disabled'); f.setAttribute('aria-disabled','true'); return true;})()",
+        );
+        wait(
+            &tab,
+            "!document.getElementById('dockCompose').hidden && !document.getElementById('dockCompose').classList.contains('blocked') && document.getElementById('dockCompose').getAttribute('aria-disabled') !== 'true'",
+        );
+        eval(
+            &tab,
+            "(()=>{const f=document.getElementById('composeFab'); f.className=window.fabClass; if (window.fabDisabled == null) f.removeAttribute('aria-disabled'); else f.setAttribute('aria-disabled', window.fabDisabled); return true;})()",
+        );
         phone_native_controls(&tab, &root);
     }
     click(&tab, "#sharedModelPicker");

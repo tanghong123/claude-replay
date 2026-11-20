@@ -3,16 +3,39 @@ import { backend } from "./backend.js";
 // compose box's markup, and asks the protocol what a server answer means. Write mode and the confirm
 // that grants a live pane are the host's (stage 7, the `write` option): the app's are its write
 // switch and its confirm layer.
-import { composeCapability, consentQuery, grantOutcome, runRevoke, runSend } from "./shared/control-protocol.js";
+import { composeBlock, composeCapability, consentQuery, grantOutcome, runRevoke, runSend } from "./shared/control-protocol.js";
 import { DialogCard } from "./dialog-card.js";
 import { page, viewRoot } from "./view-root.js";
 
 const byId = viewRoot.byId;
 
-// Who may be composed to is the shared protocol's rule (shared/control-protocol.js, #48).
-export const canInject = row => composeCapability(row, backend().paired).inject;
-export const canResume = row => composeCapability(row, backend().paired).resume;
+// Who may be composed to is the shared protocol's rule (shared/control-protocol.js, #48), for a
+// reader whose writes reach the server (`writes`, #s577: paired, holding its token, and served).
+export const canInject = row => composeCapability(row, backend().writes).inject;
+export const canResume = row => composeCapability(row, backend().writes).resume;
 export const canCompose = row => canInject(row) || canResume(row);
+// #s577: why a session takes no message, by the protocol's word for it (`composeBlock`): with write
+// mode on, a session the box cannot write to says so where its compose button would be, instead of
+// showing nothing.
+const BLOCK_WORDS = {
+  "unsupported-agent": "only Claude and Codex sessions take messages here.",
+  "continued": "this conversation went on in another session. Write to that one.",
+  "project-busy": "another session is running in this project, and the monitor will not choose between them.",
+  "no-pane": "it runs outside tmux and herdr, and the monitor can type only into their panes.",
+  "unproven-pane": "the monitor cannot prove which terminal pane runs it.",
+  "herdr-codex": "a Codex session in herdr takes messages only in its own pane.",
+  "pane-shared": "another agent runs in its pane, and a message could reach that one.",
+  "not-foreground": "it is suspended or in the background in its pane. Bring it back with fg.",
+  "other-terminal": "it runs inside another program in its pane, such as an editor's terminal.",
+  "parked": "its pane shows Claude Code's list of background sessions.",
+  "unlinked": "it is active, and the monitor has not found the process that runs it.",
+  "live": "it is running, and the monitor cannot type into it.",
+};
+/** The reason a row takes no message, as a sentence (#s577), or "" for a row that takes one. */
+export function blockReason(row) {
+  const code = composeBlock(row, backend().writes);
+  return !code || code === "unpaired" ? "" : `Can't write here: ${Object.hasOwn(BLOCK_WORDS, code) ? BLOCK_WORDS[code] : BLOCK_WORDS.live}`;
+}
 /** What the host's confirm is titled: a grant lets the monitor type into a live pane. */
 const GRANT_TITLE = "Allow typing into this pane?";
 
@@ -177,12 +200,21 @@ export class ControlStore {
     if (this.ended) return;
     const row = this.actions.selectedRow();
     const available = canCompose(row);
+    // #s577: with write mode on, a session the box cannot write to keeps its compose button, greyed,
+    // and says why beside it; a click (a tap on a phone's ✎) says it again. Codex native mode draws
+    // its own composer for its sessions, so it is left to say what it says.
+    const why = this.writeOn() && row && !available && !page.body()?.dataset.sharedCodex ? blockReason(row) : "";
+    const fab = byId("composeFab");
     byId("sendBtn").disabled = !!this.pendingSends?.has(this.compose.row?.id);
-    byId("composeFab").classList.toggle("show", this.writeOn() && available && !byId("composer").classList.contains("production-show"));
+    fab.classList.toggle("show", this.writeOn() && (available || !!why) && !byId("composer").classList.contains("production-show"));
+    fab.classList.toggle("disabled", !!why);
+    fab.setAttribute("aria-disabled", String(!!why));
     // #s298: the button says when the session waits on an answer the box can give.
-    byId("composeFab").classList.toggle("asks", !!row?.dialog && canInject(row));
-    byId("composeFab").title = row?.dialog && canInject(row) ? "Claude is asking: answer it" : "Open the compose box";
-    byId("writeNotice").classList.toggle("show", this.writeOn() && !available);
+    fab.classList.toggle("asks", !!row?.dialog && canInject(row));
+    fab.title = why || (row?.dialog && canInject(row) ? "Claude is asking: answer it" : "Open the compose box");
+    const notice = byId("writeNotice");
+    if (notice.textContent !== why) notice.textContent = why;
+    notice.classList.toggle("show", !!why);
     if (!available) {
       byId("composer").classList.remove("production-show");
       this.compose.row = null;
@@ -198,7 +230,11 @@ export class ControlStore {
   }
   open() {
     const row = this.actions.selectedRow();
-    if (!this.writeOn() || !canCompose(row)) return;
+    if (!this.writeOn() || !canCompose(row)) {
+      const why = this.writeOn() && row ? blockReason(row) : "";
+      if (why) this.actions.toast(why);
+      return;
+    }
     this.compose.row = row;
     this.compose.mode = canInject(row) ? "tmux" : "resume";
     this.compose.consented = !!row.consented;

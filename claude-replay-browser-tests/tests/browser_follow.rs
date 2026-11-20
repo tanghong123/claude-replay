@@ -29347,6 +29347,486 @@ fn a_phone_search_held_sideways_lands_a_match_below_its_process_head() {
     }
 }
 
+/// The session the write-mode cases open (#s577).
+const WRITE_SID: &str = "aaaa5770-0000-4000-8000-000000000577";
+/// A Qoder session beside it, which the compose box cannot write to (#s577).
+const WRITE_QODER: &str = "aaaa5770-0000-4000-8000-000000000578";
+
+/// What the write-mode cases read off the page (#s577): the server's word for what writing needs,
+/// the switch, the line under it, the help, the compose button and its notice, the dock's ✎ and the
+/// toast.
+const WRITE_FACTS: &str = "(function(){ var $ = function (id) { return document.getElementById(id); }, shown = function (el) { return !!el && !el.hidden && el.getClientRects().length > 0; }, d = $('dockCompose'), t = $('toast'); return JSON.stringify({ write: document.body.dataset.write, disabled: $('writeSwitch').getAttribute('aria-disabled'), checked: $('writeSwitch').getAttribute('aria-checked'), reason: $('writeReason').hidden ? null : $('writeReason').textContent, pair: !!document.querySelector('#writeReason .write-pair'), help: $('writeHelp').hidden ? null : $('writeHelp').textContent, fab: $('composeFab').className, fabTitle: $('composeFab').title, notice: $('writeNotice').classList.contains('show') && getComputedStyle($('writeNotice')).display !== 'none' ? $('writeNotice').textContent : null, composing: $('composer').classList.contains('production-show'), dock: d && shown(d) ? { cls: d.className, disabled: d.getAttribute('aria-disabled'), label: d.getAttribute('aria-label') } : null, toast: t && t.classList.contains('show') ? t.textContent : null }); })()";
+
+fn write_facts(tab: &headless_chrome::Tab) -> serde_json::Value {
+    serde_json::from_str(harness::eval(tab, WRITE_FACTS).as_str().unwrap_or("{}"))
+        .unwrap_or_default()
+}
+
+/// #s577: where this reader's writes cannot reach the monitor, Write mode's switch is disabled with
+/// the reason under it and a click opens the help, which names the command that pairs: an unpaired
+/// monitor's page says the monitor needs pairing; a paired monitor's page, opened with its token,
+/// writes; and a browser without the token may not write: on Linux, where a paired gate lets a
+/// same-user browser read without the token, its switch says this browser is not paired; on macOS,
+/// which cannot verify the peer, the gate refuses it the page.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_write_switch_says_why_it_is_off_for_this_reader() {
+    let _serial = serial();
+    let base = harness::base("write-reason");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        WRITE_SID,
+        &harness::long_session(3, harness::Shape::default()),
+    );
+    // An unpaired monitor.
+    let unpaired = harness::Monitor::spawn(harness::Kind::V1, 3160, &base, Some(&stores), false);
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1280.0, 900.0);
+    unpaired.pair(&tab);
+    unpaired.open(&tab, &format!("?ui=app&session={WRITE_SID}"));
+    harness::until(
+        &tab,
+        "document.body.dataset.write === 'monitor' && !!document.querySelector('.transcript .turn.user')",
+        "an unpaired monitor's page to open on the session",
+        Duration::from_secs(20),
+        WRITE_FACTS,
+    );
+    let off = write_facts(&tab);
+    assert!(
+        off["disabled"] == "true"
+            && off["checked"] == "false"
+            && off["reason"].as_str().is_some_and(
+                |r| r.contains("Needs a paired monitor") && r.contains("agent-monitor --pair")
+            ),
+        "an unpaired monitor's switch is disabled and its line names the command: {off}"
+    );
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    let asked = write_facts(&tab);
+    assert!(
+        asked["checked"] == "false"
+            && !asked["fab"].as_str().unwrap_or_default().contains("show")
+            && asked["help"].as_str().is_some_and(
+                |h| h.contains("needs a paired monitor") && h.contains("agent-monitor --pair")
+            ),
+        "a click on the disabled switch turns nothing on and opens the help: {asked}"
+    );
+    drop(unpaired);
+
+    // A paired monitor that, on Linux, lets a same-user browser read without the token.
+    let paired = harness::Monitor::spawn_with(
+        harness::Kind::V1,
+        3161,
+        &base,
+        Some(&stores),
+        true,
+        &[("AGENT_MONITOR_TOKEN_ONLY", "0")],
+    );
+    paired.pair(&tab);
+    paired.open(&tab, &format!("?ui=app&session={WRITE_SID}"));
+    harness::until(
+        &tab,
+        "document.body.dataset.write === 'open' && !!document.querySelector('.transcript .turn.user') && document.getElementById('writeReason').hidden",
+        "the page opened with the token to say writing is open",
+        Duration::from_secs(20),
+        WRITE_FACTS,
+    );
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('writeSwitch').getAttribute('aria-checked') === 'true' && document.getElementById('composeFab').classList.contains('show') && !document.getElementById('composeFab').classList.contains('disabled')",
+        "write mode to turn on and the finished session to offer its compose button",
+        Duration::from_secs(10),
+        WRITE_FACTS,
+    );
+
+    let (_other_browser, other) = harness::chrome_tab();
+    harness::resize(&other, 1280.0, 900.0);
+    other
+        .navigate_to(&paired.url(&format!("?ui=app&session={WRITE_SID}")))
+        .unwrap();
+    other.wait_until_navigated().unwrap();
+    if cfg!(target_os = "linux") {
+        harness::until(
+            &other,
+            "document.body && document.body.dataset.write === 'browser' && !!document.getElementById('writeReason')",
+            "a browser without the token to read the page, told it is not paired",
+            Duration::from_secs(20),
+            "document.body && document.body.dataset.write",
+        );
+        let unpaired_browser = write_facts(&other);
+        assert!(
+            unpaired_browser["disabled"] == "true"
+                && unpaired_browser["reason"]
+                    .as_str()
+                    .is_some_and(|r| r.contains("This browser is not paired")),
+            "its switch is disabled and says why: {unpaired_browser}"
+        );
+        harness::eval(
+            &other,
+            "document.getElementById('writeSwitch').click(); 'ok'",
+        );
+        let help = write_facts(&other);
+        assert!(
+            help["help"].as_str().is_some_and(|h| h.contains("agent-monitor --pair")
+                && !h.contains("printed in its terminal")),
+            "the help names the command that pairs a browser, not an address nobody printed: {help}"
+        );
+    } else {
+        let refused = harness::eval(
+            &other,
+            "fetch('/api/sessions', { cache: 'no-store' }).then(function (r) { return r.status; })",
+        );
+        assert_eq!(
+            refused.as_u64(),
+            Some(401),
+            "the paired gate refuses a browser without the token"
+        );
+    }
+}
+
+/// #s577 review: a paired browser that opens the page from a link in another app can write. The
+/// pairing cookie is `SameSite=Strict`, so that navigation carries none (a `data:` page here, which is
+/// cross-site); a paired monitor on Linux lets the same-user load read and draws the page as
+/// `data-write="browser"`, and the page reloads once from itself, which is same-site and brings the
+/// cookie. On macOS the gate refuses the load and its refusal page does the same (#341). Either way
+/// the reader lands on a page whose Write mode switch works, after one reload.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_paired_browser_opened_from_another_app_s_link_can_write() {
+    let _serial = serial();
+    let base = harness::base("write-cross-site");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        WRITE_SID,
+        &harness::long_session(3, harness::Shape::default()),
+    );
+    // Paired, and on Linux reading same-user browsers without the token, as a monitor does.
+    let m = harness::Monitor::spawn_with(
+        harness::Kind::V1,
+        3163,
+        &base,
+        Some(&stores),
+        true,
+        &[("AGENT_MONITOR_TOKEN_ONLY", "0")],
+    );
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1280.0, 900.0);
+    m.pair(&tab);
+    let target = m.url(&format!("?ui=app&session={WRITE_SID}"));
+    tab.navigate_to(&format!(
+        "data:text/html,<a id=go href=\"{target}\" style=\"font-size:40px\">open the monitor</a>"
+    ))
+    .unwrap();
+    tab.wait_until_navigated().unwrap();
+    tab.find_element("#go").unwrap().click().unwrap();
+    harness::until(
+        &tab,
+        &format!("location.port === '{}' && document.body && document.body.dataset.write === 'open' && !!document.querySelector('.transcript .turn.user') && document.getElementById('writeSwitch').getAttribute('aria-disabled') === 'false' && document.getElementById('writeReason').hidden", m.port),
+        "a paired browser arriving by another app's link to get a working Write mode switch",
+        Duration::from_secs(20),
+        "location.href + ' | ' + (document.body ? document.body.dataset.write : '') + ' | ' + ((performance.getEntriesByType('navigation')[0] || {}).type)",
+    );
+    assert_eq!(
+        harness::eval(
+            &tab,
+            "(performance.getEntriesByType('navigation')[0] || {}).type"
+        ),
+        serde_json::json!("reload"),
+        "the page it landed on is the one reload that brought the cookie"
+    );
+    // Whose reload it was: on Linux the page's own (the gate let the cookieless load read), on
+    // macOS the gate's refusal page (#341).
+    let stamps = harness::eval(
+        &tab,
+        "JSON.stringify([!!sessionStorage.getItem('am-write-retry'), !!sessionStorage.getItem('cmauth-retry')])",
+    );
+    let want = if cfg!(target_os = "linux") {
+        "[true,false]"
+    } else {
+        "[false,true]"
+    };
+    assert_eq!(
+        stamps.as_str(),
+        Some(want),
+        "the reload was the page's on Linux and the refusal page's on macOS"
+    );
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('writeSwitch').getAttribute('aria-checked') === 'true' && document.getElementById('composeFab').classList.contains('show') && !document.getElementById('composeFab').classList.contains('disabled')",
+        "write mode to turn on and offer the compose button",
+        Duration::from_secs(10),
+        WRITE_FACTS,
+    );
+}
+
+/// #s577 review: the page reloads once to bring a withheld cookie, and only once, however long the
+/// reload takes. Over a slow link (an `ssh -L` tunnel) the module graph can take longer than the ten
+/// seconds the retry is bounded by; judged by when the module ran, the reload's own stamp read as old
+/// and the page reloaded again. Here the reload's `app.js` is held 11 s: a browser that holds no token
+/// (Linux, where the gate lets it read) loads the page twice in all, then says why it cannot write.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_slow_reload_for_the_pairing_cookie_happens_once() {
+    if !cfg!(target_os = "linux") {
+        // macOS refuses a cookieless browser the page, so this page never draws "browser" there.
+        return;
+    }
+    let _serial = serial();
+    let base = harness::base("write-slow-retry");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        WRITE_SID,
+        &harness::long_session(3, harness::Shape::default()),
+    );
+    let m = harness::Monitor::spawn_with(
+        harness::Kind::V1,
+        3164,
+        &base,
+        Some(&stores),
+        true,
+        &[("AGENT_MONITOR_TOKEN_ONLY", "0")],
+    );
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1280.0, 900.0);
+    {
+        use headless_chrome::protocol::cdp::Page;
+        tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+            source: "if (location.protocol === 'http:') sessionStorage.setItem('loads', String((+sessionStorage.getItem('loads') || 0) + 1));".to_string(),
+            world_name: None,
+            include_command_line_api: None,
+            run_immediately: None,
+        })
+        .expect("the load counter is installed");
+    }
+    {
+        use headless_chrome::browser::tab::RequestPausedDecision;
+        use headless_chrome::protocol::cdp::Fetch::{RequestPattern, RequestStage};
+        tab.enable_fetch(
+            Some(&[RequestPattern {
+                url_pattern: Some("*/monitor-ui/app.js*".into()),
+                resource_Type: None,
+                request_stage: Some(RequestStage::Request),
+            }]),
+            None,
+        )
+        .expect("the Fetch domain is enabled");
+        let served = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        tab.enable_request_interception(std::sync::Arc::new(
+            move |_transport,
+                  _session,
+                  _event: headless_chrome::protocol::cdp::Fetch::events::RequestPausedEvent| {
+                // The reload's app.js, held past the ten seconds the retry is bounded by.
+                if served.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 1 {
+                    std::thread::sleep(Duration::from_secs(11));
+                }
+                RequestPausedDecision::Continue(None)
+            },
+        ))
+        .expect("the interceptor is installed");
+    }
+    tab.navigate_to(&m.url(&format!("?ui=app&session={WRITE_SID}")))
+        .unwrap();
+    harness::until(
+        &tab,
+        "sessionStorage.getItem('loads') === '2' && document.body && document.body.dataset.write === 'browser' && !document.body.hidden && !!document.getElementById('writeReason') && !document.getElementById('writeReason').hidden",
+        "the page to reload once, slowly, and then say why it cannot write",
+        Duration::from_secs(45),
+        "sessionStorage.getItem('loads') + ' | ' + (document.body ? document.body.dataset.write + ' hidden=' + document.body.hidden : '')",
+    );
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(
+        harness::eval(&tab, "sessionStorage.getItem('loads')"),
+        serde_json::json!("2"),
+        "no second reload"
+    );
+    let reason = write_facts(&tab);
+    assert!(
+        reason["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("This browser is not paired")),
+        "{reason}"
+    );
+}
+
+/// #s577: with write mode on, a session the compose box cannot write to keeps its compose button,
+/// greyed, with the reason beside it; a click says it again and opens nothing. On a phone ✎ stays
+/// in the dock, greyed, and a tap says why. A page whose server serves no writes (a host's,
+/// `data-write="host"`, which `mount_host.rs` holds a reads-only table to) has its switch disabled
+/// with that reason and no pairing offered.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_session_the_box_cannot_write_to_keeps_its_button_greyed_and_says_why() {
+    let _serial = serial();
+    let base = harness::base("write-blocked");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        WRITE_SID,
+        &harness::long_session(3, harness::Shape::default()),
+    );
+    let mut qoder = String::new();
+    for (i, q) in ["first prompt", "second prompt"].iter().enumerate() {
+        let at = 300 - i as u64 * 30;
+        qoder += &harness::user_at(q, &harness::now_minus(at));
+        qoder += &harness::assistant_at("An answer.", &harness::now_minus(at - 5));
+    }
+    stores.qoder_session(WRITE_QODER, &qoder);
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3162, &base, Some(&stores), true);
+    const WHY: &str = "Can't write here: only Claude and Codex sessions take messages here.";
+
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1280.0, 900.0);
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={WRITE_QODER}"));
+    harness::until(
+        &tab,
+        "document.body.dataset.write === 'open' && !!document.querySelector('.transcript .turn.user')",
+        "the paired page to open on the Qoder session",
+        Duration::from_secs(20),
+        WRITE_FACTS,
+    );
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composeFab').classList.contains('show') && document.getElementById('composeFab').classList.contains('disabled') && document.getElementById('writeNotice').classList.contains('show')",
+        "write mode to keep the Qoder session's compose button, greyed, with the reason beside it",
+        Duration::from_secs(10),
+        WRITE_FACTS,
+    );
+    let blocked = write_facts(&tab);
+    assert!(
+        blocked["notice"] == WHY && blocked["fabTitle"] == WHY,
+        "the reason beside the button and in its title: {blocked}"
+    );
+    harness::eval(&tab, "document.getElementById('composeFab').click(); 'ok'");
+    harness::until(
+        &tab,
+        &format!("document.getElementById('toast').classList.contains('show') && document.getElementById('toast').textContent === {WHY:?}"),
+        "a click on the greyed button to say why",
+        Duration::from_secs(5),
+        WRITE_FACTS,
+    );
+    assert_eq!(
+        write_facts(&tab)["composing"],
+        false,
+        "the click opened no compose box"
+    );
+    // A new page load starts with write mode off, as every load does.
+    m.open(&tab, &format!("?ui=app&session={WRITE_SID}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user') && document.getElementById('writeSwitch').getAttribute('aria-checked') === 'false'",
+        "the Claude session to open",
+        Duration::from_secs(20),
+        WRITE_FACTS,
+    );
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user') && document.getElementById('composeFab').classList.contains('show') && !document.getElementById('composeFab').classList.contains('disabled') && !document.getElementById('writeNotice').classList.contains('show')",
+        "a Claude session to offer its compose button, with no reason beside it",
+        Duration::from_secs(20),
+        WRITE_FACTS,
+    );
+
+    // A phone: ✎ stays in the dock, greyed, and a tap says why.
+    let (_phone_browser, phone) = harness::chrome_tab();
+    harness::phone(&phone, 390, 844);
+    m.pair(&phone);
+    m.open(&phone, &format!("?ui=app&session={WRITE_QODER}"));
+    harness::until(
+        &phone,
+        "document.getElementById('app').classList.contains('mobile-detail') && !!document.querySelector('.transcript .turn.user')",
+        "the phone to open on the Qoder session",
+        Duration::from_secs(20),
+        "document.getElementById('app').className",
+    );
+    harness::eval(
+        &phone,
+        "document.getElementById('writeSwitch').click(); 'ok'",
+    );
+    harness::until(
+        &phone,
+        &format!("(function(){{ var b = document.getElementById('dockCompose'); return !b.hidden && ({PHONE_HITTABLE})(b) && b.classList.contains('blocked') && b.getAttribute('aria-disabled') === 'true'; }})()"),
+        "✎ to stay in the dock, greyed",
+        Duration::from_secs(10),
+        WRITE_FACTS,
+    );
+    let dock = write_facts(&phone);
+    assert_eq!(
+        dock["dock"]["label"], WHY,
+        "✎ says why to a screen reader: {dock}"
+    );
+    assert_eq!(
+        dock["notice"],
+        serde_json::Value::Null,
+        "a phone shows no notice beside the dock: {dock}"
+    );
+    phone_tap(&phone, "#dockCompose");
+    harness::until(
+        &phone,
+        &format!("document.getElementById('toast').classList.contains('show') && document.getElementById('toast').textContent === {WHY:?}"),
+        "a tap on the greyed ✎ to say why",
+        Duration::from_secs(5),
+        WRITE_FACTS,
+    );
+    assert!(
+        !harness::eval(
+            &phone,
+            "document.getElementById('sessionView').classList.contains('composing')"
+        )
+        .as_bool()
+        .unwrap_or(true),
+        "the tap opened no reply box"
+    );
+
+    // A page whose server serves no writes, as a reads-only host's says (`data-write="host"`):
+    // the page's own code draws it from that attribute alone.
+    let (_host_browser, host) = harness::chrome_tab();
+    harness::resize(&host, 1280.0, 900.0);
+    m.pair(&host);
+    {
+        use headless_chrome::protocol::cdp::Page;
+        host.call_method(Page::AddScriptToEvaluateOnNewDocument {
+            source: "document.addEventListener('readystatechange', function () { if (document.readyState === 'interactive' && document.body) document.body.dataset.write = 'host'; });".to_string(),
+            world_name: None,
+            include_command_line_api: None,
+            run_immediately: None,
+        })
+        .expect("the host's word is set before the page's scripts run");
+    }
+    m.open(&host, &format!("?ui=app&session={WRITE_SID}"));
+    harness::until(
+        &host,
+        "document.body.dataset.write === 'host' && !!document.querySelector('.transcript .turn.user') && !document.getElementById('writeReason').hidden",
+        "a reads-only page to open, its switch saying why",
+        Duration::from_secs(20),
+        WRITE_FACTS,
+    );
+    let reads = write_facts(&host);
+    assert!(
+        reads["disabled"] == "true"
+            && reads["pair"] == false
+            && reads["reason"]
+                .as_str()
+                .is_some_and(|r| r.contains("This page only reads sessions")),
+        "a reads-only page's switch is disabled, says why and offers no pairing: {reads}"
+    );
+    harness::eval(
+        &host,
+        "document.getElementById('writeSwitch').click(); 'ok'",
+    );
+    let help = write_facts(&host);
+    assert!(
+        help["checked"] == "false"
+            && help["help"]
+                .as_str()
+                .is_some_and(|h| h.contains("This page does not write"))
+            && !help["fab"].as_str().unwrap_or_default().contains("show"),
+        "a click turns nothing on and says the page does not write: {help}"
+    );
+}
+
 /// #s488: a click on a paragraph of a growing session gives the page's keys a scroller no redraw
 /// can take away. With nothing focused, WebKit scrolls by a key the scroller that holds the node
 /// the mouse last PRESSED; the growth redraws the units its rewritten records stand in (a turn

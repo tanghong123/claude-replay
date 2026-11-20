@@ -760,32 +760,72 @@ var mobileShell;
 // view hears whether writing is on and asks for the confirm through its `write` option, and is told
 // when the switch moves (`writeChanged`). Native mode wraps the switch's handler (native-entry.js,
 // native-mode.js), so it is bound before either loads.
-/** Whether the session open now may be written to: its server is paired. Over several machines
- *  (#s595) that is the open session's machine, and with no session open, no machine: the switch is
- *  off and says to open one. */
-function writePaired() {
-  if (!merged) return controlState.paired;
-  return place(indexState.selected)?.machine === viewMachine && !!handleOf(viewMachine).paired;
+// #s577: where this reader's writes cannot reach the monitor, the switch is drawn disabled and says
+// why under it (`writeReason`), the first thing missing as the server named it (`data-write`): a
+// switch that turned on and could not send looked like a broken one. A click on it, or on ⓘ, opens
+// the longer help.
+const WRITE_NEED = {
+  monitor: {
+    line: "Needs a paired monitor: <code>agent-monitor --pair</code>",
+    help: "<b>Write mode needs a paired monitor</b><p>Stop the monitor and run this in a terminal:</p><code>agent-monitor --pair</code>",
+  },
+  browser: {
+    line: "This browser is not paired with the monitor",
+    // A monitor a LaunchAgent starts prints no address to its log (#s204): `--pair` in a terminal
+    // hands off to the running monitor and prints the address that carries the token.
+    help: "<b>This browser is not paired</b><p>The monitor is paired, but this browser holds no pairing token, so the monitor would refuse what it sends. Run this in a terminal on this machine: it prints the address that pairs a browser, and opens it in the default one.</p><code>agent-monitor --pair</code>",
+  },
+  host: {
+    line: "This page only reads sessions",
+    help: "<b>This page does not write</b><p>The server that serves it offers reading only.</p>",
+  },
+  // #s595: over several machines, writing follows the machine the open session runs on, so with no
+  // session open there is none to follow.
+  session: {
+    line: "Open a session to write to it",
+    help: "<b>Open a session to write to it</b><p>Write mode follows the machine the open session runs on.</p>",
+  },
+};
+const writeReason = document.createElement("div");
+writeReason.id = "writeReason";
+writeReason.className = "write-reason";
+page.byId("writeBtn").after(writeReason);
+const writeReasonText = need => { const el = document.createElement("div"); el.innerHTML = need.line; return el.textContent; };
+/** What writing still needs for the session open now, as `WRITE_NEED` names it, or "" where this
+ *  reader's writes reach its server (#s577). Over several machines (#s595) that is the open session's
+ *  machine's, and with no session open, a session. A handle that does not say its writes reach the
+ *  server (`writes`) is read as needing pairing, as the view reads it (control-store.js). */
+function writeNeedNow() {
+  if (merged && place(indexState.selected)?.machine !== viewMachine) return "session";
+  const handle = merged ? handleOf(viewMachine) : controlState;
+  return handle.writes ? "" : handle.writeNeed || "monitor";
 }
+/** The words for what writing needs now, or null where it is open. */
+const writeNeedWords = () => { const word = writeNeedNow(); return word ? WRITE_NEED[word] || WRITE_NEED.monitor : null; };
 /** Whether writing is on for the session open now. */
-const writeOn = () => controlState.write && (!merged || writePaired());
+const writeOn = () => controlState.write && (!merged || !writeNeedNow());
 function paintWrite() {
+  const need = writeNeedWords();
   page.byId("writeSwitch").setAttribute("aria-checked", String(writeOn()));
+  page.byId("writeSwitch").setAttribute("aria-disabled", String(!!need));
   page.byId("writeBtn").classList.toggle("on", writeOn());
+  page.byId("writeBtn").classList.toggle("disabled", !!need);
   page.byId("sidebarMiniWrite").classList.toggle("on", writeOn());
-  page.byId("writeInfo").hidden = writePaired();
+  page.byId("sidebarMiniWrite").classList.toggle("disabled", !!need);
+  page.byId("sidebarMiniWrite").title = need ? `Write mode: ${writeReasonText(need)}` : "Write mode";
+  page.byId("writeInfo").hidden = !need;
+  writeReason.hidden = !need;
+  writeReason.innerHTML = need ? need.line : "";
 }
 function showPairHelp() {
   const help = page.byId("writeHelp");
-  help.innerHTML = writePaired()
-    ? "<b>Monitor is paired</b><p>With write mode on, a writable session shows a compose box. A live terminal still needs its own grant.</p>"
-    : merged && !place(indexState.selected)
-      ? "<b>Open a session to write to it</b><p>Write mode follows the machine the open session runs on.</p>"
-      : "<b>Write mode needs a paired monitor</b><p>Stop the monitor and run this in a terminal:</p><code>agent-monitor --pair</code>";
+  const need = writeNeedWords();
+  help.innerHTML = need ? need.help
+    : "<b>Monitor is paired</b><p>With write mode on, a writable session shows a compose box. A live terminal still needs its own grant.</p>";
   help.hidden = false; help.classList.add("show");
 }
 page.byId("writeSwitch").onclick = () => {
-  if (!writePaired()) { showPairHelp(); return; }
+  if (writeNeedNow()) { showPairHelp(); return; }
   controlState.write = !controlState.write;
   paintWrite();
   viewHandle.writeChanged();

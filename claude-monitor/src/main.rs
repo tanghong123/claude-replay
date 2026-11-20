@@ -371,7 +371,12 @@ fn main() -> Result<()> {
     #[cfg(not(feature = "codex-native"))]
     let public_assets = claude_monitor::ui::PUBLIC_ASSETS;
     #[cfg(feature = "codex-native")]
-    let handler = claude_monitor::codex_workspace::handler(handler, native_runtime.clone(), idx);
+    let handler = claude_monitor::codex_workspace::handler(
+        handler,
+        native_runtime.clone(),
+        idx,
+        token.is_some(),
+    );
     // #196 §4.2: paired ⇒ the token gate (same-user OR the token); unpaired ⇒ D3b same-user.
     let (tailnet_hosts, tailnet_relay) =
         claude_monitor::pair_phone::tailnet_checks(port, token.is_none());

@@ -60,11 +60,15 @@ export const indexState = {
 /** The session search layer's (⌘K) results and the one chosen. */
 export const searchState = { globalResults: [], globalIndex: 0 };
 
-/** Write mode: whether the monitor is paired (writes need it) and whether the reader switched writing
- *  on, by the app's switch. The view hears it through its `write` option, and the handle's
- *  `writeChanged` when it changes; native mode reads it here (native-entry.js) and through the view. */
+/** Write mode: whether the monitor is paired, whether this reader's writes reach it (`writes`, and
+ *  what they still need, `writeNeed`, #s577), and whether the reader switched writing on, by the
+ *  app's switch. The view hears it through its `write` option, and the handle's `writeChanged` when
+ *  it changes; native mode reads it here (native-entry.js) and through the view. */
 export const controlState = {
-  get paired() { return backend().paired; }, write: false
+  get paired() { return backend().paired; },
+  get writes() { return backend().writes; },
+  get writeNeed() { return backend().writeNeed; },
+  write: false
 };
 
 /** Remember the app's choices: it calls this after changing one. The view remembers its own

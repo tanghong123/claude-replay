@@ -153,7 +153,14 @@ The options, each in `index.d.ts`:
 - **`write`**: `{ on(), confirm(ask) }`, for writing to a session. Left out, the view offers no
   writes. `on()` says whether the reader switched writing on (call `writeChanged()` when it
   changes); `confirm({ title, text, passcode })` asks before the server types into a live pane,
-  and answers the passcode, `""` where none was asked, to go on.
+  and answers the passcode, `""` where none was asked, to go on. The view writes only where the
+  backend handle says this reader's writes reach the server: its `write` option is `"open"` (by
+  default it follows `paired`). Where they cannot, give the handle what is missing, as
+  agent-monitor's page reads it from `<body data-write>` (`docs/backend-contract.md`, "The page's
+  facts"): `"monitor"` (the server is not paired), `"browser"` (this reader holds no token) or
+  `"host"` (your server serves no writes). The handle answers `writes` and `writeNeed`, which your
+  own Write mode control can show; and with writing on, a session the view cannot write to keeps
+  its compose button, greyed, with the reason, rather than offering a send the server refuses.
 - **What the view tells you**, each optional, each with plain data: `onTitle`, `onTurn`,
   `onInfo`, `onFile`, `onLinkCopied`, `onToast`, `onOutline`. A handler that throws is reported
   and the view goes on.

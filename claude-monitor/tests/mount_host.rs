@@ -351,6 +351,12 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
         "{}",
         page.text()
     );
+    // #s577: a host that serves no writes says so, and the page disables its Write mode switch with
+    // that reason, rather than offering a pairing that would not help.
+    assert!(
+        page.text().contains("data-write=\"host\""),
+        "the reads-only host's page says it serves no writes"
+    );
     let mut linked = 0;
     for tab in ["", "markdown", "image"] {
         let html = get(tab).text();

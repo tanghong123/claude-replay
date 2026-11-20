@@ -12,15 +12,50 @@ const PAGE_HEAD: &str = include_str!("codex-ui/page-head.html");
 const APP_MOUNT: &str = "<div id=\"appMount\"></div>\n";
 const PAGE_TAIL: &str = include_str!("codex-ui/page-tail.html");
 
-/// The app shell for ONE request. The classic view it was once switched with is retired (#s98),
-/// so there is no preference to read: `?ui=` and a `ui.json` left behind are both ignored.
-pub fn app_page(version: &str, paired: bool) -> String {
-    page(version, paired)
+/// Whether the page that is served may write to this machine's sessions, and if not, the first
+/// thing missing (#s577). The page draws its Write mode switch disabled, with this reason beside
+/// it, rather than a switch that turns on and cannot send. `data-write` on the page's body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteGate {
+    /// This page's writes are admitted: the monitor is paired and the request carried its token.
+    Open,
+    /// The monitor is not paired (`agent-monitor --pair`), so no write route admits anyone.
+    MonitorUnpaired,
+    /// The monitor is paired, but this request carried no token: a paired gate on Linux lets a
+    /// verified same-user browser READ without one, and refuses its writes.
+    BrowserUnpaired,
+    /// The table that served the page serves no writes (a host's ceiling, #s426).
+    NotServed,
 }
 
-pub fn page(version: &str, paired: bool) -> String {
-    let head = fill(PAGE_HEAD, version, paired);
+impl WriteGate {
+    /// The page's word for it.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::MonitorUnpaired => "monitor",
+            Self::BrowserUnpaired => "browser",
+            Self::NotServed => "host",
+        }
+    }
+}
+
+/// The app shell for ONE request. The classic view it was once switched with is retired (#s98),
+/// so there is no preference to read: `?ui=` and a `ui.json` left behind are both ignored.
+/// `paired` is the monitor's pairing; `write` is whether THIS request's page may write (#s577).
+pub fn app_page(version: &str, paired: bool, write: WriteGate) -> String {
+    let head = fill(PAGE_HEAD, version, paired).replace("{{WRITE}}", write.as_str());
     format!("{head}{APP_MOUNT}{PAGE_TAIL}")
+}
+
+/// The app shell of a page whose writes follow its monitor's pairing alone.
+pub fn page(version: &str, paired: bool) -> String {
+    let write = if paired {
+        WriteGate::Open
+    } else {
+        WriteGate::MonitorUnpaired
+    };
+    app_page(version, paired, write)
 }
 
 /// A page's facts for the page to read (its body's `data-*` and the mermaid meta): the same for the
