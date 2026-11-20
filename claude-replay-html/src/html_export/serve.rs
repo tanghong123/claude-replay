@@ -1279,7 +1279,10 @@ pub struct LiveServer {
     /// whether a session is already served elsewhere. `None` for `--no-cache`, whose whole
     /// purpose is a view that does not defer to the holder.
     shared_root: Option<std::path::PathBuf>,
-    /// Keeps the server state alive for the process's lifetime.
+    /// Stops the listener when this is dropped (#s529), which lets the server state go with it.
+    /// Declared before `_live`, so the listener stops first.
+    _listener: ListenerStop,
+    /// Keeps the server state alive while this is held.
     _live: std::sync::Arc<SessionService>,
 }
 
@@ -1366,7 +1369,7 @@ pub fn start_server(args: &Args, paths: &[std::path::PathBuf]) -> Result<LiveSer
     )
     .with_context(|| "write index.html")?;
 
-    let port = spawn_http_server(dir.clone(), Some(live.clone()))?;
+    let (port, listener) = spawn_http_server(dir.clone(), Some(live.clone()))?;
     // Hand the port to the session path, which publishes it as each session is admitted. Not a
     // publish loop here: nothing is admitted yet.
     live.set_port(port);
@@ -1375,6 +1378,7 @@ pub fn start_server(args: &Args, paths: &[std::path::PathBuf]) -> Result<LiveSer
         port,
         root_ids,
         shared_root,
+        _listener: listener,
         _live: live,
     })
 }
@@ -1395,17 +1399,44 @@ fn open_in_browser(url: &str) {
 }
 
 /// A minimal read-only HTTP server bound to loopback on an ephemeral port,
-/// serving files by basename out of `root`. Returns the chosen port; the accept
-/// loop runs on a detached thread (dies with the process on Ctrl-C). Loopback +
+/// serving files by basename out of `root`. Returns the chosen port and the listener's stop;
+/// the accept loop runs on a thread of its own until the stop is dropped. Loopback +
 /// basename-only paths keep it from exposing anything beyond the two export files.
 fn spawn_http_server(
     root: std::path::PathBuf,
     live: Option<std::sync::Arc<SessionService>>,
-) -> Result<u16> {
-    spawn_listener(
+) -> Result<(u16, ListenerStop)> {
+    let routes: RouteHandler =
+        std::sync::Arc::new(move |req: &Request| service_routes(live.as_deref(), &root, req));
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let port = spawn_listener_until(
         0,
-        std::sync::Arc::new(move |req: &Request| service_routes(live.as_deref(), &root, req)),
-    )
+        std::sync::Arc::new(move |request| routes(request).into()),
+        AuthGate::same_user(),
+        Some(stop.clone()),
+    )?;
+    Ok((port, ListenerStop { port, stop }))
+}
+
+/// The end of a listener (#s529): dropped, its accept loop stops, so its port closes and its
+/// handler goes, with the session state it holds and the files that state keeps open. A
+/// connection already being served finishes on its own thread. A `LiveServer` holds one: the
+/// CLI keeps its server for the whole run, and a test process that starts one per case (the
+/// browser suite's classic page) no longer keeps every case's port and records open to its end.
+struct ListenerStop {
+    port: u16,
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl Drop for ListenerStop {
+    fn drop(&mut self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        // The accept loop hears the flag only when an accept returns: make a connection.
+        let _ = std::net::TcpStream::connect_timeout(
+            &std::net::SocketAddr::from(([127, 0, 0, 1], self.port)),
+            std::time::Duration::from_secs(1),
+        );
+    }
 }
 
 /// A `/records` range read against an epoch the store has since left — the client drops
@@ -2271,27 +2302,44 @@ pub fn spawn_streaming_listener_gated(
     handler: StreamingRouteHandler,
     gate: AuthGate,
 ) -> Result<u16> {
+    spawn_listener_until(port, handler, gate, None)
+}
+
+/// The listener itself. With a `stop` (#s529, [`ListenerStop`]) its loop ends at the first
+/// accept once the stop is set, closes its port and then drops its handler, so whoever sees the
+/// handler gone finds the port closed too; without one it runs for the process's life.
+fn spawn_listener_until(
+    port: u16,
+    handler: StreamingRouteHandler,
+    gate: AuthGate,
+    stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<u16> {
     use std::net::TcpListener;
     let listener = TcpListener::bind(("127.0.0.1", port)).context("bind loopback HTTP server")?;
     let port = listener.local_addr()?.port();
     let gate = std::sync::Arc::new(gate);
     std::thread::Builder::new()
         .spawn(move || {
+            let mut handle = move |stream| {
+                let handler = handler.clone();
+                let gate = gate.clone();
+                // Builder, not thread::spawn: at the thread ceiling spawn returns Err
+                // instead of panicking — a panic here would unwind the accept loop and
+                // drop the listener, closing the port while the process lives on. On
+                // Err the closure (and its stream) is dropped without running.
+                std::thread::Builder::new()
+                    .spawn(move || {
+                        let _ = serve_connection(stream, &*handler, &gate);
+                    })
+                    .map(|_| ())
+            };
             accept_loop(
                 || listener.accept().map(|(stream, _)| stream),
-                move |stream| {
-                    let handler = handler.clone();
-                    let gate = gate.clone();
-                    // Builder, not thread::spawn: at the thread ceiling spawn returns Err
-                    // instead of panicking — a panic here would unwind the accept loop and
-                    // drop the listener, closing the port while the process lives on. On
-                    // Err the closure (and its stream) is dropped without running.
-                    std::thread::Builder::new()
-                        .spawn(move || {
-                            let _ = serve_connection(stream, &*handler, &gate);
-                        })
-                        .map(|_| ())
+                || {
+                    stop.as_ref()
+                        .is_some_and(|stop| stop.load(std::sync::atomic::Ordering::SeqCst))
                 },
+                &mut handle,
                 |error| {
                     use std::io::Write;
                     // writeln, not eprintln: a closed stderr pipe (EPIPE) must not panic
@@ -2299,6 +2347,9 @@ pub fn spawn_streaming_listener_gated(
                     let _ = writeln!(std::io::stderr(), "loopback listener: {error}");
                 },
             );
+            // Stopped: the port closes before the handler goes.
+            drop(listener);
+            drop(handle);
         })
         .context("spawn loopback listener thread")?;
     Ok(port)
@@ -2311,14 +2362,17 @@ pub fn spawn_streaming_listener_gated(
 /// connection is served. Say one line per error streak: the quiet second is measured from
 /// the END of the backoff sleep, so a sustained ceiling stays at one line, while a new
 /// streak after a quiet second says its own — a listener that hits the ceiling again after
-/// hours idle is seen.
+/// hours idle is seen. It returns once `stopped` answers true after an accept (#s529), whatever
+/// that accept brought: the stop's own wake-up connection is dropped unserved.
 fn accept_loop(
     accept: impl FnMut() -> std::io::Result<std::net::TcpStream>,
+    stopped: impl Fn() -> bool,
     handle: impl FnMut(std::net::TcpStream) -> std::io::Result<()>,
     say: impl FnMut(&std::io::Error),
 ) {
     accept_loop_timed(
         accept,
+        stopped,
         handle,
         say,
         std::time::Duration::from_millis(50),
@@ -2331,6 +2385,7 @@ fn accept_loop(
 /// quiet window that starts a new log line. A test drives the same logic in milliseconds.
 fn accept_loop_timed(
     mut accept: impl FnMut() -> std::io::Result<std::net::TcpStream>,
+    stopped: impl Fn() -> bool,
     mut handle: impl FnMut(std::net::TcpStream) -> std::io::Result<()>,
     mut say: impl FnMut(&std::io::Error),
     first_backoff: std::time::Duration,
@@ -2341,7 +2396,11 @@ fn accept_loop_timed(
     let mut said = false;
     let mut last_error = std::time::Instant::now();
     loop {
-        match accept().and_then(&mut handle) {
+        let accepted = accept();
+        if stopped() {
+            return;
+        }
+        match accepted.and_then(&mut handle) {
             Ok(()) => {
                 backoff = first_backoff;
             }
@@ -3990,6 +4049,7 @@ mod tests {
                         },
                     }
                 },
+                || false,
                 |stream| {
                     let n = handles_in.fetch_add(1, Ordering::SeqCst);
                     if n == 0 {
@@ -4072,6 +4132,7 @@ mod tests {
                         std::thread::park();
                     },
                 },
+                || false,
                 |stream| {
                     drop(stream);
                     Ok(())
@@ -4126,7 +4187,7 @@ mod tests {
         let loop_wrapper = &loop_wrapper[..loop_wrapper.find("fn accept_loop_timed").unwrap()];
         assert!(
             loop_wrapper.contains(
-                "accept_loop_timed(\n        accept,\n        handle,\n        say,\n        std::time::Duration::from_millis(50),\n        std::time::Duration::from_secs(1),\n        std::time::Duration::from_secs(1),\n    )"
+                "accept_loop_timed(\n        accept,\n        stopped,\n        handle,\n        say,\n        std::time::Duration::from_millis(50),\n        std::time::Duration::from_secs(1),\n        std::time::Duration::from_secs(1),\n    )"
             ),
             "the wrapper must pass the production backoff bounds to the timed core"
         );
@@ -7167,9 +7228,94 @@ mod tests {
                 "--no-cache never touches the shared root"
             );
         }
+        // #s529: dropping the server stops its listener, which lets the session state go with the
+        // files it holds open (each case of the browser suite used to keep its own to the run's end).
+        let state = std::sync::Arc::downgrade(&server._live);
         drop(server); // release the entry locks before the root goes
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while state.upgrade().is_some() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            state.upgrade().is_none(),
+            "a dropped LiveServer lets its session state go"
+        );
         std::env::remove_var("CLAUDE_REPLAY_CACHE");
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// #s529: a listener whose stop is dropped closes its port and lets its handler go, with
+    /// whatever the handler holds (a `LiveServer`'s session state and the files it keeps open),
+    /// the port first. The browser suite starts a classic server per case in one process, and
+    /// each case's port and records used to stay open to the end of the run (595 descriptors
+    /// over 278 cases).
+    #[test]
+    fn a_dropped_listener_stop_closes_its_port_and_lets_its_handler_go() {
+        let held = std::sync::Arc::new(());
+        let kept = held.clone();
+        let handler: StreamingRouteHandler = std::sync::Arc::new(move |_request: &Request| {
+            let _ = &kept;
+            HttpResponse::ok("text/plain", b"ok".to_vec()).into()
+        });
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let port = spawn_listener_until(0, handler, AuthGate::same_user(), Some(stop.clone()))
+            .expect("the listener starts");
+        let body =
+            http_post(port, "/anything").expect("the listener answers while its stop is held");
+        assert_eq!(body, "ok");
+        assert_eq!(
+            std::sync::Arc::strong_count(&held),
+            2,
+            "the handler holds what it was given"
+        );
+        drop(ListenerStop { port, stop });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while std::sync::Arc::strong_count(&held) > 1 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert_eq!(
+            std::sync::Arc::strong_count(&held),
+            1,
+            "the accept loop ended and dropped its handler"
+        );
+        assert!(
+            std::net::TcpStream::connect(("127.0.0.1", port)).is_err(),
+            "the port no longer listens"
+        );
+    }
+
+    /// #s529: the loop returns at the first accept after its stop is set, and serves nothing
+    /// that accept brought, error or connection.
+    #[test]
+    fn the_accept_loop_returns_once_stopped() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let stop = AtomicBool::new(false);
+        let accepts = AtomicUsize::new(0);
+        let handled = AtomicUsize::new(0);
+        accept_loop_timed(
+            || {
+                let n = accepts.fetch_add(1, Ordering::SeqCst);
+                if n == 2 {
+                    stop.store(true, Ordering::SeqCst);
+                }
+                Err(std::io::Error::other("fd ceiling (test)"))
+            },
+            || stop.load(Ordering::SeqCst),
+            |_stream| {
+                handled.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+            |_| {},
+            std::time::Duration::from_millis(1),
+            std::time::Duration::from_millis(2),
+            std::time::Duration::from_millis(2),
+        );
+        assert_eq!(
+            accepts.load(Ordering::SeqCst),
+            3,
+            "it stops at the accept that saw the stop"
+        );
+        assert_eq!(handled.load(Ordering::SeqCst), 0);
     }
 
     /// Minimal loopback HTTP POST for the test above (the server speaks HTTP/1.0-style
