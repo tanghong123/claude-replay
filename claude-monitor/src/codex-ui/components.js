@@ -400,9 +400,10 @@ export function renderUnit(unit, state) {
     // What was typed is the element, not these words, so it has no raw toggle and is never raw.
     html = `<div class="turn user inbox" data-kind="user" data-record-kind="user" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt">${inboxHeadHtml(unit.view.inbox)}<div class="prompt-copy-shell" data-prompt-key="${escapeText(unit.key)}"><div class="body markdown">${unit.view.html}</div></div>${renderPromptAttachments(unit.attachments)}${inboxDoHtml(unit, state)}</div>${turnTime(unit)}${spot}${promptNoticesHtml(unit.attachments)}</div>`;
   }
-  else if (unit.type === "user" && typeof unit.view?.source === "string" && !unit.view.source.trim() && unit.attachments.some(view => !isChangedNotice(view))) {
+  else if (unit.type === "user" && typeof unit.view?.source?.src === "string" && !unit.view.source.src.trim() && unit.attachments.some(view => !isChangedNotice(view))) {
     // A prompt of pictures alone (#s617): the person's turn, on their side, as its pictures alone.
-    // Nothing was typed, so no bubble with nothing in it, and no "as typed" toggle.
+    // Nothing was typed (the record's `src`, what was typed, is empty; `source` is the record), so no
+    // bubble with nothing in it, and no "as typed" toggle.
     html = `<div class="turn user user-images-alone" data-kind="user" data-record-kind="user" data-record-id="${escapeText(unit.view?.id || "")}" data-block-index="${unit.from}" data-turn="${unit.turn}"><div class="user-prompt">${renderPromptAttachments(unit.attachments)}</div>${turnTime(unit)}${spot}${promptNoticesHtml(unit.attachments)}</div>`;
   }
   else if (unit.type === "user") {
