@@ -2500,6 +2500,33 @@ fn an_ipad_app_whose_page_shrinks_for_the_keyboard_brings_the_note_into_view() {
         Duration::from_secs(5),
         NOTE_GEOMETRY,
     );
+    // Once: the key is set again at the return, so the page's next event at the same height leaves a
+    // reader who scrolls away again where they are.
+    let again = eval(
+        &tab,
+        &format!("(function(){{ var sc = {scroller}; sc.scrollTop = Math.max(0, sc.scrollTop - 300); return Math.round(sc.scrollTop); }})()"),
+    )
+    .as_i64()
+    .unwrap();
+    assert_eq!(
+        eval(
+            &tab,
+            "(function(){ visualViewport.dispatchEvent(new Event('resize')); return true; })()"
+        ),
+        true,
+        "the page's event at the same height, after the pinch"
+    );
+    eval(
+        &tab,
+        "new Promise(function (done) { requestAnimationFrame(function () { requestAnimationFrame(function () { done(true); }); }); })",
+    );
+    assert_eq!(
+        eval(&tab, &format!("Math.round({scroller}.scrollTop)"))
+            .as_i64()
+            .unwrap(),
+        again,
+        "the sheet left where the reader scrolled it again after the pinch"
+    );
 }
 
 /// The review of 4ab42eb9 (#s627): a pinch with the keyboard up, on a phone in Safari. While zoomed the
@@ -2616,12 +2643,23 @@ fn a_phone_review_sheet_brings_a_note_at_the_documents_end_back_above_the_keyboa
         Duration::from_secs(5),
         NOTE_GEOMETRY,
     );
-    // At the document's end the taller sheet clamps the reader's place; back at 1 the note is above
-    // the keyboard again.
-    let (at_end, end) = place();
-    assert!(
-        at_end + kb / 2 > end,
-        "the note's card near the document's end, so a taller sheet clamps the place ({at_end} of {end})"
+    // The reader at the document's end, the note in view: the taller sheet clamps their place; back
+    // at 1 the note is above the keyboard again.
+    let (at_end, end) = {
+        eval(
+            &tab,
+            &format!("(function(){{ var sc = {scroller}; sc.scrollTop = sc.scrollHeight; return true; }})()"),
+        );
+        eval(&tab, two_frames);
+        place()
+    };
+    assert_eq!(at_end, end, "the sheet scrolled to the document's end");
+    until(
+        &tab,
+        &visible,
+        "the note in view at the document's end, before the pinch",
+        Duration::from_secs(2),
+        NOTE_GEOMETRY,
     );
     assert_eq!(
         eval(&tab, pinch_in),

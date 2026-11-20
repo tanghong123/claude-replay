@@ -612,7 +612,7 @@ export class Preview {
       viewport?.removeEventListener("resize", fit);
       viewport?.removeEventListener("scroll", fit);
       sized?.disconnect();
-      cancelAnimationFrame(frame);
+      if (frame) cancelAnimationFrame(frame);
       sheet.removeEventListener("focusin", fitSoon);
       sheet.removeEventListener("focusout", fitAfterLeaving);
       removeEventListener("keydown", onKey, true);
