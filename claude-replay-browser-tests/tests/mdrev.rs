@@ -191,7 +191,9 @@ fn a_note_stays_above_the_keyboard(tab: &headless_chrome::Tab) {
         serde_json::from_str(eval(tab, geometry).as_str().unwrap_or("{}")).unwrap()
     };
     // The keyboard about to rise: the field and its Save lie under where it will be, or the steps
-    // below would pass without the fix.
+    // below would pass without the fix. It rises as iOS 26 reports it, with `visualViewport.offsetTop`
+    // as large as the page's own offset (the iPhone 17 Pro Simulator read 338 with the sheet drawn at
+    // the screen's top), which the fit must not read as the visible part's top.
     let kb = eval(
         tab,
         "window.__kb = Math.round(innerHeight * 0.45); window.__kb",
@@ -206,7 +208,7 @@ fn a_note_stays_above_the_keyboard(tab: &headless_chrome::Tab) {
     );
     eval(
         tab,
-        "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - window.__kb; } }); visualViewport.dispatchEvent(new Event('resize')); return true; })()",
+        "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - window.__kb; } }); Object.defineProperty(visualViewport, 'offsetTop', { configurable: true, get: function () { return window.__kb; } }); visualViewport.dispatchEvent(new Event('resize')); return true; })()",
     );
     let visible = format!(
         "(function(){{ var g = {geometry}; g = JSON.parse(g); var top = g.scrollerTop, bottom = g.inner - g.kb; return g.focused && g.sheet[1] <= bottom + 1 && g.field[0] >= top && g.field[1] <= bottom && g.save[0] >= top && g.save[1] <= bottom && g.saveHit && g.fieldHit; }})()"
@@ -221,7 +223,7 @@ fn a_note_stays_above_the_keyboard(tab: &headless_chrome::Tab) {
     // The keyboard put away: the field leaves the focus and the visual viewport is the window again.
     eval(
         tab,
-        "(function(){ delete visualViewport.height; window.__kb = 0; document.activeElement.blur(); visualViewport.dispatchEvent(new Event('resize')); return true; })()",
+        "(function(){ delete visualViewport.height; delete visualViewport.offsetTop; window.__kb = 0; document.activeElement.blur(); visualViewport.dispatchEvent(new Event('resize')); return true; })()",
     );
     until(
         tab,

@@ -44,49 +44,53 @@ const NO_KEYBOARD_INPUTS = new Set(["button", "checkbox", "radio", "range", "col
 const takesKeyboard = at => at?.localName === "input" ? !NO_KEYBOARD_INPUTS.has(at.type)
   : at?.localName === "textarea" || at?.localName === "select" || !!at?.isContentEditable;
 /** #s627: the review sheet ends above an on-screen keyboard while a field inside it has the focus.
- *  iOS covers the layout viewport's foot with its keyboard and never shortens a fixed layer for it,
+ *  iOS covers the foot of what is drawn with its keyboard and never shortens a fixed layer for it,
  *  and it lifts a focused field by scrolling the page, which the sheet (fixed over the whole app, its
  *  document scrolling inside it) does not answer. So a note box mdrev opens beside a line low on the
  *  screen took the focus under the keyboard and stayed there, its Save past the window's foot
  *  (measured on the iPad Simulator, iPadOS 26.5: the box at 1279pt, the keyboard from 1028pt).
- *  The sheet's top and foot are kept inside the visual viewport, in the layout viewport's
- *  coordinates the boxes are read in (`offsetTop` is how far the visible part is panned from it),
- *  and the scroller holding the field brings into view the field with what belongs to it: its
- *  largest ancestor under the scroller that fits in what stays visible (mdrev's note card: the
- *  quote, the field, the share box and Save), or the field's top where nothing does. Without a
- *  field the sheet is as its rules draw it. Returns the band it fitted to, as a string, so a caller
- *  reveals again only when the band or the field changed and leaves a reader who scrolled the
- *  sheet while typing alone. A visible band under 120px (an iPhone held sideways in Safari, its bars
- *  and the keyboard leaving about 16px) is not fitted: the sheet's head alone would not fit there.
+ *  The keyboard is read as the session view's keyboard ride reads it: it covers the sheet's
+ *  containing block (the window, or the app the ride moves) by that block's height less the visual
+ *  viewport's, from its foot. Never from `visualViewport.offsetTop`: with the keyboard up iOS 26
+ *  reports it equal to the page's own offset (338 with the sheet drawn at the screen's top, measured
+ *  on the iPhone 17 Pro Simulator), and on a phone the ride moves the app back over that offset, so
+ *  what is visible starts at the top as drawn. The sheet's foot is raised by what the keyboard covers
+ *  below it, and the scroller holding the field brings into view the field with what belongs to it:
+ *  its largest ancestor under the scroller that fits in what stays visible (mdrev's note card: the
+ *  quote, the field, the share box and Save), or the field's top where nothing does. Without a field
+ *  the sheet is as its rules draw it. Returns the height it fitted the sheet to, as a string, so a
+ *  caller reveals again only when that or the field changed and leaves a reader who scrolled the
+ *  sheet while typing alone. A sheet that would keep under 120px (an iPhone held sideways in Safari,
+ *  its bars and the keyboard leaving about 16px) is not fitted: its head alone would not fit there.
  *  A pinch zoom is not a keyboard: while the scale is off 1 the sheet is as its rules draw it, as the
- *  keyboard ride leaves the pan to the reader. Where the sheet ends at the keyboard or starts below a
- *  bar it drops that side's safe-area padding, which only the screen's edge needs. */
+ *  ride leaves the pan to the reader. Raised, the sheet drops its foot's safe-area padding, which
+ *  only the screen's edge needs. */
 function fitSheetAboveKeyboard(sheet, field, viewport, applied) {
-  // The box as the sheet's rules draw it, from the box drawn now less what was applied, so the sheet
-  // never grows back for a measure (a scroller grown for a moment would clamp the reader's place).
-  const box = sheet.getBoundingClientRect();
-  const drawn = { top: box.top - applied.top, bottom: box.bottom + applied.bottom };
-  let top = drawn.top, bottom = drawn.bottom;
+  // The sheet as its rules draw it, from the box drawn now plus what was applied, so the sheet never
+  // grows back for a measure (a scroller grown for a moment would clamp the reader's place); and its
+  // containing block, the box with the rules' own insets around it, read in no frame of the page's.
+  const box = sheet.getBoundingClientRect(), style = getComputedStyle(sheet);
+  const drawn = box.height + applied.bottom;
+  const insets = (parseFloat(style.top) || 0) + (parseFloat(style.bottom) || 0) - applied.bottom;
+  let want = 0;
   if (field && viewport && Math.abs((viewport.scale || 1) - 1) < 0.01) {
-    top = Math.max(drawn.top, viewport.offsetTop);
-    bottom = Math.min(drawn.bottom, viewport.offsetTop + viewport.height);
-    if (bottom - top < 120) top = drawn.top, bottom = drawn.bottom;
+    const covered = drawn + insets - viewport.height;
+    const ruledBottom = (parseFloat(style.bottom) || 0) - applied.bottom;
+    want = Math.max(0, Math.round(covered - ruledBottom));
+    if (drawn - want < 120) want = 0;
   }
-  const want = { top: Math.round(top - drawn.top), bottom: Math.round(drawn.bottom - bottom) };
-  for (const side of ["top", "bottom"]) {
-    if (want[side] === applied[side]) continue;
-    const pad = side === "top" ? "padding-top" : "padding-bottom";
-    if (want[side] > 0) {
-      const ruled = (parseFloat(getComputedStyle(sheet)[side]) || 0) - applied[side];
-      sheet.style[side] = `${ruled + want[side]}px`;
-      sheet.style.setProperty(pad, "0px");
+  if (want !== applied.bottom) {
+    if (want > 0) {
+      const ruled = (parseFloat(style.bottom) || 0) - applied.bottom;
+      sheet.style.bottom = `${ruled + want}px`;
+      sheet.style.setProperty("padding-bottom", "0px");
     } else {
-      sheet.style.removeProperty(side);
-      sheet.style.removeProperty(pad);
+      sheet.style.removeProperty("bottom");
+      sheet.style.removeProperty("padding-bottom");
     }
-    applied[side] = want[side];
+    applied.bottom = want;
   }
-  return want.top || want.bottom ? String(Math.round(bottom - top)) : "";
+  return want ? String(Math.round(drawn - want)) : "";
 }
 function revealInSheet(sheet, field) {
   let scroller = field.parentElement;
@@ -519,7 +523,7 @@ export class Preview {
     // band changes height (the keyboard rising or changing), never for a pan of the same band.
     const viewport = window.visualViewport;
     let fitted = "", fittedField = null;
-    const applied = { top: 0, bottom: 0 };
+    const applied = { bottom: 0 };
     const fit = () => {
       if (this.reviewSheet !== state) return;
       let at = viewRoot.active();
