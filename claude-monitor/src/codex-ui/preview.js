@@ -85,20 +85,24 @@ function fitSheetAboveKeyboard(sheet, field, viewport, applied, typing) {
   // The top of the box the sheet is placed in, below the visible part's top (#s627's reviews). The
   // browser is asked, not told: the sheet's own top less what its rules put between it and that box
   // is the box's top, whatever made the box (the view containing its layers in a host's pane, the
-  // ride's transform, a host's own transform or filter, or nothing: the window), in any engine. As
-  // the reader starts typing (the first fit of it, before iOS lifts anything) the view's top is read
-  // where it rests. From then until the keyboard goes, the view is taken to stay there as the reader
-  // sees it, which is the ride's whole work on a phone reader whichever way iOS's lift moves the
-  // page (a scroll, or the visible part panned, its `offsetTop` the page's offset): the box is placed
-  // against that rest by its offset from the view, which neither moves. Only the view's place in the
-  // page's layout is read again, which neither iOS's lift nor the ride's transform changes and a host
-  // moving its pane does. A pinch while typing changes neither. In the app the box starts at the
-  // window's top, as walked on the iPhone and iPad Simulators. What the keyboard covers is the
-  // ride's own measure, the layout viewport's height less the visible one's: nothing on a desktop, so
-  // a sheet taller than the window is left alone.
+  // ride's transform, a host's own transform or filter, or nothing: the window), in any engine. Where
+  // the ride holds the view still (a phone reader on a touch screen at a scale of 1, as `ride` in
+  // session-view.js decides), the view's top is read where it rests as the reader starts typing (the
+  // first fit of it, before iOS lifts anything), and from then until the field lets go of the focus
+  // (as the ride keeps `pageRest`) the view is taken to stay there as the reader sees it, whichever
+  // way iOS's lift moves the page (a scroll, or the visible part panned, its `offsetTop` the page's
+  // offset): the box is placed against that rest by its offset from the view, which neither moves.
+  // Only the view's place in the page's layout is read again, which neither iOS's lift nor the
+  // ride's transform changes and a host moving its pane does (a sticky pane's offset is read as a
+  // move: a limit). A pinch while typing changes neither. Elsewhere nothing holds the view, and what
+  // is drawn is where it is seen: the box is read where it is at every fit. In the app the box
+  // starts at the window's top, as walked on the iPhone and iPad Simulators. What the keyboard
+  // covers is the ride's own measure, the layout viewport's height less the visible one's: nothing on
+  // a desktop, so a sheet taller than the window is left alone.
   const holder = sheet.parentElement, holderTop = holder ? holder.getBoundingClientRect().top : 0;
   const laidAt = holder ? layoutTop(holder) : 0;
-  const held = typing && applied.typing;
+  const held = typing && applied.typing && Math.abs((viewport?.scale || 1) - 1) < 0.01 && !!holder?.classList.contains("pl-phone")
+    && typeof matchMedia === "function" && matchMedia("(pointer:coarse)").matches;
   if (!held) { applied.rest = holderTop; applied.laidAt = laidAt; }
   applied.typing = typing;
   const placedAt = box.top - ruledTop - (parseFloat(style.marginTop) || 0);

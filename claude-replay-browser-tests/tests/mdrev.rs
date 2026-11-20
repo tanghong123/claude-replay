@@ -165,7 +165,7 @@ fn lengthen_guide(repo: &Path) {
 fn a_note_stays_above_the_keyboard(
     tab: &headless_chrome::Tab,
     save_in_view: bool,
-    while_typing: Option<(&str, i64)>,
+    while_typing: Option<(&str, i64, i64)>,
 ) {
     let line = eval(
         tab,
@@ -237,10 +237,11 @@ fn a_note_stays_above_the_keyboard(
         geometry,
     );
     // A host moving its pane while the reader types (`while_typing`: its script, and how far it moves
-    // the sheet's top) is heard by no viewport event. The next one (the keyboard's, here its height
+    // the sheet's top and its bottom) is heard by no viewport event. The next one (the keyboard's, here its height
     // told again) fits the sheet where it is now.
     let mut rest_top = rest_top;
-    if let Some((script, moves)) = while_typing {
+    let mut rest_bottom = rest_bottom;
+    if let Some((script, moves, bottom_moves)) = while_typing {
         eval(tab, script);
         until(
             tab,
@@ -261,6 +262,7 @@ fn a_note_stays_above_the_keyboard(
             geometry,
         );
         rest_top += moves;
+        rest_bottom += bottom_moves;
     }
     // The keyboard put away: the field leaves the focus and the visual viewport is the window again.
     eval(
@@ -1819,7 +1821,11 @@ fn host_review_sheet_keeps_a_note_above_the_keyboard(case: HostSheet) {
             "Math.round(document.querySelector('.review-sheet').getBoundingClientRect().top)",
         );
     }
-    a_note_stays_above_the_keyboard(&tab, height > width, case.while_typing);
+    a_note_stays_above_the_keyboard(
+        &tab,
+        height > width,
+        case.while_typing.map(|(script, moves)| (script, moves, 0)),
+    );
 }
 
 /// #s12, the owner chose it: on a phone, where a tab of its own has no way back (#335), shared review
@@ -2208,6 +2214,93 @@ fn the_native_app_reviews_at_a_desktops_width_in_the_sheet() {
             && host["violations"] == serde_json::json!([]),
         "mounted, with no error and nothing the policy refused: {host}"
     );
+}
+
+/// #s627's fourth review: on a touch screen whose view is no phone reader (an iPad at full width, where
+/// only the native app offers the sheet), nothing holds the view still while the reader types, so the
+/// sheet's box is read where it is at every fit. The page scrolls 60px as the reader types (as iOS's
+/// lift may move it), the view and the sheet with it, and the keyboard's next event fits the sheet's
+/// foot to the keyboard's top. Red on ceaf2b7a, which held the view's resting top on every touch
+/// screen and so placed the sheet's box where it rested, 60px below where it is.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
+fn an_ipad_app_review_sheet_follows_the_page_moving_under_it_while_the_reader_types() {
+    let _serial = serial();
+    let (base, stores, repo, state) = shared_review_world("mdrev-native-sheet-ipad");
+    lengthen_guide(&repo);
+    let m = Monitor::spawn_with(
+        Kind::V1,
+        3352,
+        &base,
+        Some(&stores),
+        true,
+        &[("MDREV_STATE_DIR", &state.display().to_string())],
+    );
+    let (_browser, tab) = chrome_tab();
+    harness::phone(&tab, 1180, 820);
+    m.pair(&tab);
+    let mut answers = harness::kit_bundle();
+    answers.push(harness::Answer {
+        pattern: "*/kit-native-review*".into(),
+        path: "/kit-native-review".into(),
+        content_type: "text/html; charset=utf-8".into(),
+        body: NATIVE_REVIEW_HOST.replace("{{KIT}}", &m.url("kit/")),
+    });
+    answers.push(harness::Answer {
+        pattern: "*/kit/native-review.js*".into(),
+        path: "/kit/native-review.js".into(),
+        content_type: "text/javascript; charset=utf-8".into(),
+        body: NATIVE_REVIEW_SCRIPT
+            .replace("{{MDREV}}", claude_monitor::kit::MDREV)
+            .replace("{{MERMAID}}", claude_replay_html::mermaid_runtime_path()),
+    });
+    harness::answer_and_relay_in_browser(
+        &tab,
+        answers,
+        vec![harness::Relay {
+            prefix: "/kit/vendor".into(),
+            port: m.port,
+            token: m.token(),
+        }],
+    );
+    m.open(&tab, &format!("kit-native-review?session={SID}"));
+    until(
+        &tab,
+        "!!(window.__host && (window.__host.mounted || window.__host.error)) && !!document.querySelector('[data-reference-path]')",
+        "the app from the kit, the session's stamped path drawn",
+        Duration::from_secs(30),
+        "JSON.stringify({ host: window.__host || null, transcript: (document.querySelector('#sessionView .transcript') || {}).innerText })",
+    );
+    eval(
+        &tab,
+        "Object.defineProperty(Navigator.prototype, 'languages', { configurable: true, get: () => ['en-US'] }); 'ok'",
+    );
+    assert_eq!(
+        eval(
+            &tab,
+            "matchMedia('(pointer: coarse)').matches && !document.getElementById('sessionView').classList.contains('pl-phone')"
+        ),
+        true,
+        "a touch screen whose view is no phone reader"
+    );
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1') && (function(){ var b = document.querySelector('.preview-review'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+        "the guide in the pane, with its Review control",
+        Duration::from_secs(30),
+        PANE,
+    );
+    harness::click_when_settled(&tab, ".preview-review", "the pane's Review control");
+    until(
+        &tab,
+        "!!document.querySelector('.review-sheet .mdrev-host h1')",
+        "the review sheet",
+        Duration::from_secs(30),
+        "(document.querySelector('.review-sheet') || {innerText: 'no sheet'}).innerText.slice(0, 200)",
+    );
+    let moved = "(function(){ document.documentElement.style.height = '3000px'; document.body.style.height = '3000px'; scrollTo(0, 60); return scrollY; })()";
+    a_note_stays_above_the_keyboard(&tab, true, Some((moved, -60, -60)));
 }
 
 // ── #s13: every text file through mdrev, as source code when it is not Markdown ──────────────
