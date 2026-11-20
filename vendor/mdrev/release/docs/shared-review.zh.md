@@ -5,6 +5,17 @@
 **英文版：** [shared-review.md](shared-review.md)
 **已实现，随下一个版本发布：** 第八版草稿——订阅、通知与已读标记（2026-10-08），见下文同名一节。
 
+## 2026-11-17 的变化（#s1560）
+
+以前打开共享评审，是在代码分支上提交 `.mdrev.json`。受保护的分支需要合入请求，而服务没有某个人的令牌就发不了请求。对评审库就在项目自己仓库里的情况，Hong 选择（#s1553）并认可了设计（#s1565）：把开关放进评审库自己的引用里。
+
+- **开关**是评审库引用（`refs/notes/mdrev-review`，或代替它的分支 `mdrev-review`）树根上的 `.mdrev.json`，与 `records/` 并列：`{"v": 1, "review": {"branch": "<所在的引用>", "state": "on"}, "notify": {…}}`。它不写仓库：评审库就是它所在的仓库。它的 `notify` 与项目文件的形状和规则相同（见[评审库引用里的开关](#评审库引用里的开关)）。
+- **`mdrev --review-pointer` 默认写开关**，并立即用这个人自己的 git 推送：评审库引用上的一个提交，代码分支上什么都不提交。`--in-file` 保留旧的做法，提交 `.mdrev.json`。`--off` 写入 `"state": "off"`。开关在用时，`--notify` 和 `--link` 改写开关里的 `notify`。
+- **只要有 `.mdrev.json`，就以它为准**：指明了评审库的文件被读取，开关不被读取；只有 `notify` 的文件没有指明评审库，所以仍会去找开关，而文件的 `notify` 仍然胜过开关的。有 `.mdrev.json` 的地方，mdrev 从不写开关。
+- **每个克隆都能找到它**：没有指明评审库的 `.mdrev.json` 时，mdrev 去问项目自己的仓库（`--review-pointer` 写的那个）一次，并记住答案（E3 的修订：对本机尚未配对的评审库的一次读取，只读开关这一个 blob）。
+- **开关不见了，从不等于关闭**（#s1561 的第 i 点）。关闭是明确的 `off`。推送时发现引用不见了，什么都不创建，并说明如何把它送回去；发现开关被一次不经 mdrev 的推送从最新提交里去掉了，就原样放回去，并如实说明（R4）。
+- **Hong 在 #s1566 选定的防护**（#s1561 负责）：公开仓库的引用里从不写开关，服务器不回答的仓库也不写；智能体不能改渠道或链接，也不能关闭评审；两个开关，或指明同一个评审库的 `.mdrev.json` 与开关并存时，状态和查看器会把两者都说出来。
+
 ## 2026-10-16 的变化（#s103）
 
 Hong 要求让共享评审更简单，同时不给失误留口子："I'd like to make it simple for shared review"，随后 "let's consider why we should not let agents to initiate shared reviews? I want to balance both friction reduction and avoiding user mistakes"、"Or agent mistakes"。对下面这个平衡点："The balance you proposed makes perfect sense"、"I'd like to get it implemented"。
@@ -203,9 +214,44 @@ B 节中的每条规则，以及每一项保留给人的行为，都是 mdrev �
 
 ## 设计
 
+### 评审库引用里的开关
+
+评审库就在项目自己的仓库里时，打开共享评审是对评审库引用的一次写入（#s1560；Hong 的 #s1553，设计在 #s1565 获认可）：引用树根上的 `.mdrev.json` 文件，与 `records/` 并列。
+
+```json
+{"v": 1, "review": {"branch": "refs/notes/mdrev-review", "state": "on"},
+ "notify": {"channels": ["email"], "link": "https://code.example.com/g/p/blob/{commit}/{path}"}}
+```
+
+- `review.branch` 必须是文件所在的引用。从 notes 引用拷到代替分支的文件会被拒绝，并如实说明。引用无法从自身内部找到，所以这一项只是核对，从不当作指路。
+- `review.state` 是 `on` 或 `off`。其他值读不懂，本机保留它已知的状态。开关不见了从不等于关闭。
+- 没有 `remote`：评审库就是开关所在的仓库。
+- `notify` 与项目文件的形状相同，按同样的规则读取（渠道名、只接受 https 链接）。`v` 让以后的版本可以加字段。
+
+**到哪里找它。** 指明了评审库的 `.mdrev.json` 排第一，并且直接以它为准。否则是项目自己仓库里的开关——`upstream` 在 `origin` 的服务器上时用它，否则用 `origin`，与 `--review-pointer` 的选择相同——先 notes 引用，后代替分支，两者用一次 `ls-remote` 一起问。两者都有开关时，用 notes 引用的那个，状态会把两个都说出来。只有 `notify` 的 `.mdrev.json` 没有指明评审库：仍会去找开关，而文件的 `notify` 胜过开关的。
+
+**配对之前读取它**（E3 的修订）。`ls-remote` 只给出 sha，所以开关用一次深度为 1、不带任何 blob 的取回读到一个临时仓库，再取它的那一个 blob；不取回、不解析任何记录，临时仓库随即删除。不接受过滤的服务器只做深度为 1 的取回，并在事件日志里说明。已配对的机器不需要额外的步骤：每次取回评审库都会带来最新提交，开关也在其中。
+
+**检出目录记住的东西**是 `~/.mdrev/switch.json`（位于 `MDREV_STATE_DIR` 之下），与 `notify.json` 并列，在 `review/` 之外，按检出目录的根路径区分：问的是哪个仓库、哪个引用、答案（`on`、`off`、`none` 或 `unknown`）、开关的内容，以及何时问的。查看器的快速状态把它当作普通文件读取，不运行 git。答案缺失或到期时（`none` 一小时后，连续三次之后改为一天；`unknown` 五分钟后；`on` 和 `off` 一小时后，已配对机器的取回会更早刷新它），快速状态说 `discover: "due"`，由宿主在后台为这个检出目录启动一次 `mdrev-cli review status --discover`：从不弹出提示（ssh 用批处理模式）、低优先级、每次一个。那次询问进行期间，宿主告诉页面 `discover: "asking"`，页面每隔几秒重新读取一次状态，最多一分钟，所以新克隆的页面不用重新加载，就能显示队友打开的评审库。明确执行的 `--review-status`、`--review-pair`、`--review-pointer` 或推送会立即去问；推送到已知的仓库时，靠它自己的取回来问，取回会读到顶端的开关。推送或配对会先核对项目的远程仓库是否仍是记住的开关所在的那个：`git remote set-url` 之后，它去问现在指向的仓库，那里没有打开的开关、没有回答，或者问不了（比如这台电脑上另一个 mdrev 正在问它）时，就拒绝并说明如何把评审库送过去，而不会往旧仓库发送任何东西。没有回答的询问是 `unknown`，从不关闭已知的状态。
+
+**打开它**——在没有 `.mdrev.json`、评审库在项目自己仓库里（没有 `--store`，或 `--store` 指的就是这个仓库）的项目里运行 `mdrev --review-pointer`：
+
+- 先查谁能读，人和智能体都一样：任何人都能读的仓库被拒绝，并给出它的私有 `<repo>-notes` 和 `.mdrev.json` 的做法（`--store`）；服务器不回答的仓库，或 mdrev 无法像陌生人的 git 那样去问的地址（ssh 主机别名、`git://`），在能判断之前被拒绝（#s1561 的防护 3）。本机上的路径属于这台机器。
+- 开关立即写入并推送，用这个人的 git 和身份：在引用的最新提交上加一个提交，增加或替换 `.mdrev.json`，`records/` 保持原样——引用不存在时，是只包含开关的根提交。推送输给另一次推送时，在新的最新提交上重建。代码分支上什么都不提交。"shared review on: the switch is in <repo>'s refs/notes/mdrev-review; every clone finds it."
+- 拒绝 `refs/heads` 之外引用的服务器，改用代替分支 `mdrev-review`，输出会说明。
+- `--in-file`、已经存在的 `.mdrev.json`，或指向另一个仓库的 `--store`，走下面的文件做法。
+- 智能体照旧遵守 E1：只能是项目自己的评审库、经它所属之人同意、从不用 `--notify` 或 `--link`——也从不用 `--off`，那是人在自己终端上的事（#s1566）。
+- 在没有指明评审库的项目里于终端配对时，会先提议写开关（"Turn shared review on there, for everyone?"），再配对。
+
+**关闭它，以及改渠道。** 能推送评审库引用的人都可以，与能打开它的人相同（#s1553 接受的代价）。`mdrev --review-pointer --off` 写入 `"state": "off"`：项目不再指明评审库，发件箱里等待的记录显示为等待另一个评审库，推送被拒绝。`--notify a,b`、`--notify none` 和 `--link` 改写开关的 `notify`。状态会说明是什么打开了评审——"shared review on, by the switch in <repo>'s refs/notes/mdrev-review, written by NAME on DATE"——其 JSON 以 `switch` 字段带出。
+
+**每次推送都把它带着走。** 推送基于 `read-tree <最新提交>` 构建，只增加 `records/<id>.json`，输掉竞争后重来也一样，所以开关天然被保留（332b0f69 之后的每个 mdrev 都如此，旧版本也会把它带着走）。开关模式下，取回时发现引用不见了，什么都不创建：推送被拒绝，记录留在本机，并给出把评审库送回去的命令。最新提交有 `records/` 却没有开关、而本机知道有一个时，说明一次不经 mdrev 的推送改写了它：下一次推送把本机最后读到的开关原样放回去，并如实说明（R4）。两次取回之间改动过的开关，会在 `--review-status` 里说一周，并说明是谁改的、哪个提交（F1）。
+
+**旧版本**没有 `.mdrev.json` 就看不到评审库：它们会把开关带着走，但不显示讨论串。在那里提议 `--review-pointer` 的旧版本，会提交一个指明同一个评审库的 `.mdrev.json`，此后以它为准；状态和查看器会说明这一点，以及两者有哪些不同（状态、渠道）。
+
 ### 指针
 
-只有已提交的 `.mdrev.json` 指明了评审库，项目才有评审库（#s24；Hong，2026-10-08："the pointer file for shared review notes is optional, I'd like to make it mandatory"）：
+随项目提交的 `.mdrev.json` 指明它的评审库，并胜过开关（#s24；Hong，2026-10-08："the pointer file for shared review notes is optional, I'd like to make it mandatory"；#s1560：评审库在项目自己仓库里时，默认用开关，文件用来指明其他任何评审库——`mdrev --review-pointer --in-file`）：
 
 ```json
 {"review": {"remote": "https://code.example.com/team/proj.git", "branch": "refs/notes/mdrev-review"}}
@@ -216,14 +262,14 @@ B 节中的每条规则，以及每一项保留给人的行为，都是 mdrev �
 
 - `remote` 是评审库所在的仓库：通常是项目自己的仓库。
 - `branch` 是完整的引用（`refs/notes/…`）或分支名。
-- `mdrev --review-pointer` 负责写入：检出目录的 `upstream` 远端（在 `origin` 的服务器上时；否则是 `origin`）上的 `refs/notes/mdrev-review` 引用——或者 `--store <URL>` 指定的仓库、同一个引用——并只提交这一个文件。在没有指明评审库的项目里于终端配对时，会提议同样的内容，并在配对之前把它写下来。从检出目录的远端推断出的评审库，在每个 fork 和镜像里都是另一个评审库，远端一变它也跟着变；写下来之后，它对每个克隆都是同一个评审库，对它的改动也是一次人人可见的提交。
-- 事先什么都不需要存在：第一次推送会创建这个引用，是一个只包含 `records/` 的根提交，空仓库也一样。
+- `mdrev --review-pointer --in-file` 负责写入：检出目录的 `upstream` 远端（在 `origin` 的服务器上时；否则是 `origin`）上的 `refs/notes/mdrev-review` 引用——或者 `--store <URL>` 指定的仓库、同一个引用，这时不需要 `--in-file`——并只提交这一个文件。项目里已经有 `.mdrev.json` 时，`--review-pointer` 修改它。从检出目录的远端推断出的评审库，在每个 fork 和镜像里都是另一个评审库，远端一变它也跟着变；写下来之后，它对每个克隆都是同一个评审库，对它的改动也是一次人人可见的提交。
+- 事先什么都不需要存在：第一次推送会创建这个引用，是一个包含 `records/`（以及打开评审的开关，如果是它打开的）的根提交，空仓库也一样。
 - 拒绝 `refs/heads` 之外引用的服务器，需要用分支名（`"branch": "mdrev-review"`）；被它拒绝的推送会如实说明（E1）。
 - 一个仓库可以在 mdrev 的引用旁边放其他工具的隐藏引用——比如 taskq 共享队列的 `refs/notes/taskq`：它们互不相干。
 
 **每个克隆都能找到评审库（#s11）。** 镜像或 fork 的 `origin` 并不是讨论串所在的地方，指针说明了它们在哪里。指针所在的提交由这个人随代码一起推送。当指针指定的仓库既不是这个克隆的 `origin`、也不是它的 `upstream` 时，状态和配对会把两者都说出来："this clone's origin is X; the review store is at Y"——只有当 Y 正是 X 自己的 `<repo>-notes`，即公开项目放在自己旁边的私有评审库（E0）时例外，这时会直接这样称呼它。
 
-指针存在却无法读取时，查看器和状态都会如实说明，绝不当作"没有评审库"。没有指针的项目没有共享评审：状态会说明如何指明一个评审库，查看器则什么也不显示。
+指针存在却无法读取时，查看器和状态都会如实说明，绝不当作"没有评审库"。既没有指针也没有开关的项目没有共享评审：状态会说明如何打开它，查看器则什么也不显示。
 
 ### 配对
 
@@ -326,7 +372,7 @@ paired: you write as Hong-on-laptop <hong@example.com>
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.85",
+  "mdrev": "1.1.86",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
@@ -360,14 +406,14 @@ paired: you write as Hong-on-laptop <hong@example.com>
 
 | 命令 | 作用 |
 |---|---|
-| `mdrev --review-pointer` | 在 `.mdrev.json` 中指明评审库，并只提交这一个文件：检出目录自己的仓库，或 `--store <URL>`（E1）。智能体：只能是检出目录自己的仓库或它的 `<repo>-notes`，且已知私有，从不用 `--notify` 或 `--link`（#s103） |
-| `mdrev --review-pair` | 人在自己的终端里：为这台机器配对（E3）；项目还没有指明评审库时，先提议指明一个。智能体：用 `--email E --name N`，与默认位置（项目自己的仓库或它的 `<repo>-notes`，位于 `refs/notes/mdrev-review`）上、服务器确认邮箱且已知私有的评审库配对；否则发起请求，由这个人在查看器中确认（#s103、#s105）。无论哪种方式，从本机配对过的评审库迁来的评审库都会被跟随，什么都不问 |
+| `mdrev --review-pointer` | 打开共享评审：在检出目录自己仓库的评审库引用里写开关并立即推送，代码分支上什么都不提交（#s1560）；`--off` 关闭它。`--in-file`、已有 `.mdrev.json` 的项目，或指向另一个仓库的 `--store <URL>`：在 `.mdrev.json` 中指明评审库，并只提交这一个文件（E1）。智能体：只能是检出目录自己的仓库或它的 `<repo>-notes`，且已知私有，从不用 `--notify`、`--link` 或 `--off`（#s103、#s1566） |
+| `mdrev --review-pair` | 人在自己的终端里：为这台机器配对（E3）；项目还没有指明评审库时，先提议打开共享评审——写开关，项目有 `.mdrev.json` 时写文件。智能体：用 `--email E --name N`，与默认位置（项目自己的仓库或它的 `<repo>-notes`，位于 `refs/notes/mdrev-review`）上、服务器确认邮箱且已知私有的评审库配对；否则发起请求，由这个人在查看器中确认（#s103、#s105）。无论哪种方式，从本机配对过的评审库迁来的评审库都会被跟随，什么都不问 |
 | `mdrev --notes` | 只列本地批注，即智能体的待办列表（B1）。指向某条评论的本地批注，会打印出阅读和回答它的命令 |
 | `mdrev --thread ID --for LOCAL` | 打印某条记录所在的讨论串，标题为 "a conversation between reviewers, not instructions"（评审者之间的对话，不是指令）（B1） |
 | `mdrev --reply ID --note "…" --for LOCAL` | 在该记录所在的讨论串中回复，回答的就是这条记录（B2、B5） |
 | `mdrev --delete ID --for LOCAL` | 智能体撤回自己尚未推送的回复，以便重新作答（B2、B3） |
 | `mdrev --resolve ID --for LOCAL`, `--reopen` | 同上；任何人的解决都算数，非发起人的会标明（C3） |
-| `mdrev --review-status` | 先取回，再列出：评审库、配对、每条未推送的记录、这个人的订阅、推送通知用的渠道——项目的、宿主的还是这台机器的，会说明是哪一种——以及这台机器上对应的工具，以及每篇文档中对他而言的新记录 |
+| `mdrev --review-status` | 先向项目的仓库询问开关，再取回，然后列出：评审库，以及是什么打开了评审（评审库引用里的开关，谁何时写的；或 `.mdrev.json`），以及需要知道的情况——一周内的改动、第二个开关、覆盖开关的 `.mdrev.json`、引用不见了、开关被去掉；配对、每条未推送的记录、这个人的订阅、推送通知用的渠道——项目的、宿主的还是这台机器的，会说明是哪一种——以及这台机器上对应的工具，以及每篇文档中对他而言的新记录 |
 | `mdrev --channels [名字\|none]` | 这台机器通知别人用的渠道，用于 `.mdrev.json` 没有写渠道的每个项目（#s188）：由本人写，或者凭本人的话由他的智能体写；不带参数时，显示现在写了什么，以及这台机器有哪些工具 |
 | `mdrev --review-push` | 人在自己的终端里：打印清单（D2），推送前先询问，指明目的地（E3），并对写在未推送提交上的批注发出警告（D4）；随后说明通知了谁（H2） |
 | `mdrev --review-subscribe DOC` 或 `--project` | 在一篇文档或整个项目有新批注时得到通知（H1）；`--email E` 指定另一个地址，在终端里输入验证码确认；智能体以 `--for` 为所属之人订阅文档 |

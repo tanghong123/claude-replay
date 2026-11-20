@@ -9,7 +9,7 @@ You will serve some static files, add one script to a page, implement six small 
 ## 1. What is in the box
 
 ```text
-mdrev-embed-1.1.85/
+mdrev-embed-1.1.86/
   README.md
   bundle/              the guest — what the reader's browser runs
     mdrev.js             the entry: an ES module exporting mountMdrev   (~510 KB)
@@ -180,14 +180,14 @@ $(brew --prefix mdrev)/bin/mdrev-v2
 
 `brew pin mdrev` holds a version while you qualify the next one; `brew info tanghong123/tap/mdrev` says which is current.
 
-**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.85`, with two tarballs: `mdrev-1.1.85-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.85.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
+**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.86`, with two tarballs: `mdrev-1.1.86-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.86.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
 
 ```bash
-curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.85/mdrev-embed-1.1.85.tar.gz
-tar xzf mdrev-embed-1.1.85.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.85
+curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.86/mdrev-embed-1.1.86.tar.gz
+tar xzf mdrev-embed-1.1.86.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.86
 ```
 
-Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.85/mdrev-cli` — with node on the path. The releases page lists the current version.
+Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.86/mdrev-cli` — with node on the path. The releases page lists the current version.
 
 **From source** — `bash scripts/build-release.sh` in a checkout of the repository emits both tarballs into `dist-release/public/`.
 
@@ -196,8 +196,8 @@ Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.85/mdrev-cli` — 
 Run the sample host against a git checkout that has Markdown in it:
 
 ```bash
-tar xzf mdrev-embed-1.1.85.tar.gz
-cd mdrev-embed-1.1.85
+tar xzf mdrev-embed-1.1.86.tar.gz
+cd mdrev-embed-1.1.86
 ./mdrev-v2 ~/src/your-docs/README.md --last 3   # or --root ~/src/your-docs for the whole checkout
 # mdrev-v2: README.md @ /Users/you/src/your-docs
 #   http://127.0.0.1:4600/?path=README.md&from=…&code=…
@@ -346,6 +346,7 @@ The options, all of them:
 | `scrollParent` | the element that scrolls, when the viewer is one section of a page you scroll: an element, or `'page'` for the document itself. Left out, the viewer fills its element and scrolls inside it | own pane |
 | `phone` | the phone's layout (below, **On a phone**): `'auto'` gives it to a finger on a phone-sized screen, `'always'` whatever the device, `'never'` keeps the desktop layout | `'auto'` |
 | `shortcuts` | your own keys, for the viewer's list of keys (`?`): an array of `{mac, other?, what}`. `mac` is the keys as a Mac reader presses them, `['⌘K', '/']`, each string drawn as one key; `other` the same keys off a Mac, `['Ctrl+K', '/']`, and left out it is `mac`; `what` says what they do, `{en: 'search documents', 'zh-Hans': '搜索文档'}`, in English and, where you have it, Chinese, which falls back to English. They are drawn as text in a group of their own after the viewer's rows. List only keys your page answers around the viewer: the viewer cannot check them. A host fact, read at mount and kept through every move. The viewer's own rows follow your leave: none of the notes keys under `annotate: false`, none of the change and range keys under `review: false` (contract.md, "The host's own keys") | no host rows |
+| `personPicture(who)` | pictures of the people who write notes, for a host that has them: given `{email?, name?}`, the person as the viewer knows them, answer an image address, or `null` for none. The viewer draws a small circle before each writer's name — note cards' entries, the notes on a line, the dense list, the @ picker — with the picture, loaded lazily, or their initials where you answered `null` or the image did not load. No circle for an agent's entry, or for a name with nobody behind it (who resolved a shared thread, blame, history). The circle sits within its line, so nothing the viewer places moves. Answer at once, from what you hold: the image is the browser's to fetch, and who may see whose picture is your image route's to decide. A host fact, read at mount (contract.md, "People's pictures") | no circles, and no image asked for |
 | `onPrint()` | you print your own way. The toolbar keeps its print control either way — putting THIS document on paper is what you embedded the viewer for; this says only who carries it out. Left out, the guest prints the document alone (below) | the guest prints |
 | `credentials` | the `fetch` credentials mode; `'same-origin'` sends your session cookie | `'same-origin'` |
 | `root` | **which collection these documents belong to**, your own opaque string, sent with every request. A host that holds more than one store of anything needs it: a path stops identifying a document as soon as two projects each have a `README.md`. One store, leave it out | none |
@@ -399,6 +400,23 @@ and a `<meta name="viewport" content="width=device-width, initial-scale=1">`,
 without which a phone lays your page out at desktop width and the viewer never
 sees a phone-sized screen. Where you scroll the page yourself (`scrollParent`),
 the arrows are fixed to the screen's bottom right rather than to the mount.
+
+**Edges.** On a phone, parts of the screen's edge are unsafe: the island held
+sideways, the rounded corners, the status bar and the home indicator. Give the
+viewer the whole box out to the screen's edge and say how much of each edge of
+your mount is unsafe, with four lengths on the mount or above it:
+`--mdrev-edge-left`, `--mdrev-edge-right`, `--mdrev-edge-top` and
+`--mdrev-edge-bottom`, each `0px` by default. The viewer then paints its bar
+and its page out to the edge and keeps its controls, its text and its
+furniture that far in, as Safari's own bars do. Set each edge from your own
+box: a mount that fills the screen sets them from
+`env(safe-area-inset-left, 0px)` and the others; a mount in a column sets an
+edge only where it touches the screen, as
+`max(0px, env(safe-area-inset-right, 0px) - <its distance from that edge>)`,
+and `0px` where it does not. Two mistakes are silent. Write `0px`, not `0`,
+inside `max()` and `calc()`: a bare `0` makes the value invalid, and the viewer
+reads that edge as 0. And drop your own padding on the edges you hand over, or
+the viewer steps in twice. On paper the edges are 0.
 
 **Printing.** The toolbar has a print control, and `mounted.print()` is the same
 action for your own menu or shortcut. It borrows the document's name for the
@@ -699,6 +717,7 @@ It is written for a git checkout because that is what this repository reviews it
 - Upgrade the **bundle and `mdrev-cli` together**, from one release. They share the note record and the anchor format; a mismatch shows as notes that place by search instead of exactly, not as breakage. With Homebrew that is one command, `brew upgrade tanghong123/tap/mdrev`, since both are one keg; with the tarball, unpack the new version beside the old and switch your static files and your `mdrev-cli` path in the same deploy.
 - The **sidecar is append-and-rewrite JSON lines** and has only gained fields. Notes filed by an earlier version keep working; a record a newer version writes carries fields an older reader ignores.
 - The **contract** is versioned with this guide. Routes are added, not changed; a host that passes `conform` today passes it after an upgrade until the runner says otherwise, and the runner is the definition.
+- The **edge lengths**, `--mdrev-edge-left`, `-right`, `-top` and `-bottom` (§4, **Edges**), are stable like the theme tokens: their names and their `0px` default stay.
 - The two entries, `mdrev.js` and `mdrev.css`, are not content-hashed; version their URL prefix or give them a short cache life.
 
 Numbers, so that expectations are set: in a current Chrome the redline of a 100 KB document appears in about a tenth of a second, a 400 KB one in under half a second, once per range change, with the page usable meanwhile; a plain read is a few milliseconds per 10 KB. Range blame — which revision introduced each change — costs one `/text` per revision in the range, cached in the page; for the usual range, the newest change, that is two.

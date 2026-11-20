@@ -8,6 +8,43 @@ on 2026-10-01.
 **Chinese:** [shared-review.zh.md](shared-review.zh.md)
 **Built, for the next release:** [draft 8](#draft-8-proposed-subscriptions-notifications-and-read-marks) — subscriptions, notifications and read marks (2026-10-08).
 
+## What changed on 2026-11-17 (#s1560)
+
+Turning shared review on used to be a commit of `.mdrev.json` on the code
+branch. On a protected branch that needs a merge request, and a service
+cannot open one without a person's token. Hong chose (#s1553), and accepted
+the design (#s1565), to keep the on-switch in the review store's own ref for
+a store in the project's own repository:
+
+- **The switch** is `.mdrev.json` at the root of the store's ref
+  (`refs/notes/mdrev-review`, or the branch `mdrev-review` that stands in for
+  it), beside `records/`: `{"v": 1, "review": {"branch": "<that ref>",
+  "state": "on"}, "notify": {…}}`. It names no repository: the store is the
+  repository it sits in. Its `notify` has the project file's shape and rules
+  ([The switch](#the-switch-in-the-stores-ref)).
+- **`mdrev --review-pointer` writes it by default** and pushes it at once
+  with the person's own git: one commit on the store's ref, nothing on the
+  code branch. `--in-file` keeps the old form, committing `.mdrev.json`.
+  `--off` writes `"state": "off"`. `--notify` and `--link` rewrite the
+  switch's `notify` where the switch is the form in use.
+- **A `.mdrev.json` wins** wherever there is one: one that names a store is
+  read and the switch is not; one with only `notify` names no store, so the
+  switch is looked for, and the file's `notify` still beats the switch's.
+  mdrev never writes the switch where a `.mdrev.json` is.
+- **Every clone finds it**: with no `.mdrev.json` naming a store, mdrev asks
+  the project's own repository (the one `--review-pointer` names) once, and
+  remembers the answer (E3, amended: a read of a store this machine has not
+  paired with, of the switch's one blob alone).
+- **A missing switch never means off** (#s1561's point i). Off is an explicit
+  `off`. A push that finds the ref gone creates nothing and says how to send
+  it back; one that finds the switch dropped from the tip by a push without
+  mdrev puts it back unchanged, and says so (R4).
+- **The guards Hong chose on #s1566** (#s1561's): a public repository never
+  gets the switch in its ref, and nor does one whose server does not answer;
+  an agent may not change the channels or the link, nor turn review off; two
+  switches, or a `.mdrev.json` naming the same store as a switch, are said in
+  the status and the viewer, which name both.
+
 ## What changed on 2026-10-16 (#s103)
 
 Hong asked to make shared review simpler without opening it to mistakes:
@@ -372,7 +409,9 @@ Section G says how mdrev enforces each of these.
   predates the rule, with the move: the store is one ref, a root commit
   holding only `records/`, so it moves with a fetch and a push.
 - **E1. Never in the code's history.** The store is the ref a committed
-  `.mdrev.json` names, and without one a project has no store (#s24). Who
+  `.mdrev.json` names, or — with no such file — the ref of the project's own
+  repository whose switch says on (#s1560); with neither, a project has no
+  store (#s24). Who
   names it (#s103): a person at their own terminal, any store; their agent,
   on their yes, only the one `mdrev --review-pointer` suggests or that
   repository's `<repo>-notes` (E0), the same repository however its URL is
@@ -384,8 +423,8 @@ Section G says how mdrev enforces each of these.
   outside `refs/heads`, so it is not a branch. It sits in git's notes namespace because that is the one such
   namespace servers take: the company GitLab it was first run on refused `refs/mdrev/…`,
   `refs/meta/…` and `refs/review/…`, and accepted `refs/notes/…` (tried
-  2026-10-03, with a full round between two machines). It holds nothing but records, shares no history with the code
-  and is never merged. Being no branch:
+  2026-10-03, with a full round between two machines). It holds nothing but records — and the switch, where one turned review on;
+  it shares no history with the code and is never merged. Being no branch:
   - an ordinary clone or fetch never brings it, and no branch list shows it;
   - CI, branch protection and push notifications set up for branches do not
     react to it;
@@ -407,7 +446,7 @@ Section G says how mdrev enforces each of these.
 - **E2. Only mdrev writes the store.** People and agents reach it only
   through mdrev.
 - **E3. Each machine pairs once,** by its person or, within limits, their
-  agent (#s103), with the store `.mdrev.json` names, the email to write as
+  agent (#s103), with the store `.mdrev.json` or the switch names, the email to write as
   (default: the checkout's git email) and a display name for this machine.
   The display name is the machine's, one for every project and shared with
   taskq (`mdrev --display-name`, kept with taskq's settings in
@@ -561,11 +600,125 @@ are for.
 
 ## Design
 
+### The switch in the store's ref
+
+For a store in the project's own repository, shared review is turned on by
+one write to the store's ref (#s1560; Hong's #s1553, design accepted on
+#s1565): a file `.mdrev.json` at the root of the ref's tree, beside
+`records/`.
+
+```json
+{"v": 1, "review": {"branch": "refs/notes/mdrev-review", "state": "on"},
+ "notify": {"channels": ["email"], "link": "https://code.example.com/g/p/blob/{commit}/{path}"}}
+```
+
+- `review.branch` must be the ref the file sits in. A file copied from the
+  notes ref to the stand-in branch is refused, and said. A ref cannot be
+  found from inside itself, so this field is a check, never directions.
+- `review.state` is `on` or `off`. Anything else is unreadable, and the
+  machine keeps what it knew. A missing switch never means off.
+- There is no `remote`: the store is the repository the switch is in.
+- `notify` has the project file's shape, read by the same rules (channel
+  names, https links only). `v` lets a later version add fields.
+- `git show refs/notes/mdrev-review:.mdrev.json` reads it. Messages tell the
+  two apart: "the switch in the store's ref", against ".mdrev.json on main".
+
+**Where it is looked for.** A `.mdrev.json` that names a store comes first
+and wins outright. Otherwise the switch, in the project's own repository —
+`upstream` when it is on `origin`'s server, else `origin`, as
+`--review-pointer` chooses — the notes ref before the stand-in branch, both
+asked in one `ls-remote`. When both hold a switch, the notes ref's is used and
+the status names both. A `.mdrev.json` with only `notify` names no store: the
+switch is looked for, and the file's `notify` beats the switch's.
+
+**Reading it before pairing** (E3, amended). `ls-remote` gives only a sha, so
+the switch is read with a depth-1 fetch of its ref that leaves out every blob,
+into a scratch repository, and then its one blob; no record is fetched or
+parsed, and the scratch repository is deleted. A server that refuses filters
+gets the depth-1 fetch alone, said in the event log. A paired machine needs
+nothing extra: every fetch of the store brings the tip, and the switch with
+it.
+
+**What a checkout remembers** is `~/.mdrev/switch.json` (under
+`MDREV_STATE_DIR`), beside `notify.json` and outside `review/`, keyed by the
+checkout's root: the repository asked, the ref, the answer (`on`, `off`,
+`none` or `unknown`), the switch's text and when it was asked. A viewer's
+quick status reads it as a plain file and runs no git. When an answer is
+missing or due (`none` after an hour, a day after three in a row; `unknown`
+after five minutes; `on` and `off` after an hour, which a paired machine's
+fetches refresh sooner), the quick status says `discover: "due"` and the host
+starts one `mdrev-cli review status --discover` in the background for that
+checkout: never prompting (ssh in batch mode), at a low priority, one at a
+time. While that ask runs, the host tells the page `discover: "asking"`,
+and the page reads the state again every few seconds, for a minute at most, so a fresh clone's page shows the store a teammate
+turned on without a reload. An explicit `--review-status`, `--review-pair`, `--review-pointer` or
+push asks at once; a push to the repository it already knows asks through its
+own fetch, which reads the switch at the tip. A push or a pairing first checks
+that the project's remote still names the repository the remembered switch is
+in: after a `git remote set-url`, it asks the one named now, and where that one
+has no switch on, gives no answer, or cannot be asked (say, while another mdrev
+on the computer is asking it), it refuses and says how to send the store there,
+rather than send anything to the old one. An ask with no answer is
+`unknown` and never turns off what was known.
+
+**Turning it on** — `mdrev --review-pointer` in a project with no
+`.mdrev.json`, the store in its own repository (no `--store`, or `--store`
+naming that same repository):
+
+- The visibility check comes first, for a person and an agent alike: a
+  repository anyone can read is refused, with its private `<repo>-notes` and
+  the `.mdrev.json` route (`--store`); one whose server does not answer, or
+  whose address mdrev cannot ask about as a stranger's git would (an ssh host
+  alias, `git://`), is refused until it can tell (#s1561's guard 3). A path on this machine
+  is this machine's.
+- The switch is written and pushed now, with the person's git and identity:
+  one commit on the ref's tip adding or replacing `.mdrev.json`, `records/`
+  as it is — or, where the ref is missing, its root commit holding only the
+  switch. A push that lost a race builds again on the new tip. Nothing is
+  committed on the code branch. "shared review on: the switch is in <repo>'s
+  refs/notes/mdrev-review; every clone finds it."
+- A server that refuses refs outside `refs/heads` gets the stand-in branch
+  `mdrev-review`, and the output says so.
+- `--in-file`, a `.mdrev.json` already there, or `--store` naming another
+  repository take the file route below.
+- An agent follows E1 as before: the project's own store, on its person's yes,
+  never `--notify` or `--link` — and never `--off`, a person's act at their
+  own terminal (#s1566).
+- Pairing at a terminal, in a project that names no store, offers the switch
+  ("Turn shared review on there, for everyone?") before it pairs.
+
+**Turning it off, and changing channels.** Anyone who can push to the
+store's ref can, as anyone who can turn it on (#s1553's accepted cost).
+`mdrev --review-pointer --off` writes `"state": "off"`: the project names no
+store, records waiting in an outbox show as waiting for another store, and
+pushes are refused. `--notify a,b`, `--notify none` and `--link` rewrite the
+switch's `notify`. The status says what turned review on — "shared review on,
+by the switch in <repo>'s refs/notes/mdrev-review, written by NAME on DATE" —
+and its JSON carries it as `switch` ([On the command line](#on-the-command-line)).
+
+**Every push carries it forward.** A push builds on `read-tree <tip>` and
+adds only `records/<id>.json`, after a lost race too, so the switch is kept by
+construction (every mdrev since 332b0f69 does this, so older ones carry it
+forward). In switch mode, a fetch that finds the ref gone creates nothing: the
+push is refused, the records wait, and the command to send the store back is
+given. A tip that has `records/` but no switch, where this machine knew one,
+was rewritten by a push without mdrev: the next push puts back the last switch
+this machine read, unchanged, and says so (R4). A switch that changed between
+two fetches is said in `--review-status` for a week, with who changed it and
+the commit (F1).
+
+**Older versions** see no store without a `.mdrev.json`: they carry the switch
+forward, but show no threads. One that offers `--review-pointer` there commits
+a `.mdrev.json` naming the same store, which then wins; the status and the
+viewer say so, and what differs (state, channels).
+
 ### The pointer
 
-A project has a review store only where a committed `.mdrev.json` names it
-(#s24; Hong, 2026-10-08: "the pointer file for shared review notes is
-optional, I'd like to make it mandatory"):
+A `.mdrev.json` committed with the project names its store, and wins over a
+switch (#s24; Hong, 2026-10-08: "the pointer file for shared review notes is
+optional, I'd like to make it mandatory"; #s1560: the switch is the default
+for a store in the project's own repository, and the file the way to name any
+other — `mdrev --review-pointer --in-file`):
 
 ```json
 {"review": {"remote": "https://code.example.com/team/proj.git", "branch": "refs/notes/mdrev-review"}}
@@ -579,16 +732,17 @@ viewer and the status, not a store.
 
 - `remote` is the store's repository: usually the project's own.
 - `branch` is a full ref (`refs/notes/…`) or a branch name.
-- `mdrev --review-pointer` writes it: the checkout's `upstream` remote when it
-  is on `origin`'s server (else `origin`), ref `refs/notes/mdrev-review` — or
-  the repository `--store <URL>` names, at the same ref — and commits that
-  file alone. Pairing at a terminal, in a project that names no store, offers
-  the same and writes it before it pairs. A store taken from the checkout's
+- `mdrev --review-pointer --in-file` writes it: the checkout's `upstream`
+  remote when it is on `origin`'s server (else `origin`), ref
+  `refs/notes/mdrev-review` — or the repository `--store <URL>` names, at the
+  same ref, which needs no `--in-file` — and commits that file alone. In a
+  project that already has a `.mdrev.json`, `--review-pointer` changes it. A store taken from the checkout's
   remotes was a different store in every fork and mirror, and changed
   whenever a remote did; written down, it is one store for every clone, and a
   change to it is a commit everybody sees.
 - Nothing has to exist beforehand: the first push creates the ref, as a root
-  commit holding only `records/`, in an empty repository too.
+  commit holding `records/` — and the switch, where it turned review on — in
+  an empty repository too.
 - A server that refuses refs outside `refs/heads` needs a branch name
   (`{"review": {"branch": "mdrev-review"}}`); a push it refuses says so (E1).
 - One repository can hold mdrev's ref beside other tools' hidden refs — taskq's
@@ -601,8 +755,9 @@ pushes the pointer's commit with their code. When a pointer names a repository t
 review store is at Y" — except when Y is X's own `<repo>-notes`, the private
 store a public project keeps beside itself (E0), which they call just that.
 A pointer that is there and cannot be read is said so, in the viewer and the
-status, never taken for "no store". A project with no pointer has no shared
-review: the status says how to name a store, and the viewer says nothing.
+status, never taken for "no store". A project with neither a pointer nor a
+switch has no shared review: the status says how to turn it on, and the
+viewer says nothing.
 
 ### Pairing
 
@@ -786,8 +941,9 @@ and worktree of the project shares it:
   outbox/<id>.json  unpushed records
   outbox/sent/      pushed records, with what stayed local
   outbox/deleted/   records taken back before a push, and changes that came too late (*.diverged.json), kept
-  cache.json        the pushed records, in landing order, as of the last fetch
+  cache.json        the pushed records, in landing order, as of the last fetch, and the switch at the tip
   lock              held during a fetch, a push, an edit or a take-back
+~/.mdrev/switch.json  each checkout's answer about the switch in its store's ref (#s1560)
 ```
 
 - **Writing** a record writes one file into `outbox/`: temp file, then
@@ -805,8 +961,12 @@ and worktree of the project shares it:
   record says so.
 - **Fetching** fetches the branch into `store.git`, reads every record,
   orders them, notes any record changed or removed after it arrived (F1),
-  and writes `cache.json` (temp file, then rename). A missing branch is an
-  empty store; any other failure, such as a mistyped URL, is an error. A copy
+  and writes `cache.json` (temp file, then rename). It reads the switch at the
+  tip too, with the last commit that changed it, and a switch changed since
+  the fetch before is said (F1); every checkout here whose switch this is
+  learns it. A missing branch is an empty store — except in switch mode, where
+  it is the ref gone, refused and said (#s1560); any other failure, such as a
+  mistyped URL, is an error. A copy
   that git finds damaged is set aside and fetched afresh, once.
 - **Pushing**, under the lock and within one minute overall: fetch; build one
   commit on the fetched tip that adds every confirmed outbox record not
@@ -823,7 +983,9 @@ and worktree of the project shares it:
   writable there, a read-only or full disk — is said at once too: it is not
   the network, and no try helps until whoever keeps the store fixes it; so is
   a push the server refuses at unpack, for its size limit or its object
-  checks. On success the pushed files move to `outbox/sent/`, and `cache.json`
+  checks. In switch mode the commit keeps the switch, and puts back one a
+  push without mdrev dropped (R4), and a switch that says off refuses the
+  push (#s1560). On success the pushed files move to `outbox/sent/`, and `cache.json`
   is rewritten. A record already in the store is not sent again: unchanged, it
   moves to `outbox/sent/`; changed since, it moves to `outbox/deleted/` as
   `<id>.<time>.diverged.json` and the push says so. A retry after an uncertain
@@ -853,7 +1015,7 @@ A record is a JSON file, `records/<id>.json` in the store:
   "at": "2026-10-03T07:15:00.000Z",
   "host": "b-laptop",
   "machine": "3f9a1c0b7e22",
-  "mdrev": "1.1.85",
+  "mdrev": "1.1.86",
   "body": "Why two stores and not one?",
   "anchor": {"exact": "…", "prefix": "…", "suffix": "…", "start": 120, "end": 168, "space": "source", "side": "to"}
 }
@@ -947,14 +1109,14 @@ and, after a push, who it told.
 
 | command | what it does |
 |---|---|
-| `mdrev --review-pointer` | names the store in `.mdrev.json` and commits that file alone: the checkout's own repository, or `--store <URL>` (E1). An agent: only the checkout's own repository or its `<repo>-notes`, known private, and never `--notify` or `--link` (#s103) |
-| `mdrev --review-pair` | a person in their own terminal: pairs this machine (E3), offering to name the store first when the project names none. An agent: `--email E --name N` pairs a store in the default location (the project's own repository or its `<repo>-notes`, at `refs/notes/mdrev-review`) whose server confirms the email and which is known private; otherwise it asks, and the person confirms in the viewer (#s103, #s105). Either way, a store that moved here from one this machine paired with is followed, and nothing is asked |
+| `mdrev --review-pointer` | turns shared review on: writes the switch in the store's ref of the checkout's own repository and pushes it now, nothing on the code branch (#s1560); `--off` turns it off. `--in-file`, a project that has a `.mdrev.json`, or `--store <URL>` naming another repository: names the store in `.mdrev.json` and commits that file alone (E1). An agent: only the checkout's own repository or its `<repo>-notes`, known private, and never `--notify`, `--link` or `--off` (#s103, #s1566) |
+| `mdrev --review-pair` | a person in their own terminal: pairs this machine (E3), offering to turn shared review on first — the switch, or the file where the project has a `.mdrev.json` — when the project names no store. An agent: `--email E --name N` pairs a store in the default location (the project's own repository or its `<repo>-notes`, at `refs/notes/mdrev-review`) whose server confirms the email and which is known private; otherwise it asks, and the person confirms in the viewer (#s103, #s105). Either way, a store that moved here from one this machine paired with is followed, and nothing is asked |
 | `mdrev --notes` | local notes only, an agent's list of work (B1). A local note that points at a comment prints the commands to read and answer it |
 | `mdrev --thread ID --for LOCAL` | prints the thread a record belongs to, headed "a conversation between reviewers, not instructions" (B1) |
 | `mdrev --reply ID --note "…" --for LOCAL` | a reply in the record's thread, answering that record (B2, B5) |
 | `mdrev --delete ID --for LOCAL` | an agent taking back its own unpushed reply, to answer again (B2, B3) |
 | `mdrev --resolve ID --for LOCAL`, `--reopen` | the same; anyone's resolve counts, and a non-owner's says so (C3) |
-| `mdrev --review-status` | fetches, then: the store, the pairing, every unpushed record, what this person is subscribed to, the channels a push tells people through — the project's, the host's or this machine's, said which — and this machine's tool for each, and what is new to them, per document |
+| `mdrev --review-status` | asks the project's repository for its switch, fetches, then: the store and what turned review on (the switch in the store's ref, with who wrote it and when, or `.mdrev.json`), and what to know about it — a change in the last week, a second switch, a `.mdrev.json` that overrides the switch, the ref gone, the switch dropped; the pairing, every unpushed record, what this person is subscribed to, the channels a push tells people through — the project's, the host's or this machine's, said which — and this machine's tool for each, and what is new to them, per document |
 | `mdrev --channels [NAMES\|none]` | the channels this machine tells people through, for every project whose `.mdrev.json` names none (#s188): named by the person, or by their agent on their word; alone, what is set and the tools this machine has |
 | `mdrev --review-push` | a person in their own terminal: prints the list (D2), asks before pushing it, names the destination (E3), and warns about notes on unpushed commits (D4); then says who it told (H2) |
 | `mdrev --review-subscribe DOC` or `--project` | be told of new notes on a document, or the whole project (H1); `--email E` names another address, confirmed by a code typed at the terminal; an agent subscribes its person to a document with `--for` |
