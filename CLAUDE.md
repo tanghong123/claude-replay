@@ -1604,15 +1604,24 @@ to the owner; the owner hears of a disagreement only when a second round still h
 that cannot land fast-forward gets main merged into its branch first, then lands fast-forward: never
 a server-side merge commit.
 
-**Still the owner's.** Review it, then bring it to the owner in one line instead of landing:
-- releases, version numbers and the Homebrew formulas;
-- CI, workflow and gate configuration (`.github/`, `scripts/gate/`, `.gitleaks.toml`);
-- authentication, pairing, the file gate and its capability stamps, secret masking, and anything
-  that opens a port or a network path;
-- vendored releases (`vendor/`) and new dependencies;
-- the public contract: CLI flags, the `--json` streams, the on-disk formats other tools read;
-- removing a feature, or a design change beyond one component;
-- a UI change not yet walked on the iOS Simulator.
+**Still the owner's** (narrowed by the owner's ruling of 2026-11-20 on aries#s264: a reviewed,
+green change lands unless it loosens access or a check, changes auth, secrets or a contract beyond
+what the owner decided, or removes a feature). Review it, then bring it to the owner in one line
+instead of landing:
+- a change that loosens access or a check: one that opens a port or a network path, widens what an
+  unpaired or remote client reaches, or loosens or removes a check in CI, a workflow or a gate
+  (`.github/`, `scripts/gate/`, `.gitleaks.toml`) on a contract that is not changing. A change
+  that only tightens access is the agent's;
+- authentication, pairing, the file gate and its capability stamps, or secret masking, changed
+  beyond what the owner decided;
+- the public contract (CLI flags, the `--json` streams, the on-disk formats other tools read),
+  changed beyond what the owner decided;
+- removing a feature;
+- releases, version numbers and the Homebrew formulas, which keep this repository's own rule.
+
+**The owner's choice on a change covers landing it as chosen** (the same ruling): once an
+independent reviewer approved the exact head and CI is green on it, note the decision on the change
+and land it, with no second request to land.
 
 **A first-time contributor's** fork PR needs its workflow runs approved in the GitHub UI: approve
 them only after reading the diff for changes to workflows or anything that reaches secrets, which is
