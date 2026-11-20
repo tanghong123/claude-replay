@@ -2364,10 +2364,10 @@ impl AuthGate {
         self.decide_held(self.token.token(), peer, local, presented, from_cookie)
     }
 
-    /// [`decide`](Self::decide) against `held`, the token the gate held when the request's ruling
-    /// began (#s619): the latch can be set while a request is ruled on, and every step of one
-    /// ruling must see the same answer, or a request could pass the unpaired leg and then skip the
-    /// unpaired gate's relay check.
+    /// `decide` (the tests' entry) against `held`, the token the gate held when the request's
+    /// ruling began (#s619): the latch can be set while a request is ruled on, and every step of
+    /// one ruling must see the same answer, or a request could pass the unpaired leg and then skip
+    /// the unpaired gate's relay check.
     fn decide_held(
         &self,
         held: Option<&str>,
