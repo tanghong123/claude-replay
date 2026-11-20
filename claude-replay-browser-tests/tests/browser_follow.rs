@@ -17616,8 +17616,9 @@ const AGENTS_FILTER_ON: &str =
     "JSON.parse(localStorage.getItem('am-prod-live-only') || '[]').includes('agents')";
 
 /// #s358, Hong's choice on #s357: a phone has no Outline menu, so its Agents sheet carries both ends
-/// of the same remembered filter. With every agent finished: Show them lists them, the row at the
-/// top hides them again, and the sheet stays open. Red before #s358: Show them was one way.
+/// of the same remembered filter. With every agent finished: Show them lists them, the control in the
+/// sheet's head (#s616; the list's own row is not drawn in the sheet) hides them again, and the sheet
+/// stays open. Red before #s358: Show them was one way.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_hides_finished_agents_again_from_its_agents_sheet() {
@@ -17642,21 +17643,21 @@ fn a_phone_hides_finished_agents_again_from_its_agents_sheet() {
     finger_on_filter(&tab, "#phonePaneMenu [data-show-filtered=\"agents\"]");
     harness::until(
         &tab,
-        &format!("{sheet} && document.querySelectorAll('#phonePaneMenu .outline-agent-copy').length === 2 && !!document.querySelector('#phonePaneMenu [data-hide-finished]')"),
-        "the finished agents listed, under a row that hides them",
+        &format!("{sheet} && document.querySelectorAll('#phonePaneMenu .outline-agent-copy').length === 2 && !!document.querySelector('#phonePaneMenu .phone-pane-head .phone-pane-filter[data-hide-finished]:not([hidden])')"),
+        "the finished agents listed, the sheet's head offering to hide them",
         Duration::from_secs(10),
         "document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
     );
     assert_eq!(
-        harness::eval(&tab, "(function(){ var r = document.querySelector('#phonePaneMenu [data-hide-finished]'), a = document.querySelector('#phonePaneMenu .outline-agent'); return r.getBoundingClientRect().bottom <= a.getBoundingClientRect().top + 1; })()"),
+        harness::eval(&tab, "(function(){ var r = document.querySelector('#phonePaneMenu .phone-pane-filter'), a = document.querySelector('#phonePaneMenu .outline-agent'); var row = document.querySelector('#phonePaneMenu .agents-filter-row'); return r.textContent === 'Hide finished agents' && r.getBoundingClientRect().bottom <= a.getBoundingClientRect().top + 1 && !!row && !row.getClientRects().length; })()"),
         serde_json::json!(true),
-        "the row is above the agents, where a long list cannot hide it"
+        "the control is in the head, above the agents, where a long list cannot hide it, and the list draws no row of its own"
     );
-    finger_on_filter(&tab, "#phonePaneMenu [data-hide-finished]");
+    finger_on_filter(&tab, "#phonePaneMenu .phone-pane-filter");
     harness::until(
         &tab,
-        &format!("{sheet} && document.querySelectorAll('#phonePaneMenu .outline-agent-copy').length === 0 && !!document.querySelector('#phonePaneMenu [data-show-filtered=\"agents\"]')"),
-        "the agents hidden again, the sheet open, Show them back",
+        &format!("{sheet} && document.querySelectorAll('#phonePaneMenu .outline-agent-copy').length === 0 && !!document.querySelector('#phonePaneMenu [data-show-filtered=\"agents\"]') && document.querySelector('#phonePaneMenu .phone-pane-filter').hidden"),
+        "the agents hidden again, the sheet open, Show them back, and the head's control gone with the row (#s616: the head once read the list before this press)",
         Duration::from_secs(10),
         "document.getElementById('phonePaneMenu').hidden + ' ' + document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
     );
@@ -17665,6 +17666,60 @@ fn a_phone_hides_finished_agents_again_from_its_agents_sheet() {
         serde_json::json!(true),
         "the same remembered filter the desktop's menu row reads"
     );
+    drop(m);
+}
+
+/// #s616: a sheet's head mirrors the open list's filter row, so it must read the list as each press
+/// leaves it. The head was once mirrored before the Agents list was redrawn, and so read the list as
+/// the press before left it: with an agent running, every press left the head a step behind. Upright,
+/// a sheet, one agent running and two finished: the head names each end in turn, press by press.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_agents_sheet_head_follows_each_press_with_one_running() {
+    let _serial = serial();
+    let (m, _b, tab, _sid) =
+        emptied_panes_world(3166, "phone-sheet-head-running", Some((440, 956)), true);
+    phone_tap(&tab, "#phonePane-agents");
+    let sheet = "!document.getElementById('phonePaneMenu').hidden";
+    let rows = "document.querySelectorAll('#phonePaneMenu .outline-agent-copy').length";
+    let head = "(function(){ var b = document.querySelector('#phonePaneMenu .phone-pane-head .phone-pane-filter'); return b && !b.hidden ? b.textContent : ''; })()";
+    let show = format!("{sheet} && {rows} === 1 && {head} === 'Show 2 finished agents'");
+    harness::until(
+        &tab,
+        &show,
+        "the running agent, the head offering the two finished ones",
+        Duration::from_secs(20),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
+    );
+    for press in 0..2 {
+        finger_on_filter(&tab, "#phonePaneMenu .phone-pane-filter");
+        harness::until(
+            &tab,
+            &format!("{sheet} && {rows} === 3 && {head} === 'Hide finished agents' && !!document.querySelector('#phonePaneMenu .phone-pane-filter[data-hide-finished]')"),
+            &format!("press {}: all three listed, the head offering to hide the finished ones", 2 * press + 1),
+            Duration::from_secs(10),
+            "document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
+        );
+        assert_eq!(
+            harness::eval(&tab, AGENTS_FILTER_ON),
+            serde_json::json!(false)
+        );
+        finger_on_filter(&tab, "#phonePaneMenu .phone-pane-filter");
+        harness::until(
+            &tab,
+            &show,
+            &format!(
+                "press {}: the running agent alone, the head offering the finished ones again",
+                2 * press + 2
+            ),
+            Duration::from_secs(10),
+            "document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
+        );
+        assert_eq!(
+            harness::eval(&tab, AGENTS_FILTER_ON),
+            serde_json::json!(true)
+        );
+    }
     drop(m);
 }
 
@@ -18024,10 +18079,11 @@ fn the_tasks_pane_narrows_to_top_level_tasks_from_the_outline_menu() {
     drop(m);
 }
 
-/// #s606: a phone has no Outline menu, so its Tasks sheet carries Top-level only as a row at the top
-/// of the list, as its Agents sheet carries Active only (#s358): Hide follow-ups, then Show N
-/// follow-ups, on the same remembered choice. The phone shows every task state (#319), so the
-/// completed follow-up is counted too.
+/// #s606: a phone has no Outline menu, so its Tasks sheet carries Top-level only, as its Agents sheet
+/// carries Active only (#s358): Hide follow-ups, then Show N follow-ups, on the same remembered
+/// choice. Since #s616 the control is the sheet head's, beside its title; the list keeps its row (the
+/// first, above every state) for a wide phone's column, and does not draw it in the sheet. The phone
+/// shows every task state (#319), so the completed follow-up is counted too.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_hides_follow_ups_from_its_tasks_sheet() {
@@ -18038,8 +18094,8 @@ fn a_phone_hides_follow_ups_from_its_tasks_sheet() {
     let rows = "document.querySelectorAll('#phonePaneMenu .work-task').length";
     harness::until(
         &tab,
-        &format!("{sheet} && {rows} === 5 && !!document.querySelector('#phonePaneMenu [data-hide-follow-ups]')"),
-        "the Tasks sheet, every task under a row that hides the follow-ups",
+        &format!("{sheet} && {rows} === 5 && !!document.querySelector('#phonePaneMenu .phone-pane-filter[data-hide-follow-ups]:not([hidden])')"),
+        "the Tasks sheet, every task, its head offering to hide the follow-ups",
         Duration::from_secs(20),
         "document.getElementById('phonePaneMenu').innerText.slice(0, 300)",
     );
@@ -18050,13 +18106,27 @@ fn a_phone_hides_follow_ups_from_its_tasks_sheet() {
             serde_json::json!("Hide follow-ups"),
             serde_json::json!(true)
         ),
-        "the row is the list's first, above every state: {pane}"
+        "the list's row is its first, above every state: {pane}"
     );
-    finger_on_filter(&tab, "#phonePaneMenu [data-hide-follow-ups]");
+    let head = harness::probe(&tab, SHEET_FILTER);
+    assert_eq!(
+        (
+            head["text"].clone(),
+            head["inHead"].clone(),
+            head["rowDrawn"].clone()
+        ),
+        (
+            serde_json::json!("Hide follow-ups"),
+            serde_json::json!(true),
+            serde_json::json!(false)
+        ),
+        "the sheet's head carries the control; the list's own row is not drawn there: {head}"
+    );
+    finger_on_filter(&tab, "#phonePaneMenu .phone-pane-filter");
     harness::until(
         &tab,
-        &format!("{sheet} && {rows} === 2 && /Show 3 follow-ups/.test((document.querySelector('#phonePaneMenu .tasks-filter-row') || {{}}).textContent || '')"),
-        "what a person asked for, under a row offering the three follow-ups",
+        &format!("{sheet} && {rows} === 2 && /Show 3 follow-ups/.test((document.querySelector('#phonePaneMenu .phone-pane-filter') || {{}}).textContent || '')"),
+        "what a person asked for, the head offering the three follow-ups",
         Duration::from_secs(10),
         "document.getElementById('phonePaneMenu').innerText.slice(0, 300)",
     );
@@ -18070,15 +18140,86 @@ fn a_phone_hides_follow_ups_from_its_tasks_sheet() {
         pane["stored"], "true",
         "the same remembered choice the menu row reads: {pane}"
     );
-    finger_on_filter(&tab, "#phonePaneMenu .tasks-filter-row");
+    finger_on_filter(&tab, "#phonePaneMenu .phone-pane-filter");
     harness::until(
         &tab,
-        &format!("{sheet} && {rows} === 5 && !!document.querySelector('#phonePaneMenu [data-hide-follow-ups]')"),
+        &format!("{sheet} && {rows} === 5 && !!document.querySelector('#phonePaneMenu .phone-pane-filter[data-hide-follow-ups]')"),
         "every task again, the sheet still open",
         Duration::from_secs(10),
         "document.getElementById('phonePaneMenu').innerText.slice(0, 300)",
     );
     assert_eq!(harness::probe(&tab, TOP_LEVEL_PANE)["stored"], "false");
+    drop(m);
+}
+
+/// What the phone sheet's filter is (#s616): the head's control, its text, whether it sits in the head and
+/// is what a finger meets at its centre, and whether the list's own row is drawn in the sheet.
+const SHEET_FILTER: &str = "(function(){ var m = document.getElementById('phonePaneMenu'); var c = m.querySelector('.phone-pane-filter'); var row = m.querySelector('.phone-pane-body .tasks-filter-row, .phone-pane-body .agents-filter-row'); var out = { text: c && !c.hidden ? c.textContent : null, inHead: !!c && !!c.closest('.phone-pane-head'), rowDrawn: !!row && row.getClientRects().length > 0 }; if (c && !c.hidden) { var b = c.getBoundingClientRect(), e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); out.hit = !!e && (e === c || c.contains(e)); out.box = [Math.round(b.left), Math.round(b.top), Math.round(b.right), Math.round(b.bottom)]; var x = m.querySelector('.phone-pane-close').getBoundingClientRect(); out.clearOfClose = b.right <= x.left + 1; } return out; })()";
+
+/// #s616: held sideways the Tasks sheet's list is short (about 97px on an iPhone 17 Pro in Safari),
+/// and the sheet opens on what is still moving, past the completed state. Its filter, Hide follow-ups,
+/// is the sheet head's, so the opening scroll cannot take it out of reach and it costs the list
+/// nothing: the running state's head and its first task are whole in the list's view. Before, the row
+/// at the list's top sat above the window (box top −35); pinned there instead, the row and the state's
+/// head left about 20px for the tasks, which a review caught. (Upright the list fits and the opening
+/// scroll comes to nothing, which is why #s606's case never saw the row go.)
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_held_sideways_opens_its_tasks_sheet_with_its_filter_and_a_running_task_in_view() {
+    let _serial = serial();
+    let (m, _b, tab, _sids) = top_level_world(3165, "top-level-phone-side", Some((874, 292)));
+    phone_tap(&tab, "#phonePane-tasks");
+    let sheet = "!document.getElementById('phonePaneMenu').hidden";
+    let rows = "document.querySelectorAll('#phonePaneMenu .work-task').length";
+    harness::until(
+        &tab,
+        &format!("{sheet} && {rows} === 5 && !!document.querySelector('#phonePaneMenu .phone-pane-filter[data-hide-follow-ups]:not([hidden])')"),
+        "the Tasks sheet held sideways, every task, its head offering to hide the follow-ups",
+        Duration::from_secs(20),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 300)",
+    );
+    let head = harness::probe(&tab, SHEET_FILTER);
+    assert!(
+        head["text"] == "Hide follow-ups"
+            && head["inHead"] == true
+            && head["hit"] == true
+            && head["clearOfClose"] == true
+            && head["rowDrawn"] == false,
+        "the control is the head's, a finger meets it, ✕ stays its own, and the list draws no row: {head}"
+    );
+    let view = harness::probe(
+        &tab,
+        "(function(){ var body = document.querySelector('#phonePaneMenu .phone-pane-body'); var R = function (x) { return [Math.round(x.left), Math.round(x.top), Math.round(x.right), Math.round(x.bottom)]; }; var head = body.querySelector('.work-group[data-task-group=\"in_progress\"]'); var task = head && head.nextElementSibling; var b = body.getBoundingClientRect(), h = head.getBoundingClientRect(), t = task.getBoundingClientRect(); var e = document.elementFromPoint(t.left + t.width / 2, t.top + t.height / 2); return { scrollTop: Math.round(body.scrollTop), list: R(b), head: R(h), task: R(t), taskIs: task.classList.contains('work-task'), taskHit: !!e && (e === task || task.contains(e)) }; })()",
+    );
+    let n = |k: &str, i: usize| view[k][i].as_i64().unwrap_or(i64::MIN);
+    assert!(
+        view["scrollTop"].as_i64().unwrap_or(0) > 0,
+        "the list opened scrolled to what is still moving (else this case tests nothing): {view}"
+    );
+    assert!(
+        n("head", 1) >= n("list", 1) - 1
+            && view["taskIs"] == true
+            && n("task", 1) >= n("head", 3) - 1
+            && n("task", 3) <= n("list", 3) + 1
+            && view["taskHit"] == true,
+        "the running state's head and its first task are whole in the list's view: {view}"
+    );
+    finger_on_filter(&tab, "#phonePaneMenu .phone-pane-filter");
+    harness::until(
+        &tab,
+        &format!("{sheet} && {rows} === 2 && /Show 3 follow-ups/.test((document.querySelector('#phonePaneMenu .phone-pane-filter') || {{}}).textContent || '')"),
+        "the follow-ups hidden from the head, which now offers them back",
+        Duration::from_secs(10),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 300)",
+    );
+    finger_on_filter(&tab, "#phonePaneMenu .phone-pane-filter");
+    harness::until(
+        &tab,
+        &format!("{sheet} && {rows} === 5"),
+        "every task again",
+        Duration::from_secs(10),
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 300)",
+    );
     drop(m);
 }
 
@@ -24219,6 +24360,147 @@ fn a_phone_held_sideways_gets_the_phone_layout_in_one_row() {
         Duration::from_secs(15),
         "JSON.stringify(document.getElementById('preview').getBoundingClientRect())",
     );
+}
+
+/// Where the session's menu sits against the top bar's title row, opened from the title: the menu's
+/// box, the title's, the turn subtitle's (null where it is not drawn) and the bar's, rounded, with
+/// the window's height.
+const SESSION_MENU_PLACE: &str = "(function(){ var m = document.getElementById('sessionCopyMenu'); if (!m || !m.classList.contains('open') || getComputedStyle(m).opacity !== '1' || getComputedStyle(m).transform !== 'none') return null; var box = function(e){ if (!e || e.hidden || !e.getClientRects().length) return null; var r = e.getBoundingClientRect(); return { top: Math.round(r.top), bottom: Math.round(r.bottom), left: Math.round(r.left), right: Math.round(r.right) }; }; return JSON.stringify({ menu: box(m), title: box(document.getElementById('sessionTitle')), subtitle: box(document.getElementById('turnSubtitle')), heading: box(document.querySelector('#sessionView .workspace>.topbar>.session-heading')), chip: box(document.querySelector('#sessionView .workspace>.topbar>.session-heading>.status-chip')), bar: box(document.querySelector('#sessionView .workspace>.topbar')), titleText: document.getElementById('sessionTitle').textContent, titleScroll: document.getElementById('sessionTitle').scrollWidth, phoneTop: getComputedStyle(document.getElementById('sessionCopyMenu')).getPropertyValue('--phone-top'), menuPosition: getComputedStyle(m).position, height: innerHeight, width: innerWidth }); })()";
+
+/// #s602 (hd-replay's walk of #s581, an iPhone 17 Pro Max held sideways in Safari, 956×330): the
+/// session's menu opened from the title hung with its top at 51px, across the turn subtitle under
+/// the title (45 to 61px), so half the subtitle showed above the menu and the menu cut through the
+/// title row. Wherever the view is 700px wide or less (upright, and a wide phone's view beside its
+/// list column) the menu was pinned 51px down, the bar's bottom only while nothing moves the bar's
+/// row down. A top safe-area inset does: the walk's row sat 14px lower than this page draws it with
+/// no inset, which a 14px top inset reproduces here (the walk did not record which inset it was),
+/// and the Home Screen app upright has the status bar's 62px. On a phone it now hangs from the
+/// bar's measured bottom (`--phone-top`), as Info does: clear of the title row held sideways at both
+/// sizes the walk saw, and upright in the Home Screen app; upright in Safari, with no top inset, it
+/// is exactly where it was. On the old CSS the 956x330 leg and the Home Screen app's fail; the
+/// 852x393 view is wider than 700px, so its menu hangs from the heading and passes either way.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_held_sideways_hangs_the_session_menu_below_the_title_row() {
+    let _serial = serial();
+    let mut seen = Vec::new();
+    let sideways_row_down = (14, 62, 20, 62);
+    // Each leg: the window, its safe-area insets, what it stands for, and whether the view is 700px
+    // wide or less, where the menu is the pinned one this case is about (852x393 has no list column,
+    // so its view is wider than 700px and its menu hangs from the heading).
+    let cases = [
+        (
+            956,
+            330,
+            sideways_row_down,
+            "sideways in Safari, the list column shown",
+            true,
+        ),
+        (852, 393, sideways_row_down, "sideways in Safari", false),
+        (
+            402,
+            874,
+            harness::PORTRAIT_INSETS,
+            "upright in the Home Screen app",
+            true,
+        ),
+        (402, 874, (0, 0, 0, 0), "upright in Safari", true),
+    ];
+    for (n, (w, h, insets, label, pinned)) in cases.into_iter().enumerate() {
+        let base = harness::base(&format!("s602-menu-{n}"));
+        let stores = harness::Stores::new(&base);
+        // One turn, which the subtitle under the title names.
+        let t = [
+            harness::user_at(
+                "Please read the release notes for the last three versions and tell me which of the phone fixes are still waiting on a walk",
+                &harness::rfc3339_secs_ago(120),
+            ),
+            harness::assistant_at(
+                "Three of them are: the drawer's handle, the dock's search and the reply box held sideways.",
+                &harness::rfc3339_secs_ago(110),
+            ),
+        ]
+        .concat();
+        stores.claude_session(PHONE_SID, &t);
+        let m = harness::Monitor::spawn(harness::Kind::V1, 3602, &base, Some(&stores), true);
+        let (_b, tab) = harness::chrome_tab();
+        harness::phone(&tab, w, h);
+        harness::safe_area(&tab, insets);
+        m.pair(&tab);
+        m.open(&tab, &format!("?ui=app&session={PHONE_SID}"));
+        harness::until(
+            &tab,
+            &format!("!!document.querySelector('.transcript .turn.user') && innerWidth === {w}"),
+            "the session at its size",
+            Duration::from_secs(20),
+            "innerWidth + 'x' + innerHeight + ' ' + document.getElementById('app').className",
+        );
+        harness::until(
+            &tab,
+            "(function(){ var s = document.getElementById('turnSubtitle'); return !!s && !s.hidden && s.getClientRects().length > 0 && s.textContent.trim().length > 0; })()",
+            "the turn subtitle under the title",
+            Duration::from_secs(15),
+            "(document.getElementById('turnSubtitle') || {}).outerHTML",
+        );
+        harness::eval(
+            &tab,
+            "document.getElementById('sessionTitle').click(); 'ok'",
+        );
+        harness::until(
+            &tab,
+            &format!("!!{SESSION_MENU_PLACE}"),
+            "the session's menu open and settled",
+            Duration::from_secs(10),
+            "document.getElementById('sessionCopyMenu').className",
+        );
+        let place = harness::eval(&tab, SESSION_MENU_PLACE);
+        let place: serde_json::Value =
+            serde_json::from_str(place.as_str().unwrap_or("{}")).unwrap_or_default();
+        eprintln!("#s602 {label}, {w}x{h}: {place}");
+        seen.push((label, pinned, place));
+    }
+    for (label, pinned, place) in &seen {
+        let top = place["menu"]["top"].as_i64().unwrap_or(-1);
+        let row = [&place["title"]["bottom"], &place["subtitle"]["bottom"]]
+            .iter()
+            .filter_map(|v| v.as_i64())
+            .max()
+            .unwrap_or(i64::MAX);
+        assert!(
+            place["subtitle"].is_object(),
+            "{label}: the subtitle is drawn under the title, so the case reads the row the menu must clear: {place}"
+        );
+        assert!(
+            top >= row,
+            "{label}: the session's menu starts at or below the title row's bottom (title and subtitle), so no part of the row shows above it: {place}"
+        );
+        assert!(
+            place["menu"]["bottom"].as_i64().unwrap_or(i64::MAX)
+                <= place["height"].as_i64().unwrap_or(0),
+            "{label}: the whole menu is on the screen: {place}"
+        );
+        // A pinned leg's menu is the one this case is about, hung from the bar's measured bottom: a
+        // view wider than 700px (the list column hidden) would hang it from the heading, and the leg
+        // would pass on the old CSS too.
+        if *pinned {
+            let phone_top = place["phoneTop"]
+                .as_str()
+                .and_then(|v| v.trim().strip_suffix("px"))
+                .and_then(|v| v.parse::<f64>().ok());
+            assert_eq!(
+                (&place["menuPosition"], phone_top.map(|v| v.round() as i64)),
+                (&serde_json::json!("fixed"), Some(top)),
+                "{label}: the menu is pinned (the view is 700px wide or less) and hangs from the bar's measured bottom: {place}"
+            );
+        }
+        if *label == "upright in Safari" {
+            assert_eq!(
+                (&place["menu"]["top"], &place["menu"]["left"]),
+                (&serde_json::json!(51), &serde_json::json!(10)),
+                "{label}: the menu is where it always was, 51px down and 10px in: {place}"
+            );
+        }
+    }
 }
 
 /// #s32, part 2: between the phone and 1180px the preview is an overlay; it covered 72vw of a

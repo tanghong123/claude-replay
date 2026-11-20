@@ -130,6 +130,42 @@ either side of the range as its size and a line saying it is too large to show
 here — but a list of files the viewer can only refuse is not much of a list.
 `mdrev-cli conform --path` takes a code path as readily as a document's.
 
+## The host's own keys, in the viewer's list of keys
+
+The viewer's `?` opens a list of the keys it answers. The page around the
+viewer is the host's, and so are the keys that page answers: a tab strip's
+search, a command palette, a key that closes the tab. The viewer cannot see
+them, so a host that wants its keys in the list names them in one optional
+mount option, `shortcuts`, an array of rows:
+
+```ts
+shortcuts?: Array<{
+  mac: string[];        // the keys as a Mac reader presses them: ['⌘K', '/']
+  other?: string[];     // the same keys off a Mac: ['Ctrl+K', '/']; left out, `mac`
+  what: {en: string; 'zh-Hans'?: string};  // what they do; left out, English
+}>
+```
+
+Each string in `mac` or `other` is drawn as one key, as text, never as markup.
+The viewer picks `mac` or `other` by the reader's computer, and `what` in the
+language its own words are in (the `locale` option, the reader's choice, or the
+browser's). The rows are drawn in a group of their own, after the viewer's
+rows. A row without keys or without `what.en` is left out. List only keys your
+page really answers where the viewer is mounted: the viewer does not check
+them, and a row for a key that does nothing is the thing this option exists to
+avoid. It is a host fact, read at mount: it survives every move between
+documents and collections. Left out, the list has no host rows, as before.
+
+The viewer's own rows follow the mount too. With `annotate: false` it lists
+none of the notes layer's keys (`a`, `j`, `k`, `c`, `q`), which nothing
+answers there; with `review: false`, none of history's (`n` and `p`, which step
+a redline's changes, and the range keys `[` `]` `{` `}`). Both are read for the
+collection on screen, as the options themselves are.
+
+mdrev-v2 is the worked example: inside its tab strip it lists `⌘⇧K` (Ctrl+Shift+K
+off a Mac), the strip's search of the open tabs, and a page with no strip
+around it lists nothing.
+
 ## The routes
 
 All under one prefix, say `/docs/api/mdrev`. Every request carries the host's own session (`credentials: 'same-origin'`), and the host decides what a session may read and write; mdrev never sees a filesystem. Errors are JSON `{"error": "…"}` with the status that fits: 400 for a bad request, 403 for a session that may not, 404 for a document or note that is not there, and 500 for one the host cannot read now. A host whose storage stops answering should say so rather than hold the request. `mdrev-v2` answers 500 `"<folder> is not answering: …"` on these routes while a collection's reads have not returned within 2 s, until they do (#s1231): the page and `pages/open` for a document, `text` of the file as it stands, `stat`, `asset`, a plain folder's `tree` and `documents`, `reveal`, and opening an editing session. Nothing else is promised. A plain folder's `recent-changes`, asked with no document or one at its top, says `skipped`. `events` and the list of collections answer without it, and `resolve` gives null for a target it cannot look at. What it asks Git or `mdrev-cli` for is not covered, and for a document in a subfolder may answer 500 first. An editing session already open takes a push and holds its write, its state saying why, and a save or a page leaving answers with that state. A picture pasted into it is answered 500 "is not answering" too, and is not saved. A paste whose own write was under way when the collection stopped answering may still leave its `.assets/` folder, or the picture in it, on the disk; the editing commit does not add it.
@@ -205,7 +241,7 @@ The viewer asks for a document's notes when it opens the document, in the same m
 
 ### `POST {prefix}/annotations?path=`
 
-File a note. The body is the record the viewer built: `{body, type, anchor}`, with `anchor` in source space, and the `rev` on screen — plus `fromRev` for a note on struck text, `shared: true` for a note to the other reviewers (below), and `saveId`, the page's name for this Save: a Save whose answer was lost is sent again with the same one, and the CLI answers it with the note the first try filed rather than filing a second (#s209); pass the body through as it is. The host adds what it knows and stores it, and returns the record as stored, with 201: run `mdrev-cli notes add --path P --root <checkout> --viewer` with the body on stdin, and return its output. The CLI resolves the revision, writes the snapshot `blob`, places an anchor whose offsets were only a guess, and appends the line.
+File a note. The body is the record the viewer built: `{body, type, anchor}`, with `anchor` in source space, and the `rev` on screen — plus `fromRev` for a note on struck text, `shared: true` for a note to the other reviewers (below), and `saveId`, the page's name for this Save: a Save whose answer was lost is sent again with the same one, and the CLI answers it with the note the first try filed rather than filing a second (#s209). Pass on those fields, and `target` and `about` where the viewer sets them, and nothing else: the CLI spreads what it is given over the author and status it writes, so a body passed through as it is lets a page file a note under someone else's name, already closed, or carrying fields of its own (#s1502). The host adds what it knows and stores it, and returns the record as stored, with 201: run `mdrev-cli notes add --path P --root <checkout> --viewer` with the body on stdin, and return its output. The CLI resolves the revision, writes the snapshot `blob`, places an anchor whose offsets were only a guess, and appends the line.
 
 ### `PATCH {prefix}/annotations/{id}?path=` · `POST …/{id}/replies` · `DELETE …/{id}` · `DELETE …/{id}/replies/{at}`
 

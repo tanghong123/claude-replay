@@ -49,7 +49,7 @@ export const KEYBOARD_MODES = Object.freeze(["engaged", "page"]);
 /** Every option `mountSessionView` takes; any other name is refused, so a misspelt or retired one
  *  (the old `toast`, `keys` or `controls`) fails loudly rather than being dropped. */
 export const MOUNT_OPTIONS = Object.freeze([
-  "theme", "grid", "backend", "show", "keyboard", "write", "frame", "assets", "detachTo",
+  "theme", "grid", "backend", "show", "keyboard", "write", "frame", "assets", "reviewSheet", "detachTo",
   "selectedId", "sessionRow", "sessionWorkers", "selectSession", "renderList", "refreshIndex", "pauseIndex", "resumeIndex",
   "onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast", "onOutline",
   "room", "parentShown", "openList", "openSidebar", "paneLayout", "paneCount",
@@ -71,9 +71,9 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  Options, each named in `MOUNT_OPTIONS`; any other name is refused. Required: `grid`, `selectedId`,
  *  `sessionRow`, `sessionWorkers`, `selectSession`, `renderList`, `refreshIndex`, `pauseIndex` and
  *  `resumeIndex`. The rest are optional: a host may leave out `theme`, `backend`, `show` and
- *  `keyboard` (each has a default), `write` (writes are not offered without it), `frame` (the
- *  native app's), `detachTo` (tabs open at the server's own pages), and every handler of what the
- *  view tells it.
+ *  `keyboard` (each has a default), `write` (writes are not offered without it), `frame`, `assets`
+ *  and `reviewSheet` (the native app's), `detachTo` (tabs open at the server's own pages), and every
+ *  handler of what the view tells it.
  *  - `theme`: "light" (the default) or "dark", carried by the view's element, where its stylesheet
  *    reads it; the handle's `setTheme` changes it.
  *  - `grid`: the box around the view (the app's `#app`). The phone's sheets are measured against it
@@ -146,6 +146,11 @@ export const MOUNT_OPTIONS = Object.freeze([
  *    runtime from `mermaid` rather than the address the page's head names; the head must still name
  *    one, as it says the page draws diagrams (`mountApp` writes it there when it has none). Every
  *    route, mdrev's included, still goes through `backend`.
+ *  - `reviewSheet`: the native app's, which the kit's guide does not list (#s596, Hong on #s555: "The
+ *    phone's Review sheet on an iPad too (native app only)"): `true` offers the pane's Review control
+ *    and its full-screen sheet at every width, where without it only a phone reader is offered them
+ *    (a desktop reviews in the detached tab, the pane's ↗). The app passes it while it opens no window
+ *    of its own. Anything but a boolean is refused.
  *  - `selectedId()`, `sessionRow(id)`, `sessionWorkers(id)`: what the app's session index says —
  *    the session it has selected, a session's row, and the headless workers a session started.
  *  - `selectSession(id, push)`: ask the app to select a session (the parent control, a descent).
@@ -214,6 +219,7 @@ if (!KEYBOARD_MODES.includes(keyboardMode)) throw new Error(`mountSessionView ta
 if (options.write !== undefined && !(typeof options.write?.on === "function" && typeof options.write?.confirm === "function")) throw new Error("mountSessionView takes its write as { on, confirm }, two functions, or none for a host that offers no writes");
 if (options.room !== undefined && typeof options.room !== "function") throw new Error("mountSessionView takes its room as a function answering how many pixels its host could give, or none");
 if (options.frame !== undefined && typeof options.frame !== "function") throw new Error("mountSessionView takes its frame as a function from a page's HTML to the address its frame loads");
+if (options.reviewSheet !== undefined && typeof options.reviewSheet !== "boolean") throw new Error(`mountSessionView offers its review sheet at every width or not by true or false, not ${JSON.stringify(options.reviewSheet)}`);
 checkAssets(options.assets, "mountSessionView");
 if (options.detachTo !== undefined && !((typeof options.detachTo === "string" && options.detachTo) || typeof options.detachTo === "function")) throw new Error("mountSessionView takes its detachTo as the address of the page its tabs open at, or a function answering one, or none");
 /** Whether an optional control is drawn: each is, unless the host switched it off. */
@@ -798,7 +804,7 @@ function openTab(kind, query) {
   const href = tabAddress(kind, query);
   if (href) window.open(href, "_blank");
 }
-const preview = new Preview({ openTab, phone: () => layout.phone(), layoutChanged: () => paneLayoutChanged(), paneToggled: change => (viewMounted ? layout.toggled(change) : (change(), layout.decide())), dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
+const preview = new Preview({ openTab, phone: () => layout.phone(), layoutChanged: () => paneLayoutChanged(), paneToggled: change => (viewMounted ? layout.toggled(change) : (change(), layout.decide())), dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, reviewSheet: options.reviewSheet === true, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
 const attachmentViewer = new AttachmentViewer({ toast });
 // What the compose box asks of the app goes nowhere once the view is unmounted: a dialog's answer
 // still settling, a send still out.
@@ -1934,7 +1940,8 @@ function renderNavigator() {
   // #s606, Hong: "there is no filter for top level tasks". Top-level only hides a task that follows
   // another up (taskq's `follows_up`), so what stays is what a person asked for, and what no mark
   // places (a task filed before taskq had them). On a phone as on a desktop: the phone's way to it is
-  // a row at the top of the list (`phoneTasksFilter`), as its Agents list has.
+  // a row at the top of the list (`phoneTasksFilter`), as its Agents list has; a sheet hides the row
+  // and mirrors it in its head (#s616, `renderFilter`).
   const topLevelOnly = uiState.taskTopLevel;
   const asked = row => !topLevelOnly || !row.task.follows_up;
   const titledRows = afterFilter.map(group => ({ ...group, rows: group.rows.filter(titled) }));
@@ -1969,7 +1976,6 @@ function renderNavigator() {
   const followAll = titledRows.reduce((n, group) => n + group.rows.filter(row => row.task.follows_up).length, 0);
   const taskRows = taskShown.map(group => `<div class="work-group" data-task-group="${group.key}"><span>${group.label}</span><span class="work-group-count">${group.rows.length}</span></div>${group.rows.map(taskRow).join("")}`).join("");
   byId("navigatorWork").innerHTML = taskRows ? phoneTasksFilter(topLevelOnly, followUps, followAll) + taskRows : noTasks;
-  mobileShell?.tasksChanged(); // the phone drop-down's jumps name the groups just drawn (#319)
   const agents = directAgents(), workers = sessionWorkers();
   const activeAgents = agents.filter(agent => agent.running).length + workers.filter(workerRunning).length;
   const allAgents = agents.length + workers.length;
@@ -1991,6 +1997,9 @@ function renderNavigator() {
     return `<div class="outline-agent-row"><button class="outline-agent" type="button" data-child-outline="${escapeText(agent.id)}" title="Open the sub-agent's transcript"><span class="agent-state ${agent.running ? "running" : "completed"}"></span><span class="outline-agent-copy"><strong>${escapeText(agent.title || agent.description || agent.id)}</strong><small>${escapeText(agent.type || agent.agent_type || "agent")}</small></span><span class="outline-agent-tail"></span></button>${spawn}</div>`;
   }).concat(shownWorkers.map(workerRow)).join("");
   byId("navigatorAgents").innerHTML = agentRows ? phoneAgentsFilter(liveAgentsOnly, hiddenAgents, allAgents - activeAgents) + agentRows : noAgents;
+  // Once BOTH lists are drawn: the phone drop-down's jumps name the Tasks groups (#319), and its
+  // head mirrors the open list's filter row, Agents' too (#s616), so it never shows the one before.
+  mobileShell?.tasksChanged();
   // What the filter is holding back, for the menu row that controls it to say so (#215). The head
   // reads "25 active · 253/308 done" either way, so without this the reader has no way to tell a
   // pane that is filtered from a pane that is simply short.
@@ -2030,7 +2039,8 @@ function showFilteredControl(pane, hidden, label = "Show them") {
 }
 /** A phone's way to Top-level only (#s606), as `phoneAgentsFilter` is to Active only: a row at the
  *  top of the Tasks list, on the same remembered choice, for whichever end applies. Only where some
- *  task follows another up, since otherwise the choice changes nothing. */
+ *  task follows another up, since otherwise the choice changes nothing. A sheet does not draw the
+ *  row; its head mirrors it (#s616, `renderFilter`), and a wide phone's column draws it. */
 function phoneTasksFilter(topLevelOnly, hidden, followUps) {
   if (!layout.phone()) return "";
   const what = n => `${n} ${n === 1 ? "follow-up" : "follow-ups"}`;
@@ -2041,7 +2051,8 @@ function phoneTasksFilter(topLevelOnly, hidden, followUps) {
  *  the list carries a row for whichever end applies, on the same remembered filter. Hide finished
  *  while the filter is off; while it is on, Show them, because with an agent still running the list
  *  is not empty and the emptied pane's control is not there. At the TOP of the list, which can run to
- *  149 agents. Every row here is a phone's alone: a desktop keeps the menu. */
+ *  149 agents; a sheet hides the row and mirrors it in its head (#s616, `renderFilter`). Every row
+ *  here is a phone's alone: a desktop keeps the menu. */
 function phoneAgentsFilter(liveOnly, hidden, finished) {
   if (!layout.phone()) return "";
   const what = n => `${n} finished ${n === 1 ? "agent" : "agents"}`;
@@ -4846,7 +4857,7 @@ var phoneDock;
   menu.id = "phonePaneMenu";
   menu.hidden = true;
   menu.setAttribute("role", "dialog");
-  menu.innerHTML = '<div class="phone-pane-head"><strong></strong><button type="button" class="phone-pane-close" aria-label="Close">✕</button></div><div class="phone-pane-jumps" role="toolbar" aria-label="Jump to a state" hidden></div><div class="phone-pane-body"></div>';
+  menu.innerHTML = '<div class="phone-pane-head"><strong></strong><button type="button" class="phone-pane-filter" hidden></button><button type="button" class="phone-pane-close" aria-label="Close">✕</button></div><div class="phone-pane-jumps" role="toolbar" aria-label="Jump to a state" hidden></div><div class="phone-pane-body"></div>';
   // #s55: the session dims behind an open sheet; a tap there closes it (the outside tap below).
   const paneScrim = document.createElement("div");
   paneScrim.className = "pane-scrim";
@@ -4854,11 +4865,27 @@ var phoneDock;
   sessionView.append(paneScrim, menu);
   const menuBody = menu.querySelector(".phone-pane-body");
   const jumps = menu.querySelector(".phone-pane-jumps");
+  const headFilter = menu.querySelector(".phone-pane-filter");
   let openPane = null, home = null;
   // #319: the Tasks drop-down lists every state (a phone cannot reach the outline's state filter),
   // so its head jumps between them — each named and counted as the state's own head in the list,
   // which stays pinned at the top while its rows scroll under it (production.css).
+  // #s616: the list's filter (#s606's Hide follow-ups, #s358's Hide finished agents, and the Show N
+  // that undoes each) is drawn in the sheet's HEAD, beside its title, where it costs the list nothing.
+  // Held sideways the list is about 97px, and the opening scroll to what is still moving took the row
+  // at the list's top out of reach; pinned there, the row and a state's head left no task readable.
+  // The list keeps its row (not drawn in the sheet, production.css; a wide phone's column shows it),
+  // and the head's control carries the row's data, so a press goes through `navigatorClick` as the
+  // row's did, and the redraw it makes calls this again (`tasksChanged`).
+  const renderFilter = () => {
+    const row = openPane ? menuBody.querySelector(".tasks-filter-row, .agents-filter-row") : null;
+    for (const name of headFilter.getAttributeNames()) if (name.startsWith("data-") || name === "aria-label") headFilter.removeAttribute(name);
+    headFilter.hidden = !row;
+    headFilter.textContent = row ? row.textContent : "";
+    if (row) for (const name of row.getAttributeNames()) if (name.startsWith("data-") || name === "aria-label") headFilter.setAttribute(name, row.getAttribute(name));
+  };
   const renderJumps = () => {
+    renderFilter();
     const heads = openPane?.key === "tasks" ? [...menuBody.querySelectorAll(".work-group[data-task-group]")] : [];
     jumps.hidden = !heads.length;
     jumps.innerHTML = heads.map(head => {

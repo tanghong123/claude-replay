@@ -331,8 +331,8 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 :root{color-scheme:light}
 :root[data-theme="dark"]{color-scheme:dark}
 .app-mount{display:contents}
-#app:not(.preview-off)>#sessionView.pl-boxed.pl-phone:has(>.review-sheet){z-index:95}
-#app:not(.preview-off)>#sessionView.pl-boxed.pl-phone>.review-sheet{left:calc(0px - var(--pane-x));right:calc(0px - var(--pane-r));--pl-cut-left:0px;--pl-cut-right:0px}
+#app:not(.preview-off)>#sessionView.pl-boxed:has(>.review-sheet){z-index:95}
+#app:not(.preview-off)>#sessionView.pl-boxed>.review-sheet{left:calc(0px - var(--pane-x));right:calc(0px - var(--pane-r));--pl-cut-left:0px;--pl-cut-right:0px}
 #app:not(.preview-off)>#sessionView.pl-boxed.pl-phone.pl-coarse.pl-max-h-500.preview-full>.review-sheet{left:0;right:0}
 #app>#sessionView.pl-boxed.pl-phone:has(>.task-scrim:not([hidden])){z-index:59}
 #app>#sessionView.pl-boxed.pl-phone>.task-scrim{left:calc(0px - var(--pane-x));right:calc(0px - var(--pane-r))}
@@ -506,6 +506,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 #app:where(.app-drawer) .section-view-menu .section-menu-name{max-width:60%;font-size:12px}
 :where(:root:has(#sessionView.pl-phone)) :is(#sessionView,#app) .navigator-options .scope-option{height:44px;font-size:14px}
 :where(:root:has(#sessionView.pl-phone)) :is(#sessionView,#app) .navigator-options .scope-menu-action{min-height:36px;padding:0 8px}
+:where(:root:has(#sessionView.pl-phone)) .phone-pane-menu .phone-pane-body .tasks-filter-row,:where(:root:has(#sessionView.pl-phone)) .phone-pane-menu .phone-pane-body .agents-filter-row{display:none}
 :where(:root:has(#sessionView.pl-phone)) .phone-pane-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 6px 6px}
 :where(:root:has(#sessionView.pl-phone)) .phone-pane-body .outline-turn-row,:where(:root:has(#sessionView.pl-phone)) .phone-pane-body .work-task-head,:where(:root:has(#sessionView.pl-phone)) .phone-pane-body .outline-agent{min-height:44px}
 :where(:root:has(#sessionView.pl-phone)) .phone-pane-body .outline-turn-row .outline-label{font-size:14px}

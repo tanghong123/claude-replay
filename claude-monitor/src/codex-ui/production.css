@@ -57,14 +57,15 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    whole insets, and while it is open the view's stacking rises to the sheet's own level, 95: over a
    wide phone's column, the sidebar beside a narrow view and the drawer's handle, under the toasts. Its
    height is the view's, the app's whole height. These rules read the view's own classes, so they hold
-   exactly where its layout is contained (a phone reader in a box: `pl-phone` and `pl-boxed`), and the
-   pane's state the app keeps (the sheet opens from the open pane's Review control). They are the
+   exactly where its layout is contained (`pl-boxed`: a phone reader in a box, and since #s596 a wider
+   view beside the app's list, where the native app's `reviewSheet` offers Review: Hong on #s555, "The
+   phone's Review sheet on an iPad too"), and the pane's state the app keeps (the sheet opens from the open pane's Review control). They are the
    app's alone: in a host the sheet is drawn inside the pane like the rest of the view, the screen's
    insets counted where they fall in it, and the view's stacking left alone. At ⤢ (held sideways) the
    view no longer contains its layout, so the sheet is the window's from its own edges, with the
    screen's whole insets, in the app and in a host alike, as the pane is. */
-#app:not(.preview-off)>#sessionView.pl-boxed.pl-phone:has(>.review-sheet){z-index:95}
-#app:not(.preview-off)>#sessionView.pl-boxed.pl-phone>.review-sheet{left:calc(0px - var(--pane-x));right:calc(0px - var(--pane-r));--pl-cut-left:0px;--pl-cut-right:0px}
+#app:not(.preview-off)>#sessionView.pl-boxed:has(>.review-sheet){z-index:95}
+#app:not(.preview-off)>#sessionView.pl-boxed>.review-sheet{left:calc(0px - var(--pane-x));right:calc(0px - var(--pane-r));--pl-cut-left:0px;--pl-cut-right:0px}
 #app:not(.preview-off)>#sessionView.pl-boxed.pl-phone.pl-coarse.pl-max-h-500.preview-full>.review-sheet{left:0;right:0}
 /* The task card's dim on a phone (#319) dims everything behind the card and takes the tap that closes
    it. The card and its dim are the view's (#s431 stage 4), so a phone reader in a box dims its box;
@@ -1146,7 +1147,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 /* #s358: a phone has no Outline menu, so its Agents list opens on a row for the same filter: the
    row's whole width is the target, as a reading row's is, in the accent colour and larger than the
    agents' own titles, so it reads as a control. Only a phone ever draws it, so it needs no query of
-   its own. Its Tasks list has the same row for Top-level only (#s606). */
+   its own. Its Tasks list has the same row for Top-level only (#s606). A sheet draws neither row and
+   carries the control in its head instead (#s616, below); a wide phone's column keeps the row. */
 .agents-filter-row, .tasks-filter-row {
   display: block; width: 100%; min-height: 44px; padding: 0 12px; border-radius: 9px;
   background: transparent; color: var(--primary);
@@ -1693,6 +1695,13 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #sessionView .workspace>.topbar>#sessionParent.is-live .session-parent-label{display:none}
   #sessionView .workspace>.topbar>#sessionParent.is-live .icon{width:20px;height:20px}
   #sessionView .workspace>.topbar:has(>#sessionParent.is-live)>.session-heading{padding-left:6px}
+  /* #s602: where the view is 700px wide or less the session's menu is pinned below the bar (upright,
+     and a wide phone's view beside its list column held sideways); it hangs from the bar's measured
+     bottom (`--phone-top`), as Info does. Pinned 51px down it met the bar only while nothing moved the
+     bar's row down: a top inset does (the Home Screen app's status bar upright, and in a walk held
+     sideways in Safari the row sat 14px lower), and the menu cut through the title and its turn
+     subtitle. Upright in Safari the bar still ends 51px down. */
+  #sessionView.pl-max-w-700 .session-copy-menu{top:var(--phone-top,51px)}
   #sessionView .workspace>.topbar>.phone-info{order:2}
   #sessionView .workspace>.topbar>#previewBtn{order:3}
   #sessionView .phone-only{display:grid}
@@ -1720,6 +1729,14 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   .phone-pane-head{display:flex;align-items:center;justify-content:space-between;flex:none;padding:0 2px 0 16px;border-bottom:1px solid var(--line)}
   .phone-pane-head strong{font-size:14px;color:var(--ink)}
   .phone-pane-close{width:44px;height:44px;border-radius:10px;background:transparent;color:var(--sub);font-size:17px;cursor:pointer}
+  /* #s616: the list's filter is the sheet head's (session-view.js `renderFilter`), beside the title and
+     before ✕, so a short list held sideways keeps all its height for the list; the list's own row is
+     not drawn in the sheet (a wide phone's column, which has no such head, still shows it). The title
+     and ✕ never shrink: a long label is cut with an ellipsis, and ✕ stays a 44px target. */
+  .phone-pane-head strong,.phone-pane-close{flex:none}
+  .phone-pane-filter:not([hidden]){flex:0 1 auto;min-width:0;height:44px;margin-left:auto;padding:0 10px;border-radius:10px;background:transparent;color:var(--primary);font:inherit;font-size:14px;font-weight:570;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
+  .phone-pane-filter:active,.phone-pane-filter:focus-visible{background:var(--hover);outline:0}
+  .phone-pane-menu .phone-pane-body .tasks-filter-row,.phone-pane-menu .phone-pane-body .agents-filter-row{display:none}
   .phone-pane-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 6px 6px}
   .phone-pane-body .outline-turn-row,.phone-pane-body .work-task-head,.phone-pane-body .outline-agent{min-height:44px}
   .phone-pane-body .outline-turn-row .outline-label{font-size:14px}

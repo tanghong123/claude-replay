@@ -1847,7 +1847,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listSource, /title="\$\{BLOCKED_SUMMARY\}"/, "the Blocked checkbox explains itself with the predicate's sentence");
   assert.match(listSource, /\$\{FILTER_LABELS\.recent\}/, "the checkbox is labelled from the shared table (Active recently)");
   assert.match(listSource, /^  if \(hasSheet\) options\.place\("rail-filter", filterMini\);$/m, "the rail's filter glyph is placed by the host…");
-  assert.match(appSource, /^  else if \(part === "rail-filter"\) page\.byId\("sidebarMiniSearch"\)\.after\(node\);$/m, "…after search");
+  assert.match(appSource, /^  else if \(part === "rail-filter"\) page\.byId\("sidebarMiniSearch"\)\.after\(railFilter = node\);$/m, "…after search, kept for the Machines glyph to follow (#s596)");
   // #300 (the owner): collapsed, the glyph opens the sidebar's own sheet in a flyout beside the rail
   // rather than expanding the sidebar — pointed at, or clicked to pin it.
   assert.match(listSource, /filterMini\.onclick = \(\) => \{ [^\n]*openRailFlyout\("filter", filterMini, true\)/, "…and a click opens the sheet in the rail's flyout");
@@ -4905,7 +4905,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   for (const name of requiredNames) assert.ok(read.has(name) && passed.has(name), `the required option ${name} is read and the app passes it`);
   const optional = [...read].filter(name => !passed.has(name)).sort();
   for (const name of optional) assert.ok(!requiredNames.has(name), `options.${name}, which the app leaves out, is documented as optional`);
-  assert.deepEqual(optional, ["frame", "show"], "the app leaves out only what it keeps at its default: every optional control shown, and the pane's frame its srcdoc");
+  assert.deepEqual(optional, [], "the app passes every option the view reads: the native app's (show, reviewSheet, frame) from its own (#s596), each left at the view's default for the monitor's page");
   for (const name of passed) assert.ok(read.has(name), `the app passes ${name}, which the view reads`);
   assert.ok(!read.has("isolate") && !passed.has("isolate"), "isolate is gone (#s438): the view always draws into the page");
   assert.doesNotMatch(viewSource, /\bisolate\b/, "and the view says nothing of it");
@@ -4993,7 +4993,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     assert.match(doc[0], new RegExp(`^ \\*    - \`${name}\`: `, "m"), `the optional control ${name} is documented under show`);
     assert.match(viewSource, new RegExp(`shows\\("${name}"\\)`), `the view reads whether ${name} is shown`);
   }
-  assert.ok(!/^  show:/m.test(call[1]), "the app switches no control off");
+  assert.ok(call[1].split("\n").includes("  show: showFor(VIEW_CONTROLS),") && call[1].split("\n").filter(line => /^  show:/.test(line)).length === 1, "the app switches off only what the native app names (#s596): none on the monitor's page");
   // Stage 7: a host's page carries nothing of the view's. The compose box binds none of the app's
   // write controls or its confirm layer: write mode and the confirm come in as the `write` option,
   // which the app passes with its own switch and layer, and the app paints and binds them itself.
@@ -5083,10 +5083,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const OPTIONS = ["theme", "show", "keyboard", "backend", "persist", "onOpen", "onIndex", "onToast", "projectTree", "projectActions", "newSession", "layer", "place"];
   assert.deepEqual([...read].sort(), [...OPTIONS].sort(), "the list reads exactly the options the design gives it");
   assert.deepEqual([...documented].sort(), [...OPTIONS].sort(), "and its doc comment documents each");
-  // Stage 4: the app keeps every optional control, as it does the view's, so it passes no `show`;
-  // and with one server it reads that server for both parts, the page's (#s540), so it passes no
-  // `backend` either; over several machines (#s595) it gives the list the merged source, alone.
-  assert.deepEqual([...passed].sort(), OPTIONS.filter(name => name !== "show" && name !== "backend").sort(), "and the app passes every one but show and backend");
+  // Stage 4: the app passes `show` as the native app names it (#s596, mountApp's stage 4), none on the
+  // monitor's page; and with one server it reads that server for both parts, the page's (#s540), so it
+  // passes no `backend`; over several machines (#s595) it gives the list the merged source, alone.
+  assert.deepEqual([...passed].sort(), OPTIONS.filter(name => name !== "backend").sort(), "and the app passes every one but backend");
   assert.match(call[1], /^  \.\.\.\(merged \? \{ backend: merged \} : \{\}\),$/m, "and over several machines, the merged source as the list's backend");
   // The handle, and what the app calls of it.
   const at = listSource.lastIndexOf("\nreturn fenced({\n");
@@ -5314,7 +5314,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const listed = /^export const MOUNT_OPTIONS = Object\.freeze\(\[([^\]]*)\]\);$/m.exec(mountSource);
   assert.ok(listed, "the mount lists its options in MOUNT_OPTIONS");
   const MOUNT = [...listed[1].matchAll(/"([^"]+)"/g)].map(m => m[1]);
-  assert.deepEqual(MOUNT, ["backend", "machines", "assets", "version"], "stage 2 takes one server and the brand's version; stage 3 (#s595) several machines and the assets the app carries");
+  assert.deepEqual(MOUNT, ["backend", "machines", "assets", "version", "theme", "show", "onMachines", "reviewSheet", "frame"], "stage 2 takes one server and the brand's version; stage 3 (#s595) several machines and the assets the app carries; stage 4 (#s596) the native app's own");
   const body = mountSource.slice(mountSource.indexOf("export function mountApp("), mountSource.indexOf("export async function installNativeController("));
   const read = new Set([...body.matchAll(/\boptions\??\.([A-Za-z]+)/g)].map(m => m[1]));
   assert.deepEqual([...read].sort(), [...MOUNT].sort(), "MOUNT_OPTIONS is exactly the options the mount reads");
@@ -5325,11 +5325,14 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.ok(guards, "the mount checks it is not drawn yet, its options, its element and its machines before it touches anything");
   const { checkAssets } = await import("../../claude-monitor/src/codex-ui/backend.js");
   const { mergedBackend } = await import("../../claude-monitor/src/codex-ui/merged-source.js");
-  const guard = new Function("element", "options", "MOUNT_OPTIONS", "appMounted", "page", "checkAssets", "mergedBackend", `${guards[1]}\nreturn "drawn";`);
+  const controlsOf = source => JSON.parse(`[${/^export const OPTIONAL_CONTROLS = Object\.freeze\(\[([^\]]*)\]\);$/m.exec(source)[1]}]`);
+  const [VIEW_CONTROLS, LIST_CONTROLS] = [controlsOf(viewSource), controlsOf(listSource)];
+  assert.deepEqual([VIEW_CONTROLS, LIST_CONTROLS], [["reading", "history", "detach"], ["filter", "hiding", "arrangements"]], "the controls a part may switch off, as each declares them");
+  const guard = new Function("element", "options", "MOUNT_OPTIONS", "appMounted", "page", "checkAssets", "mergedBackend", "VIEW_CONTROLS", "LIST_CONTROLS", `${guards[1]}\nreturn "drawn";`);
   const empty = () => ({ isConnected: true, childNodes: [{ nodeType: 3, data: "\n  " }] });
   const handle = { base: "/m", paired: true, fetch: () => {} };
   const bare = { byId: () => null };
-  const mount = (options, element = empty(), mounted = false, onPage = bare) => { try { return guard(element, options, MOUNT, mounted, onPage, checkAssets, mergedBackend); } catch (error) { return `refused: ${error.message}`; } };
+  const mount = (options, element = empty(), mounted = false, onPage = bare) => { try { return guard(element, options, MOUNT, mounted, onPage, checkAssets, mergedBackend, VIEW_CONTROLS, LIST_CONTROLS); } catch (error) { return `refused: ${error.message}`; } };
   assert.equal(mount({ backend: handle }), "drawn", "a backend handle is all it needs");
   // #s595: several machines, each its handle, with the assets the app carries; or one server with them.
   const assets = { mdrev: "app://monitor/vendor", mdrevVersion: "1.1.74", mermaid: "app://monitor/vendor/mermaid.min.js" };
@@ -5340,6 +5343,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(mount({ backend: handle, assets: { ...assets, mdrev: "" } }), "drawn", "mdrev's bundle at the page's root");
   assert.equal(mount({ backend: handle, version: "1.2.3" }), "drawn", "and a version for its brand");
   assert.equal(mount({ backend: handle, version: null }), "drawn", "a version left empty is none");
+  // #s596: the native app's own, each optional.
+  assert.equal(mount({ machines, assets, theme: "dark", show: { detach: false, arrangements: false }, onMachines: () => {}, reviewSheet: true, frame: () => "app-frame://page/1" }), "drawn", "the native app's: a start theme, controls off, its Machines row, Review at every width and its frame");
+  assert.equal(mount({ backend: handle, theme: "light", show: {}, reviewSheet: false }), "drawn", "a light start, no control off, no sheet");
+  assert.equal(mount({ backend: handle, theme: null, show: null, onMachines: null, reviewSheet: null, frame: null }), "drawn", "each left empty is none");
   for (const [options, why] of [
     [{}, "needs its backend"],
     [{ backend: "/m" }, "backend handle.*\"/m\""],
@@ -5358,8 +5365,16 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     [{ backend: handle, assets: { ...assets, mdrevVersion: "" } }, "mdrevVersion as a string that is not empty"],
     [{ backend: handle, assets: { mdrev: "/v", mdrevVersion: "1" } }, "mermaid as a string that is not empty"],
     [{ backend: handle, assets: { ...assets, mdrev: null } }, "mdrev as a base"],
-    [{ backend: handle, theme: "dark" }, "no option named theme"],
-    [{ backend: handle, frame: () => "" }, "no option named frame"],
+    [{ backend: handle, keyboard: "page" }, "no option named keyboard"],
+    [{ backend: handle, detachTo: "/d" }, "no option named detachTo"],
+    [{ backend: handle, theme: "sepia" }, "theme as \"light\" or \"dark\".*\"sepia\""],
+    [{ backend: handle, show: [] }, "show as an object"],
+    [{ backend: handle, show: "detach" }, "show as an object.*\"detach\""],
+    [{ backend: handle, show: { compose: false } }, "no optional control named compose; .*reading, history, detach, filter, hiding, arrangements"],
+    [{ backend: handle, show: { detach: 0 } }, "shows detach or not by true or false, not 0"],
+    [{ backend: handle, onMachines: "/machines" }, "onMachines as the function its Machines row calls"],
+    [{ backend: handle, reviewSheet: "yes" }, "review sheet at every width or not by true or false, not \"yes\""],
+    [{ backend: handle, frame: "app-frame://x" }, "frame as a function"],
   ]) assert.match(String(mount(options)), new RegExp(`^refused: .*${why}`), `refused: ${why}`);
   for (const [options, why] of [[null, "as an object, not null"], ["/m", "as an object, not \"/m\""], [[handle], "as an object"]]) {
     assert.match(String(mount(options)), new RegExp(`^refused: .*${why}`), `options that are no object are refused: ${why}`);
@@ -5376,6 +5391,19 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(mountSource, /^  backend: handleOf\(viewMachine\),$/m, "the view is mounted on the mount's server, or on the machine it is mounted on now");
   assert.match(mountSource, /^const handles = new Map\(\(options\.machines \|\| \[\]\)\.map\(entry => \[entry\.machine, entry\.handle\]\)\);\nconst handleOf = machine => \(merged \? handles\.get\(machine\) : options\.backend\);$/m, "which is the one server's, or that machine's own handle, as the app mounted with it");
   assert.match(mountSource, /\.textContent = `v\$\{options\.version \|\| "dev"\}`;/, "the brand names the mount's version");
+  // #s596: the native app's own reach the parts that take them, and nothing else does.
+  assert.match(mountSource, /^const showFor = controls => Object\.fromEntries\(Object\.entries\(options\.show \|\| \{\}\)\.filter\(\(\[name\]\) => controls\.includes\(name\)\)\);$/m, "show is split by the controls each part declares");
+  assert.match(mountSource, /^listHandle = mountSessionList\([\s\S]*?^  show: showFor\(LIST_CONTROLS\),$/m, "the list gets its own");
+  const viewCall = /^viewHandle = mountSessionView\(viewRoot\.element\(\), \{\n([\s\S]*?)\n\}\);/m.exec(mountSource)[1];
+  for (const line of ["  show: showFor(VIEW_CONTROLS),", "  reviewSheet: options.reviewSheet ?? undefined,", "  frame: options.frame ?? undefined,"]) assert.ok(viewCall.split("\n").includes(line), `the view gets ${line.trim()}`);
+  assert.match(mountSource, /^if \(options\.onMachines\) drawMachines\(options\.onMachines\);$/m, "the Machines row and glyph are drawn only for onMachines");
+  assert.match(mountSource, /^  row\.onclick = rail\.onclick = \(\) => onMachines\(\);\n  page\.byId\("searchBtn"\)\.after\(row\);\n  \(railFilter \|\| page\.byId\("sidebarMiniSearch"\)\)\.after\(rail\);$/m, "the row after Search, the glyph after the rail's filter (or Search, with no filter), each calling it");
+  const themeToStart = new Function(`return ${/^export const themeToStart = (.*);$/m.exec(mountSource)[1]}`)();
+  for (const [stored, start, opens] of [
+    [null, undefined, null], [null, "dark", "dark"], [null, "light", "light"],
+    ["dark", "light", "dark"], ["light", "dark", null], ["dark", undefined, "dark"], ["sepia", "dark", null],
+  ]) assert.equal(themeToStart(stored, start), opens, `stored ${stored}, start ${start}: opens ${opens}`);
+  assert.match(mountSource, /^const openTheme = themeToStart\(localStorage\.getItem\("am-demo-theme"\), options\.theme\);\nif \(openTheme === "dark"\) page\.html\(\)\.dataset\.theme = "dark";\nelse if \(openTheme === "light"\) delete page\.html\(\)\.dataset\.theme;$/m, "the reader's stored theme first, then the app's start");
   // The monitor's page: one call, on its wrapper, with its own server and the version its body carries.
   assert.equal((hostSource.match(/\bmountApp\(/g) || []).length, 1, "app.js mounts the web app once");
   assert.match(hostSource, /^mountApp\(page\.byId\("appMount"\), \{ backend: backend\(\), version: page\.body\(\)\.dataset\.version \|\| undefined \}\);$/m, "on the page's wrapper, with the page's server and version");
@@ -5595,6 +5623,22 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /if \(options\.frame !== undefined && typeof options\.frame !== "function"\) throw new Error\(/, "a frame that is not a function is refused");
   assert.match(viewSource, /detach: shows\("detach"\), frame: options\.frame, /, "the view hands it to the pane");
   console.log("#s429 native frame cases passed");
+}
+
+// #s596 (Hong on #s555: "The phone's Review sheet on an iPad too (native app only)"): `reviewSheet`, the
+// native app's, offers the pane's Review and its sheet at every width; a boolean or nothing, handed to
+// the pane, whose Review is a phone's alone without it. The browser case presses it at a desktop's width.
+{
+  const guard = /^if \(options\.reviewSheet !== undefined && typeof options\.reviewSheet !== "boolean"\) throw new Error\(`[^`]*`\);$/m.exec(viewSource);
+  assert.ok(guard, "a reviewSheet that is not a boolean is refused at mount");
+  const check = new Function("options", guard[0]);
+  for (const reviewSheet of ["true", 1, null, {}]) assert.throws(() => check({ reviewSheet }), /review sheet/, `a reviewSheet of ${JSON.stringify(reviewSheet)} is refused`);
+  for (const reviewSheet of [undefined, true, false]) assert.doesNotThrow(() => check({ reviewSheet }), "none, or a boolean");
+  assert.match(viewSource, /detach: shows\("detach"\), frame: options\.frame, reviewSheet: options\.reviewSheet === true, /, "the view hands it to the pane");
+  const previewSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
+  assert.match(previewSource, /^      this\.reviewBtn\.hidden = !\(this\.actions\.phone\(\) \|\| this\.actions\.reviewSheet\) \|\| handle\.held \|\| !isMarkdownName\(item\.name\);$/m, "the pane offers Review on a phone, or at every width with it, for a file's Markdown alone");
+  assert.equal((previewSource.match(/this\.actions\.reviewSheet/g) || []).length, 1, "and reads it nowhere else");
+  console.log("#s596 review sheet cases passed");
 }
 
 // #s429 stage 7: the unmount. Every listener the view binds on the page carries its signal, the
@@ -5898,4 +5942,52 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listViewSource, /const GROUP_STATE = Object\.freeze\(\{ stale: " tree-machine-group-stale", failed: " tree-machine-group-failed", waiting: " tree-machine-group-waiting" \}\);/, "a machine's head says its state under a prefixed name too");
   assert.doesNotMatch(listRules, /\.tree-machine-group\.(?:stale|failed|live|waiting)(?![\w-])/, "and no rule styles a bare state name on it");
   console.log("#s561 group by machine cases passed");
+}
+
+// #s615 (Hong: "the sessions are not sorted by the last active time"): over several machines each
+// agent's projects come in the server's calm order across the machines, not every project of the
+// first machine and then the second's. Active in the last ten minutes first, by name; the rest newest
+// first. Each machine's list is its server's order and keeps it, so Group by machine is unchanged.
+{
+  const { groupAcrossMachines, machineSections } = await import("../../claude-monitor/src/codex-ui/session-list.js");
+  const now = 2_000_000;
+  const row = (id, agent, ago) => ({ id, agent, name: id, family: id, ignoreKey: `s:${id}`, activityTs: now - ago });
+  const group = (machine, label, rows) => ({ kind: "project", label, secondary: `~/code/${label}`, ignoreKey: `p:~/code/${label}`, machine, rows });
+  // Each machine's groups as its server orders them: active by name, then newest first.
+  const groups = [
+    group("a", "zeta", [row("a-zeta", "claude", 60)]),
+    group("a", "old", [row("a-old", "claude", 7 * 86400)]),
+    group("b", "alpha", [row("b-alpha", "claude", 120)]),
+    group("b", "codex-only", [row("b-codex", "codex", 30)]),
+    group("b", "recent", [row("b-recent", "claude", 20 * 60), row("b-recent-2", "claude", 40 * 60)]),
+    group("b", "older", [row("b-older", "claude", 3 * 86400)]),
+  ];
+  const tree = groupAcrossMachines(groups, undefined, now);
+  assert.deepEqual(tree.map(agent => [agent.id, agent.projects.map(project => project.id)]), [
+    ["claude", ["b/p:~/code/alpha", "a/p:~/code/zeta", "b/p:~/code/recent", "b/p:~/code/older", "a/p:~/code/old"]],
+    ["codex", ["b/p:~/code/codex-only"]],
+  ], "the projects active in the last ten minutes first by name, then newest first, across both machines; the agents follow their first projects");
+  const sections = machineSections(tree, [{ machine: "a", label: "a" }, { machine: "b", label: "b" }], now);
+  assert.deepEqual(sections.map(section => [section.machine.machine, section.agents.map(agent => [agent.id, agent.projects.map(project => project.id)])]), [
+    ["a", [["claude", ["a/p:~/code/zeta", "a/p:~/code/old"]]]],
+    ["b", [["claude", ["b/p:~/code/alpha", "b/p:~/code/recent", "b/p:~/code/older"]], ["codex", ["b/p:~/code/codex-only"]]]],
+  ], "grouped by machine, each machine's projects in its own server's order");
+  // A machine's own order is kept even where the clock would put it otherwise (its server's clock
+  // drew the ten minutes a moment earlier): the merge never reorders one machine's projects.
+  const skewed = groupAcrossMachines([group("a", "late", [row("a-late", "claude", 11 * 60)]), group("a", "early", [row("a-early", "claude", 5 * 60)])], undefined, now);
+  assert.deepEqual(skewed[0].projects.map(project => project.id), ["a/p:~/code/late", "a/p:~/code/early"], "one machine's projects in its server's order, whatever the page's clock says");
+  // A folder where Claude and Codex both work is ONE group on its server, dated by its newest row of
+  // either agent, and its machine's list is in that order; each agent's project is dated by the whole
+  // group, or a project Claude left three days ago in a folder Codex is busy in would sink below one
+  // Claude used an hour ago and strand the machine's later projects (the #s615 review).
+  const mixed = groupAcrossMachines([
+    group("a", "shared", [row("a-cx", "codex", 30), row("a-cl", "claude", 3 * 86400)]),
+    group("a", "solo", [row("a-solo", "claude", 3600)]),
+    group("b", "other", [row("b-other", "claude", 2 * 86400)]),
+  ], undefined, now);
+  assert.deepEqual(mixed.map(agent => [agent.id, agent.projects.map(project => project.id)]), [
+    ["codex", ["a/p:~/code/shared"]],
+    ["claude", ["a/p:~/code/shared", "a/p:~/code/solo", "b/p:~/code/other"]],
+  ], "each agent's project is dated by its whole group, as the server dates it");
+  console.log("#s615 merged order cases passed");
 }
