@@ -1151,6 +1151,36 @@ mod tests {
         assert!(!page.contains("REAL_TRANSCRIPT"));
     }
 
+    /// #s635: a search field takes no help with its words. Measured in a WKWebView on macOS 27 (the
+    /// Mac app's walk): with the system's correction bubble under ⌘K's field, the page never heard
+    /// ArrowDown, so the highlight could not step; with these attributes it did. A query is never
+    /// prose, so a phone capitalizing its first letter is wrong there too.
+    #[test]
+    fn the_search_fields_take_no_correction() {
+        let plain =
+            r#"autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false""#;
+        let shell = include_str!("codex-ui/app-shell.html");
+        assert!(
+            shell.contains(&format!(r#"<input id="searchInput" placeholder="Go to an agent, project or session…" {plain}>"#)),
+            "⌘K's field"
+        );
+        let view: String = serde_json::from_str(
+            include_str!("codex-ui/session-view-markup.js")
+                .split_once(" = ")
+                .unwrap()
+                .1
+                .trim_end()
+                .trim_end_matches(';'),
+        )
+        .unwrap();
+        assert!(
+            view.contains(&format!(
+                r#"<input id="transcriptSearchInput" placeholder="Search this session" {plain}>"#
+            )),
+            "the session search's field"
+        );
+    }
+
     /// Every `./x.js` a served module imports must itself be served. The list above is
     /// explicit, so a new module that is imported but not registered 404s in the browser and
     /// the WHOLE module graph fails to load — the shell paints nothing, and no node-side test
