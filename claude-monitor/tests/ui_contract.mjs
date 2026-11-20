@@ -5958,8 +5958,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(mountSource, /trouble: trouble\(top\) \}\);/, "a project's row takes its newest session's machine");
   assert.match(mountSource, /trouble: trouble\(session\) \}\);/, "a session's row its own");
   assert.match(mountSource, /\$\{row\.trouble \? " search-result-machine-stale" : ""\}/, "greyed under a prefixed name");
+  assert.match(mountSource, /if \(entry\?\.state !== "stale"\) return null;/, "for a machine that stopped, the one state the list greys its rows for");
+  assert.match(mountSource, /<span class="result-machine-note">\$\{escapeText\(row\.trouble\.note\)\}<\/span>/, "its note a span of its own, so the sidebar's words beside it stay faint");
   assert.doesNotMatch(mountSource.slice(mountSource.indexOf("function chooseGlobal"), mountSource.indexOf("function chooseGlobal") + 900), /trouble/, "choosing such a row moves no filter");
   assert.match(listRules, /\.search-result-machine-stale \.result-copy b,\.search-result-machine-stale \.result-copy small\{opacity:\.55\}/, "dimmed as the list's greyed rows are");
+  assert.match(listRules, /\.result-machine-note\{color:var\(--amber\)\}/, "the note in the list's amber");
   console.log("#s603 ⌘K over a machine not answering cases passed");
 }
 

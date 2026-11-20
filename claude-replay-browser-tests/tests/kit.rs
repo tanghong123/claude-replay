@@ -1473,7 +1473,7 @@ fn cmdk_over_two_machines_greys_the_rows_of_one_that_stopped_answering() {
 
     // ⌘K's rows, as the page draws them: each row's kind, the machine its meta names, its classes,
     // the note beside it and its colour, its title, and how its copy is dimmed.
-    let rows = "(function () { return [...document.querySelectorAll('#searchResults .search-result')].map(function (b) { var why = b.querySelector('.result-why'), small = b.querySelector('small'), m = / · (tern-mini|skua-book)$/.exec(small.textContent); return { kind: b.querySelector('.result-kind').textContent, machine: m ? m[1] : null, greyed: b.classList.contains('search-result-machine-stale'), why: why ? why.textContent : null, whyColour: why ? getComputedStyle(why).color : null, title: b.getAttribute('title'), copy: getComputedStyle(b.querySelector('.result-copy b')).opacity }; }); })()";
+    let rows = "(function () { return [...document.querySelectorAll('#searchResults .search-result')].map(function (b) { var why = b.querySelector('.result-why'), small = b.querySelector('small'), m = / · (tern-mini|skua-book)$/.exec(small.textContent); return { kind: b.querySelector('.result-kind').textContent, machine: m ? m[1] : null, greyed: b.classList.contains('search-result-machine-stale'), why: why ? why.textContent : null, whyColour: why && why.querySelector('.result-machine-note') ? getComputedStyle(why.querySelector('.result-machine-note')).color : null, title: b.getAttribute('title'), copy: getComputedStyle(b.querySelector('.result-copy b')).opacity }; }); })()";
     let open_cmdk = || {
         eval(&tab, "document.getElementById('searchLayer').classList.remove('production-open'); document.dispatchEvent(new KeyboardEvent('keydown', { key: 'k', metaKey: true, bubbles: true, cancelable: true })); 'ok'");
         until(
@@ -1510,6 +1510,35 @@ fn cmdk_over_two_machines_greys_the_rows_of_one_that_stopped_answering() {
         ),
     );
     let stale = open_cmdk();
+    // Choosing the stopped machine's session still opens it, and moves no filter: the machine's
+    // trouble is not a reason the sidebar hides a row.
+    let filter_before = eval(
+        &tab,
+        "String(localStorage.getItem('am-prod-session-filter'))",
+    );
+    let chosen = harness::probe(
+        &tab,
+        "(function () { var b = [...document.querySelectorAll('#searchResults .search-result.search-result-machine-stale')].find(function (b) { return b.querySelector('.result-kind').textContent === 'session'; }); if (!b) return null; b.click(); return b.getAttribute('data-global-index'); })()",
+    );
+    assert!(!chosen.is_null(), "a greyed session row to choose: {stale}");
+    until(
+        &tab,
+        &format!(
+            "!document.getElementById('searchLayer').classList.contains('production-open') && !!document.querySelector({:?})",
+            format!("{}.selected", row(&format!("b/{SID_CMDK_THERE}")))
+        ),
+        "⌘K closed and the stopped machine's session chosen in the list",
+        Duration::from_secs(10),
+        now,
+    );
+    assert_eq!(
+        eval(
+            &tab,
+            "String(localStorage.getItem('am-prod-session-filter'))"
+        ),
+        filter_before,
+        "choosing a row of a machine not answering moves no filter"
+    );
     drop(monitor);
     let all: Vec<serde_json::Value> = stale.as_array().cloned().unwrap_or_default();
     let of = |machine: &str| -> Vec<&serde_json::Value> {

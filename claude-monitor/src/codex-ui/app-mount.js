@@ -363,13 +363,14 @@ function globalRows(raw) {
     const label = machines.find(entry => entry.machine === session?.machine)?.label;
     return label ? ` · ${machineShortLabel(label, labels)}` : "";
   };
-  // How the session's machine answers, while it does not, or null: the words the list's greyed rows
-  // say in their title (`<name>: <note>`, the reason included), and the note beside the row, one
-  // line without the reason, which the title keeps.
+  // How the session's machine answers while it has stopped (stale, the one state the list greys its
+  // rows for: a failed or waiting machine has no rows), or null: the words the list's greyed rows say
+  // in their title (`<name>: <note>`, the reason included), and the note beside the row, one line
+  // without the reason, which the title keeps.
   const trouble = session => {
     const entry = machines.find(each => each.machine === session?.machine);
-    const words = entry ? machineNote(entry) : "";
-    return words ? { note: machineNote({ ...entry, error: null }), words: `${machineShortLabel(entry.label, labels)}: ${words}` } : null;
+    if (entry?.state !== "stale") return null;
+    return { note: machineNote({ ...entry, error: null }), words: `${machineShortLabel(entry.label, labels)}: ${machineNote(entry)}` };
   };
   const rows = [];
   for (const agent of listHandle.grouped()) {
@@ -407,8 +408,9 @@ function renderGlobalSearch() {
   page.byId("searchResults").innerHTML = rows.map((row, index) => {
     // A machine not answering (#s603) is said first, then what hides the row in the sidebar.
     const title = [row.trouble?.words, row.why.length ? `The sidebar is not showing this (${row.why.join(", ")}) — opening it shows it there again` : ""].filter(Boolean).join(" · ");
-    const why = [row.trouble?.note, ...row.why].filter(Boolean).join(" · ");
-    return `<button class="search-result ${index === searchState.globalIndex ? "active" : ""}${row.why.length ? " search-result-stale" : ""}${row.trouble ? " search-result-machine-stale" : ""}" data-global-index="${index}"${title ? ` title="${escapeText(title)}"` : ""}><span class="result-copy"><b>${escapeText(row.label)}</b><small>${escapeText(row.meta)}</small></span>${why ? `<span class="result-why">${escapeText(why)}</span>` : ""}<span class="result-kind">${escapeText(row.kind)}</span></button>`;
+    // The machine's note in the list's amber, the sidebar's words beside it kept faint.
+    const why = [row.trouble ? `<span class="result-machine-note">${escapeText(row.trouble.note)}</span>` : "", escapeText(row.why.join(" · "))].filter(Boolean).join(" · ");
+    return `<button class="search-result ${index === searchState.globalIndex ? "active" : ""}${row.why.length ? " search-result-stale" : ""}${row.trouble ? " search-result-machine-stale" : ""}" data-global-index="${index}"${title ? ` title="${escapeText(title)}"` : ""}><span class="result-copy"><b>${escapeText(row.label)}</b><small>${escapeText(row.meta)}</small></span>${why ? `<span class="result-why">${why}</span>` : ""}<span class="result-kind">${escapeText(row.kind)}</span></button>`;
   }).join("") || '<div class="no-results">No matches</div>';
 }
 page.byId("searchBtn").onclick = openGlobalSearch; page.byId("sidebarMiniSearch").onclick = openGlobalSearch;
