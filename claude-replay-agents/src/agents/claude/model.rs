@@ -1487,6 +1487,20 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // first non-empty list, which names a write or a connection the sandbox refused;
             // whether a Bash card says so belongs with the owner's question in #s372.
             "sandboxViolations",
+            // #s640 (client 2.1.329; the 2.1.328 binary does not hold the name): an object on the
+            // user record carrying a ReadNotifications tool result, beside the result's own
+            // `read_at` (#s81). The client's code fills it as `{session, messages: [{id, digest}]}`:
+            // the remote session it read for (CLAUDE_CODE_REMOTE_SESSION_ID) and, per notification
+            // the same result returns with a marked digest, its id and digest — read-state
+            // bookkeeping the client reads back for itself, while the notifications themselves are
+            // the result, which the tool card draws. Measured on hong-devserver, 2026-11-21: 3
+            // records in 2 sessions, every value `{messages: []}` beside an empty `notifications`
+            // list. Unread. REVISIT: (1) the first non-empty `messages`: check that every id names
+            // a notification the same result lists; one naming a notification the result does not
+            // list would be a read the card misses, a RENDER question for the owner, queued with
+            // the record count and client version, never decided here; (2) a `session` value (a
+            // remote session); (3) the key on another tool's result or another record type.
+            "notificationsRead",
         ],
     ),
     (
