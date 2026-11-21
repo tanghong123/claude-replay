@@ -61,8 +61,8 @@
 .production-native-stop-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:22px}
 .production-native-stop button{min-height:44px;padding:9px 15px;border:0;border-radius:9px;background:var(--panel);color:var(--ink);font:500 14px/1.4 var(--sans);cursor:pointer;transition:background .16s}
 .production-native-stop button:hover{background:var(--hover)}
-.production-native-stop #nativeStopConfirm{background:var(--primary);color:#fff}
-.production-native-stop #nativeStopConfirm:hover{background:color-mix(in srgb,var(--primary),#000 12%)}
+.production-native-stop #nativeStopConfirm{background:var(--primary-fill);color:#fff}
+.production-native-stop #nativeStopConfirm:hover{background:var(--primary-fill-hover)}
 .production-native-stop button:focus-visible{outline:2px solid var(--primary);outline-offset:3px}
 @media(max-width:400px){.production-native-stop{padding:20px}.production-native-stop-actions button{flex:1}}
 @media(prefers-reduced-motion:reduce){.production-native-stop button{transition:none}}
@@ -75,5 +75,5 @@
  .production-native-menu .production-native-toggle:hover{background:var(--panel)}
  .native-project-add:hover,.native-project-new:hover{background:transparent;color:var(--sub)}
  .production-native-stop button:hover{background:var(--panel)}
- .production-native-stop #nativeStopConfirm:hover{background:var(--primary)}
+ .production-native-stop #nativeStopConfirm:hover{background:var(--primary-fill)}
 }

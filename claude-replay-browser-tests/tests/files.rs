@@ -2122,3 +2122,64 @@ fn a_touch_screen_beside_the_list_reveals_nothing_on_a_hover_inside_a_record() {
         "with the # hidden at rest again, the hover over the thumbnail shows it: {shown:?}"
     );
 }
+
+/// #s639: the preview's Download, a primary button, reads at 4.5:1 at least on its fill, in either
+/// theme, at rest and with the pointer over it. The dark theme's primary is a light blue (#74a0ff),
+/// and its white label read at 2.6:1 there (the other primary buttons are
+/// `a_primary_button_s_label_reads_in_either_theme` in browser_follow.rs).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_preview_s_download_reads_in_either_theme() {
+    let _serial = serial();
+    let (base, stores, repo) = fixture("download-themes");
+    let m = Monitor::spawn(Kind::V1, 3172, &base, Some(&stores), true);
+    let (_browser, tab) = chrome_tab();
+    harness::resize(&tab, 1280.0, 900.0);
+    open_shell(&m, &tab, true);
+    click_path(&tab, &repo, "blob.bin");
+    let download = "#previewBody [data-preview-download]";
+    until(
+        &tab,
+        &format!("!!document.querySelector({download:?}) && document.querySelector({download:?}).getClientRects().length > 0"),
+        "the pane's download for blob.bin",
+        Duration::from_secs(20),
+        PANE,
+    );
+    for theme in ["light", "dark"] {
+        eval(
+            &tab,
+            &format!(
+                "(() => {{ const r = document.documentElement; if ('{theme}' === 'dark') r.dataset.theme = 'dark'; else delete r.dataset.theme; return 'ok'; }})()"
+            ),
+        );
+        until(
+            &tab,
+            &format!("document.getElementById('sessionView').dataset.theme === '{theme}'"),
+            &format!("the view in the {theme} theme"),
+            Duration::from_secs(5),
+            "document.getElementById('sessionView').dataset.theme",
+        );
+        for hover in [false, true] {
+            let r = harness::label_contrast(&tab, download, hover);
+            eprintln!("#s639 the preview's Download {theme} hover={hover}: {r}");
+            assert_eq!(
+                r["alpha"].as_f64(),
+                Some(1.0),
+                "{theme}: the Download's fill is opaque, so its label is read against it alone: {r}"
+            );
+            assert_eq!(
+                r["inkAlpha"].as_f64(),
+                Some(1.0),
+                "{theme}: the Download's label is opaque: {r}"
+            );
+            assert_eq!(
+                r["hovered"], r["hover"],
+                "{theme}: the pointer is where the read says: {r}"
+            );
+            assert!(
+                r["contrast"].as_f64().unwrap_or(0.0) >= 4.5,
+                "{theme}: the Download's label reads at 4.5:1 at least on its fill: {r}"
+            );
+        }
+    }
+}

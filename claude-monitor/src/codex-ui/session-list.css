@@ -274,3 +274,6 @@
 :where(#sessionList).session-list[data-theme="dark"]{--peer:#7ab8d6}
 :where(#sessionList).session-list{--inbox:#9a5b00}
 :where(#sessionList).session-list[data-theme="dark"]{--inbox:#f0b45c}
+:where(#sessionList).session-list{--primary-fill:var(--primary);--primary-fill-hover:var(--primary-hover)}
+:where(#sessionList).session-list[data-theme="dark"]{--primary-fill:color-mix(in srgb,var(--primary) 66%,#000);--primary-fill-hover:color-mix(in srgb,var(--primary-hover) 66%,#000)}
+:where(#sessionList) .scope-option.on .scope-check{border-color:var(--primary-fill);background:var(--primary-fill)}

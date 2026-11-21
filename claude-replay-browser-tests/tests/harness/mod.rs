@@ -5356,3 +5356,63 @@ pub const PHONE_PROBE: &str = r#"(function(){
   });
   return JSON.stringify({ viewport: W + 'x' + H, pageScrollX: document.documentElement.scrollWidth - W, bodyFont: getComputedStyle(document.body).fontSize, pastRight: past.slice(0, 25), pastRightCount: past.length, smallTargets: small.slice(0, 40), smallCount: small.length, covered: covered.slice(0, 25), coveredCount: covered.length });
 })()"#;
+
+/// How a filled button's label reads against its own fill (#s639): the element `selector` names,
+/// with the real pointer over it (`hover`) or away from it, read once its colours have stopped
+/// changing. The fill is the element's own background, which must be opaque (`alpha` says), so the
+/// contrast needs no layer beneath it; the label is the element's `color`, which its text and its
+/// `currentColor` icon both take. Chrome writes a `color-mix` as `color(srgb r g b)` in 0..1, which
+/// is read as such. The pointer goes away to the window's top left corner. The element's `opacity`
+/// is not read: a caller reading a control that fades (a disabled send) must check it itself.
+pub fn label_contrast(
+    tab: &headless_chrome::Tab,
+    selector: &str,
+    hover: bool,
+) -> serde_json::Value {
+    let el = format!("document.querySelector({selector:?})");
+    let point = if hover {
+        let centre = probe(
+            tab,
+            &format!("(() => {{ const r = {el}.getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"),
+        );
+        headless_chrome::browser::tab::point::Point {
+            x: centre[0].as_f64().unwrap_or(0.0),
+            y: centre[1].as_f64().unwrap_or(0.0),
+        }
+    } else {
+        headless_chrome::browser::tab::point::Point { x: 1.0, y: 1.0 }
+    };
+    tab.move_mouse_to_point(point).expect("the pointer moves");
+    until(
+        tab,
+        &format!(
+            "(() => {{ const e = {el}; return !!e && e.matches(':hover') === {hover} \
+             && e.getAnimations().every(a => a.playState !== 'running'); }})()"
+        ),
+        &format!("{selector} with the pointer {}, its colours settled", if hover { "over it" } else { "away" }),
+        Duration::from_secs(5),
+        &format!("(() => {{ const e = {el}; return e ? e.matches(':hover') + ' ' + getComputedStyle(e).backgroundColor : 'missing'; }})()"),
+    );
+    probe(
+        tab,
+        &format!(
+            r#"(() => {{
+        const e = {el}, style = getComputedStyle(e);
+        const parse = s => {{
+            const n = (s.match(/[\d.]+/g) || []).map(Number);
+            const scale = s.startsWith('color(') ? 255 : 1;
+            return [n[0] * scale, n[1] * scale, n[2] * scale, n.length > 3 ? n[3] : 1];
+        }};
+        const lum = rgb => {{
+            const c = rgb.slice(0, 3).map(v => {{ v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; }});
+            return .2126 * c[0] + .7152 * c[1] + .0722 * c[2];
+        }};
+        const fill = parse(style.backgroundColor), ink = parse(style.color);
+        const a = lum(ink), b = lum(fill);
+        return {{ selector: {selector:?}, hover: {hover}, hovered: e.matches(':hover'),
+            fill: style.backgroundColor, ink: style.color, alpha: fill[3], inkAlpha: ink[3],
+            contrast: +((Math.max(a, b) + .05) / (Math.min(a, b) + .05)).toFixed(2) }};
+    }})()"#
+        ),
+    )
+}

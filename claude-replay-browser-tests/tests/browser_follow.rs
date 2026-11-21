@@ -30926,3 +30926,295 @@ fn a_phone_spring_back_after_a_turn_landed_under_the_finger_keeps_following() {
     );
     drop(m);
 }
+
+/// #s638: Write mode's help card reads in either theme. The reference draws it near-white on both,
+/// so on the dark theme its light words sat on light grey (found in #s619's iPhone walk). The card
+/// is translucent, so each line (its heading, a paragraph, the command and the Pair button's label)
+/// is read, at 4.5:1 at least, against what the card composites to over the background colours
+/// beneath it; on the dark theme the card itself is dark. Twice: in a narrow window, where the list
+/// is a drawer of one opaque colour, so the composite is exact (the case checks no gradient lies
+/// between); and in a wide one, where the sidebar's own surface is a gradient the composite cannot
+/// read, so the card is read over the page's colour beneath it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn write_mode_s_help_card_reads_in_either_theme() {
+    let _serial = serial();
+    let base = harness::base("write-help-themes");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        WRITE_SID,
+        &harness::long_session(3, harness::Shape::default()),
+    );
+    // Unpaired, so the help offers the Pair button to this machine's own reader.
+    let m = harness::Monitor::spawn_with(
+        harness::Kind::V1,
+        3168,
+        &base,
+        Some(&stores),
+        false,
+        &[("AGENT_MONITOR_TOKEN_ONLY", "1")],
+    );
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1280.0, 900.0);
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={WRITE_SID}"));
+    harness::until(
+        &tab,
+        "document.body.dataset.write === 'monitor' && !!document.querySelector('.transcript .turn.user')",
+        "an unpaired monitor's page to open on the session",
+        Duration::from_secs(20),
+        WRITE_FACTS,
+    );
+    // A colour as [r, g, b, a] in 0..255 (Chrome writes a color-mix as `color(srgb r g b)` in 0..1);
+    // what an element's background composites to over every layer beneath it; and the contrast of
+    // each line against it.
+    const COLOURS: &str = r#"(() => {
+        const parse = s => {
+            const n = (s.match(/[\d.]+/g) || []).map(Number);
+            const scale = s.startsWith('color(') ? 255 : 1;
+            return [n[0] * scale, n[1] * scale, n[2] * scale, n.length > 3 ? n[3] : 1];
+        };
+        const over = (top, under) => [0, 1, 2].map(i => top[i] * top[3] + under[i] * (1 - top[3]));
+        const unread = [];
+        const backdrop = el => {
+            const layers = [];
+            for (let e = el; e; e = e.parentElement) {
+                const style = getComputedStyle(e), c = parse(style.backgroundColor);
+                if (el.id === 'writeHelp' && style.backgroundImage !== 'none') unread.push(e.id || e.className || e.tagName);
+                if (c[3] > 0) { layers.push(c); if (c[3] >= 1) break; }
+            }
+            let rgb = [255, 255, 255];
+            for (let i = layers.length - 1; i >= 0; i--) rgb = over(layers[i], rgb);
+            return rgb;
+        };
+        const lum = rgb => {
+            const c = rgb.map(v => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; });
+            return .2126 * c[0] + .7152 * c[1] + .0722 * c[2];
+        };
+        const help = document.getElementById('writeHelp');
+        const lines = [['heading', help.querySelector('b')], ['paragraph', help.querySelector('p')],
+            ['command', help.querySelector('code')], ['button', help.querySelector('.write-pair button')]];
+        const card = backdrop(help);
+        return {
+            theme: document.documentElement.dataset.theme,
+            drawer: document.getElementById('app').classList.contains('app-drawer'),
+            card: card.map(Math.round), cardLum: +lum(card).toFixed(3), unread,
+            lines: lines.map(([name, el]) => {
+                if (!el) return { name, missing: true };
+                const under = backdrop(el), ink = over(parse(getComputedStyle(el).color), under);
+                const a = lum(ink), b = lum(under);
+                return { name, ink: ink.map(Math.round), under: under.map(Math.round),
+                    contrast: +((Math.max(a, b) + .05) / (Math.min(a, b) + .05)).toFixed(2) };
+            }),
+        };
+    })()"#;
+    // The narrow window first: below 554px with a mouse the list is a drawer.
+    for (width, drawer) in [(500.0, true), (1280.0, false)] {
+        harness::resize(&tab, width, 900.0);
+        harness::until(
+            &tab,
+            &format!(
+                "innerWidth === {width} && document.getElementById('app').classList.contains('app-drawer') === {drawer}"
+            ),
+            "the window to reach its width and the list its layout",
+            Duration::from_secs(10),
+            "innerWidth + ' ' + document.getElementById('app').className",
+        );
+        harness::until_preview_parked(&tab);
+        let layout = if drawer { "drawer" } else { "wide" };
+        for theme in ["light", "dark"] {
+            harness::eval(
+                &tab,
+                &format!("document.documentElement.dataset.theme = '{theme}'; 'ok'"),
+            );
+            harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+            // Nothing the card sits in is still changing colour.
+            harness::until(
+                &tab,
+                "(() => { const help = document.getElementById('writeHelp'); \
+                 return !!help.querySelector('.write-pair button') && !help.hidden \
+                 && document.getAnimations().every(a => a.playState !== 'running' \
+                 || !(a.effect && a.effect.target && a.effect.target.contains(help))); })()",
+                "the help to show, with nothing it sits in still changing colour",
+                Duration::from_secs(10),
+                WRITE_FACTS,
+            );
+            let read = harness::probe(&tab, COLOURS);
+            eprintln!("#s638 {layout} {theme}: {read}");
+            if drawer {
+                assert_eq!(
+                    read["unread"],
+                    serde_json::json!([]),
+                    "{layout} {theme}: no gradient lies between the card and the drawer's colour, so the composite is exact: {read}"
+                );
+            }
+            let lines = read["lines"].as_array().expect("the card's lines");
+            assert_eq!(lines.len(), 4, "{layout} {theme}: {read}");
+            for line in lines {
+                assert!(
+                    line["missing"].is_null(),
+                    "{layout} {theme}: the card has its {}: {read}",
+                    line["name"]
+                );
+                assert!(
+                    line["contrast"].as_f64().unwrap_or(0.0) >= 4.5,
+                    "{layout} {theme}: the card's {} reads at 4.5:1 at least against what is under it: {read}",
+                    line["name"]
+                );
+            }
+            let lum = read["cardLum"].as_f64().unwrap_or(-1.0);
+            if theme == "dark" {
+                assert!(
+                    (0.0..0.06).contains(&lum),
+                    "{layout} dark: the card is dark (its background composites to a luminance under 0.06): {read}"
+                );
+            } else {
+                assert!(
+                    lum > 0.8,
+                    "{layout} light: the card is light (its background composites to a luminance over 0.8): {read}"
+                );
+            }
+        }
+    }
+    drop(m);
+}
+
+/// Turn the page's theme to `theme` and wait for the view to follow it (#s639).
+fn set_theme(tab: &headless_chrome::Tab, theme: &str) {
+    harness::eval(
+        tab,
+        &format!(
+            "(() => {{ const r = document.documentElement; if ('{theme}' === 'dark') r.dataset.theme = 'dark'; else delete r.dataset.theme; return 'ok'; }})()"
+        ),
+    );
+    harness::until(
+        tab,
+        &format!("document.getElementById('sessionView').dataset.theme === '{theme}'"),
+        &format!("the view in the {theme} theme"),
+        Duration::from_secs(5),
+        "document.documentElement.dataset.theme + ' ' + document.getElementById('sessionView').dataset.theme",
+    );
+}
+
+/// #s639: a primary button's white label reads at 4.5:1 at least on its fill, in either theme, at
+/// rest and with the pointer over it. The dark theme's primary is a light blue (#74a0ff), and white
+/// on it read at 2.6:1: the grant's "Confirm and send", the compose box's send and the compose
+/// button (the preview's Download is `the_preview_s_download_reads_in_either_theme` in files.rs, the
+/// help card's Pair `write_mode_s_help_card_reads_in_either_theme`). The session is in a herdr pane
+/// with no grant yet, so a send opens the app's own confirm.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_primary_button_s_label_reads_in_either_theme() {
+    let _serial = serial();
+    let base = harness::base("primary-themes");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        PHONE_SID,
+        &harness::long_session(4, harness::Shape::default()),
+    );
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3169, &base, Some(&stores), true);
+    let (_b, tab) = desktop_tab(&m);
+    let stub = STUB_HERDR
+        .replace("__SID__", PHONE_SID)
+        .replace("v.consented = true;", "v.consented = false;");
+    assert!(
+        stub.contains("v.consented = false;"),
+        "the stub was rewritten"
+    );
+    harness::eval(&tab, &stub);
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "window.__herdrRow === true && document.getElementById('composeFab').classList.contains('show')",
+        "the session in herdr pane w1:p2, with write mode on",
+        Duration::from_secs(15),
+        "String(window.__herdrRow) + ' ' + document.getElementById('composeFab').className",
+    );
+    let mut reads = Vec::new();
+    let mut read = |tab: &headless_chrome::Tab, what: &str, selector: &str| {
+        for theme in ["light", "dark"] {
+            set_theme(tab, theme);
+            for hover in [false, true] {
+                let r = harness::label_contrast(tab, selector, hover);
+                eprintln!("#s639 {what} {theme} hover={hover}: {r}");
+                reads.push((what.to_string(), theme, r));
+            }
+        }
+    };
+    read(&tab, "the compose button", "#composeFab");
+    harness::eval(&tab, "document.getElementById('composeFab').click(); (function(){ var i = document.getElementById('composeInput'); i.value = 'hello pane'; i.dispatchEvent(new Event('input', { bubbles: true })); })(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composer').classList.contains('production-show') && !document.querySelector('#composer.readonly')",
+        "the compose box open with a draft",
+        Duration::from_secs(10),
+        "document.getElementById('composer').className",
+    );
+    read(&tab, "the compose box's send", "#sendBtn");
+    harness::eval(&tab, "document.getElementById('sendBtn').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('confirmLayer').classList.contains('production-open') && /herdr pane w1:p2/.test(document.getElementById('confirmText').textContent)",
+        "the grant's confirm open",
+        Duration::from_secs(10),
+        "document.getElementById('confirmText').textContent",
+    );
+    read(&tab, "the grant's Confirm and send", "#confirmSend");
+    // A ticked box draws a white tick on the same fill: a mark, so 3:1 at least. The session filter's
+    // sheet is drawn, hidden, with its default states ticked.
+    let ticks = r#"(() => {
+        const parse = s => { const n = (s.match(/[\d.]+/g) || []).map(Number), k = s.startsWith('color(') ? 255 : 1; return [n[0] * k, n[1] * k, n[2] * k, n.length > 3 ? n[3] : 1]; };
+        const lum = rgb => { const c = rgb.slice(0, 3).map(v => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; }); return .2126 * c[0] + .7152 * c[1] + .0722 * c[2]; };
+        return [...document.querySelectorAll('#sessionFilter .scope-option.on .scope-check')].map(e => {
+            const fill = getComputedStyle(e).backgroundColor, tick = getComputedStyle(e, '::after').borderLeftColor;
+            const f = parse(fill), t = parse(tick), a = lum(f), b = lum(t);
+            return { fill, tick, fillAlpha: f[3], tickAlpha: t[3], contrast: +((Math.max(a, b) + .05) / (Math.min(a, b) + .05)).toFixed(2) };
+        });
+    })()"#;
+    for theme in ["light", "dark"] {
+        set_theme(&tab, theme);
+        let read = harness::probe(&tab, ticks);
+        eprintln!("#s639 the session filter's ticked boxes {theme}: {read}");
+        let boxes = read.as_array().expect("the ticked boxes");
+        assert!(
+            !boxes.is_empty(),
+            "{theme}: the session filter has a ticked box: {read}"
+        );
+        for b in boxes {
+            assert!(
+                b["fillAlpha"].as_f64() == Some(1.0) && b["tickAlpha"].as_f64() == Some(1.0),
+                "{theme}: a ticked box's fill and tick are opaque, so the tick is read against the fill alone: {read}"
+            );
+            assert!(
+                b["contrast"].as_f64().unwrap_or(0.0) >= 3.0,
+                "{theme}: a ticked box's tick reads at 3:1 at least on its fill: {read}"
+            );
+        }
+    }
+    for (what, theme, r) in &reads {
+        assert_eq!(
+            r["alpha"].as_f64(),
+            Some(1.0),
+            "{what} {theme}: its fill is opaque, so the label is read against it alone: {r}"
+        );
+        assert_eq!(
+            r["inkAlpha"].as_f64(),
+            Some(1.0),
+            "{what} {theme}: its label is opaque: {r}"
+        );
+        assert_eq!(
+            r["hovered"], r["hover"],
+            "{what} {theme}: the pointer is where the read says: {r}"
+        );
+        assert!(
+            r["contrast"].as_f64().unwrap_or(0.0) >= 4.5,
+            "{what} {theme}: its label reads at 4.5:1 at least on its fill: {r}"
+        );
+    }
+    assert_eq!(
+        harness::eval(&tab, "window.__sent.length").as_i64(),
+        Some(0),
+        "nothing was sent: the confirm was only looked at"
+    );
+    drop(m);
+}
