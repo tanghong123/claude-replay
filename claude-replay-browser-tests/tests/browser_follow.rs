@@ -30859,3 +30859,124 @@ fn a_phone_spring_back_after_a_turn_landed_under_the_finger_keeps_following() {
     );
     drop(m);
 }
+
+/// #s638: Write mode's help card reads in either theme. The reference draws it near-white on both,
+/// so on the dark theme its light words sat on light grey (found in #s619's iPhone walk). The card
+/// is translucent, so each line is read against what the card composites to over the drawer beneath
+/// it: its heading, its paragraphs, the command and the Pair button's label, each at 4.5:1 at least.
+/// On the dark theme the card itself is dark.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn write_mode_s_help_card_reads_in_either_theme() {
+    let _serial = serial();
+    let base = harness::base("write-help-themes");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        WRITE_SID,
+        &harness::long_session(3, harness::Shape::default()),
+    );
+    // Unpaired, so the help offers the Pair button to this machine's own reader.
+    let m = harness::Monitor::spawn_with(
+        harness::Kind::V1,
+        3168,
+        &base,
+        Some(&stores),
+        false,
+        &[("AGENT_MONITOR_TOKEN_ONLY", "1")],
+    );
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1280.0, 900.0);
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={WRITE_SID}"));
+    harness::until(
+        &tab,
+        "document.body.dataset.write === 'monitor' && !!document.querySelector('.transcript .turn.user')",
+        "an unpaired monitor's page to open on the session",
+        Duration::from_secs(20),
+        WRITE_FACTS,
+    );
+    // A colour as [r, g, b, a] in 0..255 (Chrome writes a color-mix as `color(srgb r g b)` in 0..1);
+    // what an element's background composites to over every layer beneath it; and the contrast of
+    // each line against it.
+    const COLOURS: &str = r#"(() => {
+        const parse = s => {
+            const n = (s.match(/[\d.]+/g) || []).map(Number);
+            const scale = s.startsWith('color(') ? 255 : 1;
+            return [n[0] * scale, n[1] * scale, n[2] * scale, n.length > 3 ? n[3] : 1];
+        };
+        const over = (top, under) => [0, 1, 2].map(i => top[i] * top[3] + under[i] * (1 - top[3]));
+        const backdrop = el => {
+            const layers = [];
+            for (let e = el; e; e = e.parentElement) {
+                const c = parse(getComputedStyle(e).backgroundColor);
+                if (c[3] > 0) { layers.push(c); if (c[3] >= 1) break; }
+            }
+            let rgb = [255, 255, 255];
+            for (let i = layers.length - 1; i >= 0; i--) rgb = over(layers[i], rgb);
+            return rgb;
+        };
+        const lum = rgb => {
+            const c = rgb.map(v => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; });
+            return .2126 * c[0] + .7152 * c[1] + .0722 * c[2];
+        };
+        const help = document.getElementById('writeHelp');
+        const lines = [['heading', help.querySelector('b')], ['paragraph', help.querySelector('p')],
+            ['command', help.querySelector('code')], ['button', help.querySelector('.write-pair button')]];
+        const card = backdrop(help);
+        return {
+            theme: document.documentElement.dataset.theme,
+            card: card.map(Math.round), cardLum: +lum(card).toFixed(3),
+            lines: lines.map(([name, el]) => {
+                if (!el) return { name, missing: true };
+                const under = backdrop(el), ink = over(parse(getComputedStyle(el).color), under);
+                const a = lum(ink), b = lum(under);
+                return { name, ink: ink.map(Math.round), under: under.map(Math.round),
+                    contrast: +((Math.max(a, b) + .05) / (Math.min(a, b) + .05)).toFixed(2) };
+            }),
+        };
+    })()"#;
+    for theme in ["light", "dark"] {
+        harness::eval(
+            &tab,
+            &format!("document.documentElement.dataset.theme = '{theme}'; 'ok'"),
+        );
+        harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+        harness::until(
+            &tab,
+            "!!document.querySelector('#writeHelp .write-pair button') && !document.getElementById('writeHelp').hidden \
+             && document.getAnimations().every(a => a.playState !== 'running')",
+            "the help to show, with nothing still changing colour",
+            Duration::from_secs(10),
+            WRITE_FACTS,
+        );
+        let read = harness::probe(&tab, COLOURS);
+        eprintln!("#s638 {theme}: {read}");
+        let lines = read["lines"].as_array().expect("the card's lines");
+        assert_eq!(lines.len(), 4, "{theme}: {read}");
+        for line in lines {
+            assert!(
+                line["missing"].is_null(),
+                "{theme}: the card has its {}: {read}",
+                line["name"]
+            );
+            assert!(
+                line["contrast"].as_f64().unwrap_or(0.0) >= 4.5,
+                "{theme}: the card's {} reads at 4.5:1 at least against what is under it: {read}",
+                line["name"]
+            );
+        }
+        let lum = read["cardLum"].as_f64().unwrap_or(-1.0);
+        if theme == "dark" {
+            assert!(
+                (0.0..0.06).contains(&lum),
+                "dark: the card is dark (its background composites to a luminance under 0.06): {read}"
+            );
+        } else {
+            assert!(
+                lum > 0.8,
+                "light: the card is light (its background composites to a luminance over 0.8): {read}"
+            );
+        }
+    }
+    drop(m);
+}
