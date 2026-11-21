@@ -1608,6 +1608,43 @@ class VirtualWindow {
     if (doc.activeElement === node) this.trace("refocused", { key: focused.key, depth: focused.path.length });
   }
 
+  /** The focus, when it is inside a mounted unit: that unit's key, the child positions from the
+   *  unit down to the focused element (counting no `<mark>`), what kind of element it is, and the
+   *  record it sits in (#s504), whose text is read only if the focus is to be given back. */
+  focusInside() {
+    const active = this.mount.ownerDocument?.activeElement;
+    if (!active || active === this.mount || !this.mount.contains(active)) return null;
+    const path = [];
+    let node = active;
+    while (node.parentElement && node.parentElement !== this.mount) {
+      if (node.tagName === "MARK") return null;
+      path.unshift(unmarked(node.parentElement).indexOf(node));
+      node = node.parentElement;
+    }
+    if (!node.dataset.unitKey) return null;
+    return { element: active, key: node.dataset.unitKey, path, tag: active.tagName, role: active.classList[0] || "", record: recordOf(active, node) };
+  }
+
+  /** Gives the focus back to a unit drawn again (#s504): to the element at the same place in its
+   *  new markup, when it is the same kind of element (its tag and its first class) in a record that
+   *  reads as the old one did (`recordIdentity`), and nothing else has taken the focus meanwhile. A
+   *  unit that left the window, changed its shape or holds another record there gets none, as
+   *  before; so does a record whose text changed, a running call's output grown say: a focus left on
+   *  the body is the old behaviour, and a focus given to another element would be wrong. Any redraw
+   *  of a unit holding the focus gives it back, a fold's own re-render too. */
+  refocus(focused) {
+    if (!focused || focused.element.isConnected) return;
+    const doc = this.mount.ownerDocument, now = doc.activeElement;
+    if (now && now !== doc.body && now !== doc.documentElement) return;
+    const unit = [...this.mount.children].find(child => child.dataset.unitKey === focused.key);
+    let node = unit;
+    for (const at of focused.path) node = node ? unmarked(node)[at] : null;
+    if (!node || node.tagName !== focused.tag || (node.classList[0] || "") !== focused.role) return;
+    if (recordIdentity(recordOf(node, unit)) !== recordIdentity(focused.record)) return;
+    node.focus({ preventScroll: true });
+    if (doc.activeElement === node) this.trace("refocused", { key: focused.key, depth: focused.path.length });
+  }
+
   /** Mount exactly `[lo, hi)`, reusing what is already right. `dirtyFrom` is the first index
    *  whose content changed (0 rebuilds everything mounted), or a bounded run `{from, to}` whose
    *  content changed and nothing after it. The mutation step of a mount transaction: it never
