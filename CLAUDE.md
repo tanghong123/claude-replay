@@ -164,8 +164,12 @@ button; a tap turns the dock into the reply box — the SAME `#composer` and `Co
 a phone (its head and foot `display:contents` in a grid: ✕ at the left, the field growing with its
 text to five lines with ↑ inside it, a `.compose-note` above with the box's one line) — riding the
 keyboard by `--phone-kb` like the find pill, the toolbar, search and the jump stepping aside
-(`#app.composing`). Its ✕ keeps the draft and a dot on ✎ says one is waiting; on a wide phone held
-sideways it spans the session's column (`a_phone_writes_from_the_dock_and_keeps_the_draft`).
+(`#sessionView.composing`). Its ✕ keeps the draft and a dot on ✎ says one is waiting; on a wide phone held
+sideways it spans the session's column (`a_phone_writes_from_the_dock_and_keeps_the_draft`). Held
+sideways in Safari with its tab bar, the 16px the keyboard leaves (#s287) cannot hold the box, which
+sits above it under Safari's bars while the keyboard is up (measured #s570, iPhone 17 Pro on iOS
+26.4): what is typed still lands, and once the keyboard is down the box is back whole with its
+draft, ✕ and send in reach. Upright the box, ✕ and send stay in view with the keyboard up.
 **The box says where a message goes in ONE line and stays open after a send** (#s236, Hong: "keep the
 entry dialog open", "too much info", and it said tmux for a herdr pane): `composeTargetLine`
 (`control-store.js`) gives "Types into herdr" (no pane id, #s297, Hong: "just show herdr is enough"),
