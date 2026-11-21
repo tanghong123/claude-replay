@@ -2339,3 +2339,14 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #sessionView .phone-dock>.dock-compose.blocked{color:var(--faint)}
   #sessionView .phone-dock>.dock-compose.blocked .icon{opacity:.55}
 }
+
+/* #s638: Write mode's help card in the dark theme. The reference draws it as a near-white card on
+   either theme, so in the dark one the dark theme's light words sat on light grey. Here it is the
+   drawer's own surface raised a step, as the light card is a step above its sidebar, with the
+   command and the small buttons on the dark theme's tones. The Pair button stays blue, a shade deeper:
+   white on the dark theme's light primary reads at 2.6:1, on this shade at 5.3:1. */
+[data-theme="dark"] .write-help{background:rgba(255,255,255,.045);border-color:var(--line);box-shadow:0 8px 22px rgba(0,0,0,.28)}
+[data-theme="dark"] .write-help code{background:rgba(255,255,255,.07)}
+[data-theme="dark"] .write-help .smallbtn:not(.primary){background:rgba(255,255,255,.08)}
+[data-theme="dark"] .write-help .smallbtn.primary{background:color-mix(in srgb,var(--primary) 66%,#000);border-color:transparent}
+[data-theme="dark"] .write-help .smallbtn.primary:hover{background:color-mix(in srgb,var(--primary-hover) 66%,#000)}
