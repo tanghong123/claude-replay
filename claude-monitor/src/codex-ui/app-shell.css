@@ -608,3 +608,4 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 :root[data-theme="dark"]{--primary-fill:color-mix(in srgb,var(--primary) 66%,#000);--primary-fill-hover:color-mix(in srgb,var(--primary-hover) 66%,#000)}
 .smallbtn.primary{background:var(--primary-fill);border-color:var(--primary-fill)}
 .smallbtn.primary:hover{background:var(--primary-fill-hover)}
+.scope-option.on .scope-check{border-color:var(--primary-fill);background:var(--primary-fill)}
