@@ -31251,12 +31251,12 @@ fn a_primary_button_s_label_reads_in_either_theme() {
     // A ticked box draws a white tick on the same fill: a mark, so 3:1 at least. The session filter's
     // sheet is drawn, hidden, with its default states ticked.
     let ticks = r#"(() => {
-        const parse = s => { const n = (s.match(/[\d.]+/g) || []).map(Number), k = s.startsWith('color(') ? 255 : 1; return [n[0] * k, n[1] * k, n[2] * k]; };
-        const lum = rgb => { const c = rgb.map(v => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; }); return .2126 * c[0] + .7152 * c[1] + .0722 * c[2]; };
+        const parse = s => { const n = (s.match(/[\d.]+/g) || []).map(Number), k = s.startsWith('color(') ? 255 : 1; return [n[0] * k, n[1] * k, n[2] * k, n.length > 3 ? n[3] : 1]; };
+        const lum = rgb => { const c = rgb.slice(0, 3).map(v => { v /= 255; return v <= .04045 ? v / 12.92 : ((v + .055) / 1.055) ** 2.4; }); return .2126 * c[0] + .7152 * c[1] + .0722 * c[2]; };
         return [...document.querySelectorAll('#sessionFilter .scope-option.on .scope-check')].map(e => {
             const fill = getComputedStyle(e).backgroundColor, tick = getComputedStyle(e, '::after').borderLeftColor;
-            const a = lum(parse(fill)), b = lum(parse(tick));
-            return { fill, tick, contrast: +((Math.max(a, b) + .05) / (Math.min(a, b) + .05)).toFixed(2) };
+            const f = parse(fill), t = parse(tick), a = lum(f), b = lum(t);
+            return { fill, tick, fillAlpha: f[3], tickAlpha: t[3], contrast: +((Math.max(a, b) + .05) / (Math.min(a, b) + .05)).toFixed(2) };
         });
     })()"#;
     for theme in ["light", "dark"] {
@@ -31269,6 +31269,10 @@ fn a_primary_button_s_label_reads_in_either_theme() {
             "{theme}: the session filter has a ticked box: {read}"
         );
         for b in boxes {
+            assert!(
+                b["fillAlpha"].as_f64() == Some(1.0) && b["tickAlpha"].as_f64() == Some(1.0),
+                "{theme}: a ticked box's fill and tick are opaque, so the tick is read against the fill alone: {read}"
+            );
             assert!(
                 b["contrast"].as_f64().unwrap_or(0.0) >= 3.0,
                 "{theme}: a ticked box's tick reads at 3:1 at least on its fill: {read}"
