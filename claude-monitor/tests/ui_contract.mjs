@@ -407,6 +407,7 @@ let droppedAttention = "";
     assert.equal(styles.appGate("#app>.sidebar", "phone").written, "#app:where(.app-drawer)>.sidebar", "…on the app's element too");
     assert.equal(styles.appGate(".toast", "phone").written, ":where(:root:has(#sessionView.pl-phone)) .toast", "and the phone reader's");
     assert.match(appSource, /^addEventListener\("resize", \(\) => arrangeList\(\)\);$/m, "the app arranges its list as the window changes");
+    assert.match(appSource, /^  new ResizeObserver\(\(\) => \{\n    const width = page\.html\(\)\.clientWidth;\n    if \(width === rootWidth\) return;\n    rootWidth = width;\n    arrangeList\(\);\n  \}\)\.observe\(page\.html\(\)\);$/m, "…and as the root's width changes with no resize to say so, as Safari's page zoom does (#s593)");
     assert.match(appSource, /paneLayout: \(name, on\) => \{ app\.classList\.toggle\(name, on\); if \(name === "preview-off"\) arrangeList\(\{ remeasure: false \}\); \},/, "as the pane opens or shuts, before the view decides");
     assert.match(appSource, /onOutline: \(\{ wanted \}\) => \{ viewOutlineWanted = wanted; arrangeList\(\{ remeasure: false \}\); \},/, "and as the reader's outline choice changes");
     assert.match(appSource, /room: \(\) => \(typeof listArranged\?\.list === "number" \? listArranged\.list - LIST_MIN : 0\),/, "the room the app could give is the list's give over 232");
