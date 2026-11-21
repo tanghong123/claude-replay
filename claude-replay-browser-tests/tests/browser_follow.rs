@@ -20538,14 +20538,21 @@ fn a_phone_tap_where_a_row_s_unseen_hide_action_sits_never_hides_the_session() {
         "document.querySelectorAll('.tree-row.session').length",
     );
     let at = probe(&tab, &hide, &other);
-    assert_eq!(
-        at["opacity"].as_f64(),
-        Some(0.0),
-        "on a touch screen a row's hide action is not drawn (#s41): {at}"
+    // The base rule draws it at opacity 0 everywhere until a hover lifts it; what touch adds is
+    // that it takes no pointer events, which is the fix itself.
+    assert!(
+        at["opacity"].as_f64() == Some(0.0) && at["events"] == "none",
+        "on a touch screen a row's hide action is not drawn (#s41) and takes no pointer events (#s644): {at}"
     );
     assert!(
         at["inRow"] == true && at["onAction"] == false,
         "a finger where the unseen action sits reaches the row, not the action (#s644): {at}"
+    );
+    // A project head carries the same action under the same rule.
+    let head = probe(&tab, ".tree-row.project .tree-action", ".tree-row.project");
+    assert!(
+        head["events"] == "none" && head["inRow"] == true && head["onAction"] == false,
+        "a finger at a project head's unseen hide action reaches the head, not the action (#s644): {head}"
     );
     harness::finger_tap(&tab, at["x"].as_f64().unwrap(), at["y"].as_f64().unwrap());
     harness::until(
@@ -20608,8 +20615,8 @@ fn a_phone_tap_where_a_row_s_unseen_hide_action_sits_never_hides_the_session() {
     }
     let at = probe(&tab, &restore, &first);
     assert!(
-        at["opacity"].as_f64() == Some(1.0) && at["onAction"] == true,
-        "a hidden row's restore action is drawn and a finger reaches it: {at}"
+        at["opacity"].as_f64() == Some(1.0) && at["events"] != "none" && at["onAction"] == true,
+        "a hidden row's restore action is drawn, takes pointer events and a finger reaches it: {at}"
     );
     harness::finger_tap(&tab, at["x"].as_f64().unwrap(), at["y"].as_f64().unwrap());
     harness::until(
@@ -20620,10 +20627,11 @@ fn a_phone_tap_where_a_row_s_unseen_hide_action_sits_never_hides_the_session() {
         "JSON.stringify(window.__ignores)",
     );
     let asked = ignores(&tab);
-    let asked = asked.as_str().unwrap_or("");
+    let asked: Vec<String> =
+        serde_json::from_str(asked.as_str().unwrap_or("[]")).unwrap_or_default();
     assert!(
-        asked.contains("add=") && asked.contains("remove="),
-        "the only hide is the scripted one, and the restore went to the server: {asked}"
+        asked.len() == 2 && asked[0].contains("add=") && asked[1].contains("remove="),
+        "the one hide is the scripted one, then the finger's restore went to the server: {asked:?}"
     );
 }
 
