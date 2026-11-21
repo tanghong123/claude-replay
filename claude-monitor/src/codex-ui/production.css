@@ -184,7 +184,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 #sessionView .compose-dialog .dialog-choice{display:grid;gap:1px;min-height:30px;max-width:100%;box-sizing:border-box;padding:5px 10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font:inherit;text-align:left;cursor:pointer}
 #sessionView .compose-dialog .dialog-choice b{font-weight:600;overflow-wrap:anywhere}
 #sessionView .compose-dialog .dialog-desc{color:var(--sub);font-size:11.5px}
-#sessionView .compose-dialog .dialog-choice.sv-primary{background:var(--primary);border-color:var(--primary);color:#fff}
+#sessionView .compose-dialog .dialog-choice.sv-primary{background:var(--primary-fill);border-color:var(--primary-fill);color:#fff}
 #sessionView .compose-dialog .dialog-tick{grid-template-columns:auto minmax(0,1fr);align-items:start;column-gap:8px}
 #sessionView .compose-dialog .dialog-tick input{margin:3px 0 0}
 #sessionView .compose-dialog .dialog-words{display:grid;gap:1px}
@@ -794,7 +794,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 /* #78 / #95: the published-artifact roster — the right pane's pinned first tab, and the
    count on the pane's button so a closed pane still says there is something to see. */
 #previewBtn{position:relative}
-.preview-badge{position:absolute;right:-2px;top:-3px;min-width:14px;height:14px;padding:0 3px;border-radius:6px;background:var(--primary);color:#fff;font:9px/14px var(--mono);text-align:center;box-shadow:0 0 0 2px var(--bg)}
+.preview-badge{position:absolute;right:-2px;top:-3px;min-width:14px;height:14px;padding:0 3px;border-radius:6px;background:var(--primary-fill);color:#fff;font:9px/14px var(--mono);text-align:center;box-shadow:0 0 0 2px var(--bg)}
 .preview-tab.sv-pinned{padding-right:11px}
 /* #337: tabs keep their width and the strip scrolls, rather than every tab squeezing to a few
    letters and the CURRENT one to nothing: the current file takes the width its title needs (to a
@@ -1973,7 +1973,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #sessionView .composer.production-show #closeComposer .icon{width:20px;height:20px}
   #sessionView .composer.production-show textarea{grid-area:field;box-sizing:border-box;width:100%;min-height:56px;max-height:none;padding:16px 54px 16px 18px;border-radius:28px;background:var(--bg);box-shadow:0 0 0 1px var(--line),0 10px 28px -12px rgba(20,24,32,.38);color:var(--ink);font-size:16px;line-height:1.35;overflow-y:auto}
   #sessionView .composer.production-show .compose-foot:before{display:none}
-  #sessionView .composer.production-show #sendBtn{grid-area:field;justify-self:end;align-self:end;margin:0 11px 11px 0;width:34px;height:34px;background:var(--primary);color:#fff}
+  #sessionView .composer.production-show #sendBtn{grid-area:field;justify-self:end;align-self:end;margin:0 11px 11px 0;width:34px;height:34px;background:var(--primary-fill);color:#fff}
   #sessionView .composer.production-show #sendBtn .icon{width:18px;height:18px}
   #sessionView .composer.production-show:has(.compose-images:not(:empty)){grid-template-areas:"note note" "images images" "close field"}
   #sessionView .composer.production-show .compose-images{grid-area:images;padding:0 2px}
@@ -2343,10 +2343,21 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 /* #s638: Write mode's help card in the dark theme. The reference draws it as a near-white card on
    either theme, so in the dark one the dark theme's light words sat on light grey. Here it is the
    drawer's own surface raised a step, as the light card is a step above its sidebar, with the
-   command and the small buttons on the dark theme's tones. The Pair button stays blue, a shade deeper:
-   white on the dark theme's light primary reads at 2.6:1, on this shade at 5.3:1. */
+   command and the small buttons on the dark theme's tones. Its Pair button is a primary button, filled
+   as every other one is (#s639, below). */
 :root[data-theme="dark"] .write-help{background:rgba(255,255,255,.045);border-color:var(--line);box-shadow:0 8px 22px rgba(0,0,0,.28)}
 :root[data-theme="dark"] .write-help code{background:rgba(255,255,255,.07)}
 :root[data-theme="dark"] .write-help .smallbtn:not(.primary){background:rgba(255,255,255,.08)}
-:root[data-theme="dark"] .write-help .smallbtn.primary{background:color-mix(in srgb,var(--primary) 66%,#000);border-color:transparent}
-:root[data-theme="dark"] .write-help .smallbtn.primary:hover{background:color-mix(in srgb,var(--primary-hover) 66%,#000)}
+
+/* #s639: a control that draws white on the primary fills with --primary-fill. In the light theme that
+   is the primary itself (white on it reads at 4.6:1). The dark theme's primary is a light blue, on
+   which white read at 2.6:1, so there the fill is the primary mixed 66% toward black (5.3:1, and its
+   hover 4.7:1); the primary itself stays as it is for links, rings and marks. The reference's rule
+   for the buttons is restated with the fill; the compose dialog's chosen answer, the pane's count
+   badge and the phone's send take it where production writes them, and native mode's stop confirm in
+   native-entry.css. */
+:root{--primary-fill:var(--primary);--primary-fill-hover:var(--primary-hover)}
+:root[data-theme="dark"]{--primary-fill:color-mix(in srgb,var(--primary) 66%,#000);--primary-fill-hover:color-mix(in srgb,var(--primary-hover) 66%,#000)}
+.smallbtn.primary,.smallbtn.sv-primary,.composer:not(.readonly) .send,.compose-fab:not(.disabled){background:var(--primary-fill);border-color:var(--primary-fill)}
+.smallbtn.primary:hover,.smallbtn.sv-primary:hover,.composer:not(.readonly) .send:hover,.compose-fab:not(.disabled):hover{background:var(--primary-fill-hover)}
+.filter-badge{background:var(--primary-fill)}
