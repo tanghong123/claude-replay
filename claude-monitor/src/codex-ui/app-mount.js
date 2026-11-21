@@ -528,6 +528,18 @@ page.byId("sidebarCollapse").onclick = () => toggleSidebar(false); page.byId("si
 page.byId("sidebarCollapse").title = `Collapse the sidebar into its icon rail  ( ${hintFor("sidebar-toggle")} )`;
 addEventListener("resize", () => arrangeList());
 coarseScreen.addEventListener("change", () => arrangeList());
+// #s593: the layout width can change with no `resize` event. Safari's page zoom on an iPad (⌘ and =)
+// took an 834px page to 725 and fired none, so the list stayed a column where the order gives the
+// drawer, until a reload. The root's own box sees every change of the width, however it came.
+{
+  let rootWidth = page.html().clientWidth;
+  new ResizeObserver(() => {
+    const width = page.html().clientWidth;
+    if (width === rootWidth) return;
+    rootWidth = width;
+    arrangeList();
+  }).observe(page.html());
+}
 // #96: the session list is resizable, the way the preview pane is — a handle on the sidebar's
 // own right edge. The width is the viewer's: it is written to `--sidebar-user` (production.css
 // feeds it to the grid only above the mobile breakpoint, so a phone keeps its full-width
