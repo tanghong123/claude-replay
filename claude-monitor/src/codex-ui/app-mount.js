@@ -780,7 +780,10 @@ const WRITE_NEED = {
     line: "This browser is not paired with the monitor",
     // A monitor a LaunchAgent starts prints no address to its log (#s204): `--pair` in a terminal
     // hands off to the running monitor and prints the address that carries the token.
-    help: "<b>This browser is not paired</b><p>The monitor is paired, but this browser holds no pairing token, so the monitor would refuse what it sends. Run this in a terminal on the monitor's machine: it shows a QR code and a short code that pair a browser on another device, to open or type in here.</p><code>agent-monitor --pair-phone</code>",
+    // #s630: a reader elsewhere reads the page without the token only through a relay the gate takes
+    // for this user's own (tailscale serve's runs as another user and is refused), which --pair-phone
+    // does not find by itself, so the command names the address this reader uses (`showPairHelp`).
+    help: "<b>This browser is not paired</b><p>The monitor is paired, but this browser holds no pairing token, so the monitor would refuse what it sends. Run this in a terminal on the monitor's machine: it prints a link to open in this browser, and a short code to type at the address it names.</p><code>agent-monitor --pair-phone</code>",
     here: "<b>This browser is not paired</b><p>The monitor is paired, but this browser holds no pairing token, so the monitor would refuse what it sends. The monitor shows a code on this machine to type into its page.</p><p class='write-pair'></p><p>Or run this in a terminal on this machine: it prints the address that pairs a browser, and opens it in the default one.</p><code>agent-monitor --pair</code>",
   },
   host: {
@@ -833,6 +836,11 @@ function showPairHelp() {
   const here = need?.here && handle.local;
   help.innerHTML = need ? (here ? need.here : need.help)
     : "<b>Monitor is paired</b><p>With write mode on, a writable session shows a compose box. A live terminal still needs its own grant.</p>";
+  if (need === WRITE_NEED.browser && !here) {
+    const base = handle.base || "";
+    const address = /^https?:\/\//.test(base) ? base : location.origin + base;
+    help.querySelector("code").textContent = `agent-monitor --pair-phone --url ${address}/`;
+  }
   if (here) {
     const go = document.createElement("button");
     go.type = "button";

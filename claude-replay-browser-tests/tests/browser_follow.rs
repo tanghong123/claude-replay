@@ -29527,14 +29527,16 @@ fn the_write_switch_says_why_it_is_off_for_this_reader() {
         );
         let elsewhere: serde_json::Value =
             serde_json::from_str(elsewhere.as_str().unwrap_or("{}")).unwrap_or_default();
+        // The command names the address this reader came by, which --pair-phone would not find
+        // behind a relay other than tailscale serve's.
+        let command = format!("agent-monitor --pair-phone --url {}", paired.remote_url(""));
         assert!(
             elsewhere["shown"] == true
                 && elsewhere["offers"] == 0
-                && elsewhere["text"].as_str().is_some_and(|t| t
-                    .contains("agent-monitor --pair-phone")
+                && elsewhere["text"].as_str().is_some_and(|t| t.contains(&command)
                     && t.contains("on the monitor's machine")
                     && !t.contains("on this machine")),
-            "a reader elsewhere is offered no /pair and told what pairs a device elsewhere: {elsewhere}"
+            "a reader elsewhere is offered no /pair and told the command that pairs it, `{command}`: {elsewhere}"
         );
     } else {
         let refused = harness::eval(
