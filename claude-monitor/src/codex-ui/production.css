@@ -2013,8 +2013,17 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #sessionView .transcript{padding-left:env(safe-area-inset-left,0px);padding-right:env(safe-area-inset-right,0px)}
   #sessionView .header-search-cluster>.navigator-options,#sessionView .reading-cluster>.reading-options,#sessionView .header-search-cluster>.search-suggest,.phone-pane-menu:not([hidden]),#sessionView .info-popover{left:calc(8px + env(safe-area-inset-left,0px));right:calc(8px + env(safe-area-inset-right,0px))}
   #taskPopover.task-popover{left:calc(8px + env(safe-area-inset-left,0px))!important;right:calc(8px + env(safe-area-inset-right,0px))}
-  /* The full-screen sheets pad themselves, so their heads clear the status bar and the island. */
-  #sessionView>.preview,.review-sheet{padding:env(safe-area-inset-top,0px) env(safe-area-inset-right,0px) env(safe-area-inset-bottom,0px) env(safe-area-inset-left,0px)}
+  /* The full-screen sheets pad themselves, so their heads clear the status bar and the island. Each
+     side's length is a property of the sheet's own (`--pane-safe-*`), which the sideways rules below
+     set to 0 where the pane does not meet the screen, so mdrev inside it is told the same lengths. */
+  #sessionView>.preview,.review-sheet{--pane-safe-top:env(safe-area-inset-top,0px);--pane-safe-right:env(safe-area-inset-right,0px);--pane-safe-bottom:env(safe-area-inset-bottom,0px);--pane-safe-left:env(safe-area-inset-left,0px);padding:var(--pane-safe-top) var(--pane-safe-right) var(--pane-safe-bottom) var(--pane-safe-left)}
+  /* #s533: mdrev's toolbar has a background of its own, and inside the padding it stopped short of the
+     screen's edge, a strip of the pane's own background beside it (62px held sideways, by the island).
+     So where the sheet shows mdrev, its body reaches out over the sheet's padding at the sides and the
+     foot (the sheet's head is above it), and mdrev is told how much of each of those edges is unsafe
+     (its embedding guide, "Edges"): it paints its bar and its page to the edge and keeps its controls
+     and its text inside. */
+  #sessionView>.preview>.preview-body.mdrev-mounted,.review-sheet>.review-sheet-body{margin:0 calc(0px - var(--pane-safe-right)) calc(0px - var(--pane-safe-bottom)) calc(0px - var(--pane-safe-left));--mdrev-edge-right:var(--pane-safe-right);--mdrev-edge-bottom:var(--pane-safe-bottom);--mdrev-edge-left:var(--pane-safe-left)}
 }
 
 /* #s37 (design/phone-landscape.md §3.2) — a WIDE phone held sideways (`WIDE_PHONE_QUERY`: the Plus
@@ -2108,7 +2117,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .preview-expand{display:none}
 @media(pointer:coarse) and (max-height:500px){
   #sessionView:not(.preview-off)>.workspace{width:50%}
-  #sessionView:not(.preview-off)>.preview{left:50%;right:0;width:auto;padding-left:0;box-shadow:-1px 0 0 var(--line)}
+  #sessionView:not(.preview-off)>.preview{left:50%;right:0;width:auto;--pane-safe-left:0px;box-shadow:-1px 0 0 var(--line)}
   #sessionView:not(.preview-off) .transcript{padding-right:0}
   #sessionView:not(.preview-off) .workspace>.topbar{padding-right:6px}
   #sessionView:not(.preview-off) .phone-dock{right:calc(50% + 12px)}
@@ -2135,7 +2144,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app:not(.phone-column-off):not(.preview-off) .workspace>.topbar{padding-right:calc(6px + env(safe-area-inset-right,0px))}
 }
 @media(pointer:coarse) and (max-height:500px){
-  #sessionView.preview-full:not(.preview-off)>.preview{left:0;padding-left:env(safe-area-inset-left,0px);box-shadow:none}
+  #sessionView.preview-full:not(.preview-off)>.preview{left:0;--pane-safe-left:env(safe-area-inset-left,0px);box-shadow:none}
   #app.preview-full:not(.preview-off) .drawer-handle{display:none}
   /* #s242: the dock's own sheets (Aa, the filter, the suggestions) live inside the dock, whose z 14
      caps whatever z they carry, so held sideways, risen over the top bar (#s41), they met the handle

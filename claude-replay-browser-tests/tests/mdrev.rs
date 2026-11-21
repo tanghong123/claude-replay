@@ -1586,6 +1586,117 @@ fn a_phone_pane_leaves_mdrevs_toolbar_its_own_layout() {
     }
 }
 
+/// #s533: held sideways, the island and the rounded corners leave 62px of each side unsafe. mdrev's
+/// toolbar has a grey of its own, and inside the pane's safe-area padding it stopped 62px short of the
+/// screen's edge, a strip of the pane's white beside it, where iOS runs a bar's background to the edge
+/// and keeps only its controls inside. The pane hands mdrev its edges now (mdrev 1.1.86's
+/// `--mdrev-edge-*`): in each place the pane can be held sideways (beside a wide phone's column, as
+/// the second column, at the whole screen, and the Review sheet over everything) the bar runs from
+/// the pane's edge to its edge, painted, every control in it and the document's heading are inside
+/// the safe area, and mdrev reaches the pane's foot. Red on 3e5e27c5, where the bar ended at 870.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_sideways_phone_runs_mdrevs_toolbar_to_the_screen_s_edge() {
+    let _serial = serial();
+    let (base, stores, repo) = fixture("mdrev-toolbar-edge");
+    let m = Monitor::spawn(Kind::V1, 3381, &base, Some(&stores), true);
+    let (_browser, tab) = chrome_tab();
+    harness::phone(&tab, 932, 430);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    open_shell(&m, &tab);
+    open_guide(&tab, &repo);
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody .mdrev-host h1') && !!document.querySelector('#preview .mdrev-host .topbar')",
+        "the guide in the pane with mdrev's toolbar",
+        Duration::from_secs(30),
+        PANE,
+    );
+    let (_, right, _, left) = harness::SIDEWAYS_INSETS;
+    let measure = |sheet: &str| -> serde_json::Value {
+        let js = format!(
+            "(function(){{ var box = document.querySelector({sheet:?}); var bar = box && box.querySelector('.mdrev-host .topbar'); if (!bar) return JSON.stringify({{missing: true}}); var p = box.getBoundingClientRect(), r = bar.getBoundingClientRect(); var safeL = Math.max(p.left, {left}), safeR = Math.min(p.right, innerWidth - {right}); var shown = [...bar.querySelectorAll('button, a[href], input, select, summary, [role=button]')].filter(function (e) {{ var q = e.getBoundingClientRect(); return q.width > 0 && q.height > 0 && getComputedStyle(e).visibility !== 'hidden'; }}); var outside = shown.map(function (e) {{ var q = e.getBoundingClientRect(); return {{ label: e.getAttribute('aria-label') || e.textContent.trim().slice(0, 20), left: Math.round(q.left), right: Math.round(q.right) }}; }}).filter(function (c) {{ return c.left < safeL - 0.5 || c.right > safeR + 0.5; }}); var h = box.querySelector('.mdrev-host h1').getBoundingClientRect(); var host = box.querySelector('.mdrev-host').getBoundingClientRect(); return JSON.stringify({{ pane: [Math.round(p.left), Math.round(p.right), Math.round(p.bottom)], bar: [Math.round(r.left), Math.round(r.right)], paint: getComputedStyle(bar).backgroundColor, controls: shown.length, outside: outside, heading: [Math.round(h.left), Math.round(h.right)], safe: [Math.round(safeL), Math.round(safeR)], foot: Math.round(host.bottom) }}); }})()"
+        );
+        serde_json::from_str(eval(&tab, &js).as_str().unwrap_or("{}")).unwrap()
+    };
+    let check = |place: &str, seen: &serde_json::Value| {
+        let n = |v: &serde_json::Value| v.as_i64().unwrap_or(i64::MIN);
+        let (pane, bar, safe) = (&seen["pane"], &seen["bar"], &seen["safe"]);
+        assert!(
+            n(&bar[0]) <= n(&pane[0]) + 1 && n(&bar[1]) >= n(&pane[1]) - 1,
+            "{place}: mdrev's toolbar runs from the pane's edge to its edge: {seen}"
+        );
+        assert!(
+            seen["paint"] != "rgba(0, 0, 0, 0)" && seen["paint"].is_string(),
+            "{place}: and paints its own background there: {seen}"
+        );
+        assert!(
+            n(&seen["controls"]) > 0 && seen["outside"].as_array().is_some_and(|o| o.is_empty()),
+            "{place}: every control in it is inside the safe area: {seen}"
+        );
+        assert!(
+            n(&seen["heading"][0]) >= n(&safe[0]) && n(&seen["heading"][1]) <= n(&safe[1]),
+            "{place}: so is the document's text: {seen}"
+        );
+        assert!(
+            n(&seen["foot"]) >= n(&pane[2]) - 1,
+            "{place}: mdrev reaches the pane's foot, keeping its own text clear of it: {seen}"
+        );
+    };
+    let pane_at = |what: &str, cond: &str| {
+        until(
+            &tab,
+            &format!("(function(){{ var p = document.getElementById('preview').getBoundingClientRect(); return {cond}; }})()"),
+            what,
+            Duration::from_secs(10),
+            "JSON.stringify(document.getElementById('preview').getBoundingClientRect())",
+        );
+    };
+    pane_at(
+        "the pane beside the wide phone's column, at the screen's right",
+        "Math.round(p.right) === innerWidth && p.left > innerWidth / 4",
+    );
+    let beside = measure("#preview");
+    check("beside the column", &beside);
+    eval(
+        &tab,
+        "document.getElementById('drawerHandle').click(); 'ok'",
+    );
+    pane_at(
+        "the pane as the second column, the list hidden",
+        "document.getElementById('app').classList.contains('phone-column-off') && Math.abs(p.left - innerWidth / 2) <= 2",
+    );
+    check("the second column", &measure("#preview"));
+    eval(
+        &tab,
+        "document.querySelector('#preview .preview-expand').click(); 'ok'",
+    );
+    pane_at(
+        "the pane at the whole screen",
+        "Math.round(p.left) === 0 && Math.round(p.right) === innerWidth",
+    );
+    check("the whole screen", &measure("#preview"));
+    until(
+        &tab,
+        "(function(){ var b = document.querySelector('.preview-review'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+        "the pane's Review control",
+        Duration::from_secs(10),
+        PANE,
+    );
+    eval(
+        &tab,
+        "document.querySelector('.preview-review').click(); 'ok'",
+    );
+    until(
+        &tab,
+        "!!document.querySelector('.review-sheet .mdrev-host h1') && !!document.querySelector('.review-sheet .mdrev-host .topbar')",
+        "the Review sheet with mdrev's toolbar",
+        Duration::from_secs(30),
+        "(document.querySelector('.review-sheet') || {innerText: 'no sheet'}).innerText.slice(0, 200)",
+    );
+    check("the Review sheet", &measure(".review-sheet"));
+}
+
 /// #s627: on a phone held upright, the review sheet keeps a note started low on the screen above
 /// the keyboard, as the native app's sheet does at a desktop's width (that case's later steps).
 #[test]
