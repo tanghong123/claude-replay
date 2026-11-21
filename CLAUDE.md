@@ -319,7 +319,8 @@ find pill's at its right by the funnel, Info under Info; there the height is wha
 Safari with its tab bar), so they may rise over the top bar
 (`a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_whole`). The jump to the
 latest sits at the bottom CENTRE of the session (#332): just above the dock upright, ON the dock's
-row sideways, where the middle of that row is free (the owner: "should move to the bottom"), and
+row sideways, where the middle of that row is free (the owner: "should move to the bottom"; above it
+again while the pane is a second column, whose half puts the pill in that middle, #s645), and
 gone while the find pill holds the dock (#s41). Inputs are 16px (iOS zooms into anything
 smaller), targets 44px — a reading row's whole width flips its switch, a facet suggestion is a 44px
 row, a delivered file a 36px chip (at 14px WebKit's tap adjustment gave its tap to the row's head,

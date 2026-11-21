@@ -26066,31 +26066,27 @@ fn a_phone_held_sideways_with_the_pane_beside_reaches_the_jump_to_the_latest() {
         );
     };
     jump_is_reached("874x402, the list a drawer");
-    // A wide phone shows its list as a column; hidden, the session and the pane sit side by side.
+    // A wide phone shows its list as a column (nothing has stored a choice to hide it); hidden, the
+    // session and the pane sit side by side. The view is laid out for the column before the handle is
+    // read, or a slow runner reads the drawer layout's handle.
     harness::phone(&tab, 956, 440);
     harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
     harness::until(
         &tab,
-        "innerWidth === 956",
-        "the wide phone held sideways",
-        Duration::from_secs(5),
-        "innerWidth",
+        &format!("innerWidth === 956 && !document.getElementById('app').classList.contains('phone-column-off') && document.querySelector('#sessionView>.workspace').getBoundingClientRect().left > 270 && {}", harness::VIEW_CAUGHT_UP),
+        "the wide phone held sideways, its list a column beside the session",
+        Duration::from_secs(10),
+        DRAWER_FACTS,
     );
-    if harness::eval(
+    let h = page_point(&tab, "the handle", "(function(){ var r = document.getElementById('drawerHandle').getBoundingClientRect(); return JSON.stringify([r.left + r.width / 2, r.top + r.height / 2]); })()");
+    harness::finger_tap(&tab, h[0], h[1]);
+    harness::until(
         &tab,
         "document.getElementById('app').classList.contains('phone-column-off')",
-    ) != serde_json::Value::Bool(true)
-    {
-        let h = page_point(&tab, "the handle", "(function(){ var r = document.getElementById('drawerHandle').getBoundingClientRect(); return JSON.stringify([r.left + r.width / 2, r.top + r.height / 2]); })()");
-        harness::finger_tap(&tab, h[0], h[1]);
-        harness::until(
-            &tab,
-            "document.getElementById('app').classList.contains('phone-column-off')",
-            "the list hidden",
-            Duration::from_secs(5),
-            "document.getElementById('app').className",
-        );
-    }
+        "the list hidden",
+        Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
     jump_is_reached("956x440, the list hidden");
 }
 
