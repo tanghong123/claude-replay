@@ -1619,8 +1619,29 @@ fn a_sideways_phone_runs_mdrevs_toolbar_to_the_screen_s_edge() {
         );
         serde_json::from_str(eval(&tab, &js).as_str().unwrap_or("{}")).unwrap()
     };
-    let check = |place: &str, seen: &serde_json::Value| {
+    // The measure is read again until it holds or 5 s pass: mdrev lays itself out from a resize
+    // observer, so a frame after the pane's box has moved it may still be laid out for the old one.
+    let check = |place: &str, sheet: &str| {
         let n = |v: &serde_json::Value| v.as_i64().unwrap_or(i64::MIN);
+        let holds = |seen: &serde_json::Value| {
+            let (pane, bar, safe) = (&seen["pane"], &seen["bar"], &seen["safe"]);
+            n(&bar[0]) <= n(&pane[0]) + 1
+                && n(&bar[1]) >= n(&pane[1]) - 1
+                && seen["paint"].is_string()
+                && seen["paint"] != "rgba(0, 0, 0, 0)"
+                && n(&seen["controls"]) > 0
+                && seen["outside"].as_array().is_some_and(|o| o.is_empty())
+                && n(&seen["heading"][0]) >= n(&safe[0])
+                && n(&seen["heading"][1]) <= n(&safe[1])
+                && n(&seen["foot"]) >= n(&pane[2]) - 1
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let mut seen = measure(sheet);
+        while !holds(&seen) && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(100));
+            seen = measure(sheet);
+        }
+        let seen = &seen;
         let (pane, bar, safe) = (&seen["pane"], &seen["bar"], &seen["safe"]);
         assert!(
             n(&bar[0]) <= n(&pane[0]) + 1 && n(&bar[1]) >= n(&pane[1]) - 1,
@@ -1656,8 +1677,7 @@ fn a_sideways_phone_runs_mdrevs_toolbar_to_the_screen_s_edge() {
         "the pane beside the wide phone's column, at the screen's right",
         "Math.round(p.right) === innerWidth && p.left > innerWidth / 4",
     );
-    let beside = measure("#preview");
-    check("beside the column", &beside);
+    check("beside the column", "#preview");
     eval(
         &tab,
         "document.getElementById('drawerHandle').click(); 'ok'",
@@ -1666,7 +1686,7 @@ fn a_sideways_phone_runs_mdrevs_toolbar_to_the_screen_s_edge() {
         "the pane as the second column, the list hidden",
         "document.getElementById('app').classList.contains('phone-column-off') && Math.abs(p.left - innerWidth / 2) <= 2",
     );
-    check("the second column", &measure("#preview"));
+    check("the second column", "#preview");
     eval(
         &tab,
         "document.querySelector('#preview .preview-expand').click(); 'ok'",
@@ -1675,7 +1695,7 @@ fn a_sideways_phone_runs_mdrevs_toolbar_to_the_screen_s_edge() {
         "the pane at the whole screen",
         "Math.round(p.left) === 0 && Math.round(p.right) === innerWidth",
     );
-    check("the whole screen", &measure("#preview"));
+    check("the whole screen", "#preview");
     until(
         &tab,
         "(function(){ var b = document.querySelector('.preview-review'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
@@ -1694,7 +1714,7 @@ fn a_sideways_phone_runs_mdrevs_toolbar_to_the_screen_s_edge() {
         Duration::from_secs(30),
         "(document.querySelector('.review-sheet') || {innerText: 'no sheet'}).innerText.slice(0, 200)",
     );
-    check("the Review sheet", &measure(".review-sheet"));
+    check("the Review sheet", ".review-sheet");
 }
 
 /// #s627: on a phone held upright, the review sheet keeps a note started low on the screen above

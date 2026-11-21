@@ -2015,14 +2015,16 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #taskPopover.task-popover{left:calc(8px + env(safe-area-inset-left,0px))!important;right:calc(8px + env(safe-area-inset-right,0px))}
   /* The full-screen sheets pad themselves, so their heads clear the status bar and the island. Each
      side's length is a property of the sheet's own (`--pane-safe-*`), which the sideways rules below
-     set to 0 where the pane does not meet the screen, so mdrev inside it is told the same lengths. */
+     set again where the pane moves (0 at the second column's left, which meets no screen edge, and
+     the screen's inset at the whole screen), so mdrev inside it is told the same lengths. */
   #sessionView>.preview,.review-sheet{--pane-safe-top:env(safe-area-inset-top,0px);--pane-safe-right:env(safe-area-inset-right,0px);--pane-safe-bottom:env(safe-area-inset-bottom,0px);--pane-safe-left:env(safe-area-inset-left,0px);padding:var(--pane-safe-top) var(--pane-safe-right) var(--pane-safe-bottom) var(--pane-safe-left)}
   /* #s533: mdrev's toolbar has a background of its own, and inside the padding it stopped short of the
      screen's edge, a strip of the pane's own background beside it (62px held sideways, by the island).
      So where the sheet shows mdrev, its body reaches out over the sheet's padding at the sides and the
      foot (the sheet's head is above it), and mdrev is told how much of each of those edges is unsafe
      (its embedding guide, "Edges"): it paints its bar and its page to the edge and keeps its controls
-     and its text inside. */
+     and its text inside. Upright that is the foot alone: mdrev's page runs into the home indicator's
+     band and keeps its text above it. */
   #sessionView>.preview>.preview-body.mdrev-mounted,.review-sheet>.review-sheet-body{margin:0 calc(0px - var(--pane-safe-right)) calc(0px - var(--pane-safe-bottom)) calc(0px - var(--pane-safe-left));--mdrev-edge-right:var(--pane-safe-right);--mdrev-edge-bottom:var(--pane-safe-bottom);--mdrev-edge-left:var(--pane-safe-left)}
 }
 
