@@ -270,21 +270,20 @@ mod tests {
     /// says. Answers the display and the directory the records land in.
     #[cfg(unix)]
     fn stand_in(tag: &str, behaviour: &str) -> (PairDialog, std::path::PathBuf) {
-        use std::os::unix::fs::PermissionsExt;
         let dir = std::env::temp_dir().join(format!("cm-dialog-{}-{tag}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let program = dir.join("osascript");
         let d = dir.display();
-        std::fs::write(
+        // Written by a `cp` child (`write_script`): a stand-in this process writes and then runs is
+        // refused at random on Linux (ETXTBSY), and never ran in CI (#s641).
+        crate::write_script(
             &program,
-            format!(
+            &format!(
                 "#!/bin/sh\nprintf '%s\\n' \"$#\" \"$@\" > '{d}/args'\n\
                  echo $$ > '{d}/pid'\nps -o args= -p $$ > '{d}/ps'\ncat > '{d}/stdin'\n{behaviour}\n"
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let display = PairDialog {
             slot: Arc::default(),
             off: false,
@@ -420,11 +419,7 @@ mod tests {
         let (mut display, dir) = stand_in("early", "");
         // Exits before anything else, as osascript does with no window server to draw on.
         let early = dir.join("early");
-        std::fs::write(&early, "#!/bin/sh\nexit 1\n").unwrap();
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&early, std::fs::Permissions::from_mode(0o755)).unwrap();
-        }
+        crate::write_script(&early, "#!/bin/sh\nexit 1\n");
         display.program = early;
         assert!(!display.show("ABCD-EFGH", 300, 2727, Box::new(|| panic!("never"))));
         let _ = std::fs::remove_dir_all(&dir);
