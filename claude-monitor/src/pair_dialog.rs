@@ -276,7 +276,7 @@ mod tests {
         let program = dir.join("osascript");
         let d = dir.display();
         // Written by a `cp` child (`write_script`): a stand-in this process writes and then runs is
-        // refused at random on Linux (ETXTBSY), and never ran in CI (#s641).
+        // refused at random on Linux (ETXTBSY), so CI once saw it never run (#s641).
         crate::write_script(
             &program,
             &format!(
