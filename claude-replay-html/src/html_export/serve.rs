@@ -8838,11 +8838,15 @@ mod tests {
         stop.store(true, Ordering::SeqCst);
         let _ = std::net::TcpStream::connect(("127.0.0.1", port));
         // Until the port refuses: any other error (a parallel test at the open-file ceiling) is not
-        // a closed port, and is said as itself rather than read as a stopped loop.
+        // a closed port, and is said as itself rather than read as a stopped loop. A reset is the
+        // port closing under the connect, as Linux answers a handshake that reached the backlog of
+        // a socket then closed (CI saw it, #s642), so it is polled on through, as a connect that
+        // went through is.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         loop {
             match std::net::TcpStream::connect(("127.0.0.1", port)) {
                 Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => break,
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
                 Err(error) => panic!("waiting for the port to close: {error}"),
                 Ok(_) => {}
             }
