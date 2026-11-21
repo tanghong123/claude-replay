@@ -31078,3 +31078,107 @@ fn write_mode_s_help_card_reads_in_either_theme() {
     }
     drop(m);
 }
+
+/// Turn the page's theme to `theme` and wait for the view to follow it (#s639).
+fn set_theme(tab: &headless_chrome::Tab, theme: &str) {
+    harness::eval(
+        tab,
+        &format!(
+            "(() => {{ const r = document.documentElement; if ('{theme}' === 'dark') r.dataset.theme = 'dark'; else delete r.dataset.theme; return 'ok'; }})()"
+        ),
+    );
+    harness::until(
+        tab,
+        &format!("document.getElementById('sessionView').dataset.theme === '{theme}'"),
+        &format!("the view in the {theme} theme"),
+        Duration::from_secs(5),
+        "document.documentElement.dataset.theme + ' ' + document.getElementById('sessionView').dataset.theme",
+    );
+}
+
+/// #s639: a primary button's white label reads at 4.5:1 at least on its fill, in either theme, at
+/// rest and with the pointer over it. The dark theme's primary is a light blue (#74a0ff), and white
+/// on it read at 2.6:1: the grant's "Confirm and send", the compose box's send and the compose
+/// button (the preview's Download is `the_preview_s_download_reads_in_either_theme` in files.rs, the
+/// help card's Pair `write_mode_s_help_card_reads_in_either_theme`). The session is in a herdr pane
+/// with no grant yet, so a send opens the app's own confirm.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_primary_button_s_label_reads_in_either_theme() {
+    let _serial = serial();
+    let base = harness::base("primary-themes");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        PHONE_SID,
+        &harness::long_session(4, harness::Shape::default()),
+    );
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3169, &base, Some(&stores), true);
+    let (_b, tab) = desktop_tab(&m);
+    let stub = STUB_HERDR
+        .replace("__SID__", PHONE_SID)
+        .replace("v.consented = true;", "v.consented = false;");
+    assert!(
+        stub.contains("v.consented = false;"),
+        "the stub was rewritten"
+    );
+    harness::eval(&tab, &stub);
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "window.__herdrRow === true && document.getElementById('composeFab').classList.contains('show')",
+        "the session in herdr pane w1:p2, with write mode on",
+        Duration::from_secs(15),
+        "String(window.__herdrRow) + ' ' + document.getElementById('composeFab').className",
+    );
+    let mut reads = Vec::new();
+    let mut read = |tab: &headless_chrome::Tab, what: &str, selector: &str| {
+        for theme in ["light", "dark"] {
+            set_theme(tab, theme);
+            for hover in [false, true] {
+                let r = harness::label_contrast(tab, selector, hover);
+                eprintln!("#s639 {what} {theme} hover={hover}: {r}");
+                reads.push((what.to_string(), theme, r));
+            }
+        }
+    };
+    read(&tab, "the compose button", "#composeFab");
+    harness::eval(&tab, "document.getElementById('composeFab').click(); (function(){ var i = document.getElementById('composeInput'); i.value = 'hello pane'; i.dispatchEvent(new Event('input', { bubbles: true })); })(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composer').classList.contains('production-show') && !document.querySelector('#composer.readonly')",
+        "the compose box open with a draft",
+        Duration::from_secs(10),
+        "document.getElementById('composer').className",
+    );
+    read(&tab, "the compose box's send", "#sendBtn");
+    harness::eval(&tab, "document.getElementById('sendBtn').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('confirmLayer').classList.contains('production-open') && /herdr pane w1:p2/.test(document.getElementById('confirmText').textContent)",
+        "the grant's confirm open",
+        Duration::from_secs(10),
+        "document.getElementById('confirmText').textContent",
+    );
+    read(&tab, "the grant's Confirm and send", "#confirmSend");
+    for (what, theme, r) in &reads {
+        assert_eq!(
+            r["alpha"].as_f64(),
+            Some(1.0),
+            "{what} {theme}: its fill is opaque, so the label is read against it alone: {r}"
+        );
+        assert_eq!(
+            r["hovered"], r["hover"],
+            "{what} {theme}: the pointer is where the read says: {r}"
+        );
+        assert!(
+            r["contrast"].as_f64().unwrap_or(0.0) >= 4.5,
+            "{what} {theme}: its label reads at 4.5:1 at least on its fill: {r}"
+        );
+    }
+    assert_eq!(
+        harness::eval(&tab, "window.__sent.length").as_i64(),
+        Some(0),
+        "nothing was sent: the confirm was only looked at"
+    );
+    drop(m);
+}
