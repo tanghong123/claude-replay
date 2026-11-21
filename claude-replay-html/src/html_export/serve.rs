@@ -1462,11 +1462,14 @@ enum Wake {
     Woke,
     /// The port refused it. Nothing listens there, so the loop had already ended on its own (an
     /// accept returned a connection or an error after the flag was set, and the loop closed the
-    /// port), or the backlog is full, which happens only while every accept fails, and then the
-    /// loop sees its stop at its next accept anyway. Either way there is nothing to wake.
+    /// port only once it returned). Where a kernel refuses rather than drops a connection to a
+    /// full backlog (macOS's listen(2) allows it; both kernels normally drop the SYN), connections
+    /// are waiting, so the loop's next accept returns at once and it sees its stop. Either way
+    /// there is nothing to wake.
     AlreadyStopped,
     /// Every try failed some other way: at the open-file ceiling the connect itself fails, the
-    /// very state the stop is there to prevent. The loop ends at its next connection.
+    /// very state the stop is there to prevent; a dropped SYN times out after its second. The
+    /// loop ends at its next connection.
     CouldNot,
 }
 
@@ -8834,8 +8837,15 @@ mod tests {
             .expect("the listener starts");
         stop.store(true, Ordering::SeqCst);
         let _ = std::net::TcpStream::connect(("127.0.0.1", port));
+        // Until the port refuses: any other error (a parallel test at the open-file ceiling) is not
+        // a closed port, and is said as itself rather than read as a stopped loop.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+        loop {
+            match std::net::TcpStream::connect(("127.0.0.1", port)) {
+                Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => break,
+                Err(error) => panic!("waiting for the port to close: {error}"),
+                Ok(_) => {}
+            }
             assert!(
                 std::time::Instant::now() < deadline,
                 "the loop ended on the accept after its stop"
