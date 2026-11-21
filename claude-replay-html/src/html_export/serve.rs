@@ -1435,18 +1435,16 @@ struct ListenerStop {
 impl Drop for ListenerStop {
     fn drop(&mut self) {
         self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
-        // The accept loop hears the flag only when an accept returns: make a connection. At the
-        // open-file ceiling the connect itself can fail, the very state this stop is there to
-        // prevent, so it is tried a few times; if none goes through, the listener lives on
-        // until a connection comes, and that is said.
+        // The accept loop hears the flag only when an accept returns: make a connection.
         let to = std::net::SocketAddr::from(([127, 0, 0, 1], self.port));
-        let woke = (0..4).any(|attempt| {
-            if attempt > 0 {
-                std::thread::sleep(std::time::Duration::from_millis(50 << attempt));
-            }
-            std::net::TcpStream::connect_timeout(&to, std::time::Duration::from_secs(1)).is_ok()
-        });
-        if !woke {
+        let woke = wake_listener(
+            || {
+                std::net::TcpStream::connect_timeout(&to, std::time::Duration::from_secs(1))
+                    .map(drop)
+            },
+            std::thread::sleep,
+        );
+        if woke == Wake::CouldNot {
             use std::io::Write;
             let _ = writeln!(
                 std::io::stderr(),
@@ -1455,6 +1453,42 @@ impl Drop for ListenerStop {
             );
         }
     }
+}
+
+/// What a stop's wake-up connection found (#s529, #s632).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Wake {
+    /// It went through: the loop's accept returns, and the loop sees its stop.
+    Woke,
+    /// The port refused it. Nothing listens there, so the loop had already ended on its own (an
+    /// accept returned a connection or an error after the flag was set, and the loop closed the
+    /// port), or the backlog is full, which happens only while every accept fails, and then the
+    /// loop sees its stop at its next accept anyway. Either way there is nothing to wake.
+    AlreadyStopped,
+    /// Every try failed some other way: at the open-file ceiling the connect itself fails, the
+    /// very state the stop is there to prevent. The loop ends at its next connection.
+    CouldNot,
+}
+
+/// Wakes a stopping accept loop with `connect`, trying four times with a growing pause (`sleep`)
+/// while the connect fails but is not refused.
+fn wake_listener(
+    mut connect: impl FnMut() -> std::io::Result<()>,
+    mut sleep: impl FnMut(std::time::Duration),
+) -> Wake {
+    for attempt in 0..4 {
+        if attempt > 0 {
+            sleep(std::time::Duration::from_millis(50 << attempt));
+        }
+        match connect() {
+            Ok(()) => return Wake::Woke,
+            Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+                return Wake::AlreadyStopped;
+            }
+            Err(_) => {}
+        }
+    }
+    Wake::CouldNot
 }
 
 /// A `/records` range read against an epoch the store has since left — the client drops
@@ -8780,6 +8814,82 @@ mod tests {
         assert!(
             std::net::TcpStream::connect(("127.0.0.1", port)).is_err(),
             "the port no longer listens"
+        );
+    }
+
+    /// #s632: a stop that finds its loop already ended says nothing and waits for nothing. The loop
+    /// ends on its own when an accept returns after the flag is set; here a connection of the
+    /// test's own brings it, and the loop closes the port. The stop's wake is then refused, which
+    /// is stopped: no retry pause, and not the "could not wake it" line, which is said only for
+    /// `Wake::CouldNot`. A connect that fails another way (the open-file ceiling) is still tried
+    /// four times.
+    #[test]
+    fn a_refused_wake_means_the_loop_already_stopped() {
+        use std::sync::atomic::Ordering;
+        let handler: StreamingRouteHandler = std::sync::Arc::new(|_request: &Request| {
+            HttpResponse::ok("text/plain", b"ok".to_vec()).into()
+        });
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let port = spawn_listener_until(0, handler, AuthGate::same_user(), Some(stop.clone()))
+            .expect("the listener starts");
+        stop.store(true, Ordering::SeqCst);
+        let _ = std::net::TcpStream::connect(("127.0.0.1", port));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while std::net::TcpStream::connect(("127.0.0.1", port)).is_ok() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the loop ended on the accept after its stop"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let to = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        let mut pauses = 0;
+        let woke = wake_listener(
+            || {
+                std::net::TcpStream::connect_timeout(&to, std::time::Duration::from_secs(1))
+                    .map(drop)
+            },
+            |_| pauses += 1,
+        );
+        assert_eq!(
+            woke,
+            Wake::AlreadyStopped,
+            "a closed port is a stopped loop"
+        );
+        assert_eq!(pauses, 0, "and nothing is retried");
+
+        let mut tries = 0;
+        let mut pauses = Vec::new();
+        let woke = wake_listener(
+            || {
+                tries += 1;
+                Err(std::io::Error::other("Too many open files"))
+            },
+            |pause| pauses.push(pause.as_millis()),
+        );
+        assert_eq!(
+            woke,
+            Wake::CouldNot,
+            "a connect that cannot be made is said"
+        );
+        assert_eq!((tries, pauses), (4, vec![100, 200, 400]));
+
+        let mut tries = 0;
+        let woke = wake_listener(
+            || {
+                tries += 1;
+                if tries < 3 {
+                    Err(std::io::Error::other("Too many open files"))
+                } else {
+                    Ok(())
+                }
+            },
+            |_| {},
+        );
+        assert_eq!(
+            (woke, tries),
+            (Wake::Woke, 3),
+            "a later try that connects wakes it"
         );
     }
 
