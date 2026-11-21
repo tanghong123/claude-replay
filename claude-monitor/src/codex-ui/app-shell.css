@@ -601,8 +601,8 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .sidebar .write-reason[hidden]{display:none}
 .sidebar .write-reason code{font:11px var(--mono);color:var(--sub);white-space:nowrap}
 .sidebar-mini-button.disabled{opacity:.5}
-[data-theme="dark"] .write-help{background:rgba(255,255,255,.045);border-color:var(--line);box-shadow:0 8px 22px rgba(0,0,0,.28)}
-[data-theme="dark"] .write-help code{background:rgba(255,255,255,.07)}
-[data-theme="dark"] .write-help .smallbtn:not(.primary){background:rgba(255,255,255,.08)}
-[data-theme="dark"] .write-help .smallbtn.primary{background:color-mix(in srgb,var(--primary) 66%,#000);border-color:transparent}
-[data-theme="dark"] .write-help .smallbtn.primary:hover{background:color-mix(in srgb,var(--primary-hover) 66%,#000)}
+:root[data-theme="dark"] .write-help{background:rgba(255,255,255,.045);border-color:var(--line);box-shadow:0 8px 22px rgba(0,0,0,.28)}
+:root[data-theme="dark"] .write-help code{background:rgba(255,255,255,.07)}
+:root[data-theme="dark"] .write-help .smallbtn:not(.primary){background:rgba(255,255,255,.08)}
+:root[data-theme="dark"] .write-help .smallbtn.primary{background:color-mix(in srgb,var(--primary) 66%,#000);border-color:transparent}
+:root[data-theme="dark"] .write-help .smallbtn.primary:hover{background:color-mix(in srgb,var(--primary-hover) 66%,#000)}

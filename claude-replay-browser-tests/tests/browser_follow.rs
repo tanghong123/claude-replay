@@ -30929,9 +30929,12 @@ fn a_phone_spring_back_after_a_turn_landed_under_the_finger_keeps_following() {
 
 /// #s638: Write mode's help card reads in either theme. The reference draws it near-white on both,
 /// so on the dark theme its light words sat on light grey (found in #s619's iPhone walk). The card
-/// is translucent, so each line is read against what the card composites to over the drawer beneath
-/// it: its heading, its paragraphs, the command and the Pair button's label, each at 4.5:1 at least.
-/// On the dark theme the card itself is dark.
+/// is translucent, so each line (its heading, a paragraph, the command and the Pair button's label)
+/// is read, at 4.5:1 at least, against what the card composites to over the background colours
+/// beneath it; on the dark theme the card itself is dark. Twice: in a narrow window, where the list
+/// is a drawer of one opaque colour, so the composite is exact (the case checks no gradient lies
+/// between); and in a wide one, where the sidebar's own surface is a gradient the composite cannot
+/// read, so the card is read over the page's colour beneath it.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn write_mode_s_help_card_reads_in_either_theme() {
@@ -30972,10 +30975,12 @@ fn write_mode_s_help_card_reads_in_either_theme() {
             return [n[0] * scale, n[1] * scale, n[2] * scale, n.length > 3 ? n[3] : 1];
         };
         const over = (top, under) => [0, 1, 2].map(i => top[i] * top[3] + under[i] * (1 - top[3]));
+        const unread = [];
         const backdrop = el => {
             const layers = [];
             for (let e = el; e; e = e.parentElement) {
-                const c = parse(getComputedStyle(e).backgroundColor);
+                const style = getComputedStyle(e), c = parse(style.backgroundColor);
+                if (el.id === 'writeHelp' && style.backgroundImage !== 'none') unread.push(e.id || e.className || e.tagName);
                 if (c[3] > 0) { layers.push(c); if (c[3] >= 1) break; }
             }
             let rgb = [255, 255, 255];
@@ -30992,7 +30997,8 @@ fn write_mode_s_help_card_reads_in_either_theme() {
         const card = backdrop(help);
         return {
             theme: document.documentElement.dataset.theme,
-            card: card.map(Math.round), cardLum: +lum(card).toFixed(3),
+            drawer: document.getElementById('app').classList.contains('app-drawer'),
+            card: card.map(Math.round), cardLum: +lum(card).toFixed(3), unread,
             lines: lines.map(([name, el]) => {
                 if (!el) return { name, missing: true };
                 const under = backdrop(el), ink = over(parse(getComputedStyle(el).color), under);
@@ -31002,47 +31008,72 @@ fn write_mode_s_help_card_reads_in_either_theme() {
             }),
         };
     })()"#;
-    for theme in ["light", "dark"] {
-        harness::eval(
-            &tab,
-            &format!("document.documentElement.dataset.theme = '{theme}'; 'ok'"),
-        );
-        harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    // The narrow window first: below 554px with a mouse the list is a drawer.
+    for (width, drawer) in [(500.0, true), (1280.0, false)] {
+        harness::resize(&tab, width, 900.0);
         harness::until(
             &tab,
-            "!!document.querySelector('#writeHelp .write-pair button') && !document.getElementById('writeHelp').hidden \
-             && document.getAnimations().every(a => a.playState !== 'running')",
-            "the help to show, with nothing still changing colour",
+            &format!(
+                "innerWidth === {width} && document.getElementById('app').classList.contains('app-drawer') === {drawer}"
+            ),
+            "the window to reach its width and the list its layout",
             Duration::from_secs(10),
-            WRITE_FACTS,
+            "innerWidth + ' ' + document.getElementById('app').className",
         );
-        let read = harness::probe(&tab, COLOURS);
-        eprintln!("#s638 {theme}: {read}");
-        let lines = read["lines"].as_array().expect("the card's lines");
-        assert_eq!(lines.len(), 4, "{theme}: {read}");
-        for line in lines {
-            assert!(
-                line["missing"].is_null(),
-                "{theme}: the card has its {}: {read}",
-                line["name"]
+        harness::until_preview_parked(&tab);
+        let layout = if drawer { "drawer" } else { "wide" };
+        for theme in ["light", "dark"] {
+            harness::eval(
+                &tab,
+                &format!("document.documentElement.dataset.theme = '{theme}'; 'ok'"),
             );
-            assert!(
-                line["contrast"].as_f64().unwrap_or(0.0) >= 4.5,
-                "{theme}: the card's {} reads at 4.5:1 at least against what is under it: {read}",
-                line["name"]
+            harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+            // Nothing the card sits in is still changing colour.
+            harness::until(
+                &tab,
+                "(() => { const help = document.getElementById('writeHelp'); \
+                 return !!help.querySelector('.write-pair button') && !help.hidden \
+                 && document.getAnimations().every(a => a.playState !== 'running' \
+                 || !(a.effect && a.effect.target && a.effect.target.contains(help))); })()",
+                "the help to show, with nothing it sits in still changing colour",
+                Duration::from_secs(10),
+                WRITE_FACTS,
             );
-        }
-        let lum = read["cardLum"].as_f64().unwrap_or(-1.0);
-        if theme == "dark" {
-            assert!(
-                (0.0..0.06).contains(&lum),
-                "dark: the card is dark (its background composites to a luminance under 0.06): {read}"
-            );
-        } else {
-            assert!(
-                lum > 0.8,
-                "light: the card is light (its background composites to a luminance over 0.8): {read}"
-            );
+            let read = harness::probe(&tab, COLOURS);
+            eprintln!("#s638 {layout} {theme}: {read}");
+            if drawer {
+                assert_eq!(
+                    read["unread"],
+                    serde_json::json!([]),
+                    "{layout} {theme}: no gradient lies between the card and the drawer's colour, so the composite is exact: {read}"
+                );
+            }
+            let lines = read["lines"].as_array().expect("the card's lines");
+            assert_eq!(lines.len(), 4, "{layout} {theme}: {read}");
+            for line in lines {
+                assert!(
+                    line["missing"].is_null(),
+                    "{layout} {theme}: the card has its {}: {read}",
+                    line["name"]
+                );
+                assert!(
+                    line["contrast"].as_f64().unwrap_or(0.0) >= 4.5,
+                    "{layout} {theme}: the card's {} reads at 4.5:1 at least against what is under it: {read}",
+                    line["name"]
+                );
+            }
+            let lum = read["cardLum"].as_f64().unwrap_or(-1.0);
+            if theme == "dark" {
+                assert!(
+                    (0.0..0.06).contains(&lum),
+                    "{layout} dark: the card is dark (its background composites to a luminance under 0.06): {read}"
+                );
+            } else {
+                assert!(
+                    lum > 0.8,
+                    "{layout} light: the card is light (its background composites to a luminance over 0.8): {read}"
+                );
+            }
         }
     }
     drop(m);
