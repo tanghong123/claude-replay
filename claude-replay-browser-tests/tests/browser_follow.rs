@@ -12809,6 +12809,94 @@ fn the_app_shell_expands_every_group_again() {
     drop(monitor);
 }
 
+/// #s593: the app shell lays its list out again whenever the layout width changes, also when the
+/// page hears no `resize`. Safari's page zoom on an iPad took an 834px page to 725 and fired none,
+/// and the list stayed a column where the order gives the drawer. Here the case swallows every
+/// `resize` before the page's own listeners run, then narrows the window into the drawer and
+/// widens it back: the list must follow both ways.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_arranges_its_list_when_the_width_changes_without_a_resize_event() {
+    use headless_chrome::protocol::cdp::Page;
+    let _serial = serial();
+    let base = base("appshell-arrange-no-resize");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000593".to_string();
+    stores.claude_session(&sid, &harness::long_session(6, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3171, &base, Some(&stores), true);
+    let port = monitor.port;
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1280.0, 900.0);
+    // A capture listener on the window runs before the page's own `resize` listeners, and stops them.
+    tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+        source: "window.__resizeSwallowed = 0; addEventListener('resize', function (e) { window.__resizeSwallowed++; e.stopImmediatePropagation(); }, true);".to_string(),
+        world_name: None,
+        include_command_line_api: None,
+        run_immediately: None,
+    })
+    .expect("the resize swallower is installed");
+    monitor.pair(&tab);
+    let url = format!("http://127.0.0.1:{port}/?session={sid}");
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    let mounted = "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0";
+    harness::until(
+        &tab,
+        mounted,
+        "the app shell to mount the fixture",
+        std::time::Duration::from_secs(30),
+        "document.body.innerText.slice(0, 120)",
+    );
+    let state = "(function(){ var a = document.getElementById('app'), s = document.querySelector('#app > .sidebar') || document.querySelector('.sidebar'); return { w: innerWidth, drawer: a.classList.contains('app-drawer'), rail: a.classList.contains('sidebar-off'), list: s ? Math.round(s.getBoundingClientRect().width) : null, swallowed: window.__resizeSwallowed }; })()";
+    let seen = format!("JSON.stringify({state})");
+    let column = "(function(){ var a = document.getElementById('app'); return innerWidth === 1280 && !a.classList.contains('app-drawer') && !a.classList.contains('sidebar-off'); })()";
+    harness::until(
+        &tab,
+        column,
+        "the list a column beside the session at 1280px",
+        std::time::Duration::from_secs(10),
+        &seen,
+    );
+    let start = harness::probe(&tab, state);
+    assert!(
+        start["list"].as_i64().unwrap_or(0) >= 232,
+        "at 1280px the list is a column of its own width: {start}"
+    );
+
+    // Narrowed under the rail's 554px with a mouse: the order gives the drawer.
+    harness::resize(&tab, 500.0, 900.0);
+    harness::until(
+        &tab,
+        "innerWidth === 500",
+        "the window to reach 500px",
+        std::time::Duration::from_secs(10),
+        &seen,
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('app-drawer')",
+        "the list to become the drawer with no resize event heard",
+        std::time::Duration::from_secs(5),
+        &seen,
+    );
+    let narrow = harness::probe(&tab, state);
+    assert!(
+        narrow["swallowed"].as_i64().unwrap_or(0) > 0,
+        "the browser did send resize, and the page's listeners never heard it: {narrow}"
+    );
+
+    // Widened back: the column again.
+    harness::resize(&tab, 1280.0, 900.0);
+    harness::until(
+        &tab,
+        column,
+        "the list a column again at 1280px with no resize event heard",
+        std::time::Duration::from_secs(10),
+        &seen,
+    );
+    drop(monitor);
+}
+
 /// #96: the session list is resizable — a handle on the sidebar's own right edge, a width that
 /// is clamped, remembered across a reload, and reset by a double-click. The head reflows with
 /// it: the controls that share a row with the brand only when there is room for them.
