@@ -9,7 +9,7 @@ You will serve some static files, add one script to a page, implement six small 
 ## 1. What is in the box
 
 ```text
-mdrev-embed-1.1.86/
+mdrev-embed-1.1.87/
   README.md
   bundle/              the guest — what the reader's browser runs
     mdrev.js             the entry: an ES module exporting mountMdrev   (~510 KB)
@@ -180,14 +180,14 @@ $(brew --prefix mdrev)/bin/mdrev-v2
 
 `brew pin mdrev` holds a version while you qualify the next one; `brew info tanghong123/tap/mdrev` says which is current.
 
-**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.86`, with two tarballs: `mdrev-1.1.86-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.86.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
+**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.87`, with two tarballs: `mdrev-1.1.87-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.87.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
 
 ```bash
-curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.86/mdrev-embed-1.1.86.tar.gz
-tar xzf mdrev-embed-1.1.86.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.86
+curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.87/mdrev-embed-1.1.87.tar.gz
+tar xzf mdrev-embed-1.1.87.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.87
 ```
 
-Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.86/mdrev-cli` — with node on the path. The releases page lists the current version.
+Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.87/mdrev-cli` — with node on the path. The releases page lists the current version.
 
 **From source** — `bash scripts/build-release.sh` in a checkout of the repository emits both tarballs into `dist-release/public/`.
 
@@ -196,8 +196,8 @@ Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.86/mdrev-cli` — 
 Run the sample host against a git checkout that has Markdown in it:
 
 ```bash
-tar xzf mdrev-embed-1.1.86.tar.gz
-cd mdrev-embed-1.1.86
+tar xzf mdrev-embed-1.1.87.tar.gz
+cd mdrev-embed-1.1.87
 ./mdrev-v2 ~/src/your-docs/README.md --last 3   # or --root ~/src/your-docs for the whole checkout
 # mdrev-v2: README.md @ /Users/you/src/your-docs
 #   http://127.0.0.1:4600/?path=README.md&from=…&code=…
@@ -347,6 +347,7 @@ The options, all of them:
 | `phone` | the phone's layout (below, **On a phone**): `'auto'` gives it to a finger on a phone-sized screen, `'always'` whatever the device, `'never'` keeps the desktop layout | `'auto'` |
 | `shortcuts` | your own keys, for the viewer's list of keys (`?`): an array of `{mac, other?, what}`. `mac` is the keys as a Mac reader presses them, `['⌘K', '/']`, each string drawn as one key; `other` the same keys off a Mac, `['Ctrl+K', '/']`, and left out it is `mac`; `what` says what they do, `{en: 'search documents', 'zh-Hans': '搜索文档'}`, in English and, where you have it, Chinese, which falls back to English. They are drawn as text in a group of their own after the viewer's rows. List only keys your page answers around the viewer: the viewer cannot check them. A host fact, read at mount and kept through every move. The viewer's own rows follow your leave: none of the notes keys under `annotate: false`, none of the change and range keys under `review: false` (contract.md, "The host's own keys") | no host rows |
 | `personPicture(who)` | pictures of the people who write notes, for a host that has them: given `{email?, name?}`, the person as the viewer knows them, answer an image address, or `null` for none. The viewer draws a small circle before each writer's name — note cards' entries, the notes on a line, the dense list, the @ picker — with the picture, loaded lazily, or their initials where you answered `null` or the image did not load. No circle for an agent's entry, or for a name with nobody behind it (who resolved a shared thread, blame, history). The circle sits within its line, so nothing the viewer places moves. Answer at once, from what you hold: the image is the browser's to fetch, and who may see whose picture is your image route's to decide. A host fact, read at mount (contract.md, "People's pictures") | no circles, and no image asked for |
+| `star` | a star right after the document's name, for a host that keeps favourites: `{isStarred(doc), setStarred(doc, on), subscribe?(changed)}`, where `doc` is `{path, root?}`, the document on screen and the collection you named it in. The viewer asks `isStarred` at mount, at every move, when the page is shown again, and whenever you call the `changed` that `subscribe` was given (a star pressed elsewhere on your page; return what stops it), and drops an answer for a document the reader has left. A press turns the star at once and calls `setStarred`: resolve when done, reject when not, and the star goes back with a brief message; a press while one is in flight does nothing, and one before the first answer only asks again. The star is a piece of the bar like any other: the bar measures itself with it and folds for it as for any other piece. It does not print. A host fact, read at mount (contract.md, "A star for the document") | no star, and nothing asked |
 | `onPrint()` | you print your own way. The toolbar keeps its print control either way — putting THIS document on paper is what you embedded the viewer for; this says only who carries it out. Left out, the guest prints the document alone (below) | the guest prints |
 | `credentials` | the `fetch` credentials mode; `'same-origin'` sends your session cookie | `'same-origin'` |
 | `root` | **which collection these documents belong to**, your own opaque string, sent with every request. A host that holds more than one store of anything needs it: a path stops identifying a document as soon as two projects each have a `README.md`. One store, leave it out | none |

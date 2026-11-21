@@ -46,6 +46,14 @@
 .mdrev-host .doc li.task-list-item {list-style:none}
 .mdrev-host .doc li.task-list-item>input[type=checkbox]:first-child, .mdrev-host .doc li.task-list-item>p:first-child>input[type=checkbox]:first-child {vertical-align:-.1em;margin:0 .4em 0 -1.35em}
 .mdrev-host .doc li>ul, .mdrev-host .doc li>ol {margin:.3em 0 .35em}
+.mdrev-host .doc ol ol {list-style-type:lower-alpha}
+.mdrev-host .doc ol ol ol {list-style-type:lower-roman}
+.mdrev-host .doc ol ol ol ol {list-style-type:decimal}
+.mdrev-host .doc ol ol ol ol ol {list-style-type:lower-alpha}
+.mdrev-host .doc ol ol ol ol ol ol {list-style-type:lower-roman}
+.mdrev-host .doc ol ol ol ol ol ol ol {list-style-type:decimal}
+.mdrev-host .doc ol ol ol ol ol ol ol ol {list-style-type:lower-alpha}
+.mdrev-host .doc ol ol ol ol ol ol ol ol ol {list-style-type:lower-roman}
 .mdrev-host .doc li>p {margin-bottom:.45em}
 .mdrev-host .doc blockquote {border-left:2px solid var(--rule);color:var(--ink-soft);margin-left:0;padding:.1em 0 .1em 1.15em;font-style:italic}
 .mdrev-host .doc blockquote p:last-child {margin-bottom:0}
@@ -350,6 +358,7 @@
 .mdrev-host .build-in-menu {color:var(--ink-faint);font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px}
 .mdrev-host .history-picks {border-bottom:1px solid var(--rule-soft);flex-wrap:wrap;gap:10px;padding:8px 12px 2px}
 .mdrev-host .topbar.tier-1 .topbar-row {--tier:1}
+.mdrev-host .topbar.tier-1 .topbar-tools {position:static}
 .mdrev-host .topbar.tier-1 .topbar-row:not(.topbar-tools) {display:contents}
 .mdrev-host .topbar.tier-1 .outline-wrap.for-merged {margin-left:14px;display:inline-flex}
 .mdrev-host .topbar.tier-1 .topbar-tools>.outline-wrap {display:none}
@@ -366,8 +375,36 @@
 .mdrev-host .topbar.tier-5 .topbar-row {--tier:5}
 .mdrev-host .topbar.tier-3 .picker>.pick-unit, .mdrev-host .topbar.tier-4 .picker>.pick-unit, .mdrev-host .topbar.tier-5 .picker>.pick-unit {display:none}
 .mdrev-host .topbar.tier-3 .pick-mini, .mdrev-host .topbar.tier-4 .pick-mini {display:inline-flex}
-.mdrev-host :is(.topbar.tier-4:has(.display-wrap:not([hidden])) .controls>.reading, .mdrev-host .topbar.tier-5:has(.display-wrap:not([hidden])) .controls>.reading) {display:none}
-.mdrev-host .topbar.tier-4 .display-doc, .mdrev-host .topbar.tier-5 .display-doc, .mdrev-host .topbar.tier-5 .history-picks {display:flex}
+.mdrev-host .topbar.tier-1.fold-glyphs .picker>.pick-unit {display:none}
+.mdrev-host .topbar.tier-1.fold-glyphs:not(.fold-pill) .pick-mini {display:inline-flex}
+.mdrev-host .topbar.tier-1.fold-pill .history-picks {display:flex}
+.mdrev-host .topbar.tier-1.fold-reading .topbar-row {gap:8px}
+.mdrev-host .topbar.tier-1.fold-reading .controls, .mdrev-host .topbar.tier-1.fold-reading .acts, .mdrev-host .topbar.tier-1.fold-reading .reading {gap:5px}
+.mdrev-host .topbar.tier-1.fold-reading .outline-wrap.for-merged, .mdrev-host .topbar.tier-1.fold-reading .rail-opener.for-merged {margin-left:8px}
+.mdrev-host .topbar.tier-1.fold-reading .build {margin-right:8px}
+.mdrev-host .topbar.tier-1.fold-reading .picker:before {margin-right:5px}
+.mdrev-host .topbar.tier-1.flow .topbar-tools:not(.is-inert), .mdrev-host .topbar.tier-1.flow .topbar-tools:not(.is-inert) .controls, .mdrev-host .topbar.tier-1.flow .topbar-tools:not(.is-inert) .acts, .mdrev-host .topbar.tier-1.flow .topbar-tools:not(.is-inert) .reading, .mdrev-host .topbar.tier-1.flow .topbar-tools:not(.is-inert) .picker, .mdrev-host .topbar.tier-1.flow.fold-glyphs:not(.fold-pill) .topbar-tools:not(.is-inert) .pick-mini {display:contents}
+.mdrev-host .topbar.tier-1.flow .picker:before {display:none}
+.mdrev-host .topbar.tier-1.flow {column-gap:8px;padding-inline:8px}
+.mdrev-host .topbar.tier-1.flow .rail-opener.for-merged, .mdrev-host .topbar.tier-1.flow .outline-wrap.for-merged {order:-1;margin-left:0}
+.mdrev-host .topbar.tier-1.flow .agent-pair-wrap, .mdrev-host .topbar.tier-1.flow .agent-chip-wrap {margin-left:0}
+.mdrev-host .topbar.tier-1.flow:has(.display-wrap:not([hidden])) .build {display:none}
+.mdrev-host .topbar.tier-1.flow .display-build {display:flex}
+.mdrev-host .topbar[class*=reading-out-]:has(.display-wrap:not([hidden])) .display-doc {display:flex}
+.mdrev-host .topbar.reading-out-all:has(.display-wrap:not([hidden])) .controls>.reading {display:none}
+.mdrev-host .topbar.reading-out-1:has(.display-wrap:not([hidden])) .controls>.reading>:nth-last-child(-n+1 of :not([hidden])) {display:none}
+.mdrev-host .topbar.reading-out-1 .display-doc .doc-tools>:not(:nth-last-child(-n+1 of :not([hidden]))) {display:none}
+.mdrev-host .topbar.reading-out-2:has(.display-wrap:not([hidden])) .controls>.reading>:nth-last-child(-n+2 of :not([hidden])) {display:none}
+.mdrev-host .topbar.reading-out-2 .display-doc .doc-tools>:not(:nth-last-child(-n+2 of :not([hidden]))) {display:none}
+.mdrev-host .topbar.reading-out-3:has(.display-wrap:not([hidden])) .controls>.reading>:nth-last-child(-n+3 of :not([hidden])) {display:none}
+.mdrev-host .topbar.reading-out-3 .display-doc .doc-tools>:not(:nth-last-child(-n+3 of :not([hidden]))) {display:none}
+.mdrev-host .topbar.reading-out-4:has(.display-wrap:not([hidden])) .controls>.reading>:nth-last-child(-n+4 of :not([hidden])) {display:none}
+.mdrev-host .topbar.reading-out-4 .display-doc .doc-tools>:not(:nth-last-child(-n+4 of :not([hidden]))) {display:none}
+.mdrev-host .topbar.reading-out-5:has(.display-wrap:not([hidden])) .controls>.reading>:nth-last-child(-n+5 of :not([hidden])) {display:none}
+.mdrev-host .topbar.reading-out-5 .display-doc .doc-tools>:not(:nth-last-child(-n+5 of :not([hidden]))) {display:none}
+.mdrev-host .topbar.reading-out-6:has(.display-wrap:not([hidden])) .controls>.reading>:nth-last-child(-n+6 of :not([hidden])) {display:none}
+.mdrev-host .topbar.reading-out-6 .display-doc .doc-tools>:not(:nth-last-child(-n+6 of :not([hidden]))) {display:none}
+.mdrev-host .topbar.tier-5 .history-picks {display:flex}
 .mdrev-host .topbar.tier-4 .display-wrap, .mdrev-host .topbar.tier-5 .display-wrap, .mdrev-host .topbar.set-read.tier-2 .display-wrap, .mdrev-host .topbar.set-annotate.tier-2 .display-wrap, .mdrev-host .app.is-phone .topbar .display-wrap {position:static}
 .mdrev-host .topbar.tier-4 .display-menu, .mdrev-host .topbar.tier-5 .display-menu, .mdrev-host .topbar.set-read.tier-2 .display-menu, .mdrev-host .topbar.set-annotate.tier-2 .display-menu, .mdrev-host .app.is-phone .topbar .display-menu {right:calc(8px + var(--mdv-edge-r));top:calc(100% - 6px)}
 .mdrev-host .topbar.tier-5 .controls {justify-content:flex-start;margin-left:0}
@@ -382,6 +419,8 @@
 .mdrev-host .app.is-phone .topbar .build {display:none}
 .mdrev-host .app.is-phone .topbar .display-build {display:flex}
 .mdrev-host .app.is-phone .topbar-row>.toolbar-hide {margin-left:auto}
+.mdrev-host .app.is-phone .topbar.title-3 .changes-pill[data-count], .mdrev-host .topbar.tier-1.fold-count .changes-pill[data-count] {padding:2px 9px;font-size:0}
+.mdrev-host .app.is-phone .topbar.title-3 .changes-pill[data-count]:before, .mdrev-host .topbar.tier-1.fold-count .changes-pill[data-count]:before {content:attr(data-count);content:attr(data-count) / "";font-size:12px}
 .mdrev-host .app.is-phone .topbar:not(.counters-out) .topbar-row:has(>.bar-counter)>.doc-time {display:none}
 .mdrev-host .app.is-phone .topbar:not(.tier-1) .topbar-row {gap:8px;padding:0 10px}
 .mdrev-host .app.is-phone .topbar .controls {gap:6px}
@@ -400,6 +439,13 @@
 .mdrev-host .switcher-wrap:hover .file-copy, .mdrev-host .file-copy:focus-visible, .mdrev-host .file-copy.copied {opacity:1}
 .mdrev-host .file-copy:hover {color:var(--ink)}
 .mdrev-host .file-copy.copied {color:var(--ins-fg)}
+.mdrev-host .doc-star {height:22px;color:var(--ink-faint);cursor:pointer;background:0 0;border:none;border-radius:5px;flex:none;align-self:center;align-items:center;margin-left:1px;padding:0 3px;line-height:0;transition:color .12s;display:inline-flex}
+.mdrev-host .doc-star svg {fill:none}
+.mdrev-host .doc-star:hover {color:var(--ink)}
+.mdrev-host .doc-star.on {color:var(--accent)}
+.mdrev-host .doc-star.on svg {fill:currentColor}
+.mdrev-host .doc-star[aria-disabled=true] {cursor:default}
+.mdrev-host .doc-star[data-state=unknown] {opacity:.55}
 .mdrev-host .controls {flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:8px;margin-left:auto;display:flex}
 .mdrev-host .topbar-tools {align-items:center;position:relative}
 .mdrev-host .topbar-tools .picker {padding:0}
@@ -990,7 +1036,8 @@
 .mdrev-host .ann-reply {border-left:2px solid var(--rule-soft);color:var(--ink-soft);overflow-wrap:anywhere;margin-top:5px;padding-left:8px;font-size:11.5px}
 .mdrev-host .ann-reply-who {color:var(--ink);margin-right:5px;font-weight:600}
 .mdrev-host .ann-reply-box {flex-wrap:wrap;align-items:flex-end;gap:5px;margin-top:6px;display:flex}
-.mdrev-host .ann-reply-box textarea {min-height:0;font:inherit;background:var(--bg-soft);color:var(--ink);border:1px solid var(--rule);resize:vertical;border-radius:6px;flex:100%;margin:0;padding:3px 7px;font-size:11.5px}
+.mdrev-host .ann-reply-box textarea {font:inherit;background:var(--bg-soft);color:var(--ink);border:1px solid var(--rule);resize:vertical;border-radius:6px;flex:100%;margin:0;padding:3px 7px;font-size:11.5px}
+.mdrev-host .ann-draft>textarea, .mdrev-host .ann-reply-box textarea {box-sizing:border-box;field-sizing:content;min-height:calc(3lh + 12px);max-height:min(8lh + 12px,30dvh);padding-block:5px;overflow-y:auto}
 .mdrev-host .ann-reply-box button {white-space:nowrap}
 .mdrev-host .ann-unresolve-row {justify-content:flex-end;margin-top:6px;display:flex}
 .mdrev-host .ann-unresolve {color:var(--ink-soft);border:1px solid var(--rule);white-space:nowrap;background:0 0;border-radius:5px;padding:1px 8px;font-size:11.5px}
@@ -1172,7 +1219,7 @@
 .mdrev-host, .mdrev-host .app, .mdrev-host .doc {color:var(--ink)!important;background:#fff!important}
 .mdrev-host, .mdrev-host, .mdrev-host .app, .mdrev-host .main {height:auto!important;min-height:0!important;display:block!important;overflow:visible!important}
 .mdrev-host .scrollpane {height:auto!important;margin-top:0!important;scroll-padding-top:0!important;overflow:visible!important}
-.mdrev-host .topbar, .mdrev-host .rail, .mdrev-host .file-rail, .mdrev-host .outline, .mdrev-host .mdv-canvas-bar, .mdrev-host .toast, .mdrev-host .ann-orphans, .mdrev-host .blame-pop, .mdrev-host .ann-invite-group, .mdrev-host .ann-margin, .mdrev-host .gutter-margin, .mdrev-host .find, .mdrev-host .phone-shift, .mdrev-host .note-step, .mdrev-host .print-notice, .mdrev-host .print-wait {display:none!important}
+.mdrev-host .topbar, .mdrev-host .rail, .mdrev-host .file-rail, .mdrev-host .outline, .mdrev-host .mdv-canvas-bar, .mdrev-host .toast, .mdrev-host .ann-orphans, .mdrev-host .blame-pop, .mdrev-host .ann-invite-group, .mdrev-host .ann-margin, .mdrev-host .gutter-margin, .mdrev-host .find, .mdrev-host .phone-shift, .mdrev-host .note-step, .mdrev-host .print-notice, .mdrev-host .print-wait, .mdrev-host .doc-star {display:none!important}
 .mdrev-host .mdv-canvas.is-picked {border-color:var(--rule);outline:none}
 .mdrev-host .doc .mdv-block-ins:not(tr):not(code), .mdrev-host .doc .mdv-block-del:not(tr):not(code), .mdrev-host .doc .mdv-block-mod:not(tr):not(code), .mdrev-host .doc .mdv-block-shape:not(tr):not(code) {border-left:3px solid #0000;margin-left:-10px!important;padding-left:7px!important}
 .mdrev-host .doc .mdv-block-ins:not(tr):not(code) {border-left-color:var(--ins-fg)}
@@ -1383,6 +1430,22 @@
 .mdrev-host .app.is-phone .mdv-mode-seg .mdv-edit-more {border-radius:0 5px 5px 0;position:relative}
 .mdrev-host .app.is-phone .mdv-mode-seg .mdv-edit-more:not(.is-idle):after {content:"";width:100%;height:44px;margin-top:-22px;position:absolute;top:50%;left:0}
 .mdrev-host .app.is-phone .mdv-auto-commit {gap:0;padding:1px 4px}
+@media (pointer:coarse) {
+.mdrev-host .topbar .ctl:before, .mdrev-host .topbar .view-seg button:before, .mdrev-host .topbar .pick:not(.pick-pop .pick):before, .mdrev-host .topbar .file-copy:before, .mdrev-host .topbar .doc-star:before, .mdrev-host .topbar .note-hint-x:before {content:"";position:absolute;inset:-5px -4px}
+.mdrev-host .topbar .file-copy:before {right:0}
+.mdrev-host .topbar .doc-star:before {left:0;right:0}
+.mdrev-host .topbar .doc-star+.file-copy:before {left:0}
+.mdrev-host .topbar .view-seg button:before {left:0;right:0}
+.mdrev-host .topbar .view-seg button:first-child:before {left:-4px}
+.mdrev-host .topbar .view-seg button:last-child:before {right:-4px}
+.mdrev-host .topbar .pick:not(.pick-pop .pick), .mdrev-host .topbar .file-copy, .mdrev-host .topbar .doc-star, .mdrev-host .topbar .note-hint-x {position:relative}
+.mdrev-host .app:not(.is-phone) .topbar .mdv-mode-seg.in-title {overflow:visible}
+.mdrev-host .app:not(.is-phone) .topbar .mdv-mode-seg.in-title>:first-child {border-radius:6px 0 0 6px}
+.mdrev-host .app:not(.is-phone) .topbar .mdv-mode-seg.in-title>:last-child {border-radius:0 6px 6px 0}
+.mdrev-host .app:not(.is-phone) .topbar .mdv-mode-seg.in-title .mdv-mode-option, .mdrev-host .app:not(.is-phone) .topbar .mdv-mode-seg.in-title .mdv-edit-more {position:relative}
+.mdrev-host .app:not(.is-phone) .topbar .mdv-mode-seg.in-title .mdv-mode-option:before, .mdrev-host .app:not(.is-phone) .topbar .mdv-mode-seg.in-title .mdv-edit-more:not(.is-idle):before {content:"";position:absolute;inset:-5px 0}
+.mdrev-host .app:not(.is-phone) .topbar .mdv-mode-seg.in-title>.mdv-mode-option:first-child:before {left:-4px}
+}
 .mdrev-host .app.is-phone .mdv-auto-commit-words {display:none}
 .mdrev-host .mdv-edit-card-diff {gap:6px;display:grid}
 .mdrev-host .mdv-edit-card-side {background:var(--bg-inset,#00000008);border-radius:8px;gap:2px;padding:6px 8px;display:grid}
@@ -1443,14 +1506,29 @@
 .mdrev-host .doc .mdv-src-cell {overflow-wrap:normal}
 .mdrev-host .doc .mdv-src-line {overflow-wrap:break-word}
 .mdrev-host .doc .mdv-src-item {white-space:pre-wrap;overflow-wrap:anywhere}
-.mdrev-host .doc .mdv-src .mdv-src-box {box-sizing:border-box;vertical-align:top;width:100%;font-family:var(--read-mono);background:var(--code-bg);border:1px solid var(--rule-soft);tab-size:2;border-radius:8px;padding:.85em 1em;font-size:.82em;line-height:1.55;display:inline-block}
-.mdrev-host .doc[data-discuss-live] .mdv-discuss {margin:.5em 0 1.2em;padding-left:32px;list-style:none}
+.mdrev-host .doc .mdv-src .mdv-src-box {box-sizing:border-box;vertical-align:top;width:100%;font-family:var(--read-mono);background:var(--code-bg);border:1px solid var(--rule-soft);tab-size:2;border-radius:8px;padding:.85em 1em;font-size:.82em;font-style:normal;line-height:1.55;display:inline-block}
+.mdrev-host .doc .mdv-src-box .mdv-mk-quote {margin-left:calc(-1em - 1px)}
+@media screen {
+.mdrev-host .doc[data-discuss-live] {--discuss-tint:color-mix(in srgb, var(--accent) 6%, var(--bg));--discuss-edge:inset 3px 0 0 color-mix(in srgb, var(--accent) 65%, transparent)}
+.mdrev-host .doc[data-discuss-live] .mdv-discuss-head {background:var(--discuss-tint);box-shadow:var(--discuss-edge);color:var(--accent);letter-spacing:.04em;border:0;border-radius:8px 8px 0 0;align-items:baseline;gap:10px;margin:2em 0 0;padding:12px 16px 0 14px;font-size:14px;font-weight:600;line-height:22px;display:flex}
+.mdrev-host .doc[data-discuss-live] .mdv-discuss-head:before {content:"?";background:var(--accent);width:18px;height:18px;color:var(--on-accent);letter-spacing:0;border-radius:50%;flex:none;place-items:center;font:700 12px/1 system-ui,sans-serif;display:grid}
+.mdrev-host .doc[data-discuss-live][data-discuss-settled] .mdv-discuss-head:before {content:"✓";background:var(--ink-faint)}
+.mdrev-host .doc[data-discuss-live] .mdv-discuss-head:is(.mdv-src, .mdrev-host :has(.mdv-src)):before {content:none}
+.mdrev-host .doc[data-discuss-live] .mdv-discuss {background:var(--discuss-tint);box-shadow:var(--discuss-edge);border-radius:0 0 8px 8px;margin:0 0 1.6em;padding:2px 16px 10px 44px;list-style:none}
+.mdrev-host .doc[data-discuss-live] .mdv-discuss-between {background:var(--discuss-tint);box-shadow:var(--discuss-edge);border-radius:0;margin:0;padding:6px 16px 6px 44px}
+.mdrev-host .doc[data-discuss-live]>pre.shiki.mdv-discuss-between {--code-bg:var(--discuss-tint);border:0}
+.mdrev-host .doc[data-discuss-live][data-mdv-editing]>pre.mdv-discuss-between.mdv-src-code {border:0;padding-block:1lh}
+.mdrev-host .doc[data-discuss-live][data-mdv-editing]>pre.mdv-discuss-between:has(>code) {border:0;padding-block:1lh}
+.mdrev-host .doc[data-discuss-live][data-mdv-editing]>pre.mdv-discuss-between.mdv-src-fenced {padding-block:0;top:0}
+.mdrev-host .doc[data-discuss-live][data-mdv-editing]>pre.mdv-discuss-between.mdv-src-fenced:before {content:none}
+.mdrev-host .doc[data-discuss-live]>.mdv-discuss:has(~.mdv-discuss) {border-radius:0;margin-bottom:0}
+}
 .mdrev-host .doc .mdv-discuss-item {padding:.12em 0;transition:color .12s}
 .mdrev-host .doc .mdv-discuss-item>p {margin:.2em 0}
 .mdrev-host .doc[data-discuss-live] .mdv-discuss-item>input[type=checkbox], .mdrev-host .doc[data-discuss-live] .mdv-discuss-item>p:first-child>input[type=checkbox] {display:none}
 .mdrev-host .doc .mdv-discuss-item.is-checked {color:var(--ink-faint)}
 .mdrev-host .doc[data-discuss-live] .mdv-discuss>li:not(.mdv-discuss-item):not(.task-list-item) {list-style:outside}
-.mdrev-host .discuss-check {z-index:6;left:calc(var(--pn-text,0px) + 6px);border:1.5px solid color-mix(in srgb, var(--ink) 32%, transparent);background:var(--bg);width:18px;height:18px;color:var(--on-accent);cursor:pointer;border-radius:5px;place-items:center;padding:0;transition:background .12s,border-color .12s;display:grid;position:absolute}
+.mdrev-host .discuss-check {z-index:6;left:calc(var(--pn-text,0px) + 14px);border:1.5px solid color-mix(in srgb, var(--ink) 32%, transparent);background:var(--bg);width:18px;height:18px;color:var(--on-accent);cursor:pointer;border-radius:5px;place-items:center;padding:0;transition:background .12s,border-color .12s;display:grid;position:absolute}
 .mdrev-host .discuss-check:before {content:"";border-radius:8px;position:absolute;inset:-6px}
 .mdrev-host .discuss-check:hover {border-color:var(--accent)}
 .mdrev-host .discuss-check:focus-visible {outline:2px solid var(--accent);outline-offset:2px}
@@ -1461,7 +1539,7 @@
 .mdrev-host .discuss-check, .mdrev-host .discuss-check svg, .mdrev-host .doc .mdv-discuss-item {transition:none}
 }
 @media print {
-.mdrev-host .doc[data-discuss-live] .mdv-discuss {padding-left:1.35em;list-style:outside}
+.mdrev-host .doc[data-discuss-live] .mdv-discuss {margin:.5em 0 1.2em;padding-left:1.35em;list-style:outside}
 .mdrev-host .doc .mdv-discuss-item.is-checked {color:inherit}
 .mdrev-host .doc[data-discuss-live] .mdv-discuss-item>input[type=checkbox], .mdrev-host .doc[data-discuss-live] .mdv-discuss-item>p:first-child>input[type=checkbox] {display:revert}
 }

@@ -200,6 +200,51 @@ there are no circles, no image is asked for, and the page is exactly as
 before. mdrev-v2 passes none; the team service passes one that points at
 its own route for its people's pictures.
 
+## A star for the document
+
+A host that keeps a reader's favourites can let them star the document they
+are reading, to come back to, in one optional mount option, `star`:
+
+```ts
+star?: {
+  isStarred(doc: {path: string; root?: string}): Promise<boolean>;
+  setStarred(doc: {path: string; root?: string}, on: boolean): Promise<void>;
+  subscribe?(changed: () => void): () => void;
+}
+```
+
+The viewer then draws a star right after the document's name in its top
+bar, a real button: an outline, filled once the document is starred, with
+`aria-pressed` and a label that says what a press does ("Add to favourites",
+"Remove from favourites", in the viewer's language). `doc` is the document on
+screen: its `path`, and `root`, the collection's name as you gave it (the
+`root` option, or `open`'s `other.root`), left out where you gave none.
+
+- **Asking.** The viewer calls `isStarred` at mount, at every move to another
+  document, when the page is shown again (another browser tab or window), and
+  whenever you call the `changed` function `subscribe` was given: call it when
+  the answer may have changed somewhere the viewer cannot see, such as a star
+  pressed elsewhere on your page or the viewer's pane brought to the front
+  again, and return a function that stops it. Each answer is tied to the
+  document it was asked for: one that arrives after the reader moved on is
+  dropped. A rejection leaves the star as it was. Until the first answer the
+  star is drawn dim, and a press only asks again, so a first ask that failed
+  does not leave a star that cannot be pressed.
+- **Pressing.** A press turns the star at once and calls `setStarred`.
+  Resolve when it is done; reject when it is not, and the viewer puts the star
+  back as it was and says briefly that it could not. A press while one is in
+  flight does nothing.
+- **Room.** The star is a piece of the bar like any other, drawn from the
+  first render, so its width counts: the bar measures itself with it and folds
+  for it as for any other piece. So a bar with a star may take the next fold
+  where the same bar without one would not; it never cuts the document's name
+  from the first fold on. The star does not print.
+
+The list is yours: the viewer keeps no favourites and shows none. It is a
+host fact, read at mount. Left out, there is no star, nothing is asked, and
+the bar is exactly as before. mdrev-v2 passes none; the team service passes
+one backed by the reader's favourites there.
+
 ## The routes
 
 All under one prefix, say `/docs/api/mdrev`. Every request carries the host's own session (`credentials: 'same-origin'`), and the host decides what a session may read and write; mdrev never sees a filesystem. Errors are JSON `{"error": "…"}` with the status that fits: 400 for a bad request, 403 for a session that may not, 404 for a document or note that is not there, and 500 for one the host cannot read now. A host whose storage stops answering should say so rather than hold the request. `mdrev-v2` answers 500 `"<folder> is not answering: …"` on these routes while a collection's reads have not returned within 2 s, until they do (#s1231): the page and `pages/open` for a document, `text` of the file as it stands, `stat`, `asset`, a plain folder's `tree` and `documents`, `reveal`, and opening an editing session. Nothing else is promised. A plain folder's `recent-changes`, asked with no document or one at its top, says `skipped`. `events` and the list of collections answer without it, and `resolve` gives null for a target it cannot look at. What it asks Git or `mdrev-cli` for is not covered, and for a document in a subfolder may answer 500 first. An editing session already open takes a push and holds its write, its state saying why, and a save or a page leaving answers with that state. A picture pasted into it is answered 500 "is not answering" too, and is not saved. A paste whose own write was under way when the collection stopped answering may still leave its `.assets/` folder, or the picture in it, on the disk; the editing commit does not add it.
@@ -683,7 +728,7 @@ One JSON object per note, the same on the wire and in the sidecar:
 }
 ```
 
-- `id` — the host may mint one; the CLI does.
+- `id` — the host may mint one; the CLI does. Its shape is `(ann|shr|dft)-[\w-]+`: `ann-`, `shr-` or `dft-` and then letters, digits, `_` or `-`. The local viewer refuses an `annotations/<id>` request whose id has any other shape before it reads the document's notes: 400, or 404 where no route takes that request. The team service takes only `ann-` and `shr-` ids on those routes, so there too no id starting with `-` reaches mdrev-cli.
 - `rev` — the git commit the note was taken on; `WORKTREE` for an uncommitted file. `blob` — a content snapshot of the document as the reviewer saw it, written to the git object store; with it a note is mapped *exactly* through later edits, without it every reader falls back to searching for the quote. The CLI writes both.
 - `fromRev` — only on a note on struck text (`anchor.side: "from"`): the older revision of the redline it was taken on. Its offsets index that revision's text, and `blob` is that text; `rev` stays the revision on screen. The viewer sends it and the CLI snapshots it.
 - `anchor` — `exact` is the quoted text; `start`/`end` are offsets into the Markdown **source** (`space: "source"`); `prefix`/`suffix` are the 32 characters around it; `trail` is the heading path; `side` is `to` for text in the newer revision of a redline and `from` for struck text, which exists only in the older one. A host filing a note by hand may send `exact` alone with zero offsets; the CLI locates it.

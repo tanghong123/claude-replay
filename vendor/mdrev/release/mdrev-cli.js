@@ -672,7 +672,7 @@ var CatFile = class {
         return;
       const body3 = this.buf.subarray(nl + 1, nl + 1 + size).toString("utf8");
       this.buf = this.buf.subarray(nl + 1 + size + 1);
-      this.settle({ ok: true, body: body3 });
+      this.settle(parts[1] === "blob" ? { ok: true, body: body3 } : { ok: false });
     }
   }
   settle(r) {
@@ -884,7 +884,7 @@ var GitBlobSource = class {
     const batched = await this.batch.read(commit, name);
     if (batched !== null)
       return batched;
-    return this.git("show", `${commit}:${name}`);
+    return this.git("cat-file", "blob", `${commit}:${name}`);
   }
   /**
    * The name `readBlob(rev, path)` reads `path` by: the name the document
@@ -1328,7 +1328,7 @@ ${staged}`;
    * moved on to since it was resolved.
    */
   async documentsAt(rev) {
-    const tree = await this.git("ls-tree", "-r", "--name-only", notAnOption(rev));
+    const tree = await this.git("ls-tree", "-r", "--name-only", `${notAnOption(rev)}^{commit}`);
     return [...new Set(tree.split("\n").filter((p2) => p2.endsWith(".md")))].sort();
   }
   async documents() {
@@ -34365,6 +34365,10 @@ function markDiscussion(root5) {
   if (!lists.length)
     return;
   addClass(head2, "mdv-discuss-head");
+  const last = lists.at(-1);
+  for (const el of kids.slice(kids.indexOf(head2) + 1, kids.indexOf(last)))
+    if (!lists.includes(el))
+      addClass(el, "mdv-discuss-between");
   for (const list4 of lists) {
     addClass(list4, "mdv-discuss");
     for (const li2 of list4.children) {
@@ -36115,11 +36119,18 @@ function storeAddressRefused(remote, branch) {
     return `the review store's address may not start with "-"`;
   if (branch.startsWith("-"))
     return `the review store's ref may not start with "-"`;
+  const helper = /^(?:[A-Za-z0-9][A-Za-z0-9+.-]*)?::/.exec(remote);
+  if (helper)
+    return `the review store's address may not name a git remote helper ("${helper[0]}"): git would run a program for it`;
+  const scheme = /^([A-Za-z0-9][A-Za-z0-9+.-]*):\/\//.exec(remote)?.[1];
+  if (scheme !== void 0 && !STORE_SCHEMES.has(scheme))
+    return `the review store's address may not use "${scheme}://": git would hand it to a program, git-remote-${scheme} \u2014 name the store by https, ssh or a path`;
   const where = remoteHost(remote);
   if (where && (where.host.startsWith("-") || where.user?.startsWith("-")))
     return `the review store's address may not name a user or host that starts with "-"`;
   return null;
 }
+var STORE_SCHEMES = /* @__PURE__ */ new Set(["file", "git", "ssh", "git+ssh", "ssh+git", "http", "https"]);
 function readPointerOrNull(root5) {
   try {
     return readPointer(root5);
