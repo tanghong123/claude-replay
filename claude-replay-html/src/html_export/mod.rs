@@ -2494,7 +2494,7 @@ fn build_page(
     </div>
     <div class="searchbox">
       <span class="mag">⌕</span>
-      <input id="q" placeholder="Search transcript" title="⏎ next · ⇧⏎ previous · a uatow: prefix scopes by type — o(…) narrows the tools, e.g. o(B): for Bash; w requires whole words (e.g. tw:) · a leading : searches the literal text" autocomplete="off">
+      <input id="q" placeholder="Search transcript" title="⏎ next · ⇧⏎ previous · a uatow: prefix scopes by type — o(…) narrows the tools, e.g. o(B): for Bash; w requires whole words (e.g. tw:) · a leading : searches the literal text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
       <span id="qcount"></span>
       <span id="qprev" class="qnav" title="Previous match (⇧⏎)">▲</span>
       <span id="qnext" class="qnav" title="Next match (⏎)">▼</span>
@@ -4180,6 +4180,27 @@ mod tests {
             named(&build_bundle_shell("t", "root", false, PageStore::Memory)),
             Vec::<&str>::new()
         );
+    }
+
+    /// #s636: the classic page's search field takes no help with its words, as the app shell's two
+    /// do (#s635, `ui.rs` `the_search_fields_take_no_correction`): Return steps through hits, and a
+    /// query is never prose, so a correction or a capital first letter only gets in the way.
+    #[test]
+    fn the_classic_search_field_takes_no_correction() {
+        let html = build_shell("My session", "root-9f3d", false, false);
+        let field = html
+            .split("<input id=\"q\" ")
+            .nth(1)
+            .and_then(|s| s.split('>').next())
+            .expect("the classic page's search field");
+        for attr in [
+            r#"autocomplete="off""#,
+            r#"autocorrect="off""#,
+            r#"autocapitalize="off""#,
+            r#"spellcheck="false""#,
+        ] {
+            assert!(field.contains(attr), "#q carries {attr}: {field}");
+        }
     }
 
     /// The multi-file shell carries `data-multi`/`data-root` and no inline snapshot;
