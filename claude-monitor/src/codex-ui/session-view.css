@@ -2256,6 +2256,7 @@
 #sessionView:where(.pl-coarse.pl-max-h-500):not(.preview-off) .transcript{padding-right:0}
 #sessionView:where(.pl-coarse.pl-max-h-500):not(.preview-off) .workspace>.topbar{padding-right:6px}
 #sessionView:where(.pl-coarse.pl-max-h-500):not(.preview-off) .phone-dock{right:calc(50% + 12px)}
+#sessionView:where(.pl-coarse.pl-max-h-500):not(.preview-off) .jump-to-bottom{bottom:calc(var(--phone-dock-h) + 10px)}
 #sessionView:where(.pl-coarse.pl-max-h-500):not(.preview-off) .workspace .composer.production-show{right:calc(50% + 12px)}
 #sessionView:where(.pl-coarse.pl-max-h-500):not(.preview-off) .header-search-cluster>.navigator-options,#sessionView:where(.pl-coarse.pl-max-h-500):not(.preview-off) .header-search-cluster>.search-suggest{right:calc(50% + 12px);width:min(380px,calc(50% - 24px - max(0px, env(safe-area-inset-left,0px) - var(--pl-cut-left,0px))))}
 #sessionView:where(.pl-coarse.pl-max-h-500):not(.preview-off) .info-popover{right:calc(50% + 8px);width:min(420px,calc(50% - 16px - max(0px, env(safe-area-inset-left,0px) - var(--pl-cut-left,0px))))}

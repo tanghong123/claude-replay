@@ -2125,6 +2125,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #sessionView:not(.preview-off) .transcript{padding-right:0}
   #sessionView:not(.preview-off) .workspace>.topbar{padding-right:6px}
   #sessionView:not(.preview-off) .phone-dock{right:calc(50% + 12px)}
+  /* #s645: in the half column the dock's pill (Turns, Tasks, Agents, Aa from the left) reaches the
+     middle of its row, which #s41 left free for the jump to the latest on the whole width, so the
+     pill covered it (measured: a tap at its centre met Agents). There it rises above the dock, as
+     upright. */
+  #sessionView:not(.preview-off) .jump-to-bottom{bottom:calc(var(--phone-dock-h) + 10px)}
   #sessionView:not(.preview-off) .workspace .composer.production-show{right:calc(50% + 12px)}
   #sessionView:not(.preview-off) .header-search-cluster>.navigator-options,#sessionView:not(.preview-off) .header-search-cluster>.search-suggest{right:calc(50% + 12px);width:min(380px,calc(50% - 24px - env(safe-area-inset-left,0px)))}
   #sessionView:not(.preview-off) .info-popover{right:calc(50% + 8px);width:min(420px,calc(50% - 16px - env(safe-area-inset-left,0px)))}

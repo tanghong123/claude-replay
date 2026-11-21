@@ -25987,6 +25987,113 @@ fn a_phone_held_sideways_opens_the_pane_as_a_second_column() {
     );
 }
 
+/// #s645 (the app's layout walk on kit 1.547.0, iPhone 17 Pro held sideways): with the pane beside the
+/// session, a reader scrolled up was offered the jump to the latest in the middle of the dock's row,
+/// where the session's half column puts the pill (a tap at the jump's centre met Agents). A shown jump
+/// is reached by a tap at its centre there, on a phone whose list is a drawer (the walk's 874x402) and
+/// on a wide one with its list hidden.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_held_sideways_with_the_pane_beside_reaches_the_jump_to_the_latest() {
+    let _serial = serial();
+    let (_m, _b, tab) = drawer_world(
+        2761,
+        "pane-beside-jump",
+        874,
+        402,
+        false,
+        30,
+        Some(harness::SIDEWAYS_INSETS),
+    );
+    let facts = "(function(){ var j = document.getElementById('jumpToBottom'), r = j.getBoundingClientRect(), ws = document.querySelector('#sessionView>.workspace').getBoundingClientRect(), pill = document.getElementById('dockPill'), p = pill ? pill.getBoundingClientRect() : null, at = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return JSON.stringify({ show: j.classList.contains('show'), jump: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)], ws: [Math.round(ws.left), Math.round(ws.width)], pill: p ? [Math.round(p.left), Math.round(p.top), Math.round(p.right), Math.round(p.bottom)] : null, hit: !!at && j.contains(at), at: at ? String(at.id || at.className || at.tagName).slice(0, 40) : null }); })()";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
+            .unwrap_or_default()
+    };
+    let jump_is_reached = |what: &str| {
+        phone_tap(&tab, "#previewBtn");
+        harness::until(
+            &tab,
+            "!document.getElementById('app').classList.contains('preview-off')",
+            "the pane open",
+            Duration::from_secs(5),
+            "document.getElementById('app').className",
+        );
+        harness::until(
+            &tab,
+            "(function(){ var w = document.querySelector('#sessionView>.workspace').getBoundingClientRect().width; return Math.abs(w - innerWidth / 2) <= 2; })()",
+            "the session at the half width beside the pane",
+            Duration::from_secs(5),
+            "document.querySelector('#sessionView>.workspace').getBoundingClientRect().width + ' of ' + innerWidth",
+        );
+        harness::scroll_by(&tab, harness::Surface::AppShell, -600);
+        harness::until(
+            &tab,
+            "document.getElementById('jumpToBottom').classList.contains('show')",
+            "the jump to the latest shown to a reader scrolled up",
+            Duration::from_secs(5),
+            facts,
+        );
+        // Its show animation settles before the hit test.
+        let mut seen = read();
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(100));
+            let now = read();
+            if now["jump"] == seen["jump"] {
+                break;
+            }
+            seen = now;
+        }
+        assert_eq!(
+            seen["hit"], true,
+            "{what}: a tap at the shown jump's centre reaches it, not the dock's pill: {seen}"
+        );
+        phone_tap(&tab, "#jumpToBottom");
+        harness::until(
+            &tab,
+            "!document.getElementById('jumpToBottom').classList.contains('show')",
+            "the jump taken, the reader at the latest",
+            Duration::from_secs(5),
+            facts,
+        );
+        phone_tap(&tab, "#closePreview");
+        harness::until(
+            &tab,
+            "document.getElementById('app').classList.contains('preview-off')",
+            "the pane closed",
+            Duration::from_secs(5),
+            "document.getElementById('app').className",
+        );
+    };
+    jump_is_reached("874x402, the list a drawer");
+    // A wide phone shows its list as a column; hidden, the session and the pane sit side by side.
+    harness::phone(&tab, 956, 440);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    harness::until(
+        &tab,
+        "innerWidth === 956",
+        "the wide phone held sideways",
+        Duration::from_secs(5),
+        "innerWidth",
+    );
+    if harness::eval(
+        &tab,
+        "document.getElementById('app').classList.contains('phone-column-off')",
+    ) != serde_json::Value::Bool(true)
+    {
+        let h = page_point(&tab, "the handle", "(function(){ var r = document.getElementById('drawerHandle').getBoundingClientRect(); return JSON.stringify([r.left + r.width / 2, r.top + r.height / 2]); })()");
+        harness::finger_tap(&tab, h[0], h[1]);
+        harness::until(
+            &tab,
+            "document.getElementById('app').classList.contains('phone-column-off')",
+            "the list hidden",
+            Duration::from_secs(5),
+            "document.getElementById('app').className",
+        );
+    }
+    jump_is_reached("956x440, the list hidden");
+}
+
 /// #s49, the owner: "when filter menu is on the screen, automatically hide the keyboard, and always keep
 /// the search box open. When keyboard is up, always hide the filter menu" — then "the filter icon may
 /// only get visual changes when it is on", and, after closing the menu, "the layout of the search pill
