@@ -1936,7 +1936,7 @@
 :where(#sessionView) .tool-type-option.tool-sub2{padding-left:24px}
 :where(#sessionView) .tool-type-option{grid-template-columns:9px 15px minmax(0,1fr) auto auto;gap:7px}
 :where(#sessionView) .tool-type-option .tool-tw{width:9px}
-:where(#sessionView) .tool-type-option.on .scope-check{border-color:var(--primary);background:var(--primary);box-shadow:0 1px 2px color-mix(in srgb,var(--primary) 22%,transparent)}
+:where(#sessionView) .tool-type-option.on .scope-check{border-color:var(--primary-fill);background:var(--primary-fill);box-shadow:0 1px 2px color-mix(in srgb,var(--primary) 22%,transparent)}
 :where(#sessionView) .tool-type-option.on .scope-check:after{opacity:1}
 :where(#sessionView) .header-searchbox .find-whole{font:9.5px/1 var(--mono);letter-spacing:.02em;padding:0 5px;color:var(--faint)}
 :where(#sessionView) .header-searchbox .find-whole.on{color:var(--primary);background:color-mix(in srgb,var(--primary) 12%,transparent)}
@@ -2009,7 +2009,7 @@
 :where(#sessionView) .search-suggest-letter{font:11px var(--mono);color:var(--primary);text-align:center}
 :where(#sessionView) .search-suggest-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 :where(#sessionView) .search-suggest-count{color:var(--faint);font:10px var(--mono)}
-:where(#sessionView) .search-suggest-row.on .scope-check{border-color:var(--primary);background:var(--primary)}
+:where(#sessionView) .search-suggest-row.on .scope-check{border-color:var(--primary-fill);background:var(--primary-fill)}
 :where(#sessionView) .search-suggest-row.on .scope-check:after{opacity:1}
 :where(#sessionView) .search-suggest-empty{padding:8px;color:var(--faint);font-size:11px}
 :where(#sessionView) .pane-scrim,:where(#sessionView) .phone-only,:where(#sessionView) .phone-pane-menu,:where(#sessionView) .task-scrim,:where(#sessionView) .phone-dock,:where(#sessionView) .turn-subtitle{display:none}
@@ -2359,3 +2359,4 @@
 :where(#sessionView) .smallbtn.sv-primary,:where(#sessionView) .composer:not(.readonly) .send,:where(#sessionView) .compose-fab:not(.disabled){background:var(--primary-fill);border-color:var(--primary-fill)}
 :where(#sessionView) .smallbtn.sv-primary:hover,:where(#sessionView) .composer:not(.readonly) .send:hover,:where(#sessionView) .compose-fab:not(.disabled):hover{background:var(--primary-fill-hover)}
 :where(#sessionView) .filter-badge{background:var(--primary-fill)}
+:where(#sessionView) .scope-option.on .scope-check{border-color:var(--primary-fill);background:var(--primary-fill)}

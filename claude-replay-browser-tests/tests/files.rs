@@ -2168,6 +2168,11 @@ fn the_preview_s_download_reads_in_either_theme() {
                 "{theme}: the Download's fill is opaque, so its label is read against it alone: {r}"
             );
             assert_eq!(
+                r["inkAlpha"].as_f64(),
+                Some(1.0),
+                "{theme}: the Download's label is opaque: {r}"
+            );
+            assert_eq!(
                 r["hovered"], r["hover"],
                 "{theme}: the pointer is where the read says: {r}"
             );

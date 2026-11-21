@@ -5362,7 +5362,8 @@ pub const PHONE_PROBE: &str = r#"(function(){
 /// changing. The fill is the element's own background, which must be opaque (`alpha` says), so the
 /// contrast needs no layer beneath it; the label is the element's `color`, which its text and its
 /// `currentColor` icon both take. Chrome writes a `color-mix` as `color(srgb r g b)` in 0..1, which
-/// is read as such. The pointer goes away to the window's top left corner.
+/// is read as such. The pointer goes away to the window's top left corner. The element's `opacity`
+/// is not read: a caller reading a control that fades (a disabled send) must check it itself.
 pub fn label_contrast(
     tab: &headless_chrome::Tab,
     selector: &str,
