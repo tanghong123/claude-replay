@@ -350,8 +350,10 @@ body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){displa
 /* #s41: never on a touch screen. WebKit spends a tap on a HOVER that shows content — here the row's
    action fading in from nothing — and sends no click, so choosing a session from an iPhone's drawer
    took two taps (measured on iOS 26: the first tap's touchend came and its click never did). A
-   hidden session keeps its action, which brings it back. */
-@media(hover:none){.tree-row:not(.is-hidden) .tree-action:not(:focus-visible){opacity:0}}
+   hidden session keeps its action, which brings it back. #s644: and an action nobody can see takes
+   no tap either. At opacity 0 it still caught a finger at the row's end, between the name and its
+   age, and hid the session the reader meant to open; the tap goes to the row now. */
+@media(hover:none){.tree-row:not(.is-hidden) .tree-action:not(:focus-visible){opacity:0;pointer-events:none}}
 /* …and a glyph button keeps no hover tint there: iOS leaves `:hover` on whatever was tapped last, so a
    closed Info or Aa still looked pressed (and, after a turn of the phone, whatever now sat under the
    old touch). An open control says so by its own state — and a LIT one (`.on`, the session filter

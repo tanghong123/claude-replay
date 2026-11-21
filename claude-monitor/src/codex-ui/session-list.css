@@ -159,7 +159,7 @@
 :where(#sessionList) .tree-action:hover{background:var(--hover);color:var(--ink)}
 :where(#sessionList) .tree-row:hover .tree-action,:where(#sessionList) .tree-row:focus-within .tree-action,:where(#sessionList) .tree-row.is-hidden .tree-action,:where(#sessionList) .tree-action:focus-visible{opacity:1}
 @media(hover:none){
-:where(#sessionList) .tree-row:not(.is-hidden) .tree-action:not(:focus-visible){opacity:0}
+:where(#sessionList) .tree-row:not(.is-hidden) .tree-action:not(:focus-visible){opacity:0;pointer-events:none}
 }
 :where(#sessionList) .tree-row.project .tree-action{margin-left:auto}
 :where(#sessionList) .tree-row.is-hidden{opacity:.55}

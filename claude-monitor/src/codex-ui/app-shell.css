@@ -361,7 +361,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .tree-action:hover{background:var(--hover);color:var(--ink)}
 .tree-row:hover .tree-action,.tree-row:focus-within .tree-action,.tree-row.is-hidden .tree-action,.tree-action:focus-visible{opacity:1}
 @media(hover:none){
-.tree-row:not(.is-hidden) .tree-action:not(:focus-visible){opacity:0}
+.tree-row:not(.is-hidden) .tree-action:not(:focus-visible){opacity:0;pointer-events:none}
 }
 @media(hover:none){
 :is(#sessionView,#app) :is(.find-nav,.search-clear,.search-chip-remove,.scope-chip,.reading-step button,.renderer-head,.process-surface-head,.command-head,.activity-row:not(.expanded),.renderer-children-toggle,.process-children-toggle,.process-section-toggle,.process-bulk-toggle,.composer-close,.preview-tab:not(.on),.preview-tab-close,.outline-turn-row:not(.current),.outline-turn-head,.outline-agent,.filter-option,.artifact-row,.navbtn:not(.on),.prompt-expand,.session-heading>#sessionTitle:not([aria-expanded="true"])):hover{background:transparent}

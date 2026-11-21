@@ -20489,6 +20489,144 @@ fn a_phone_switch_closes_the_drawer_and_veils_the_load() {
     );
 }
 
+/// #s644: on a touch screen a session row's hide action is not drawn (#s41: opacity 0, since WebKit
+/// spends a tap on a hover that shows content), and since #s644 it takes no tap either. A finger at
+/// the row's end, where the unseen action sits between the name and its age, opens the session the
+/// reader meant and hides nothing; on 1.547.0 it reached the action and hid the session, with the
+/// toast "Hidden". A hidden row keeps its action, drawn, and a finger still brings the session back.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_tap_where_a_row_s_unseen_hide_action_sits_never_hides_the_session() {
+    let _serial = serial();
+    let (m, _b, tab) = phone_world(2842, "phone-unseen-hide", 390, 844);
+    // The builders date both sessions in a fixed past hour (Idle): the drawer lists them only with
+    // every bucket shown.
+    harness::show_every_session(&tab, &m.url(&format!("?ui=app&session={PHONE_SID}")));
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('mobile-detail') && !!document.querySelector('.transcript .turn.user')",
+        "the phone back on its session",
+        Duration::from_secs(20),
+        "document.getElementById('app').className",
+    );
+    // Every hide or restore the page asks the server for, in order.
+    harness::eval(&tab, "(function () { window.__ignores = []; var real = window.fetch; window.fetch = function (input, init) { var u = String(input && input.url || input); if (u.indexOf('/api/ignore') >= 0) window.__ignores.push(u); return real.apply(this, arguments); }; return 1; })()");
+    let ignores =
+        |tab: &headless_chrome::Tab| harness::eval(tab, "JSON.stringify(window.__ignores)");
+    // Where a finger at an element's centre lands, and how that element is drawn.
+    let probe = |tab: &headless_chrome::Tab, sel: &str, row: &str| -> serde_json::Value {
+        let text = harness::eval(tab, &format!("(function () {{ var a = document.querySelector('{sel}'); if (!a) return JSON.stringify(null); var b = a.getBoundingClientRect(), x = b.left + b.width / 2, y = b.top + b.height / 2, hit = document.elementFromPoint(x, y), cs = getComputedStyle(a); return JSON.stringify({{ x: x, y: y, opacity: Number(cs.opacity), events: cs.pointerEvents, onAction: !!hit && (hit === a || a.contains(hit)), inRow: !!hit && !!hit.closest('{row}'), at: hit ? (hit.className || hit.tagName) : null }}); }})()"));
+        serde_json::from_str(text.as_str().unwrap_or("null")).unwrap_or(serde_json::Value::Null)
+    };
+
+    // 1. The other session's row, its action unseen: a finger there opens that session.
+    phone_tap(&tab, "#drawerHandle");
+    harness::until(
+        &tab,
+        DRAWER_OPEN,
+        "the drawer",
+        Duration::from_secs(5),
+        DRAWER_STATE,
+    );
+    let other = format!(".tree-row.session[data-session=\"{PHONE_OTHER}\"]");
+    let hide = format!("{other} .tree-action[data-ignore-op=\"add\"]");
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('{hide}')"),
+        "the other session's row with its hide action",
+        Duration::from_secs(10),
+        "document.querySelectorAll('.tree-row.session').length",
+    );
+    let at = probe(&tab, &hide, &other);
+    assert_eq!(
+        at["opacity"].as_f64(),
+        Some(0.0),
+        "on a touch screen a row's hide action is not drawn (#s41): {at}"
+    );
+    assert!(
+        at["inRow"] == true && at["onAction"] == false,
+        "a finger where the unseen action sits reaches the row, not the action (#s644): {at}"
+    );
+    harness::finger_tap(&tab, at["x"].as_f64().unwrap(), at["y"].as_f64().unwrap());
+    harness::until(
+        &tab,
+        &format!("new URL(location.href).searchParams.get('session') === '{PHONE_OTHER}' && document.getElementById('app').classList.contains('mobile-detail')"),
+        "the tap to open the session the reader meant, shutting the drawer",
+        Duration::from_secs(10),
+        "location.search + ' | ' + document.getElementById('app').className + ' | ignores ' + JSON.stringify(window.__ignores)",
+    );
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(
+        ignores(&tab).as_str(),
+        Some("[]"),
+        "the tap hid nothing (#s644)"
+    );
+    assert!(
+        harness::eval(&tab, &format!("!!document.querySelector('{other}') && !document.querySelector('{other}').classList.contains('is-hidden')")).as_bool() == Some(true),
+        "the session is still listed, and not as hidden"
+    );
+
+    // 2. A hidden row keeps its action, drawn and reachable: a finger brings the session back.
+    phone_tap(&tab, "#drawerHandle");
+    harness::until(
+        &tab,
+        DRAWER_OPEN,
+        "the drawer again",
+        Duration::from_secs(5),
+        DRAWER_STATE,
+    );
+    let first = format!(".tree-row.session[data-session=\"{PHONE_SID}\"]");
+    // Hidden by the row's own button, pressed by script (the desktop's way in; a finger cannot reach it).
+    harness::eval(
+        &tab,
+        &format!(
+            "document.querySelector('{first} .tree-action[data-ignore-op=\"add\"]').click(); 1"
+        ),
+    );
+    harness::until(
+        &tab,
+        &format!("!document.querySelector('{first}')"),
+        "the first session to leave the list once hidden",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__ignores)",
+    );
+    harness::eval(
+        &tab,
+        "document.querySelector('#sessionFilter [data-include-hidden]').click(); 1",
+    );
+    let restore = format!("{first}.is-hidden .tree-action[data-ignore-op=\"remove\"]");
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('{restore}')"),
+        "the hidden session listed, dimmed, under Include hidden",
+        Duration::from_secs(10),
+        &format!("String(!!document.querySelector('{first}'))"),
+    );
+    // The filter's sheet closes, so nothing lies over the row.
+    if harness::eval(&tab, "(function () { var s = document.getElementById('sessionFilter'); return !!s && !s.hidden && s.getClientRects().length > 0; })()").as_bool() == Some(true) {
+        harness::eval(&tab, "document.getElementById('filterBtn').click(); 1");
+    }
+    let at = probe(&tab, &restore, &first);
+    assert!(
+        at["opacity"].as_f64() == Some(1.0) && at["onAction"] == true,
+        "a hidden row's restore action is drawn and a finger reaches it: {at}"
+    );
+    harness::finger_tap(&tab, at["x"].as_f64().unwrap(), at["y"].as_f64().unwrap());
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('{first}') && !document.querySelector('{first}').classList.contains('is-hidden')"),
+        "a finger on the restore action to bring the session back",
+        Duration::from_secs(10),
+        "JSON.stringify(window.__ignores)",
+    );
+    let asked = ignores(&tab);
+    let asked = asked.as_str().unwrap_or("");
+    assert!(
+        asked.contains("add=") && asked.contains("remove="),
+        "the only hide is the scripted one, and the restore went to the server: {asked}"
+    );
+}
+
 /// A phone with a screenshot in a process, opened in the right pane (the full-screen sheet) by one
 /// tap on its thumbnail (#s223), and pinched to zoom it in. Returns the browser, the tab, the pane's
 /// stage, the point at its centre and the zoom that fits.

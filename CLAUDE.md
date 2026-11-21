@@ -322,7 +322,8 @@ row, a delivered file a 36px chip (at 14px WebKit's tap adjustment gave its tap 
 which folded the row), and the jump is offered only where something is below. **On a touch screen hover reveals nothing** (#s41): WebKit spends a tap on a hover that SHOWS
 content — a session row's action fading in from nothing — and sends no click, so choosing a session
 from an iPhone's drawer took two taps (the first tap's `touchend` came and its click never did); the
-action stays hidden there (`@media(hover:none)`), and since iOS leaves `:hover` on whatever was tapped
+action stays hidden there (`@media(hover:none)`) and takes no tap (#s644: at opacity 0 it still caught a
+finger at the row's end and hid the session; a hidden row's restore action stays drawn and tappable), and since iOS leaves `:hover` on whatever was tapped
 last, a glyph button takes its tint from `aria-expanded` rather than hover, and every control a phone
 keeps on screen after a tap whose resting background is clear (the search box's steps, clear and chip
 ✕, the funnel, fold heads and toggles, Aa's steps, the preview's tabs, outline and sidebar rows, the
