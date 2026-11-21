@@ -12848,13 +12848,14 @@ fn the_app_shell_arranges_its_list_when_the_width_changes_without_a_resize_event
         "document.body.innerText.slice(0, 120)",
     );
     let state = "(function(){ var a = document.getElementById('app'), s = document.querySelector('#app > .sidebar') || document.querySelector('.sidebar'); return { w: innerWidth, drawer: a.classList.contains('app-drawer'), rail: a.classList.contains('sidebar-off'), list: s ? Math.round(s.getBoundingClientRect().width) : null, swallowed: window.__resizeSwallowed }; })()";
+    let seen = format!("JSON.stringify({state})");
     let column = "(function(){ var a = document.getElementById('app'); return innerWidth === 1280 && !a.classList.contains('app-drawer') && !a.classList.contains('sidebar-off'); })()";
     harness::until(
         &tab,
         column,
         "the list a column beside the session at 1280px",
         std::time::Duration::from_secs(10),
-        state,
+        &seen,
     );
     let start = harness::probe(&tab, state);
     assert!(
@@ -12869,14 +12870,14 @@ fn the_app_shell_arranges_its_list_when_the_width_changes_without_a_resize_event
         "innerWidth === 500",
         "the window to reach 500px",
         std::time::Duration::from_secs(10),
-        state,
+        &seen,
     );
     harness::until(
         &tab,
         "document.getElementById('app').classList.contains('app-drawer')",
         "the list to become the drawer with no resize event heard",
         std::time::Duration::from_secs(5),
-        state,
+        &seen,
     );
     let narrow = harness::probe(&tab, state);
     assert!(
@@ -12891,7 +12892,7 @@ fn the_app_shell_arranges_its_list_when_the_width_changes_without_a_resize_event
         column,
         "the list a column again at 1280px with no resize event heard",
         std::time::Duration::from_secs(10),
-        state,
+        &seen,
     );
     drop(monitor);
 }
