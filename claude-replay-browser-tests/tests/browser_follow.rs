@@ -29367,7 +29367,11 @@ fn write_facts(tab: &headless_chrome::Tab) -> serde_json::Value {
 /// monitor's page says the monitor needs pairing; a paired monitor's page, opened with its token,
 /// writes; and a browser without the token may not write: on Linux, where a paired gate lets a
 /// same-user browser read without the token, its switch says this browser is not paired; on macOS,
-/// which cannot verify the peer, the gate refuses it the page.
+/// which cannot verify the peer, the gate refuses it the page. #s630: on Linux the help offers that
+/// browser, at this machine, pairing from the page (Pair this browser, to `/pair`, which offers to
+/// show a code here) with the terminal command as the other way; a browser reaching the monitor by
+/// a tailnet name is elsewhere, so it is offered no `/pair`, whose code it could not see, and is told
+/// the command on the monitor's machine that pairs a device elsewhere.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_write_switch_says_why_it_is_off_for_this_reader() {
@@ -29412,13 +29416,13 @@ fn the_write_switch_says_why_it_is_off_for_this_reader() {
     );
     drop(unpaired);
 
-    // A paired monitor that, on Linux, lets a same-user browser read without the token.
-    let paired = harness::Monitor::spawn_with(
+    // A paired monitor that, on Linux, lets a same-user browser read without the token, and that
+    // a tailnet name reaches too (`phone.test`, mapped to the loopback by the remote browser).
+    let paired = harness::Monitor::spawn_remote_with(
         harness::Kind::V1,
         3161,
         &base,
         Some(&stores),
-        true,
         &[("AGENT_MONITOR_TOKEN_ONLY", "0")],
     );
     paired.pair(&tab);
@@ -29470,6 +29474,67 @@ fn the_write_switch_says_why_it_is_off_for_this_reader() {
             help["help"].as_str().is_some_and(|h| h.contains("agent-monitor --pair")
                 && !h.contains("printed in its terminal")),
             "the help names the command that pairs a browser, not an address nobody printed: {help}"
+        );
+        let offer = harness::eval(
+            &other,
+            "(function(){ var h = document.getElementById('writeHelp'); return JSON.stringify({ buttons: [...h.querySelectorAll('.write-pair button')].map(function (b) { return b.textContent; }), code: h.textContent.includes('shows a code on this machine'), terminal: h.textContent.includes('Or run this in a terminal on this machine') }); })()",
+        );
+        let offer: serde_json::Value =
+            serde_json::from_str(offer.as_str().unwrap_or("{}")).unwrap_or_default();
+        assert!(
+            offer["buttons"] == serde_json::json!(["Pair this browser"])
+                && offer["code"] == true
+                && offer["terminal"] == true,
+            "at this machine the help offers pairing from the page first, the terminal as the other way: {offer}"
+        );
+        harness::eval(
+            &other,
+            "document.querySelector('#writeHelp .write-pair button').click(); 'ok'",
+        );
+        harness::until(
+            &other,
+            "location.pathname === '/pair' && !!document.getElementById('ask') && /Show a code/.test(document.getElementById('ask').textContent)",
+            "Pair this browser to open /pair, which offers to show a code on this machine",
+            Duration::from_secs(20),
+            "location.pathname + ' | ' + (document.body ? document.body.innerText.slice(0, 300) : '')",
+        );
+
+        let rule = format!(
+            "--host-resolver-rules=MAP {} 127.0.0.1",
+            harness::REMOTE_HOST
+        );
+        let (_remote_browser, remote) =
+            harness::chrome_with_tab(&[rule.as_str(), "--no-proxy-server"]);
+        harness::resize(&remote, 1280.0, 900.0);
+        remote
+            .navigate_to(&paired.remote_url(&format!("?ui=app&session={WRITE_SID}")))
+            .unwrap();
+        remote.wait_until_navigated().unwrap();
+        harness::until(
+            &remote,
+            "document.body && document.body.dataset.write === 'browser' && !!document.getElementById('writeReason')",
+            "a browser reaching the monitor by a tailnet name, without the token, told it is not paired",
+            Duration::from_secs(20),
+            "document.body && document.body.dataset.write",
+        );
+        harness::eval(
+            &remote,
+            "document.getElementById('writeSwitch').click(); 'ok'",
+        );
+        let elsewhere = harness::eval(
+            &remote,
+            "(function(){ var h = document.getElementById('writeHelp'); return JSON.stringify({ shown: !h.hidden, text: h.textContent, offers: h.querySelectorAll('.write-pair, .write-pair button').length }); })()",
+        );
+        let elsewhere: serde_json::Value =
+            serde_json::from_str(elsewhere.as_str().unwrap_or("{}")).unwrap_or_default();
+        assert!(
+            elsewhere["shown"] == true
+                && elsewhere["offers"] == 0
+                && elsewhere["text"].as_str().is_some_and(|t| t
+                    .contains("agent-monitor --pair-phone")
+                    && t.contains("on the monitor's machine")
+                    && !t.contains("on this machine")),
+            "a reader elsewhere is offered no /pair and told what pairs a device elsewhere: {elsewhere}"
         );
     } else {
         let refused = harness::eval(

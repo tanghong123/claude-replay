@@ -767,7 +767,9 @@ var mobileShell;
 // `here` is the help for a reader at the monitor's own machine, who pairs from the page
 // (design/pair-from-the-page.md, #s618 and #s619): its button opens `/pair`, where the monitor shows
 // a code on this machine to type in. On a monitor not yet paired that pairs the monitor too, which
-// the help says before the button, as `/pair` says again before it asks.
+// the help says before the button, as `/pair` says again before it asks. `help` is for a reader
+// elsewhere, whom `/pair` would show a code on a screen they cannot see (#s630): a browser there
+// pairs the way a phone does, from a code the monitor's machine prints.
 const WRITE_NEED = {
   monitor: {
     line: "Needs a paired monitor: <code>agent-monitor --pair</code>",
@@ -778,7 +780,7 @@ const WRITE_NEED = {
     line: "This browser is not paired with the monitor",
     // A monitor a LaunchAgent starts prints no address to its log (#s204): `--pair` in a terminal
     // hands off to the running monitor and prints the address that carries the token.
-    help: "<b>This browser is not paired</b><p>The monitor is paired, but this browser holds no pairing token, so the monitor would refuse what it sends. Run this in a terminal on this machine: it prints the address that pairs a browser, and opens it in the default one.</p><code>agent-monitor --pair</code>",
+    help: "<b>This browser is not paired</b><p>The monitor is paired, but this browser holds no pairing token, so the monitor would refuse what it sends. Run this in a terminal on the monitor's machine: it shows a QR code and a short code that pair a browser on another device, to open or type in here.</p><code>agent-monitor --pair-phone</code>",
     here: "<b>This browser is not paired</b><p>The monitor is paired, but this browser holds no pairing token, so the monitor would refuse what it sends. The monitor shows a code on this machine to type into its page.</p><p class='write-pair'></p><p>Or run this in a terminal on this machine: it prints the address that pairs a browser, and opens it in the default one.</p><code>agent-monitor --pair</code>",
   },
   host: {

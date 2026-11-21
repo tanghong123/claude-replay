@@ -2127,6 +2127,22 @@ impl Monitor {
     /// The name is trusted on the port the monitor GETS, which is not `port` when that one is
     /// held (#s495).
     pub fn spawn_remote(kind: Kind, port: u16, base: &Path, stores: Option<&Stores>) -> Monitor {
+        Self::spawn_remote_with(kind, port, base, stores, &[])
+    }
+
+    /// [`Monitor::spawn_remote`] with more of the monitor's environment (`extra`, set after the
+    /// harness's own, so it can turn `AGENT_MONITOR_TOKEN_ONLY` back off).
+    pub fn spawn_remote_with(
+        kind: Kind,
+        port: u16,
+        base: &Path,
+        stores: Option<&Stores>,
+        extra: &[(&str, &str)],
+    ) -> Monitor {
+        let extra: Vec<(String, String)> = extra
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
         Self::spawn_inner(
             kind,
             port,
@@ -2135,7 +2151,9 @@ impl Monitor {
             true,
             &|bound| {
                 let trusted = format!("{REMOTE_HOST}:{bound}");
-                vec![("AGENT_MONITOR_TRUSTED_HOSTS".to_string(), trusted)]
+                let mut env = vec![("AGENT_MONITOR_TRUSTED_HOSTS".to_string(), trusted)];
+                env.extend(extra.iter().cloned());
+                env
             },
             &[],
         )
