@@ -406,6 +406,8 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .session-filter-options .scope-option[role="radio"] .scope-check{border-radius:50%}
 .session-filter-options .scope-option.arrange-app{height:auto;min-height:30px;align-items:start;padding-top:5px;padding-bottom:5px}
 .session-filter-options .scope-option.disabled{opacity:.55;cursor:not-allowed}
+.session-filter-options [data-group-part]{display:none}
+.session-filter-options [data-group-action] .icon{width:16px;height:16px;color:var(--sub)}
 .arrange-text{display:flex;flex-direction:column;gap:1px;min-width:0}
 .arrange-note{font-size:10.5px;line-height:13px;color:var(--faint);white-space:normal}
 .arrange-note:empty{display:none}
@@ -538,11 +540,14 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 #app:not(.phone-column-off)>:where(.session-view){grid-column:2;grid-row:1;min-width:0}
 #app.phone-column-off>.sidebar{display:none}
 #app>.drawer-scrim{display:none}
-#app .side-head{flex:none;height:auto;min-height:0;padding:4px 6px;flex-wrap:nowrap;align-items:center;column-gap:2px}
+#app .side-head{flex:none;height:auto;min-height:0;padding:4px 6px;flex-wrap:nowrap;align-items:center;column-gap:0}
 #app .side-head>.brand{display:none}
 #app .side-head>.head-actions{flex:0 0 auto;margin-left:auto;flex-wrap:nowrap}
-#app .side-head .iconbtn{width:32px;height:44px}
-#app:not(.phone-column-off) .column-switch{display:flex;flex:none;gap:2px}
+#app .side-head .iconbtn{width:44px;height:44px;flex:none}
+#app .side-head>.head-actions{gap:0}
+#app .side-head :is(#collapseBtn,#expandBtn){display:none}
+#app .session-filter-options [data-group-part]:not([data-flat]){display:block}
+#app:not(.phone-column-off) .column-switch{display:flex;flex:none;gap:0}
 .column-switch .iconbtn{position:relative;display:grid;place-items:center;border-radius:9px;background:transparent;color:var(--sub)}
 .column-switch .iconbtn.on{background:var(--hover);color:var(--ink)}
 .column-switch-count{position:absolute;top:2px;right:-1px;min-width:14px;height:14px;padding:0 3px;border-radius:7px;background:var(--hover);color:var(--sub);font:600 9px/14px var(--mono);text-align:center}
