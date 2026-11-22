@@ -3288,19 +3288,66 @@ pub fn renderer_verdict(tab: &headless_chrome::Tab) -> String {
 /// filter" 4 times on a loaded Mac. Once this tab has left for the icon, no page of the app in this
 /// tab holds the old filter when the seed lands. (Another tab of the origin still could.)
 fn seed_every_bucket(tab: &headless_chrome::Tab, origin: &str) {
+    seed_storage(
+        tab,
+        origin,
+        &[("am-prod-session-filter", r#"["recent","blocked","idle"]"#)],
+    );
+}
+
+/// Write each of `keys` (a storage name and the string stored under it) in `origin`'s storage, from
+/// a page of that origin that runs none of the app: one of its public icons, which the gate serves
+/// unpaired. The caller navigates next, and the page it opens reads them; [`assert_storage_held`]
+/// then checks it did (#s660).
+///
+/// For the reason [`seed_every_bucket`] gives (#s658): a page of the app reads its remembered
+/// choices once as it loads and writes all of them back whenever it saves one, so a key written
+/// under a page of the app loaded before it can be written over before the next page reads it.
+/// Once this tab has left for the icon, no page of the app in this tab holds the old value.
+pub fn seed_storage(tab: &headless_chrome::Tab, origin: &str, keys: &[(&str, &str)]) {
     tab.navigate_to(&format!("{}/icon-192.png", origin.trim_end_matches('/')))
         .unwrap();
     tab.wait_until_navigated().unwrap();
+    let keys_json = serde_json::to_string(keys).unwrap();
     let wrote = eval(
         tab,
-        "(function(){ if (location.pathname !== '/icon-192.png') return 'on ' + location.pathname; try { localStorage.setItem('am-prod-session-filter', JSON.stringify(['recent','blocked','idle'])); return 'ok'; } catch (e) { return 'refused: ' + e; } })()",
+        &format!("(function(){{ if (location.pathname !== '/icon-192.png') return 'on ' + location.pathname; try {{ {keys_json}.forEach(function (kv) {{ localStorage.setItem(kv[0], kv[1]); }}); return 'ok'; }} catch (e) {{ return 'refused: ' + e; }} }})()"),
     );
     assert_eq!(
         wrote,
         "ok",
-        "the session filter seed (#202) is written on the icon, {}",
+        "the storage seed {keys_json} is written on the icon, {}",
         tab.get_url()
     );
+}
+
+/// Panic, naming the key, unless the page the tab has just loaded holds each of `keys` as
+/// [`seed_storage`] wrote it (#s660): read once the page has loaded, which is after the app read
+/// it. A JSON array is compared as a set, since the app writes a remembered set back in its own
+/// order.
+pub fn assert_storage_held(tab: &headless_chrome::Tab, keys: &[(&str, &str)]) {
+    for (key, want) in keys {
+        let held = eval(
+            tab,
+            &format!("(function(){{ try {{ return String(localStorage.getItem({})); }} catch (e) {{ return 'unreadable: ' + e; }} }})()", serde_json::to_string(key).unwrap()),
+        );
+        let held = held.as_str().unwrap_or_default().to_string();
+        let as_set = |text: &str| -> Option<Vec<String>> {
+            let mut items: Vec<String> = serde_json::from_str::<Vec<serde_json::Value>>(text)
+                .ok()?
+                .iter()
+                .map(|v| v.to_string())
+                .collect();
+            items.sort();
+            Some(items)
+        };
+        let same = held == *want || as_set(&held).is_some_and(|h| Some(h) == as_set(want));
+        assert!(
+            same,
+            "the seeded {key} ({want}) is not what {} holds: it reads {held}",
+            tab.get_url()
+        );
+    }
 }
 
 /// Panic, naming the seed, unless the page the tab has just loaded holds it: the remembered filter

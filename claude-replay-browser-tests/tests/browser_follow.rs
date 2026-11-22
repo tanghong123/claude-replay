@@ -25256,13 +25256,16 @@ fn drawer_world(
         harness::safe_area(&tab, insets);
     }
     m.pair(&tab);
+    // The desktop's rail is written from a page that runs none of the app (#s660): pairing leaves a
+    // page of the app, which writes its own reading of the key back whenever it saves a choice.
+    const RAIL: [(&str, &str); 1] = [("am-demo-sidebar", "0")];
     if rail {
-        harness::eval(
-            &tab,
-            "(function(){ localStorage.setItem('am-demo-sidebar', '0'); return 'ok'; })()",
-        );
+        harness::seed_storage(&tab, harness::origin_of(&m.url("")), &RAIL);
     }
     harness::show_every_session(&tab, &m.url(&format!("?ui=app&session={PHONE_SID}")));
+    if rail {
+        harness::assert_storage_held(&tab, &RAIL);
+    }
     harness::until(
         &tab,
         &format!("!!document.querySelector('.transcript .turn.user') && innerWidth === {w} && document.querySelectorAll('#app>.sidebar .tree-row.session').length > 30"),
