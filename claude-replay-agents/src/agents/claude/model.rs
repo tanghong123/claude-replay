@@ -1199,8 +1199,9 @@ const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
     // the same transcript, whose card the page draws with the schedule and prompt; firings are
     // `scheduled_task_fire`. Drawn nothing, the `todo_reminder`/`task_reminder` analogue for
     // scheduled jobs. Since client 2.1.330 (#s654) each job also carries `maxAgeMs`, its lifetime
-    // (`{id, cron, prompt, createdAt, recurring, maxAgeMs}`; one job carried four times in one
-    // session, measured 2026-11-22 on aries-black, 30 days each), as its CronCreate result does.
+    // (`{id, cron, prompt, createdAt, recurring, maxAgeMs}`; two jobs in two sessions, one carried
+    // four times and one once, measured 2026-11-22 on aries-black, 30 days each), as its CronCreate
+    // result does.
     // REVISIT: a carry naming a job id with no CronCreate earlier in its transcript
     // (a session resumed into a new file, say) is then the only trace of a live job, and a note
     // naming it ("scheduled: <cron>, carried over") is the RENDER question for the owner.
