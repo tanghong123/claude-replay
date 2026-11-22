@@ -8,7 +8,7 @@
 //! machinery that builds it. Byte-identical to the retired `parse_main`/`parse_lines` oracles
 //! (see the equivalence gates in `claude_model`/`codex_model`).
 
-use crate::engine::message::{InboxPeer, Message, QueueOpKind};
+use crate::engine::message::{Message, QueueOpKind};
 use crate::model::*;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -457,17 +457,13 @@ impl<'a> Replayer<'a> {
                     images,
                     peer,
                 } => {
-                    if let Some(InboxPeer {
-                        from,
-                        addr: Some(a),
-                        ..
-                    }) = peer.as_deref()
-                    {
-                        self.peer_names.insert(a.clone(), from.clone());
-                    }
                     // Delivered like any prompt: a queued copy is popped by the text it was
                     // queued under (#52), whether this arrived as the user record or the pickup.
-                    if let Some(pos) = self.queue.iter().position(|q| q.content == text.trim()) {
+                    // An empty text names no queued prompt (#s608), as in the `UserText` arm.
+                    let named = Some(text.trim()).filter(|t| !t.is_empty());
+                    if let Some(pos) =
+                        named.and_then(|t| self.queue.iter().position(|q| q.content == t))
+                    {
                         let item = self.queue.remove(pos);
                         if let Some(mi) = item.marker_idx {
                             self.suppress.push(mi);
@@ -483,7 +479,7 @@ impl<'a> Replayer<'a> {
                         });
                         self.out
                             .extend(images.iter().cloned().map(Block::Attachment));
-                    } else if let Some(p) = peer {
+                    } else if let Some(p) = peer.as_deref() {
                         self.out.push(Block::PeerText {
                             from: p.from.clone(),
                             mode: p.mode.clone(),

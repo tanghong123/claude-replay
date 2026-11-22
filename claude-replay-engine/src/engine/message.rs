@@ -151,8 +151,9 @@ pub enum Message {
         inbox: Box<crate::model::Inbox>,
         images: Vec<Attachment>,
         /// The session it came from, when it arrived as another session's message (#s655): a
-        /// later copy of its id is then that session's `PeerText`, as it was before the check,
-        /// and the fold learns the sender's name for its address either way.
+        /// later copy of its id is then that session's `PeerText`, as it was before the check.
+        /// The person's card carries no address, so the fold learns the sender's name only from
+        /// such a copy, which a resumed fold reads back from its committed blocks as well.
         peer: Option<Box<InboxPeer>>,
     },
     /// A message from another agent session (#s79): opens a turn like a prompt and becomes a

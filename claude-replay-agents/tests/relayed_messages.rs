@@ -178,6 +178,41 @@ fn a_sent_copy_of_a_relayed_message_stays_the_sessions_across_every_resume_point
     );
 }
 
+/// #s655: a verified message's card carries no address, so the fold learns no name for it: a
+/// message this session sends back there is named the same, cold or resumed after the card
+/// committed.
+#[test]
+fn a_reply_to_a_verified_senders_address_is_named_alike_cold_and_resumed() {
+    claude_inbox::install_key_source(zero_key);
+    let first = message("dash-41");
+    let lines = [
+        sent(&first, 1),
+        reply(1),
+        prompt("and reply to it", 2),
+        json!({
+            "type": "assistant",
+            "timestamp": "2026-10-26T08:00:02.100Z",
+            "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_r1", "name": "SendMessage",
+                        "input": {"to": "uds:/tmp/cc-socks/9.sock", "summary": "got it", "message": "On it.", "type": "message"}}]},
+        })
+        .to_string(),
+        json!({
+            "type": "user",
+            "timestamp": "2026-10-26T08:00:02.200Z",
+            "toolUseResult": {"success": true, "message": "sent"},
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_r1", "content": "{\"success\":true,\"message\":\"sent\"}"}]},
+        })
+        .to_string(),
+        reply(3),
+    ];
+    let (expected, resumed) = every_resume_point(&lines);
+    assert_eq!(inbox_ids(&expected), ["dash-41"], "{expected:#?}");
+    assert!(
+        resumed.iter().any(|&(_, committed)| committed >= 1),
+        "the test must resume after the card committed: {resumed:?}"
+    );
+}
+
 /// A live tail folds a poll at a time: the copy arriving in a later poll is still a copy.
 #[test]
 fn a_copy_arriving_in_a_later_poll_is_a_copy() {

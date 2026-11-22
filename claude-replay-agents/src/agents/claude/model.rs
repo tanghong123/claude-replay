@@ -523,7 +523,8 @@ fn push_inbox(
     else {
         return;
     };
-    if let Some((queue, suppress)) = queue {
+    // An empty text names no queued prompt (#s608), as in the fold.
+    if let Some((queue, suppress)) = queue.filter(|_| !text.trim().is_empty()) {
         if let Some(pos) = queue.iter().position(|q| q.content == text.trim()) {
             if let Some(mi) = queue.remove(pos).marker_idx {
                 suppress.push(mi);
@@ -8921,6 +8922,12 @@ mod tests {
         let mut sidechain: Value =
             serde_json::from_str(&sent("2026-11-22T08:06:00.000Z", &signed("dash-side"))).unwrap();
         sidechain["isSidechain"] = true.into();
+        let mut sidechain_pickup: Value = serde_json::from_str(&picked_up(
+            "2026-11-22T08:06:30.000Z",
+            &signed("dash-side-pickup"),
+        ))
+        .unwrap();
+        sidechain_pickup["isSidechain"] = true.into();
         let mut no_body: Value =
             serde_json::from_str(&sent("2026-11-22T08:07:00.000Z", &signed("dash-nobody")))
                 .unwrap();
@@ -8958,6 +8965,7 @@ mod tests {
                 wrapped(&signed("dash-paste"), "608f").trim(),
             ),
             sidechain.to_string(),
+            sidechain_pickup.to_string(),
             no_body.to_string(),
         ];
         let jsonl = lines.join("\n");
@@ -8996,8 +9004,8 @@ mod tests {
             .collect();
         assert_eq!(
             peers.len(),
-            6,
-            "the sent copy and the five never his: {streamed:#?}"
+            7,
+            "the sent copy and the six never his: {streamed:#?}"
         );
         assert!(peers[0].starts_with("<aries-inbox ") && peers[0].contains("id=\"dash-peer\""));
         assert!(
