@@ -31704,8 +31704,9 @@ fn a_primary_button_s_label_reads_in_either_theme() {
 
 /// #s647: on a phone an agent process is folded by the chevron at its head and every detail in it
 /// opened by the control at its right, each a 25-point glyph. A finger takes 44 points around each
-/// (the phone's target, #313), upright and held sideways: every point of that square hits the control,
-/// a point just past it does not, and a tap off the glyph inside it does what the glyph does. The
+/// (the phone's target, #313), upright and held sideways: the corners, edges and centre of that square
+/// hit the control, a point just past it does not, and a tap off the glyph inside it does what the
+/// glyph does. The
 /// glyphs are drawn at 25 points as before, and a desktop keeps its 25-point targets.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
@@ -31795,19 +31796,22 @@ fn a_phone_folds_an_agent_process_from_a_finger_s_target() {
     drop(m);
 }
 
-/// An agent process in `tab`'s session (the one `key` names, else one with a detail whose head is above
-/// the middle), its head brought to the middle of the transcript, and for
+/// An agent process in `tab`'s session (the one `key` names, else one with a detail whose box starts
+/// in view, so its head is not stuck at the top, and whose head is above the middle), its head brought
+/// to the middle of the transcript (between a fifth and four fifths of it for one already named, which
+/// a fold near the session's end can move down where no scroll can follow), and for
 /// its fold (`fold`) and expand-every-detail (`bulk`) controls: the drawn box (`w`, `h`), the glyph's
 /// centre (`cx`, `cy`), the points of the 44-point square around it that do not hit the control
 /// (`missed`, of a 3×3 grid 21 points apart), the points 24 points out that do (`beyond`), and the
 /// hit area's `::after` content.
 fn process_targets(tab: &headless_chrome::Tab, what: &str, key: Option<&str>) -> serde_json::Value {
-    let pick = "(function(){ var t = document.querySelector('.sv-session-main>.transcript'), r = t.getBoundingClientRect(); var ps = [...document.querySelectorAll('.virtual-window [data-process-surface]')].filter(function (p) { return !!p.querySelector('[data-renderer]:not(.noninteractive)') && p.querySelector('.process-surface-summary').getBoundingClientRect().top < r.top + r.height / 2; }); var p = ps.pop(); if (!p) return JSON.stringify({ miss: document.querySelectorAll('[data-process-surface]').length }); var h = p.querySelector('.process-surface-summary').getBoundingClientRect(); return JSON.stringify({ key: p.dataset.processKey, dy: Math.round(h.top + h.height / 2 - (r.top + r.height / 2)) }); })()";
+    let pick = "(function(){ var t = document.querySelector('.sv-session-main>.transcript'), r = t.getBoundingClientRect(); var ps = [...document.querySelectorAll('.virtual-window [data-process-surface]')].filter(function (p) { return !!p.querySelector('[data-renderer]:not(.noninteractive)') && p.getBoundingClientRect().top >= r.top && p.querySelector('.process-surface-summary').getBoundingClientRect().top < r.top + r.height / 2; }); var p = ps.pop(); if (!p) return JSON.stringify({ miss: document.querySelectorAll('[data-process-surface]').length }); var h = p.querySelector('.process-surface-summary').getBoundingClientRect(); return JSON.stringify({ key: p.dataset.processKey, dy: Math.round(h.top + h.height / 2 - (r.top + r.height / 2)) }); })()";
     let read = |js: &str| -> serde_json::Value {
         let raw = harness::eval(tab, js);
         serde_json::from_str(raw.as_str().unwrap_or("null"))
             .unwrap_or_else(|_| panic!("{what}: unreadable: {raw}"))
     };
+    let named = key.is_some();
     let key = match key {
         Some(key) => key.to_owned(),
         None => {
@@ -31823,6 +31827,7 @@ fn process_targets(tab: &headless_chrome::Tab, what: &str, key: Option<&str>) ->
     let surface = format!(
         "document.querySelector('[data-process-surface][data-process-key=\"' + CSS.escape({key:?}) + '\"]')"
     );
+    let (lo, hi) = if named { (0.2, 0.8) } else { (0.3, 0.7) };
     let dy = harness::eval(tab, &format!("(function(){{ var p = {surface}; if (!p) return null; var t = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(), h = p.querySelector('.process-surface-summary').getBoundingClientRect(); return Math.round(h.top + h.height / 2 - (t.top + t.height / 2)); }})()"));
     let dy = dy
         .as_i64()
@@ -31832,7 +31837,7 @@ fn process_targets(tab: &headless_chrome::Tab, what: &str, key: Option<&str>) ->
     }
     harness::until(
         tab,
-        &format!("(function(){{ var p = {surface}; if (!p) return false; var t = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(), h = p.querySelector('.process-surface-summary').getBoundingClientRect(), c = h.top + h.height / 2; return c > t.top + t.height * 0.3 && c < t.top + t.height * 0.7; }})()"),
+        &format!("(function(){{ var p = {surface}; if (!p) return false; var t = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(), h = p.querySelector('.process-surface-summary').getBoundingClientRect(), c = h.top + h.height / 2; return c > t.top + t.height * {lo} && c < t.top + t.height * {hi}; }})()"),
         &format!("{what}: the agent process's head in the middle of the transcript"),
         Duration::from_secs(10),
         &format!("(function(){{ var p = {surface}; return p ? JSON.stringify(p.querySelector('.process-surface-summary').getBoundingClientRect()) : 'gone'; }})()"),
