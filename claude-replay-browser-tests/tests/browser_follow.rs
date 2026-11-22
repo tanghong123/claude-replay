@@ -12897,6 +12897,90 @@ fn the_app_shell_arranges_its_list_when_the_width_changes_without_a_resize_event
     drop(monitor);
 }
 
+/// #s650: on a touch screen the list's height test is the media query's own (`max-height:500px`),
+/// never `innerHeight`. In the iOS app's web view the keyboard took an iPad mini held sideways from
+/// 712 points tall to 284 and back, and `innerHeight` read the short height for 60 to 90 ms after the
+/// phone query already saw the tall one: the list was laid out short as the page grew back and nothing
+/// laid it out again, so it stayed a drawer on a page where it is a column. Here the case holds
+/// `innerHeight` at the short height while the window grows back, then lets it go: the list must be a
+/// column again with the hold still on, and stay one after.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_app_shell_arranges_its_list_by_the_height_the_media_query_sees() {
+    use headless_chrome::protocol::cdp::Page;
+    let _serial = serial();
+    let base = base("appshell-arrange-short");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000650".to_string();
+    stores.claude_session(&sid, &harness::long_session(6, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3173, &base, Some(&stores), true);
+    let port = monitor.port;
+    let (_browser, tab) = harness::chrome_tab();
+    // An iPad mini held sideways: a touch screen 1133 wide, where the list is a column.
+    harness::phone(&tab, 1133, 712);
+    tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+        source: "(function(){ var real = Object.getOwnPropertyDescriptor(window, 'innerHeight') || Object.getOwnPropertyDescriptor(Window.prototype, 'innerHeight'); window.__heldHeight = null; Object.defineProperty(window, 'innerHeight', { configurable: true, get: function(){ return window.__heldHeight === null ? real.get.call(window) : window.__heldHeight; } }); })();".to_string(),
+        world_name: None,
+        include_command_line_api: None,
+        run_immediately: None,
+    })
+    .expect("the innerHeight hold is installed");
+    monitor.pair(&tab);
+    let url = format!("http://127.0.0.1:{port}/?session={sid}");
+    tab.navigate_to(&url).unwrap();
+    tab.wait_until_navigated().unwrap();
+    let mounted = "!!document.querySelector('.virtual-window') && document.querySelector('.virtual-window').children.length > 0";
+    harness::until(
+        &tab,
+        mounted,
+        "the app shell to mount the fixture",
+        std::time::Duration::from_secs(30),
+        "document.body.innerText.slice(0, 120)",
+    );
+    let state = "(function(){ var a = document.getElementById('app'); return { inner: innerHeight, short: matchMedia('(max-height:500px)').matches, coarse: matchMedia('(pointer:coarse)').matches, drawer: a.classList.contains('app-drawer'), rail: a.classList.contains('sidebar-off') }; })()";
+    let seen = format!("JSON.stringify({state})");
+    let column = "(function(){ var a = document.getElementById('app'); return !matchMedia('(max-height:500px)').matches && !a.classList.contains('app-drawer') && !a.classList.contains('sidebar-off'); })()";
+    harness::until(
+        &tab,
+        column,
+        "the list a column on a touch screen 1133 by 712",
+        std::time::Duration::from_secs(10),
+        &seen,
+    );
+    let start = harness::probe(&tab, state);
+    assert_eq!(start["coarse"], true, "the screen is a touch screen: {start}");
+
+    // The keyboard up: 284 tall, a short touch screen, where the list is the drawer.
+    harness::phone(&tab, 1133, 284);
+    harness::until(
+        &tab,
+        "matchMedia('(max-height:500px)').matches && document.getElementById('app').classList.contains('app-drawer')",
+        "the list to become the drawer on a short touch screen",
+        std::time::Duration::from_secs(10),
+        &seen,
+    );
+
+    // The keyboard down, with innerHeight still reading the short height, as the web view's did.
+    harness::probe(&tab, "(window.__heldHeight = 284, true)");
+    harness::phone(&tab, 1133, 712);
+    harness::until(
+        &tab,
+        column,
+        "the list a column again while innerHeight still reads 284",
+        std::time::Duration::from_secs(10),
+        &seen,
+    );
+    let held = harness::probe(&tab, state);
+    assert_eq!(held["inner"], 284, "innerHeight was held short: {held}");
+
+    // innerHeight catches up: the list stays a column.
+    harness::probe(&tab, "(window.__heldHeight = null, true)");
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let after = harness::probe(&tab, state);
+    assert_eq!(after["drawer"], false, "the list stays a column once innerHeight catches up: {after}");
+    drop(monitor);
+}
+
 /// #96: the session list is resizable — a handle on the sidebar's own right edge, a width that
 /// is clamped, remembered across a reload, and reset by a double-click. The head reflows with
 /// it: the controls that share a row with the brand only when there is room for them.
