@@ -753,7 +753,8 @@ fn the_app_shell_preview_pinch_zooms_an_image_on_a_phone() {
 /// #s649, found by the app's layout walk: on a phone the pane's head kept its Download and reveal 40
 /// points wide, its tab 36 tall, and the image's zoom bar 40 tall, under the 44 points a phone's
 /// targets are (#313). With an image in the pane each is a finger's 44 points, side by side without
-/// overlapping, and every point of the 3×3 grid 21 points around a control's centre hits it.
+/// overlapping, and every point of the 44-point disc around a control's centre hits it (21 points out along each axis,
+/// 15 along each diagonal: a round control is a disc).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_s_pane_controls_take_a_finger_s_44_points() {
@@ -786,7 +787,7 @@ fn a_phone_s_pane_controls_take_a_finger_s_44_points() {
     let list = serde_json::to_string(&sels).unwrap();
     let raw = eval(
         &tab,
-        &format!("(function(){{ var out = {{}}, boxes = {{}}; {list}.forEach(function (sel) {{ var e = document.querySelector(sel); if (!e || e.hidden || !e.getClientRects().length) {{ out[sel] = null; return; }} var r = e.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2; var missed = []; [-21, 0, 21].forEach(function (dx) {{ [-21, 0, 21].forEach(function (dy) {{ var h = document.elementFromPoint(cx + dx, cy + dy); if (!h || (h !== e && !e.contains(h))) missed.push([dx, dy, h ? (h.id || String(h.className) || h.tagName) : null]); }}); }}); boxes[sel] = r; out[sel] = {{ w: Math.round(r.width), h: Math.round(r.height), missed: missed, gap: null }}; }}); Object.keys(boxes).forEach(function (a) {{ var r = boxes[a]; Object.keys(boxes).forEach(function (b) {{ var o = boxes[b]; if (a === b || o.left >= r.left || o.bottom <= r.top || o.top >= r.bottom) return; var g = Math.round(r.left - o.right); if (out[a].gap === null || g < out[a].gap) out[a].gap = g; }}); }}); return JSON.stringify(out); }})()"),
+        &format!("(function(){{ var out = {{}}, boxes = {{}}; {list}.forEach(function (sel) {{ var e = document.querySelector(sel); if (!e || e.hidden || !e.getClientRects().length) {{ out[sel] = null; return; }} var r = e.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2; var missed = []; [[0, 0], [-21, 0], [21, 0], [0, -21], [0, 21], [-15, -15], [-15, 15], [15, -15], [15, 15]].forEach(function (d) {{ var dx = d[0], dy = d[1]; var h = document.elementFromPoint(cx + dx, cy + dy); if (!h || (h !== e && !e.contains(h))) missed.push([dx, dy, h ? (h.id || String(h.className) || h.tagName) : null]); }}); boxes[sel] = r; out[sel] = {{ w: Math.round(r.width), h: Math.round(r.height), missed: missed, gap: null }}; }}); Object.keys(boxes).forEach(function (a) {{ var r = boxes[a]; Object.keys(boxes).forEach(function (b) {{ var o = boxes[b]; if (a === b || o.left >= r.left || o.bottom <= r.top || o.top >= r.bottom) return; var g = Math.round(r.left - o.right); if (out[a].gap === null || g < out[a].gap) out[a].gap = g; }}); }}); return JSON.stringify(out); }})()"),
     );
     let seen: serde_json::Value = serde_json::from_str(raw.as_str().unwrap_or("null"))
         .unwrap_or_else(|_| panic!("the pane's controls: unreadable: {raw}"));
