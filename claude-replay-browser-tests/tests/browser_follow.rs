@@ -32030,3 +32030,142 @@ fn phone_process_targets_hold(seen: &serde_json::Value, what: &str) {
         );
     }
 }
+
+/// #s649, found by the app's layout walk: on a phone the find pill's steps sat 30 points wide side by
+/// side (34 by 40 in the open box), the search clear 36 by 40 beside them, and the field 32 tall, so
+/// a finger a little off a step landed on its neighbour. Each now takes the 44 points the phone's
+/// targets are (#313): upright, held sideways and on a wide phone held sideways, in the open box with a
+/// query and a chip and in the closed pill holding the query, each step, the clear, the funnel and the
+/// field are 44 points tall at least and the controls 44 wide, side by side without overlapping, every
+/// point of the 3×3 grid 21 points around a control's centre hits it, and the glyphs are drawn at the
+/// size they were (18 points for the steps, 14 for the clear). The field keeps room in the strip.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_s_find_steps_and_clear_take_a_finger_s_44_points() {
+    let _serial = serial();
+    let (m, _b, tab) = phone_world(3385, "phone-find-targets", 390, 844);
+    find_targets_hold(&tab, "upright");
+    let (_bs, side) = phone_tab(&m, 844, 390);
+    find_targets_hold(&side, "sideways");
+    let (_bw, wide) = phone_tab(&m, 932, 430);
+    find_targets_hold(&wide, "a wide phone sideways");
+    drop(m);
+}
+
+/// The measures of the controls `sels` name in `tab`: each one's box (`w`, `h`), its glyph's box
+/// (`icon`, the `.icon` inside it), the points of the 3×3 grid 21 points around its centre that do not
+/// hit it (`missed`), and how far each one's left edge is from the right edge of the one before it
+/// (`gap`, negative where they overlap). `strip` is the width of the open box's chips-and-field strip.
+fn find_targets(tab: &headless_chrome::Tab, sels: &[&str]) -> serde_json::Value {
+    let list = serde_json::to_string(sels).unwrap();
+    let raw = harness::eval(
+        tab,
+        &format!("(function(){{ var out = {{ controls: {{}} }}, prev = null; {list}.forEach(function (sel) {{ var e = document.querySelector(sel); if (!e) {{ out.controls[sel] = null; return; }} var r = e.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2, ic = e.querySelector('.icon'), ir = ic && ic.getBoundingClientRect(); var missed = []; [-21, 0, 21].forEach(function (dx) {{ [-21, 0, 21].forEach(function (dy) {{ var h = document.elementFromPoint(cx + dx, cy + dy); if (!h || (h !== e && !e.contains(h))) missed.push([dx, dy, h ? (h.id || h.className || h.tagName) : null]); }}); }}); out.controls[sel] = {{ w: Math.round(r.width), h: Math.round(r.height), icon: ir ? [Math.round(ir.width), Math.round(ir.height)] : null, missed: missed, gap: prev ? Math.round(r.left - prev.right) : null }}; prev = r; }}); var s = document.querySelector('.header-searchbox .search-field'); out.strip = s ? Math.round(s.getBoundingClientRect().width) : null; out.w = innerWidth; out.h = innerHeight; return JSON.stringify(out); }})()")
+    );
+    serde_json::from_str(raw.as_str().unwrap_or("null"))
+        .unwrap_or_else(|_| panic!("the find pill's controls: unreadable: {raw}"))
+}
+
+/// The open box with a query and a chip, then the closed pill holding it: every control a finger's 44
+/// points, side by side without overlapping, its glyph as it was; then the search ended.
+fn find_targets_hold(tab: &headless_chrome::Tab, what: &str) {
+    let (gx, gy) = phone_point(tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    phone_tap_at(tab, gx, gy);
+    harness::until(
+        tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')",
+        &format!("{what}: a tap on the search to open it"),
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    tab.type_str("u: question").unwrap();
+    tab.press_key("Enter").unwrap();
+    harness::until(
+        tab,
+        "!!document.querySelector('#searchChips [data-chip=\"scope\"]') && /[1-9]/.test(document.getElementById('transcriptSearchCount').textContent) && getComputedStyle(document.getElementById('transcriptSearchClear')).display !== 'none'",
+        &format!("{what}: the scope chip, the word's hits and the clear"),
+        Duration::from_secs(10),
+        "document.getElementById('searchChips').innerText + ' | ' + document.getElementById('transcriptSearchCount').textContent",
+    );
+    harness::pause("the open box to lay out", Duration::from_millis(300));
+    let open = find_targets(
+        tab,
+        &[
+            "#transcriptSearchClear",
+            "#findPrev",
+            "#findNext",
+            "#filterTranscriptBtn",
+        ],
+    );
+    let field = find_targets(tab, &["#transcriptSearchInput"]);
+    let input = &field["controls"]["#transcriptSearchInput"];
+    assert!(
+        input["h"].as_i64().unwrap_or(0) >= 44,
+        "{what}: the field is a finger's 44 points tall in the open box: {field}"
+    );
+    assert!(
+        input["missed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|p| p[0].as_i64() != Some(0)),
+        "{what}: a tap anywhere up and down the field's middle takes it: {field}"
+    );
+    assert!(
+        open["strip"].as_i64().unwrap_or(0) >= 80,
+        "{what}: the chips and the field keep their room in the open box: {open}"
+    );
+    find_controls_hold(&open, what, "the open box");
+    phone_tap_outside(tab);
+    harness::until(
+        tab,
+        "!document.querySelector('.header-searchbox').classList.contains('phone-open') && document.querySelector('.header-searchbox').classList.contains('has-query')",
+        &format!("{what}: a tap outside to close the box with its query"),
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    harness::pause("the closed pill to lay out", Duration::from_millis(300));
+    let closed = find_targets(tab, &["#findPrev", "#findNext"]);
+    find_controls_hold(&closed, what, "the closed pill");
+    phone_tap(tab, "#phoneSearchDone");
+    harness::until(
+        tab,
+        "!document.querySelector('.header-searchbox').classList.contains('has-query')",
+        &format!("{what}: the ✕ circle to end the search"),
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+}
+
+fn find_controls_hold(seen: &serde_json::Value, what: &str, place: &str) {
+    for (sel, c) in seen["controls"].as_object().unwrap() {
+        assert!(!c.is_null(), "{what}, {place}: {sel} is drawn: {seen}");
+        assert!(
+            c["w"].as_i64().unwrap_or(0) >= 44 && c["h"].as_i64().unwrap_or(0) >= 44,
+            "{what}, {place}: {sel} is a finger's 44 points: {seen}"
+        );
+        assert_eq!(
+            c["missed"].as_array().map(Vec::len),
+            Some(0),
+            "{what}, {place}: a finger anywhere in the 44 points around {sel} takes it: {seen}"
+        );
+        if let Some(gap) = c["gap"].as_i64() {
+            assert!(
+                gap >= 0,
+                "{what}, {place}: {sel} does not overlap the control before it: {seen}"
+            );
+        }
+        let icon = match sel.as_str() {
+            "#findPrev" | "#findNext" => Some(18),
+            "#transcriptSearchClear" => Some(14),
+            _ => None,
+        };
+        if let Some(n) = icon {
+            assert_eq!(
+                c["icon"],
+                serde_json::json!([n, n]),
+                "{what}, {place}: {sel}'s glyph is drawn at {n} points, as it was: {seen}"
+            );
+        }
+    }
+}
