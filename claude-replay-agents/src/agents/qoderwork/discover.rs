@@ -322,8 +322,16 @@ fn duplicates_a_project(slug: &str, dir: &Path) -> bool {
 /// Only the duplicate rule applies. The home-slug skip and the size floor decide which MAIN
 /// transcripts are rows; a sub-agent whose main is no row has no root to land on in the monitor,
 /// so its cost is not banked anyway, and the sweep reads it, which is the point of listing it.
+///
+/// The mirrors of an agent's opencode chats (#s659) keep their sub-agents in the same layout, so
+/// they are walked too. The sub-agents there are the engine's child sessions, each with its own
+/// steps' tokens, which no step of the parent's counts: a parent's step is its own model call.
 pub(crate) fn subagent_transcripts_for(home: &Home) -> Vec<(PathBuf, String, String)> {
-    subagent_transcripts_in(&projects_dir_for(home))
+    let mut out = subagent_transcripts_in(&projects_dir_for(home));
+    if let Some(mirror) = super::opencode::mirror_root_for(home) {
+        out.extend(subagent_transcripts_in(&mirror));
+    }
+    out
 }
 
 /// [`subagent_transcripts_for`] rooted at an explicit projects dir.
@@ -1326,10 +1334,10 @@ mod tests {
 
         let e = Connection::open(harness.join("qwenwork.db")).unwrap();
         e.execute_batch(
-            "create table session (id text, parent_id text, directory text, version text, time_created integer);
+            "create table session (id text, parent_id text, directory text, version text, time_created integer, agent text);
              create table event_sequence (aggregate_id text, seq integer);
              create table event (aggregate_id text, seq integer, type text, data text);
-             insert into session values ('ses_one', null, '/work/chats/opencode-1', '1.0.0', 1000);
+             insert into session values ('ses_one', null, '/work/chats/opencode-1', '1.0.0', 1000, 'build');
              insert into event_sequence values ('ses_one', 0);",
         )
         .unwrap();
@@ -1399,7 +1407,7 @@ mod tests {
         // one as a chat would mirror it.
         for n in 0..4 {
             e.execute(
-                "insert into session values (?1, null, ?2, '1.0.0', 1000)",
+                "insert into session values (?1, null, ?2, '1.0.0', 1000, 'build')",
                 params![format!("ses_bad{n}"), format!("/work/chats/bad-{n}")],
             )
             .unwrap();
@@ -1483,6 +1491,271 @@ mod tests {
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #s659: a sub-agent the engine ran for a chat's task call (a child session, `parent_id` the
+    /// chat's) is mirrored in the family's layout beside the chat's mirror, on the sidechain, with
+    /// a sidecar naming the call, so the call links to its child while it still runs and the reader
+    /// draws the child's records under it; it is listed with the store's sub-agents, and it grows
+    /// on its own while the chat's own log is quiet.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_opencode_sub_agent_is_mirrored_beside_its_chat_and_linked_to_its_call() {
+        use rusqlite::{params, Connection};
+        use serde_json::json;
+        let _env = STORE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("qw-opencode-sub-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = root.join("projects");
+        std::fs::create_dir_all(&store).unwrap();
+        let harness = root.join(".harness/flash-cli/qwenwork");
+        std::fs::create_dir_all(&harness).unwrap();
+        let app = root.join("agents.db");
+        let dir = "/work/chats/opencode-2";
+        let chat = "c0ffee00-0000-4000-8000-000000000002";
+
+        let a = Connection::open(&app).unwrap();
+        a.execute_batch(
+            "create table sub_chats (session_id text, ext text, name text, updated_at integer);
+             create table chats (id text, name text, updated_at integer);",
+        )
+        .unwrap();
+        let ext = json!({ "engineSessionBindingV1": {
+            "engineId": "opencode", "workingDirectory": dir, "nativeSessionId": "ses_main", "generation": 1,
+        }});
+        a.execute(
+            "insert into sub_chats values (?1, ?2, 'Survey the notes', 5)",
+            params![chat, ext.to_string()],
+        )
+        .unwrap();
+        drop(a);
+
+        let e = Connection::open(harness.join("qwenwork.db")).unwrap();
+        e.execute_batch(
+            "create table session (id text, parent_id text, directory text, version text, time_created integer, agent text);
+             create table event_sequence (aggregate_id text, seq integer);
+             create table event (aggregate_id text, seq integer, type text, data text);
+             insert into session values ('ses_main', null, '/work/chats/opencode-2', '1.0.0', 1000, 'build');
+             insert into session values ('ses_kid', 'ses_main', '/work/chats/opencode-2', '1.0.0', 3000, 'general');
+             insert into event_sequence values ('ses_main', 0);
+             insert into event_sequence values ('ses_kid', 0);",
+        )
+        .unwrap();
+        let add = |e: &Connection, sid: &str, ty: &str, data: serde_json::Value| {
+            let seq: i64 = e
+                .query_row(
+                    "select seq + 1 from event_sequence where aggregate_id = ?1",
+                    [sid],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            e.execute(
+                "insert into event values (?1, ?2, ?3, ?4)",
+                params![sid, seq, ty, data.to_string()],
+            )
+            .unwrap();
+            e.execute(
+                "update event_sequence set seq = ?1 where aggregate_id = ?2",
+                params![seq, sid],
+            )
+            .unwrap();
+        };
+        let message = |sid: &str, id: &str, role: &str, done: bool| {
+            let mut info = json!({ "id": id, "role": role, "modelID": "mode-test", "time": { "created": 1000 } });
+            if done {
+                info["time"]["completed"] = json!(9000);
+            }
+            json!({ "sessionID": sid, "info": info })
+        };
+        let part =
+            |sid: &str, p: serde_json::Value| json!({ "sessionID": sid, "part": p, "time": 1 });
+        let task = |status: &str, named: bool, out: Option<&str>| {
+            let mut state = json!({ "status": status, "input": { "description": "Survey notes", "prompt": "find the notes", "subagent_type": "general" }, "time": { "start": 2000 } });
+            if named {
+                state["metadata"] = json!({ "sessionId": "ses_kid" });
+            }
+            if let Some(out) = out {
+                state["output"] = json!(out);
+                state["time"]["end"] = json!(8000);
+            }
+            json!({ "id": "prt_task", "messageID": "msg_a1", "type": "tool", "tool": "task", "callID": "call_task", "state": state })
+        };
+        // The chat: a prompt, then a task call that runs, named from its second running update.
+        let long = "a note the agent read\n".repeat(200);
+        add(
+            &e,
+            "ses_main",
+            "message.updated.1",
+            message("ses_main", "msg_u1", "user", false),
+        );
+        add(
+            &e,
+            "ses_main",
+            "message.part.updated.1",
+            part(
+                "ses_main",
+                json!({ "id": "prt_u1", "messageID": "msg_u1", "type": "text", "text": "survey the notes" }),
+            ),
+        );
+        add(
+            &e,
+            "ses_main",
+            "message.updated.1",
+            message("ses_main", "msg_a1", "assistant", false),
+        );
+        add(
+            &e,
+            "ses_main",
+            "message.part.updated.1",
+            part("ses_main", task("running", false, None)),
+        );
+        add(
+            &e,
+            "ses_main",
+            "message.part.updated.1",
+            part("ses_main", task("running", true, None)),
+        );
+        // The child: its prompt, a tool, and a reply still being written.
+        add(
+            &e,
+            "ses_kid",
+            "message.updated.1",
+            message("ses_kid", "msg_k1", "user", false),
+        );
+        add(
+            &e,
+            "ses_kid",
+            "message.part.updated.1",
+            part(
+                "ses_kid",
+                json!({ "id": "prt_k1", "messageID": "msg_k1", "type": "text", "text": "find the notes" }),
+            ),
+        );
+        add(
+            &e,
+            "ses_kid",
+            "message.updated.1",
+            message("ses_kid", "msg_k2", "assistant", false),
+        );
+        add(
+            &e,
+            "ses_kid",
+            "message.part.updated.1",
+            part(
+                "ses_kid",
+                json!({ "id": "prt_k2", "messageID": "msg_k2", "type": "tool", "tool": "read", "callID": "call_read", "state": { "status": "completed", "input": { "filePath": "/work/notes.md" }, "output": long, "time": { "start": 3100, "end": 3200 } } }),
+            ),
+        );
+
+        std::env::set_var("QWENWORK_PROJECTS_DIR", &store);
+        std::env::set_var("QWENWORK_DB", &app);
+        super::super::opencode::refresh_now(&QWENWORK);
+        let main = transcript_by_id_for(&QWENWORK, chat).expect("the chat's mirror");
+        let child = main
+            .parent()
+            .unwrap()
+            .join(chat)
+            .join("subagents")
+            .join("agent-ses_kid.jsonl");
+        let meta = child.with_file_name("agent-ses_kid.meta.json");
+        let first_child = std::fs::read_to_string(&child).expect("the sub-agent's mirror");
+        let running_links = spawn_links(&main);
+        let listed = subagent_transcripts_for(&QWENWORK);
+        let running = claude_replay_core::parse_session_enriched_as(Agent::QWENWORK, &main)
+            .unwrap()
+            .blocks();
+
+        // The child goes on while the chat's own log is quiet: its mirror grows.
+        add(
+            &e,
+            "ses_kid",
+            "message.part.updated.1",
+            part(
+                "ses_kid",
+                json!({ "id": "prt_k3", "messageID": "msg_k2", "type": "text", "text": "Three notes.", "time": { "start": 3300, "end": 3400 } }),
+            ),
+        );
+        super::super::opencode::refresh_now(&QWENWORK);
+        let grown_child = std::fs::read_to_string(&child).unwrap();
+        // The call ends: its result names the child.
+        add(
+            &e,
+            "ses_main",
+            "message.part.updated.1",
+            part("ses_main", task("completed", true, Some("Three notes."))),
+        );
+        super::super::opencode::refresh_now(&QWENWORK);
+        let finished = claude_replay_core::parse_session_enriched_as(Agent::QWENWORK, &main)
+            .unwrap()
+            .blocks();
+        std::env::remove_var("QWENWORK_PROJECTS_DIR");
+        std::env::remove_var("QWENWORK_DB");
+
+        let records: Vec<serde_json::Value> = first_child
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert!(!records.is_empty());
+        assert!(
+            records.iter().all(|r| r["type"] != "runtime-config"),
+            "a sub-agent's file has no head of its own, as the family's"
+        );
+        for r in &records {
+            assert_eq!(r["isSidechain"], json!(true), "{r}");
+            assert_eq!(r["agentId"], json!("ses_kid"), "{r}");
+            assert_eq!(r["parent_tool_use_id"], json!("call_task"), "{r}");
+            assert_eq!(r["sessionId"], json!(chat), "{r}");
+        }
+        assert_eq!(records[0]["type"], json!("user"));
+        assert!(
+            records[0]["promptId"]
+                .as_str()
+                .is_some_and(|p| p.starts_with("mirror-")),
+            "its first record carries when the file was begun: {}",
+            records[0]
+        );
+        let meta: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&meta).unwrap()).unwrap();
+        assert_eq!(meta["toolUseId"], json!("call_task"));
+        assert_eq!(meta["agentType"], json!("general"));
+        assert_eq!(meta["description"], json!("Survey notes"));
+        assert!(
+            running_links
+                .iter()
+                .any(|l| l.tool_use_id == "call_task" && l.agent_id == "ses_kid"),
+            "the running call links to its child: {running_links:?}"
+        );
+        assert!(
+            listed
+                .iter()
+                .any(|(p, _, parent)| p == &child && parent == chat),
+            "listed with the store's sub-agents, under its chat: {listed:?}"
+        );
+        let sub = |blocks: &[claude_replay_engine::seam::Block]| {
+            blocks.iter().find_map(|b| match b {
+                claude_replay_engine::seam::Block::SubAgent(s) => Some(s.clone()),
+                _ => None,
+            })
+        };
+        let r = sub(&running).expect("the task call is a sub-agent block");
+        assert_eq!(r.agent_id, "ses_kid", "linked while it runs");
+        assert!(
+            !r.blocks.is_empty(),
+            "the child's records are drawn under it"
+        );
+        assert!(
+            grown_child.starts_with(&first_child) && grown_child.len() > first_child.len(),
+            "a child that goes on grows its mirror while the chat is quiet"
+        );
+        let f = sub(&finished).expect("still a sub-agent block");
+        assert_eq!(f.agent_id, "ses_kid");
+        assert!(f.blocks.len() >= r.blocks.len());
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&child).unwrap().permissions().mode() & 0o777,
             0o600
         );
         let _ = std::fs::remove_dir_all(&root);
