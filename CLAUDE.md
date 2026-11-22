@@ -1761,6 +1761,18 @@ presentation-agnostic".
   #359), and to the Qoder adapter's, since the Qoder desktop app writes the family's records into
   the Qoder store (#s468). A hermetic test points `QWENWORK_PROJECTS_DIR` (and `QWENWORK_DB`) at its scratch like
   every other store, or it reads this machine's real sessions.
+  **Qwenwork's opencode chats are MIRRORED** (#s657): Qwenwork picks an engine per chat, and a chat
+  on its bundled opencode engine writes no JSONL, only SQLite (`~/.qwenworkcn/.harness/flash-cli/
+  qwenwork/qwenwork.db`, an append-only `event` log in opencode's schema). `agents/qoderwork/
+  opencode.rs` writes each such chat out in the family's own record shapes, at `<cache home>/
+  qwenwork-opencode/projects/<slug>/<chat uuid>.jsonl` (0600; the cache home is the engine's
+  `cache_home`, the one rule), so every reader, and every tool that reads a row's `path`, takes it
+  as any other transcript. The family's listing brings the mirrors up to date (at most every 2 s)
+  and lists them beside the store; the projection only grows as the log does, and a removal builds
+  it again under a new first line. A chat's engine sessions are joined only where the folder or
+  the app's binding says whose they are. With `QWENWORK_PROJECTS_DIR` moved (every test), the
+  engine database and the mirrors are found beside it; `QWENWORK_ENGINE_DB` and
+  `QWENWORK_MIRROR_DIR` move each alone.
 
 Also in core (beside the vocabulary they index): `fold.rs` the `FoldPolicy` (clap-free
 `from_flags`; the CLI bridge is `Args::fold_policy`) and the agent-neutral diff-row model
