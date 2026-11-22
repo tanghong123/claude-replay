@@ -1301,6 +1301,12 @@ mod tests {
             params![chat, ext.to_string()],
         )
         .unwrap();
+        // A row the schema allows with no chat id: skipped, and the others still mirrored.
+        a.execute(
+            "insert into sub_chats values (null, ?1, 'No id', 6)",
+            params![ext.to_string()],
+        )
+        .unwrap();
         drop(a);
 
         let e = Connection::open(harness.join("qwenwork.db")).unwrap();

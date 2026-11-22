@@ -451,7 +451,7 @@ impl<'a> Projector<'a> {
                 let text = part.get("text").and_then(Value::as_str).unwrap_or("");
                 if role == "user" {
                     let meta = part.get("synthetic").and_then(Value::as_bool) == Some(true);
-                    // A typed prompt's shape in the family's files: the text as a string.
+                    // A typed prompt's shape in Claude Code's transcripts: the text as a string.
                     let mut rec = json!({ "message": { "role": "user", "content": text } });
                     if meta {
                         rec["isMeta"] = json!(true);
@@ -872,10 +872,20 @@ mod db {
         // A step that fails is an error, never the end of the rows: a list cut short would read as
         // the whole of it.
         let rows = q
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, Option<String>>(0)?,
+                    r.get::<_, Option<String>>(1)?,
+                ))
+            })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut out = Vec::new();
+        // The columns may be NULL (the schema allows it): such a row names no chat to mirror.
         for row in rows {
+            let (Some(id), Some(ext)) = row else {
+                continue;
+            };
+            let row = (id, ext);
             let Ok(ext) = serde_json::from_str::<Value>(&row.1) else {
                 continue;
             };
