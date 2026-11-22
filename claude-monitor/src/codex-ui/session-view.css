@@ -2190,6 +2190,8 @@
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .image-run-open-all{min-height:36px;padding:0 14px;border-radius:18px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .renderer-open-all{display:inline-flex;align-items:center;min-height:32px;padding:0 12px;border-radius:16px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .image-run-strip{gap:8px}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) :is(.process-section-toggle,.process-bulk-toggle){position:relative}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) :is(.process-section-toggle,.process-bulk-toggle)::after{content:"";position:absolute;inset:-9.5px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .sv-session-main .transcript-inner{padding-bottom:calc(var(--phone-dock-h) + 16px)}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .compose-fab{display:none!important}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .dock-compose,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) .compose-note{display:none}
