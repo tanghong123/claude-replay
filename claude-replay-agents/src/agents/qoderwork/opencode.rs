@@ -870,17 +870,15 @@ mod db {
              where json_valid(ext) and json_extract(ext, '$.engineSessionBindingV1.engineId') = 'opencode'",
         )?;
         // A step that fails is an error, never the end of the rows: a list cut short would read as
-        // the whole of it.
+        // the whole of it. A VALUE that is not text (NULL, which the schema allows, a blob, text
+        // that is not UTF-8) is that row's alone: it names no chat to mirror, and is skipped.
+        let text = |r: &rusqlite::Row, i| -> rusqlite::Result<Option<String>> {
+            Ok(r.get_ref(i)?.as_str().ok().map(str::to_owned))
+        };
         let rows = q
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, Option<String>>(0)?,
-                    r.get::<_, Option<String>>(1)?,
-                ))
-            })?
+            .query_map([], |r| Ok((text(r, 0)?, text(r, 1)?)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut out = Vec::new();
-        // The columns may be NULL (the schema allows it): such a row names no chat to mirror.
         for row in rows {
             let (Some(id), Some(ext)) = row else {
                 continue;

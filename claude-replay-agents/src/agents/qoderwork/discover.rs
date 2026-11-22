@@ -1301,12 +1301,27 @@ mod tests {
             params![chat, ext.to_string()],
         )
         .unwrap();
-        // A row the schema allows with no chat id: skipped, and the others still mirrored.
-        a.execute(
-            "insert into sub_chats values (null, ?1, 'No id', 6)",
-            params![ext.to_string()],
-        )
-        .unwrap();
+        // Rows the schema allows whose chat id or binding is not text (NULL, a blob, bytes that
+        // are not UTF-8): each skipped, the others still mirrored. Each names an engine session of
+        // its own, so a row read as a chat would show as a mirror of its own.
+        for (n, (id, ext)) in [
+            ("null", "?1"),
+            ("x'6162'", "?1"),
+            ("cast(x'ff61' as text)", "?1"),
+            ("'c0ffee00-0000-4000-8000-0000000000b4'", "cast(?1 as blob)"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let other = serde_json::json!({ "engineSessionBindingV1": {
+                "engineId": "opencode", "workingDirectory": format!("/work/chats/bad-{n}"), "nativeSessionId": format!("ses_bad{n}"), "generation": 1,
+            }});
+            a.execute(
+                &format!("insert into sub_chats values ({id}, {ext}, 'Not a chat', 6)"),
+                params![other.to_string()],
+            )
+            .unwrap();
+        }
         drop(a);
 
         let e = Connection::open(harness.join("qwenwork.db")).unwrap();
@@ -1380,6 +1395,26 @@ mod tests {
             message("msg_a1", "assistant", true),
         );
 
+        // Each row that is not a chat names a session of its own holding the same turn, so reading
+        // one as a chat would mirror it.
+        for n in 0..4 {
+            e.execute(
+                "insert into session values (?1, null, ?2, '1.0.0', 1000)",
+                params![format!("ses_bad{n}"), format!("/work/chats/bad-{n}")],
+            )
+            .unwrap();
+            e.execute(
+                "insert into event_sequence select ?1, seq from event_sequence where aggregate_id = 'ses_one'",
+                params![format!("ses_bad{n}")],
+            )
+            .unwrap();
+            e.execute(
+                "insert into event select ?1, seq, type, data from event where aggregate_id = 'ses_one'",
+                params![format!("ses_bad{n}")],
+            )
+            .unwrap();
+        }
+
         std::env::set_var("QWENWORK_PROJECTS_DIR", &store);
         std::env::set_var("QWENWORK_DB", &app);
         super::super::opencode::refresh_now(&QWENWORK);
@@ -1422,6 +1457,11 @@ mod tests {
         );
         assert_eq!(path.file_stem().and_then(|s| s.to_str()), Some(chat));
         assert!(listed.contains(&path), "listed with the store: {listed:?}");
+        let mirrors: Vec<_> = listed
+            .iter()
+            .filter(|p| p.starts_with(store.parent().unwrap().join("opencode-mirror")))
+            .collect();
+        assert_eq!(mirrors, [&path], "one mirror, the chat's: {listed:?}");
         assert_eq!(claimed, (Agent::QWENWORK, true), "Qwenwork by provenance");
         match card {
             CardOutcome::Fresh { card, .. } => {
