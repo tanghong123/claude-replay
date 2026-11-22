@@ -178,39 +178,72 @@ fn a_sent_copy_of_a_relayed_message_stays_the_sessions_across_every_resume_point
     );
 }
 
-/// #s655: a verified message's card carries no address, so the fold learns no name for it: a
-/// message this session sends back there is named the same, cold or resumed after the card
-/// committed.
+/// #s655: a verified message's card carries no address, so the fold learns no name for it, and
+/// a sent copy of it, a `PeerText`, teaches the name: either way a message this session sends back
+/// there is named the same, cold or resumed after the card (and the copy) committed.
 #[test]
 fn a_reply_to_a_verified_senders_address_is_named_alike_cold_and_resumed() {
     claude_inbox::install_key_source(zero_key);
     let first = message("dash-41");
-    let lines = [
-        sent(&first, 1),
-        reply(1),
-        prompt("and reply to it", 2),
+    replied(vec![sent(&first, 1), reply(1)], None);
+    replied(
+        vec![sent(&first, 1), reply(1), sent(&first, 2), reply(2)],
+        Some("aries-tell"),
+    );
+}
+
+/// `before`, then a SendMessage to the sender's address, every resume point folding alike; the
+/// reply is named `named`, else by its address.
+fn replied(before: Vec<String>, named: Option<&str>) {
+    let mut lines = before;
+    lines.extend([
+        prompt("and reply to it", 3),
         json!({
             "type": "assistant",
-            "timestamp": "2026-10-26T08:00:02.100Z",
+            "timestamp": "2026-10-26T08:00:03.100Z",
             "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_r1", "name": "SendMessage",
                         "input": {"to": "uds:/tmp/cc-socks/9.sock", "summary": "got it", "message": "On it.", "type": "message"}}]},
         })
         .to_string(),
         json!({
             "type": "user",
-            "timestamp": "2026-10-26T08:00:02.200Z",
+            "timestamp": "2026-10-26T08:00:03.200Z",
             "toolUseResult": {"success": true, "message": "sent"},
             "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_r1", "content": "{\"success\":true,\"message\":\"sent\"}"}]},
         })
         .to_string(),
-        reply(3),
-    ];
+        reply(4),
+    ]);
     let (expected, resumed) = every_resume_point(&lines);
     assert_eq!(inbox_ids(&expected), ["dash-41"], "{expected:#?}");
+    let to = sent_to(&expected);
+    assert_eq!(to.len(), 1, "{expected:#?}");
+    match named {
+        Some(name) => assert!(to[0].contains(name), "{to:?}"),
+        None => assert!(!to[0].contains("aries-tell"), "{to:?}"),
+    }
+    let copies = lines.len() - 4;
     assert!(
-        resumed.iter().any(|&(_, committed)| committed >= 1),
-        "the test must resume after the card committed: {resumed:?}"
+        resumed
+            .iter()
+            .any(|&(split, committed)| split >= copies && committed >= 1),
+        "the test must resume after what came before the reply committed: {resumed:?}"
     );
+}
+
+/// Whom each message this session sent went to, as its head names it.
+fn sent_to(blocks: &[Block]) -> Vec<String> {
+    let mut out = Vec::new();
+    for b in blocks {
+        match b {
+            Block::ToolUse {
+                sent_to: Some(to), ..
+            } => out.push(to.clone()),
+            Block::Thinking { tools, .. } => out.extend(sent_to(tools)),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// A live tail folds a poll at a time: the copy arriving in a later poll is still a copy.

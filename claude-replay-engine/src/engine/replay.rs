@@ -480,6 +480,11 @@ impl<'a> Replayer<'a> {
                         self.out
                             .extend(images.iter().cloned().map(Block::Attachment));
                     } else if let Some(p) = peer.as_deref() {
+                        // The copy is the `PeerText` the drain saves the name from, so the live
+                        // fold learns it here too, and a resumed fold names a reply alike.
+                        if let Some(a) = &p.addr {
+                            self.peer_names.insert(a.clone(), p.from.clone());
+                        }
                         self.out.push(Block::PeerText {
                             from: p.from.clone(),
                             mode: p.mode.clone(),
