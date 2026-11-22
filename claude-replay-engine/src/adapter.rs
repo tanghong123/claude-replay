@@ -627,6 +627,16 @@ pub trait TranscriptAdapter: Sync {
         None
     }
 
+    /// The session that STARTED this one from its own tools (#s653), if the agent records it:
+    /// Claude Code writes it into a session an agent's Bash launched, from the starter's id that
+    /// session inherits. Default `None`: an agent that does not record it says nothing.
+    ///
+    /// The fact only: what a starter means is the consumer's (the monitor files a ONE-SHOT under
+    /// its starter, and never an interactive session someone started from an agent's Bash).
+    fn launched_by(&self, _path: &Path) -> Option<String> {
+        None
+    }
+
     /// The LIVE on-disk task list for the session at `path` (#15). Default `None` —
     /// an agent with no task store (Codex) has none; Claude reads
     /// `~/.claude/tasks/<session-id>/*.json`. Backs `discover::session_tasks`.

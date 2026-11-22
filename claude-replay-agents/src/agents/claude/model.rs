@@ -1061,6 +1061,30 @@ const RECORD_TYPES_KNOWN: &[&str] = &[
     // the owner, queued with counts, never decided here.
     "data-flow-incomplete",
     "data-flow-records",
+    // #s653 (client 2.1.329; 2.1.330 measured): `{type, v: 1, sessionId, sessions: [{type, id,
+    // via}]}`, type first, no timestamp, uuid or version: the sessions this session's context
+    // derives from. In the store on hong-devserver (2026-11-22, one day): 40 records in 18 main
+    // transcripts and none in a sub-agent, each written at a resume point beside the data-flow
+    // records (#s652) and again after a compaction, every entry naming the session itself, `via:
+    // "resume"` (40) and `"compact"` (26). In a throwaway Claude home the same day: a fork
+    // (`--resume A --fork-session`) writes `{type: "claude_code_session", id: A, via: "fork"}` as
+    // its third line, after `mode` and `atis-latch`; a one-shot started with A's id in
+    // `CLAUDE_CODE_SESSION_ID` (as an agent's Bash starts one) writes `{…, id: A, via:
+    // "subprocess", started: <itself>}` as its first line, the launch chain
+    // (`CLAUDE_CODE_LAUNCHED_BY_SESSION_IDS`) adding nothing; a fresh one-shot and a headless
+    // `--resume` wrote none. So the transcript itself now names a fork's parent and a worker's
+    // starter, which before only a live process's argv or environment did: the adapter reads both
+    // from the head (`fork_origin`, `launched_by` in `discover.rs`), and the monitor files a fork
+    // in its family and a one-shot worker under its starter even when it never saw it run.
+    // Nothing is drawn: a resume and a compaction show already. With no timestamp, a resume that
+    // writes these and nothing else is no activity to the monitor's clock, so no growth. The
+    // `derived-from` arm claims a record only when every entry is a `claude_code_session` reached
+    // by one of `DERIVED_FROM_VIA_KNOWN`; any other entry reaches the sweep as `derived-from
+    // <type> via <via>`. REVISIT when it does: the client's code (read, not measured) also names
+    // `branch`, `teleport`, `cloud` and `launch`, and entries of type `unknown` with no id; a
+    // `branch` naming another session may belong in `fork_origin`. Also REVISIT a `started` that
+    // names a session other than the record's own, or a first `derived-from` past the head.
+    "derived-from",
     "file-history-delta",
     "file-history-snapshot",
     // #s374: `{type, agentId, parentSessionId, parentLastUuid, contextLength}`, no version and no
@@ -1110,6 +1134,12 @@ const RECORD_TYPES_KNOWN: &[&str] = &[
     "tools-used",
     "user",
 ];
+
+/// The `via` values a `derived-from` entry of type `claude_code_session` has been measured with
+/// (#s653; see `RECORD_TYPES_KNOWN`): `resume` and `compact` name the session itself, `fork` a
+/// fork's parent and `subprocess` the session whose tools started this one. Any other entry is
+/// reported by the `derived-from` arm.
+const DERIVED_FROM_VIA_KNOWN: &[&str] = &["compact", "fork", "resume", "subprocess"];
 
 /// `system` subtypes met in the corpus (census, 2026-09-20: 11).
 const SYSTEM_SUBTYPES_KNOWN: &[&str] = &[
@@ -4986,6 +5016,20 @@ pub(crate) fn decode_line_known(
                     a.and_then(|a| a.get("type")).and_then(|t| t.as_str()),
                     ATTACHMENT_TYPES_KNOWN,
                 );
+            }
+        }
+        // #s653: the sessions this one derives from. Nothing drawn; the adapter reads a fork's
+        // parent and a worker's starter from the head (`discover.rs`). An entry outside what was
+        // measured is reported by its type and via, so a new kind of derivation shows in the sweep.
+        Some("derived-from") => {
+            let entries = v.get("sessions").and_then(Value::as_array);
+            for e in entries.into_iter().flatten() {
+                let kind = e.get("type").and_then(Value::as_str).unwrap_or("(absent)");
+                let via = e.get("via").and_then(Value::as_str).unwrap_or("(absent)");
+                if kind != "claude_code_session" || !DERIVED_FROM_VIA_KNOWN.contains(&via) {
+                    let name = format!("derived-from {kind} via {via}");
+                    note_unknown_shape(&v, UnknownAt::RecordType, Some(&name), &[]);
+                }
             }
         }
         // #264: a top-level record type no arm matched — Claude Code writing a row it did not
@@ -10278,6 +10322,44 @@ mod tests {
             mine,
             vec!["user.aKeyBesideDataFlowOnS652".to_string()],
             "dataFlowOn is known; the made-up key beside it is reported"
+        );
+    }
+
+    /// #s653: `derived-from` (client 2.1.329+) draws nothing, and an entry reached by a `via`
+    /// that was measured (`resume`, `compact`, `fork`, `subprocess`) is known; any other entry
+    /// reaches the sweep by its type and via, so a new kind of derivation is seen.
+    #[test]
+    fn the_2_1_329_derived_from_is_known_by_its_vias() {
+        let prompt = r#"{"type":"user","version":"2.1.330","sessionId":"s-s653","uuid":"u1","timestamp":"2026-11-22T03:00:00.000Z","message":{"role":"user","content":"carry on"}}"#;
+        let answer = r#"{"type":"assistant","version":"2.1.330","sessionId":"s-s653","uuid":"a1","parentUuid":"u1","timestamp":"2026-11-22T03:00:02.000Z","requestId":"r1","message":{"id":"msg_1","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}}"#;
+        let fork = r#"{"type":"derived-from","v":1,"sessionId":"s-s653","sessions":[{"type":"claude_code_session","id":"p-s653","via":"fork"}]}"#;
+        let launched = r#"{"type":"derived-from","v":1,"sessionId":"s-s653","sessions":[{"type":"claude_code_session","id":"p-s653","via":"subprocess","started":"s-s653"}]}"#;
+        let resumed = r#"{"type":"derived-from","v":1,"sessionId":"s-s653","sessions":[{"type":"claude_code_session","id":"s-s653","via":"resume"},{"type":"claude_code_session","id":"s-s653","via":"compact"}]}"#;
+        let with = [fork, launched, prompt, answer, resumed].join("\n");
+        assert_eq!(
+            format!("{:?}", parse(&with)),
+            format!("{:?}", parse(&[prompt, answer].join("\n"))),
+            "derived-from draws nothing"
+        );
+        let mine = |sid: &str| -> Vec<String> {
+            unknown_shapes()
+                .into_iter()
+                .filter(|s| s.example.as_deref() == Some(sid))
+                .map(|s| s.name)
+                .collect()
+        };
+        assert!(mine("s-s653").is_empty(), "the measured vias are known");
+        let branch = r#"{"type":"derived-from","v":1,"sessionId":"s-s653b","sessions":[{"type":"claude_code_session","id":"p-s653","via":"branch"},{"type":"unknown","via":"launch"},{"type":"claude_code_session","id":"s-s653b","via":"resume"}]}"#;
+        let _ = parse(branch);
+        let mut got = mine("s-s653b");
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                "derived-from claude_code_session via branch".to_string(),
+                "derived-from unknown via launch".to_string()
+            ],
+            "an entry outside the measured set is reported, the known one beside it is not"
         );
     }
 

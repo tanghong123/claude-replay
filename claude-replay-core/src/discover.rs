@@ -180,6 +180,13 @@ pub fn fork_origin(agent: Agent, path: &Path) -> Option<String> {
     crate::adapter::adapter(agent).fork_origin(path)
 }
 
+/// The session whose tools started the session at `path` (#s653), if its agent records it —
+/// the agent-neutral facade over each adapter's `launched_by` hook. A fact, not a nesting rule:
+/// the monitor files only a one-shot under its starter.
+pub fn launched_by(agent: Agent, path: &Path) -> Option<String> {
+    crate::adapter::adapter(agent).launched_by(path)
+}
+
 /// The session the conversation at `path` continued in (#s294), when its transcript ends by
 /// saying so — the agent-neutral facade over each adapter's `continued_in` hook.
 pub fn continued_in(agent: Agent, path: &Path) -> Option<crate::Continuation> {

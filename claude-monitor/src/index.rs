@@ -468,7 +468,8 @@ struct State {
     growth_conflicts: HashMap<(u32, String), (String, Instant)>,
     /// Which session started each headless worker (#s53), worker sid → starter sid: banked from a
     /// running worker's environment (`bank_started_by`) and kept in `<cache_root>/started-by.json`,
-    /// because the edge is visible only while the worker runs and its transcript never records it.
+    /// because before Claude Code 2.1.329 the edge was visible only while the worker ran: its
+    /// transcript did not record it (since then its `derived-from` does, #s653, read by `started_by`).
     started_by_edges: BTreeMap<String, String>,
     /// The Claude desktop app's session records (#s340), read on the process clock.
     desktop: crate::desktop_sessions::DesktopSessions,
@@ -481,8 +482,9 @@ struct State {
 
 impl State {
     /// The session that started `sid` as a headless worker (#s53), when this index knows it: the
-    /// edge banked from the worker's environment, or — needing no sighting — a one-shot session's
-    /// #373 scratch owner (knack's workers run in worktrees under their coordinator's scratchpad).
+    /// edge banked from the worker's environment, or — needing no sighting — the starter a one-shot
+    /// session's own transcript names (#s653, Claude Code 2.1.329+), else its #373 scratch owner
+    /// (knack's workers run in worktrees under their coordinator's scratchpad).
     /// `None` for a starter that is not a row here, so such a worker stays a row of its own.
     fn started_by(&self, sid: &str) -> Option<&str> {
         let row = self.rows.get(sid)?;
@@ -490,6 +492,7 @@ impl State {
             .started_by_edges
             .get(sid)
             .map(String::as_str)
+            .or_else(|| row.one_shot.then_some(row.launched_by.as_deref()).flatten())
             .or_else(|| row.one_shot.then_some(row.spawned_by.as_deref()).flatten())?;
         (parent != sid && self.rows.contains_key(parent)).then_some(parent)
     }
@@ -552,6 +555,10 @@ struct Row {
     /// a fork's origin is fixed when it is created and no later write changes it.
     fork_from: Option<String>,
     fork_probed: bool,
+    /// The session whose tools started this one (#s653), as its own transcript says (Claude Code
+    /// 2.1.329's `derived-from`, via `subprocess`), read with `fork_from`. A fact only: `started_by`
+    /// files a ONE-SHOT under it, never an interactive session someone started from an agent's Bash.
+    launched_by: Option<String>,
     /// The session whose scratch this one's cwd lies in (#373) — a knack worktree under its
     /// scratchpad, a job's tmp — and whether we have looked. Read once: a cwd never moves. Groups
     /// the session under that session's project (`assemble`), never as a project of its own.
@@ -1363,6 +1370,7 @@ impl Index {
                     brief: None,
                     fork_from: None,
                     fork_probed: false,
+                    launched_by: None,
                     spawned_by: None,
                     spawn_probed: false,
                     proved_pid: None,
@@ -1421,11 +1429,19 @@ impl Index {
                 }
                 row.tree_mtime = now_mtime;
                 row.transcript_len = now_len;
-                // #142: which session this one was forked from. Read ONCE — a fork's origin
-                // is fixed when it is created, so no later write changes the answer.
+                // #142: which session this one was forked from, and (#s653) which one's tools
+                // started it. Read ONCE — a fork's origin is fixed when it is created, so no later
+                // write changes the answer — but only once the head is whole: Claude writes its
+                // `derived-from` before the session's first timestamped record (a fork's third
+                // line), so a head caught as it is made is asked again at the next scan rather
+                // than read as no origin. A head with no timestamp is whole past the 64 KB read.
                 if !row.fork_probed {
                     row.fork_from = discover::fork_origin(row.agent, &path);
-                    row.fork_probed = true;
+                    row.launched_by = discover::launched_by(row.agent, &path);
+                    row.fork_probed = row.last_event.is_some()
+                        || row.fork_from.is_some()
+                        || row.launched_by.is_some()
+                        || row.transcript_len.is_some_and(|n| n >= 64 * 1024);
                 }
                 // #373: started in another session's scratch? Asked once the cwd is known — the
                 // block below may be what first learns it, so the probe also runs after it.
@@ -1588,12 +1604,13 @@ impl Index {
     /// nothing and banks nothing. The record is dropped as soon as the pid is gone or its cwd
     /// has moved, so a reused pid cannot inherit another session's identity.
     /// #269: a live fork's ENGINE names its parent — `--session-id <child> --fork-session
-    /// --resume <parent.jsonl>` — and nothing else does: the Claude adapter has no
-    /// `fork_origin`, and the fork's transcript mentions its parent only inside file-history
-    /// snapshots of the parent's scratchpad. So while the engine lives, the process table is
-    /// how a Claude fork joins its #142 family, and the edge is kept once seen (a fork's origin
-    /// is fixed at creation). Independent of `fork_probed`, which the transcript probe sets to
-    /// `true` with `None` on the first scan.
+    /// --resume <parent.jsonl>`. Before Claude Code 2.1.329 nothing else did: the fork's
+    /// transcript mentioned its parent only inside file-history snapshots of the parent's
+    /// scratchpad (since then its `derived-from` names it, which the adapter's `fork_origin`
+    /// reads, #s653). So while the engine lives, the process table is how an older Claude fork
+    /// joins its #142 family, and the edge is kept once seen (a fork's origin is fixed at
+    /// creation). Independent of `fork_probed`, which the transcript probe sets to `true` with
+    /// `None` once the head is whole.
     fn note_forks_from_argv(&self, st: &mut State) {
         let edges: Vec<(String, String)> = st
             .procs
@@ -6874,6 +6891,7 @@ mod tests {
             brief: None,
             fork_from: None,
             fork_probed: true,
+            launched_by: None,
             spawned_by: None,
             spawn_probed: true,
             proved_pid: None,
@@ -10274,6 +10292,180 @@ n/Users/x/proj
         st.rows.insert("own".into(), own);
         assert_eq!(st.started_by("w"), Some(coord));
         assert_eq!(st.started_by("own"), None);
+    }
+
+    /// #s653, measured on Claude Code 2.1.330 in a throwaway home: a session's own `derived-from`
+    /// names a fork's parent (`via: fork`, after `mode` and `atis-latch`) and the session whose
+    /// Bash started a one-shot (`via: subprocess`, its first line). With no process in sight, the
+    /// fork joins its parent's family and the one-shot is filed under its starter; an interactive
+    /// session started the same way stays the owner's own, and a resume (which names the session
+    /// itself) changes nothing. Before, a finished Claude fork was a family of one and such a
+    /// worker a row of its own.
+    #[test]
+    fn a_claude_session_s_own_transcript_names_its_parent_and_its_starter() {
+        struct RestoreStores([(&'static str, Option<std::ffi::OsString>); 2]);
+        impl Drop for RestoreStores {
+            fn drop(&mut self) {
+                for (name, previous) in &self.0 {
+                    match previous {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+        let scratch = std::env::temp_dir().join(format!("cm-derived-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&scratch);
+        let _state_env = StateEnv::set(scratch.join("state"));
+        let variables = ["CLAUDE_PROJECTS_DIR", "CLAUDE_DESKTOP_SESSIONS_DIR"];
+        let _restore = RestoreStores(variables.map(|name| (name, std::env::var_os(name))));
+        let cwd = scratch.join("derived-project");
+        let slug = cwd.display().to_string().replace(['/', '.'], "-");
+        let store = scratch.join("claude/projects");
+        let dir = store.join(&slug);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::create_dir_all(scratch.join("desktop")).unwrap();
+        std::env::set_var("CLAUDE_PROJECTS_DIR", &store);
+        std::env::set_var("CLAUDE_DESKTOP_SESSIONS_DIR", scratch.join("desktop"));
+
+        let parent = "6a5c0f2e-1d64-4b2e-9a51-6530000000a1";
+        let fork = "6a5c0f2e-1d64-4b2e-9a51-6530000000b2";
+        let worker = "6a5c0f2e-1d64-4b2e-9a51-6530000000c3";
+        let own = "6a5c0f2e-1d64-4b2e-9a51-6530000000d4";
+        let resumed = "6a5c0f2e-1d64-4b2e-9a51-6530000000e5";
+        let derived = |sid: &str, from: &str, via: &str| {
+            json!({"type":"derived-from","v":1,"sessionId":sid,
+                "sessions":[{"type":"claude_code_session","id":from,"via":via}]})
+        };
+        let turn = |sid: &str, entry: &str, prompt: &str, at: u32| {
+            [
+                json!({"type":"queue-operation","operation":"enqueue","sessionId":sid,
+                    "timestamp":format!("2026-11-22T03:{at:02}:00.000Z")}),
+                json!({"type":"user","entrypoint":entry,"sessionId":sid,"cwd":cwd,
+                    "uuid":format!("u-{sid}"),"version":"2.1.330",
+                    "timestamp":format!("2026-11-22T03:{at:02}:01.000Z"),
+                    "message":{"role":"user","content":prompt}}),
+                json!({"type":"assistant","sessionId":sid,"cwd":cwd,"uuid":format!("a-{sid}"),
+                    "parentUuid":format!("u-{sid}"),"version":"2.1.330",
+                    "timestamp":format!("2026-11-22T03:{at:02}:02.000Z"),
+                    "message":{"role":"assistant","model":"claude-opus-5-5",
+                        "content":[{"type":"text","text":"ok"}]}}),
+            ]
+        };
+        let write = |sid: &str, head: Vec<Value>, entry: &str, prompt: &str, at: u32| {
+            let body: String = head
+                .into_iter()
+                .chain(turn(sid, entry, prompt, at))
+                .map(|l| format!("{l}\n"))
+                .collect();
+            std::fs::write(dir.join(format!("{sid}.jsonl")), body).unwrap();
+        };
+        write(parent, vec![], "cli", "Plan the release", 0);
+        write(
+            fork,
+            vec![
+                json!({"type":"mode","mode":"normal","sessionId":fork}),
+                json!({"type":"atis-latch","sessionId":fork}),
+                derived(fork, parent, "fork"),
+            ],
+            "cli",
+            "Try the other way",
+            5,
+        );
+        write(
+            worker,
+            vec![json!({"type":"derived-from","v":1,"sessionId":worker,
+                "sessions":[{"type":"claude_code_session","id":parent,"via":"subprocess",
+                    "started":worker}]})],
+            "sdk-cli",
+            "Review the diff",
+            10,
+        );
+        write(
+            own,
+            vec![derived(own, parent, "subprocess")],
+            "cli",
+            "My own session",
+            15,
+        );
+        write(
+            resumed,
+            vec![derived(resumed, resumed, "resume")],
+            "cli",
+            "Carry on",
+            20,
+        );
+
+        let index = Index::new(
+            scratch.join("cache"),
+            scratch.join("state"),
+            vec![Agent::CLAUDE],
+        );
+        let listed: Value = serde_json::from_str(&index.sessions_json(|_| {})).unwrap();
+        let mut rows = Vec::new();
+        fn walk(v: &Value, out: &mut Vec<Value>) {
+            match v {
+                Value::Object(o) => {
+                    if o.get("id").is_some() && o.get("family").is_some() {
+                        out.push(v.clone());
+                    }
+                    o.values().for_each(|c| walk(c, out));
+                }
+                Value::Array(a) => a.iter().for_each(|c| walk(c, out)),
+                _ => {}
+            }
+        }
+        walk(&listed, &mut rows);
+        let row = |sid: &str| {
+            rows.iter()
+                .find(|r| r["id"] == sid)
+                .unwrap_or_else(|| panic!("{sid} is listed: {rows:?}"))
+                .clone()
+        };
+        assert_eq!(row(fork)["family"], parent, "the fork is in its parent's family");
+        assert_eq!(row(fork)["isFork"], true);
+        assert_eq!(row(parent)["family"], parent);
+        assert_eq!(row(worker)["startedBy"], parent, "the one-shot is its starter's");
+        assert_eq!(row(worker)["brief"], "Review the diff");
+        assert_eq!(row(worker)["family"], worker, "a worker is no fork");
+        assert!(
+            row(own).get("startedBy").is_none(),
+            "an interactive session started from an agent's Bash is the owner's own"
+        );
+        assert_eq!(row(resumed)["family"], resumed, "a resume names the session itself");
+        assert!(row(resumed).get("startedBy").is_none());
+        let _ = std::fs::remove_dir_all(&scratch);
+    }
+
+    /// #s653 (#s652's correction note): a resume with no prompt after it leaves the client's
+    /// ledger, `derived-from` and the data-flow records, as the transcript's newest lines. None of
+    /// them carries a timestamp, so the content clock stays where the conversation left it: the
+    /// resume is no activity and no growth.
+    #[test]
+    fn a_resume_that_writes_only_the_ledger_is_no_activity() {
+        let dir = std::env::temp_dir().join(format!("cm-ledger-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("r.jsonl");
+        let conversation = concat!(
+            r#"{"type":"user","sessionId":"r","timestamp":"2026-11-22T03:00:01.000Z","message":{"role":"user","content":"hi"}}"#,
+            "\n",
+            r#"{"type":"assistant","sessionId":"r","timestamp":"2026-11-22T03:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}"#,
+            "\n",
+        );
+        std::fs::write(&p, conversation).unwrap();
+        let before = last_event_ts(&p);
+        assert!(before.is_some());
+        let ledger = concat!(
+            r#"{"type":"derived-from","v":1,"sessionId":"r","sessions":[{"type":"claude_code_session","id":"r","via":"resume"}]}"#,
+            "\n",
+            r#"{"type":"data-flow-incomplete","v":1,"sessionId":"r","codes":[3]}"#,
+            "\n",
+            r#"{"type":"data-flow-records","v":1,"sessionId":"r","records":[{"response_id":"x"}]}"#,
+            "\n",
+        );
+        std::fs::write(&p, format!("{conversation}{ledger}")).unwrap();
+        assert_eq!(last_event_ts(&p), before, "the ledger moves no clock");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// #s53: a one-shot session's head names it and its brief (the first line of its first

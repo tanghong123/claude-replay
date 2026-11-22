@@ -188,6 +188,12 @@ impl TranscriptAdapter for ClaudeAdapter {
     fn turn_aside(&self, raw_lines: &[&str]) -> Vec<bool> {
         agents::claude::model::turn_aside(raw_lines)
     }
+    fn fork_origin(&self, path: &Path) -> Option<String> {
+        agents::claude::discover::fork_origin(path)
+    }
+    fn launched_by(&self, path: &Path) -> Option<String> {
+        agents::claude::discover::launched_by(path)
+    }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
         // What Claude Code's transcript records of the runtime snapshot (#62): the reasoning
         // effort, the permission mode and the client version — no sandbox, no context window.

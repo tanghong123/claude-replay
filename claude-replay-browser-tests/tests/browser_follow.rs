@@ -28515,10 +28515,20 @@ fn a_phone_held_sideways_puts_the_keyboard_down_on_return_where_the_find_pill_ca
 /// #s53: a coordinator and the two headless workers it started, the edge as the monitor keeps it
 /// (`started-by.json` in its cache root — what a restart finds). Served on `port`, the coordinator
 /// open. Returns the monitor, the browser, the tab and the three ids.
+/// How a workers world's monitor knows who started the workers (#s653).
+#[derive(Clone, Copy)]
+enum Starter {
+    /// From the edges it banked from their environment while they ran (`started-by.json`).
+    Banked,
+    /// From the workers' own transcripts, nothing banked: their `derived-from`.
+    Transcript,
+}
+
 fn workers_world(
     port: u16,
     case: &str,
     phone: Option<(u32, u32)>,
+    starter: Starter,
 ) -> (
     Monitor,
     harness::Chrome,
@@ -28539,7 +28549,14 @@ fn workers_world(
         (w2, "review B71", "approve", 3),
     ] {
         // A one-shot's head, as `claude -p` writes it: entrypoint `sdk-cli`, the prompt a string.
+        // Claude Code 2.1.329+ starts it with the session it derives from: the starter, for a
+        // one-shot an agent's Bash started (#s653, measured on 2.1.330).
+        let derived = match starter {
+            Starter::Banked => String::new(),
+            Starter::Transcript => format!("{{\"type\":\"derived-from\",\"v\":1,\"sessionId\":\"{sid}\",\"sessions\":[{{\"type\":\"claude_code_session\",\"id\":\"{coord}\",\"via\":\"subprocess\",\"started\":\"{sid}\"}}]}}\n"),
+        };
         let t = [
+            derived,
             format!("{{\"type\":\"user\",\"cwd\":\"/r\",\"entrypoint\":\"sdk-cli\",\"message\":{{\"role\":\"user\",\"content\":\"{ask}\\nRead the brief first.\"}},\"timestamp\":\"2026-09-01T05:0{minute}:00.000Z\"}}\n"),
             harness::assistant_at(said, &format!("2026-09-01T05:0{minute}:30.000Z")),
         ]
@@ -28548,13 +28565,17 @@ fn workers_world(
     }
     // The monitor keeps its index under the cache root the harness gives it (`cache-<port>`). This
     // seeded v2's `$XDG_CACHE_HOME/agent-monitor-v2` until #s96 moved the app shell cases to v1.
-    let cache = base.join(format!("cache-{port}"));
-    std::fs::create_dir_all(&cache).unwrap();
-    std::fs::write(
-        cache.join("started-by.json"),
-        format!("{{\"{w1}\": \"{coord}\", \"{w2}\": \"{coord}\"}}"),
-    )
-    .unwrap();
+    // The edges a monitor banks from a running worker's environment, as if it had seen both run;
+    // a world whose workers name their starter themselves has none.
+    if let Starter::Banked = starter {
+        let cache = base.join(format!("cache-{port}"));
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(
+            cache.join("started-by.json"),
+            format!("{{\"{w1}\": \"{coord}\", \"{w2}\": \"{coord}\"}}"),
+        )
+        .unwrap();
+    }
     let m = Monitor::spawn(Kind::V1, port, &base, Some(&stores), true);
     let (browser, tab) = harness::chrome_tab();
     match phone {
@@ -28595,7 +28616,7 @@ fn workers_world(
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_session_s_headless_workers_live_in_its_agents_pane_not_the_list() {
     let _serial = serial();
-    let (m, _b, tab, [coord, w1, w2]) = workers_world(2754, "workers-pane", None);
+    let (m, _b, tab, [coord, w1, w2]) = workers_world(2754, "workers-pane", None, Starter::Banked);
     let seen = harness::probe(&tab, "(function(){ var rows = [...document.querySelectorAll('#navigatorAgents [data-worker-session]')]; return { listed: [...document.querySelectorAll('[data-session]')].map(function (e) { return e.dataset.session; }), pane: rows.map(function (r) { return r.dataset.workerSession; }), labels: rows.map(function (r) { return r.querySelector('small').textContent; }), names: rows.map(function (r) { return r.querySelector('strong').textContent; }), count: document.getElementById('navigatorAgentCount').textContent.replace(/\\s+/g, ' ').trim() }; })()");
     let listed: Vec<&str> = seen["listed"]
         .as_array()
@@ -28667,13 +28688,46 @@ fn a_session_s_headless_workers_live_in_its_agents_pane_not_the_list() {
     );
 }
 
+/// #s653: a worker this monitor never saw run (nothing banked in `started-by.json`) is still its
+/// starter's, because its own transcript names that session (Claude Code 2.1.329's `derived-from`,
+/// via `subprocess`): the list shows the coordinator and neither worker, its Agents pane holds
+/// both, and a link straight to a worker leads back to it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_worker_s_own_transcript_files_it_under_its_starter() {
+    let _serial = serial();
+    let (m, _b, tab, [coord, w1, w2]) =
+        workers_world(2762, "workers-transcript", None, Starter::Transcript);
+    let seen = harness::probe(&tab, "(function(){ return { listed: [...document.querySelectorAll('[data-session]')].map(function (e) { return e.dataset.session; }), pane: [...document.querySelectorAll('#navigatorAgents [data-worker-session]')].map(function (r) { return r.dataset.workerSession; }) }; })()");
+    let listed: Vec<&str> = seen["listed"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+    assert!(listed.contains(&coord), "the coordinator is listed: {seen}");
+    assert!(
+        !listed.contains(&w1) && !listed.contains(&w2),
+        "no worker is a list row: {seen}"
+    );
+    assert_eq!(seen["pane"], serde_json::json!([w1, w2]), "{seen}");
+    m.open(&tab, &format!("?ui=app&session={w2}"));
+    harness::until(
+        &tab,
+        &format!("document.getElementById('sessionParent').classList.contains('is-live') && document.getElementById('sessionParent').dataset.parent === '{coord}'"),
+        "a linked worker's way back to the starter its transcript names",
+        Duration::from_secs(20),
+        "location.search + ' | ' + document.getElementById('sessionParent').className",
+    );
+}
+
 /// #s53 on a phone: the drawer's list has no worker, and the Agents sheet rising from the dock
 /// holds both, finger-sized; a tap opens the worker.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_reaches_a_session_s_workers_from_its_agents_sheet() {
     let _serial = serial();
-    let (_m, _b, tab, [coord, w1, w2]) = workers_world(2755, "workers-phone", Some((440, 956)));
+    let (_m, _b, tab, [coord, w1, w2]) = workers_world(2755, "workers-phone", Some((440, 956)), Starter::Banked);
     let listed = harness::eval(&tab, "[...document.querySelectorAll('[data-session]')].map(function (e) { return e.dataset.session; }).join(',')");
     let listed = listed.as_str().unwrap_or("");
     assert!(

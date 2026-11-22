@@ -367,6 +367,69 @@ pub fn continued_in(transcript: &Path) -> Option<claude_replay_engine::seam::Con
     None
 }
 
+/// How much of a transcript's head holds its first `derived-from` record (#s653): the client
+/// writes it as the session is made, before the first prompt (measured on 2.1.330: line 1 of a
+/// one-shot an agent's Bash started, line 3 of a fork, after `mode` and `atis-latch`), so it
+/// sits well inside the 64 KB every head probe reads.
+const DERIVED_FROM_HEAD: u64 = 64 * 1024;
+
+/// The other session a Claude session derives from by `via` (#s653): the first entry of the
+/// head's first `derived-from` record, `{type, v, sessionId, sessions: [{type, id, via}]}`, that
+/// is a `claude_code_session` reached `via` and names a session other than this one (the
+/// record's own `sessionId` and the transcript's stem). Every entry a resume or a compaction
+/// writes names the session itself, so a session that was only resumed answers `None`.
+///
+/// Measured 2026-11-22 in a throwaway Claude home with client 2.1.330: a fork
+/// (`--resume A --fork-session`) writes `{id: A, via: "fork"}`; a one-shot started with A's id in
+/// `CLAUDE_CODE_SESSION_ID` (as an agent's Bash starts it) writes `{id: A, via: "subprocess",
+/// started: <itself>}`. Parsed, never matched as text; a cut last line fails to parse.
+fn derived_from(path: &Path, via: &str) -> Option<String> {
+    use std::io::Read;
+    let mut head = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(DERIVED_FROM_HEAD)
+        .read_to_end(&mut head)
+        .ok()?;
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    let record = String::from_utf8_lossy(&head)
+        .lines()
+        .filter(|l| l.contains("\"derived-from\""))
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v.get("type").and_then(serde_json::Value::as_str) == Some("derived-from"))?;
+    let own = record
+        .get("sessionId")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    record
+        .get("sessions")?
+        .as_array()?
+        .iter()
+        .find_map(|e| {
+            let id = e.get("id")?.as_str()?;
+            (e.get("type")?.as_str()? == "claude_code_session"
+                && e.get("via")?.as_str()? == via
+                && !id.is_empty()
+                && id != own
+                && id != stem)
+                .then(|| id.to_string())
+        })
+}
+
+/// The session a Claude session was FORKED from (#142, #s653), from its own `derived-from`
+/// record: until client 2.1.329 a fork's transcript did not name its parent, and only a live
+/// fork engine's argv did (`note_forks_from_argv` in the monitor).
+pub fn fork_origin(path: &Path) -> Option<String> {
+    derived_from(path, "fork")
+}
+
+/// The session whose tools started this Claude session (#s653), from its own `derived-from`
+/// record: until client 2.1.329 only a live process's inherited `CLAUDE_CODE_SESSION_ID` said so
+/// (`bank_started_by` in the monitor).
+pub fn launched_by(path: &Path) -> Option<String> {
+    derived_from(path, "subprocess")
+}
+
 /// All transcript files under a store root — shared with the QoderWork store, whose
 /// on-disk layout (`<root>/<slug>/<id>.jsonl`) is identical to Claude Code's.
 pub(crate) fn all_transcripts_in(root: &Path) -> Vec<PathBuf> {
@@ -828,6 +891,69 @@ pub(crate) fn load_tasks_in(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #s653, measured on Claude Code 2.1.330 in a throwaway home: a fork's head names its parent
+    /// (`via: fork`, its third line, after `mode` and `atis-latch`), and a one-shot started with a
+    /// session's id in `CLAUDE_CODE_SESSION_ID` names that session (`via: subprocess`, its first
+    /// line). A resume or a compaction names the session itself, which is no origin; a later
+    /// `derived-from` does not change the first; a session with none says nothing.
+    #[test]
+    fn a_claude_head_names_its_fork_parent_and_its_starter() {
+        let dir = std::env::temp_dir().join(format!("cr-derived-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let a = "aaaaaaaa-0000-4000-8000-000000000653";
+        let b = "bbbbbbbb-0000-4000-8000-000000000653";
+        let c = "cccccccc-0000-4000-8000-000000000653";
+        let user = |sid: &str| {
+            format!(
+                r#"{{"type":"user","timestamp":"2026-11-22T03:00:00.000Z","sessionId":"{sid}","message":{{"role":"user","content":"hi"}}}}"#
+            )
+        };
+        let derived = |sid: &str, from: &str, via: &str| {
+            format!(
+                r#"{{"type":"derived-from","v":1,"sessionId":"{sid}","sessions":[{{"type":"claude_code_session","id":"{from}","via":"{via}"}}]}}"#
+            )
+        };
+        let write = |sid: &str, lines: &[String]| {
+            let p = dir.join(format!("{sid}.jsonl"));
+            std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+            p
+        };
+        let forked = write(
+            b,
+            &[
+                format!(r#"{{"type":"mode","mode":"normal","sessionId":"{b}"}}"#),
+                format!(r#"{{"type":"atis-latch","sessionId":"{b}"}}"#),
+                derived(b, a, "fork"),
+                user(b),
+                derived(b, c, "fork"),
+            ],
+        );
+        assert_eq!(fork_origin(&forked).as_deref(), Some(a));
+        assert_eq!(launched_by(&forked), None, "a fork is not a launch");
+        let launched = write(
+            c,
+            &[
+                format!(
+                    r#"{{"type":"derived-from","v":1,"sessionId":"{c}","sessions":[{{"type":"claude_code_session","id":"{a}","via":"subprocess","started":"{c}"}}]}}"#
+                ),
+                user(c),
+            ],
+        );
+        assert_eq!(launched_by(&launched).as_deref(), Some(a));
+        assert_eq!(fork_origin(&launched), None);
+        let resumed = write(
+            a,
+            &[user(a), derived(a, a, "resume"), derived(a, a, "compact")],
+        );
+        assert_eq!(fork_origin(&resumed), None, "a resume names the session itself");
+        assert_eq!(launched_by(&resumed), None);
+        let plain = write("dddddddd-0000-4000-8000-000000000653", &[user("d")]);
+        assert_eq!(fork_origin(&plain), None);
+        assert_eq!(launched_by(&plain), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// #s294: a transcript that ENDS by moving its conversation to another session names it and
     /// when; bookkeeping after the move does not change that; a conversation record after it

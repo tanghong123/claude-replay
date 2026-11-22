@@ -695,10 +695,13 @@ pane, and a `codex exec` an agent's Bash starts inherits that agent's pane as a 
 "keep them under agents outline pane, and don't put them on main session list"). Claude Code exports
 its own session id into every Bash command (`CLAUDE_CODE_SESSION_ID`, with
 `CLAUDE_CODE_CHILD_SESSION=1`), so a worker's ENVIRONMENT (`apply_env`, `ps eww`) names its starter
-while it runs; its transcript never does. `bank_started_by` (before `assemble`) records the edge for
+while it runs. `bank_started_by` (before `assemble`) records the edge for
 a ONE-SHOT session only — an interactive session started from an agent's Bash is the owner's own —
-and keeps it in `<cache_root>/started-by.json`, so a restart or a finished worker keeps it; a one-shot
-session in another session's scratch (#373) is that session's worker with no sighting at all. A row
+and keeps it in `<cache_root>/started-by.json`, so a restart or a finished worker keeps it. Since
+Claude Code 2.1.329 the worker's transcript says so too (#s653): its first line, `derived-from`, names
+the starter `via: subprocess` (the adapter's `launched_by`), so a one-shot the monitor never saw run
+is its starter's as well; and a one-shot session in another session's scratch (#373) is that
+session's worker with no sighting at all. A row
 carries `startedBy` only when the starter is a row here, and `brief` (the first line of its first
 prompt: a worker's own title is its project's). The app shell leaves such rows out of the tree and
 its counts, lists them in the starter's Agents pane after its sub-agents (`data-worker-session`, the
@@ -719,8 +722,9 @@ by depth, in the tree, the flat list and a phone's drawer (`nestSideSessions` in
 the group taking its earliest member's place, so an active side session lifts an old starter rather
 than sinking behind "Show N more"; a starter the session filter leaves out, or one in another
 project, leaves its side session listed on its own
-(`the_app_shell_nests_a_desktop_side_session_under_its_starter`). A fork's engine (`--fork-session --resume <parent.jsonl>`) is the only marker of a Claude fork
-anywhere, and `note_forks_from_argv` is how one joins its #142 family. Diagnose against the
+(`the_app_shell_nests_a_desktop_side_session_under_its_starter`). A Claude fork's own `derived-from` names its parent `via: fork` (Claude Code 2.1.329+,
+#s653), read by the adapter's `fork_origin`; for an older fork its engine (`--fork-session --resume
+<parent.jsonl>`) is the only marker, and `note_forks_from_argv` is how one joins its #142 family. Diagnose against the
 machine, not the API: `term`/`injectable` describe the process the row was LINKED to, so a false
 link reads exactly like a correct refusal — `tmux -L <sock> list-panes -a` and `ps -axww` first.
 **The scan's probes are bounded and read paths whole** (#s266, from collab #s298): each `ps` and
