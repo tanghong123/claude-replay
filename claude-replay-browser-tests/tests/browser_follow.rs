@@ -28120,6 +28120,11 @@ fn a_phone_ends_the_search_on_one_tap_of_its_done_with_the_keyboard_up() {
         "Math.round(document.getElementById('phoneDock').getBoundingClientRect().bottom) + ' of ' + innerHeight",
     );
     let (x, y) = phone_point(&tab, "(function(){ var r = document.getElementById('phoneSearchDone').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    // iOS keeps the focus off a tapped button, so the field holds the keyboard until the click. Chrome
+    // on Linux moves the focus to the ✕ at its mousedown, and a frame between the press and the release
+    // then takes the dock down under the click (CI's first run of this case). The case keeps the press
+    // off the focus, as iOS does.
+    harness::eval(&tab, "(function(){ document.getElementById('phoneSearchDone').addEventListener('mousedown', function (e) { e.preventDefault(); }, { once: true }); return 1; })()");
     harness::finger_tap_late_click(&tab, x, y, Duration::from_millis(250));
     harness::until(
         &tab,
