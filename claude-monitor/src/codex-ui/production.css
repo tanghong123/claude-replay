@@ -1863,9 +1863,12 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      (A reveal is not a question of width since #s29 — the shells offer it to a reader at this
      machine and nobody else.) */
   #sessionView .preview-newtab,#sessionView .session-newtab{display:none!important}
-  #sessionView .preview-tab-step{width:40px;height:44px}
+  /* #s649: the pane's tabs, their steps and the head's file controls are a finger's 44 points (#313);
+     the head is 57 tall, so the row keeps its height. */
+  #sessionView .preview-tab-step{width:44px;height:44px}
+  #sessionView .preview-tab{height:44px}
   /* #s30: the head's file controls are a finger's target on a phone too. */
-  #sessionView .preview-head .preview-print,#sessionView .preview-head .preview-download,#sessionView .preview-head .preview-reveal{width:40px;height:44px}
+  #sessionView .preview-head .preview-print,#sessionView .preview-head .preview-download,#sessionView .preview-head .preview-reveal{width:44px;height:44px}
 
   input:not([type=checkbox]):not([type=radio]):not([type=range]),textarea,select{font-size:16px!important}
 }
@@ -1950,7 +1953,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   /* #s221/#s222 on a phone: a thumbnail, Open all and the pane's zoom bar are finger targets. */
   #sessionView .image-thumb img{height:56px}
   #sessionView .image-thumb{min-height:44px;min-width:44px}
-  #sessionView .artifact-stage .image-zoom-btn,#sessionView .artifact-stage .image-zoom-level{height:40px;min-width:44px}
+  #sessionView .artifact-stage .image-zoom-btn,#sessionView .artifact-stage .image-zoom-level{height:44px;min-width:44px}
   #sessionView .image-run-open-all{min-height:36px;padding:0 14px;border-radius:18px}
   #sessionView .renderer-open-all{display:inline-flex;align-items:center;min-height:32px;padding:0 12px;border-radius:16px}
   #sessionView .image-run-strip{gap:8px}
