@@ -383,6 +383,8 @@
 .mdrev-host .topbar.tier-1.fold-reading .outline-wrap.for-merged, .mdrev-host .topbar.tier-1.fold-reading .rail-opener.for-merged {margin-left:8px}
 .mdrev-host .topbar.tier-1.fold-reading .build {margin-right:8px}
 .mdrev-host .topbar.tier-1.fold-reading .picker:before {margin-right:5px}
+.mdrev-host .app.is-phone .topbar.tier-1:not(:has(.topbar-row>.bar-counter):not(.counters-out):not(.counters-crowded)) {padding-right:calc(14px + var(--mdv-edge-r))}
+.mdrev-host .app.is-phone .topbar.tier-1.fold-reading:not(:has(.topbar-row>.bar-counter):not(.counters-out):not(.counters-crowded)) {padding-right:calc(8px + var(--mdv-edge-r))}
 .mdrev-host .topbar.tier-1.flow .topbar-tools:not(.is-inert), .mdrev-host .topbar.tier-1.flow .topbar-tools:not(.is-inert) .controls, .mdrev-host .topbar.tier-1.flow .topbar-tools:not(.is-inert) .acts, .mdrev-host .topbar.tier-1.flow .topbar-tools:not(.is-inert) .reading, .mdrev-host .topbar.tier-1.flow .topbar-tools:not(.is-inert) .picker, .mdrev-host .topbar.tier-1.flow.fold-glyphs:not(.fold-pill) .topbar-tools:not(.is-inert) .pick-mini {display:contents}
 .mdrev-host .topbar.tier-1.flow .picker:before {display:none}
 .mdrev-host .topbar.tier-1.flow {column-gap:8px;padding-inline:8px}
