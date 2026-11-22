@@ -541,7 +541,8 @@ struct Row {
     /// (#129), and `start_probed` so it is derived exactly ONCE: an append-only log's head
     /// never changes, and a miss costs the wide window (a re-probe per mtime tick would
     /// re-read a megabyte forever for the one session that has no head timestamp). A Claude
-    /// head is settled once it holds its first prompt (#s653), and the start is read then.
+    /// head is settled once it holds its first prompt (#s653); until then it is under 64 KB, so
+    /// a re-ask reads no more than the file.
     first_event: Option<u64>,
     start_probed: bool,
     /// The transcript's head says a one-shot run wrote it (`"entrypoint":"sdk-cli"`, what
@@ -1407,6 +1408,7 @@ impl Index {
                         .unwrap_or(0);
                     row.continued_in = read_continuation(row.agent, &row.path, now_secs);
                     if !row.start_probed {
+                        row.first_event = first_event_ts(&row.path);
                         let entry = head_entry(&row.path);
                         let seen = !matches!(entry, HeadEntry::Unseen);
                         row.brief = match entry {
@@ -1422,11 +1424,6 @@ impl Index {
                         row.start_probed = seen
                             || row.agent != Agent::CLAUDE
                             || now_len.is_some_and(|n| n >= 64 * 1024);
-                        // The start once, with the head that settles: a head with no timestamp
-                        // costs `first_event_ts` its wide window, which a re-ask must not pay.
-                        if row.start_probed {
-                            row.first_event = first_event_ts(&row.path);
-                        }
                     }
                     // #142: which session this one was forked from, and (#s653) which one's
                     // tools started it, from the head with the start: a fork's origin is fixed
@@ -3039,9 +3036,9 @@ enum HeadEntry {
 
 /// Whether the transcript's head says a one-shot run wrote it — Claude Code records
 /// `"entrypoint":"sdk-cli"` on the first prompt of a `claude -p` (measured 2026-10-08) where an
-/// interactive session says `cli` — and if so, its BRIEF: the first line of its first prompt, at
-/// most 120 characters (empty when the prompt holds no text). `Unseen` until the head holds that
-/// first `user` record. 64 KB is the head of any transcript.
+/// interactive session says `cli` — and if so, its BRIEF: the first line of the first `user`
+/// record that holds text, at most 120 characters (empty when none does). `Unseen` until the
+/// head holds a `user` record. 64 KB is the head of any transcript.
 fn head_entry(path: &Path) -> HeadEntry {
     head_entry_read(path).unwrap_or(HeadEntry::Unseen)
 }
@@ -3063,13 +3060,15 @@ fn head_entry_read(path: &Path) -> Option<HeadEntry> {
         .collect();
     // The first PROMPT's entrypoint (#s653): a record the client writes before it (`mode`, a
     // hook's attachment) may carry the key too, and settling on it would read a head caught before
-    // its prompt as whole: a one-shot with no brief, a fork before its `derived-from` is read.
+    // its prompt as whole: a one-shot with no brief, a fork before its `derived-from` is read. A
+    // first prompt without the key is an interactive launch (a client that wrote none), so only a
+    // head with no prompt yet is unseen.
     let entry = records
         .iter()
         .find(|r| r.get("type").and_then(Value::as_str) == Some("user"))?
         .get("entrypoint")
-        .and_then(Value::as_str)?;
-    if entry != "sdk-cli" {
+        .and_then(Value::as_str);
+    if entry != Some("sdk-cli") {
         return Some(HeadEntry::Interactive);
     }
     let prompt = records.iter().find_map(|rec| {
@@ -10527,6 +10526,12 @@ n/Users/x/proj
             "the one-shot is its starter's"
         );
         assert_eq!(row(worker)["brief"], "Review the diff");
+        for sid in [parent, fork, worker] {
+            assert!(
+                row(sid)["startTs"].is_u64(),
+                "{sid} has its start: {rows:?}"
+            );
+        }
         assert_eq!(row(worker)["family"], worker, "a worker is no fork");
         assert!(
             row(own).get("startedBy").is_none(),
@@ -10633,6 +10638,16 @@ n/Users/x/proj
             r#"{"type":"derived-from","v":1,"sessionId":"e","sessions":[{"type":"claude_code_session","id":"p","via":"subprocess","started":"e"}]}"#,
         );
         assert!(matches!(head_entry(&early), HeadEntry::Unseen));
+        // A first prompt without the key is an interactive launch, whatever a later record says.
+        let older = file(
+            "k.jsonl",
+            &format!(
+                "{}\n{}\n",
+                r#"{"type":"user","sessionId":"k","message":{"role":"user","content":"hi"},"timestamp":"2026-10-08T10:00:01Z"}"#,
+                r#"{"type":"user","entrypoint":"sdk-cli","sessionId":"k","message":{"role":"user","content":"again"},"timestamp":"2026-10-08T10:00:09Z"}"#
+            ),
+        );
+        assert!(matches!(head_entry(&older), HeadEntry::Interactive));
         // Nor does a record before the prompt that carries the key: only the prompt's counts.
         let before = file(
             "b.jsonl",

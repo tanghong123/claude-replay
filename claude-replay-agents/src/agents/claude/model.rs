@@ -1144,16 +1144,17 @@ const RECORD_TYPES_KNOWN: &[&str] = &[
 const DERIVED_FROM_VIA_KNOWN: &[&str] = &["compact", "fork", "resume", "subprocess"];
 
 /// What a `derived-from` record holds outside what was measured (#s653), one sweep name each: a
-/// version other than 1, no `sessions` list, an entry that is not a `claude_code_session` reached
-/// by a known via, a `resume` or `compact` of ANOTHER session (measured, every one names the
-/// session itself), or a `started` naming another session than the record's own.
+/// version other than 1, no `sessionId` (its entries are then not judged: nothing says whose they
+/// are), no `sessions` list, an entry that is not a `claude_code_session` reached by a known via,
+/// a `resume` or `compact` of ANOTHER session (measured, every one names the session itself), or a
+/// `started` naming another session than the record's own.
 fn derived_from_unknown(v: &Value) -> Vec<String> {
     let mut out = Vec::new();
-    // A number only: a sweep name carries no text a record holds.
+    // The version as a number only, never the value as the record spells it.
     match v.get("v").map(Value::as_u64) {
         Some(Some(1)) => {}
         Some(Some(n)) => out.push(format!("derived-from v{n}")),
-        Some(None) => out.push("derived-from v(not a whole number)".to_string()),
+        Some(None) => out.push("derived-from v(not a count)".to_string()),
         None => out.push("derived-from v(absent)".to_string()),
     }
     let Some(own) = v.get("sessionId").and_then(Value::as_str) else {
@@ -10412,6 +10413,22 @@ mod tests {
                 "derived-from via subprocess started another session".to_string(),
             ],
             "what else was not measured is reported too"
+        );
+        let unnamed = [r#"{"type":"derived-from","v":"one","sessions":[]}"#];
+        let _ = parse(&unnamed.join("\n"));
+        let mut got: Vec<String> = unknown_shapes()
+            .into_iter()
+            .map(|s| s.name)
+            .filter(|n| n == "derived-from (no sessionId)" || n == "derived-from v(not a count)")
+            .collect();
+        got.sort();
+        got.dedup();
+        assert_eq!(
+            got,
+            vec![
+                "derived-from (no sessionId)".to_string(),
+                "derived-from v(not a count)".to_string()
+            ]
         );
     }
 
