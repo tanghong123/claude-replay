@@ -12948,7 +12948,10 @@ fn the_app_shell_arranges_its_list_by_the_height_the_media_query_sees() {
         &seen,
     );
     let start = harness::probe(&tab, state);
-    assert_eq!(start["coarse"], true, "the screen is a touch screen: {start}");
+    assert_eq!(
+        start["coarse"], true,
+        "the screen is a touch screen: {start}"
+    );
 
     // The keyboard up: 284 tall, a short touch screen, where the list is the drawer.
     harness::phone(&tab, 1133, 284);
@@ -12977,7 +12980,10 @@ fn the_app_shell_arranges_its_list_by_the_height_the_media_query_sees() {
     harness::probe(&tab, "(window.__heldHeight = null, true)");
     std::thread::sleep(std::time::Duration::from_millis(300));
     let after = harness::probe(&tab, state);
-    assert_eq!(after["drawer"], false, "the list stays a column once innerHeight catches up: {after}");
+    assert_eq!(
+        after["drawer"], false,
+        "the list stays a column once innerHeight catches up: {after}"
+    );
     drop(monitor);
 }
 
