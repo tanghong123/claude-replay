@@ -1740,7 +1740,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #sessionView .header-searchbox.phone-open{position:absolute;left:6px;right:6px;bottom:2px;top:auto;width:auto;height:44px;z-index:6;padding:0 4px 0 12px;background:var(--panel);box-shadow:0 0 0 1px var(--line),0 8px 20px -12px rgba(34,43,73,.25)}
   #sessionView .header-searchbox.phone-open input{display:block!important;flex:1 1 auto;min-width:0}
   #sessionView .header-searchbox.phone-open .find-count{display:block!important;flex:none}
-  #sessionView .header-searchbox.phone-open .find-nav{display:grid!important;flex:none;width:34px;height:40px}
+  #sessionView .header-searchbox.phone-open .find-nav{display:grid!important;flex:none;width:44px;height:44px}
   #sessionView .header-filter{width:40px;height:40px}
   #sessionView .header-search-cluster>.navigator-options,#sessionView .reading-cluster>.reading-options,#sessionView .header-search-cluster>.search-suggest{position:fixed;left:8px;right:8px;top:auto;bottom:calc(var(--phone-bottom,var(--phone-dock-h)) + 8px);width:auto;max-height:calc(100dvh - var(--phone-top,100px) - var(--phone-bottom,var(--phone-dock-h)) - 72px);overflow:auto;background:var(--bg);transition:none;animation:none}
   :is(#sessionView,#app) .navigator-options .scope-option,#sessionView .navigator-options .tool-type-option,#sessionView .reading-options .reading-row{height:44px;font-size:14px}
@@ -1821,7 +1821,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      scope filter and whole-words leave (both are in the open box), so the row stays one row. */
   #sessionView .header-searchbox.has-query:not(.phone-open){width:auto;padding:0 2px 0 12px}
   #sessionView .header-searchbox.has-query:not(.phone-open) .find-count{display:block!important;flex:none;max-width:64px;margin:0 2px 0 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
-  #sessionView .header-searchbox.has-query:not(.phone-open) :is(#findPrev,#findNext){display:grid!important;flex:none;width:30px;height:44px}
+  #sessionView .header-searchbox.has-query:not(.phone-open) :is(#findPrev,#findNext){display:grid!important;flex:none;width:44px;height:44px}
   #sessionView .header-searchbox.has-query:not(.phone-open) :is(.find-whole,#filterTranscriptBtn){display:none!important}
   /* #352, #s37: the closed box never wraps the dock (the owner's toolbar did, with a chip in it): it
      holds its count and steps and gives way — its count ellipsizes — and the chips, which the count
@@ -1829,12 +1829,15 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #sessionView .header-searchbox.has-query:not(.phone-open){max-width:100%;min-width:0}
   #sessionView .header-searchbox.has-query:not(.phone-open) .find-count{flex:0 1 auto;min-width:0;max-width:none}
   #sessionView .header-searchbox:not(.phone-open) :is(.search-chips,.search-clear){display:none!important}
-  #sessionView .header-searchbox.phone-open .search-clear{width:36px;height:40px}
+  /* #s649: the steps, the clear and the field are a finger's 44 points (#313), side by side without
+     overlapping: at 30 to 36 points wide a tap a little off a step landed on its neighbour. The glyphs
+     keep their size; the box's gaps go, since each target's own box spaces its glyph. */
+  #sessionView .header-searchbox.phone-open .search-clear{width:44px;height:44px}
   /* The open box on a phone holds the glass, the chips, the field, the clear control, the count, both
      steps and the filter — measured, with two chips that was ~460px in a 378px box and the field got
      4px. So the gaps tighten, whole-words leaves (the filter's Scope list carries "Whole words", and
      `w:` types it), and the count is what gives way, never the field or a chip. */
-  #sessionView .header-searchbox.phone-open{column-gap:2px}
+  #sessionView .header-searchbox.phone-open{column-gap:0}
   #sessionView .header-searchbox.phone-open .find-whole{display:none!important}
   /* #353: the strip scrolls rather than squeezing — the chips keep their whole width, the field is as
      wide as its text (app.js), and the count leaves the row for a tag beside the box — above the find
@@ -1845,7 +1848,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      still under the facet suggestions (49), the task card (59, 60) and the drawer handle's own layer
      once a tap outside has closed the box. */
   #sessionView .header-searchbox.phone-open{z-index:27}
-  #sessionView .header-searchbox.phone-open .search-field input{flex:none;min-width:48px}
+  #sessionView .header-searchbox.phone-open .search-field input{flex:none;min-width:48px;height:44px}
   #sessionView .header-searchbox.phone-open .search-field>.search-chips{flex:none;max-width:none;overflow:visible}
   #sessionView .header-searchbox:not(.phone-open) .search-field{display:none}
   #sessionView .header-searchbox.phone-open .find-count{position:absolute;top:auto;bottom:calc(100% + 6px);right:8px;max-width:calc(100% - 16px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px 9px;border-radius:11px;background:var(--panel);box-shadow:0 0 0 1px var(--line),0 6px 14px -10px rgba(34,43,73,.3);color:var(--sub);font-size:11.5px;line-height:16px;z-index:7}
