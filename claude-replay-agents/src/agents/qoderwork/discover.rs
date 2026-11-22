@@ -1662,6 +1662,11 @@ mod tests {
             .join("agent-ses_kid.jsonl");
         let meta = child.with_file_name("agent-ses_kid.meta.json");
         let first_child = std::fs::read_to_string(&child).expect("the sub-agent's mirror");
+        let meta_body = std::fs::read_to_string(&meta).expect("the sub-agent's sidecar");
+        let child_mode = {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::metadata(&child).unwrap().permissions().mode() & 0o777
+        };
         let running_links = spawn_links(&main);
         let listed = subagent_transcripts_for(&QWENWORK);
         let running = claude_replay_core::parse_session_enriched_as(Agent::QWENWORK, &main)
@@ -1691,6 +1696,14 @@ mod tests {
         let finished = claude_replay_core::parse_session_enriched_as(Agent::QWENWORK, &main)
             .unwrap()
             .blocks();
+        // The chat is deleted in the app (its row goes): its mirror goes, sub-agents and all.
+        let a = Connection::open(&app).unwrap();
+        a.execute("delete from sub_chats where session_id = ?1", [chat])
+            .unwrap();
+        drop(a);
+        super::super::opencode::refresh_now(&QWENWORK);
+        let after_delete = store_transcripts_for(&QWENWORK);
+        let subs_after_delete = subagent_transcripts_for(&QWENWORK);
         std::env::remove_var("QWENWORK_PROJECTS_DIR");
         std::env::remove_var("QWENWORK_DB");
 
@@ -1717,8 +1730,7 @@ mod tests {
             "its first record carries when the file was begun: {}",
             records[0]
         );
-        let meta: serde_json::Value =
-            serde_json::from_str(&std::fs::read_to_string(&meta).unwrap()).unwrap();
+        let meta: serde_json::Value = serde_json::from_str(&meta_body).unwrap();
         assert_eq!(meta["toolUseId"], json!("call_task"));
         assert_eq!(meta["agentType"], json!("general"));
         assert_eq!(meta["description"], json!("Survey notes"));
@@ -1753,11 +1765,17 @@ mod tests {
         let f = sub(&finished).expect("still a sub-agent block");
         assert_eq!(f.agent_id, "ses_kid");
         assert!(f.blocks.len() >= r.blocks.len());
-        use std::os::unix::fs::PermissionsExt;
-        assert_eq!(
-            std::fs::metadata(&child).unwrap().permissions().mode() & 0o777,
-            0o600
+        assert!(!main.exists(), "a deleted chat's mirror goes");
+        assert!(!child.exists(), "and its sub-agents with it");
+        assert!(
+            !after_delete.contains(&main),
+            "it is no longer listed: {after_delete:?}"
         );
+        assert!(
+            subs_after_delete.is_empty(),
+            "nor its sub-agents: {subs_after_delete:?}"
+        );
+        assert_eq!(child_mode, 0o600);
         let _ = std::fs::remove_dir_all(&root);
     }
 }

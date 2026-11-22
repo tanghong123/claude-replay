@@ -1035,6 +1035,65 @@ pub(crate) fn subagent_path(root: &Path, chat: &Chat, agent_id: &str) -> PathBuf
         .join(format!("agent-{agent_id}.jsonl"))
 }
 
+/// Removes what the mirrors keep for chats the app no longer has (#s659), and returns how many
+/// chats' it removed. The app deletes a chat's row (`deleteSubChat` in its bundle, 2.1.0), so a
+/// mirror whose stem `keep` (every chat id the app names, read whole) does not name is a deleted
+/// chat's; and one a chat has left is at a folder it no longer works in (`current`, each mirrored
+/// chat's mirror now). Only what the writer makes is touched: `<slug>/<id>.jsonl`, its `.tmp`, and
+/// its sub-agents' `<slug>/<id>/`; a slug left empty goes too.
+pub(crate) fn prune(
+    root: &Path,
+    keep: &HashSet<String>,
+    current: &HashMap<String, PathBuf>,
+) -> usize {
+    let Ok(slugs) = std::fs::read_dir(root) else {
+        return 0;
+    };
+    let mut gone: HashSet<String> = HashSet::new();
+    for slug in slugs.flatten() {
+        let dir = slug.path();
+        if !slug.file_type().is_ok_and(|t| t.is_dir()) {
+            continue;
+        }
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let path = e.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            let is_dir = e.file_type().is_ok_and(|t| t.is_dir());
+            let id = if is_dir {
+                name
+            } else if let Some(id) = name
+                .strip_suffix(".jsonl.tmp")
+                .or_else(|| name.strip_suffix(".jsonl"))
+            {
+                id
+            } else {
+                continue;
+            };
+            let here = dir.join(format!("{id}.jsonl"));
+            let stale = !keep.contains(id) || current.get(id).is_some_and(|now| now != &here);
+            if !stale {
+                continue;
+            }
+            let removed = if is_dir {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+            if removed.is_ok() {
+                gone.insert(id.to_string());
+            }
+        }
+        // A folder no chat is left in.
+        let _ = std::fs::remove_dir(&dir);
+    }
+    gone.len()
+}
+
 /// Whether an engine id can name a file as it is: the engine's ids are `ses_` and letters and
 /// digits, and one that is anything else (a separator, a dot) is not written out.
 fn file_safe(id: &str) -> bool {
@@ -1306,6 +1365,29 @@ mod db {
             }
         }
         let _ = c.execute_batch("commit");
+        // Read after the chats were: a chat mirrored above is named here unless it was deleted
+        // since, and a read that fails or is cut short removes nothing. Nor does one that misses
+        // a chat the first read had (a table caught empty while the app rewrites it): the next
+        // refresh decides, rather than every mirror going and being built again.
+        let Ok(keep) = chat_ids(&app) else { return };
+        if chats.iter().all(|c| keep.contains(&c.id)) {
+            let current: HashMap<String, PathBuf> = chats
+                .iter()
+                .map(|c| (c.id.clone(), mirror_path(&root, c)))
+                .collect();
+            prune(&root, &keep, &current);
+        }
+    }
+
+    /// Every chat id the app database names, on whichever engine and however its binding reads:
+    /// what a mirror may stay for (#s659). A row whose id is not text names no mirror.
+    fn chat_ids(app: &Path) -> rusqlite::Result<HashSet<String>> {
+        let c = open(app)?;
+        let mut q = c.prepare("select session_id from sub_chats")?;
+        let rows = q
+            .query_map([], |r| Ok(r.get_ref(0)?.as_str().ok().map(str::to_owned)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows.into_iter().flatten().collect())
     }
 }
 
@@ -1589,6 +1671,63 @@ mod tests {
         let s = session("ses_b", 1, ev);
         let lines = project(&c, &[&s]);
         assert!(!kinds(&lines).contains(&"assistant:text".to_string()));
+    }
+
+    /// #s659: a deleted chat's mirror goes with its sub-agents and its folder; a chat that moved
+    /// folder keeps only its mirror where it works now; a chat the app still has keeps its mirror
+    /// whatever engine it is on; and nothing else in the root is touched.
+    #[test]
+    fn prune_removes_the_mirrors_of_deleted_and_moved_chats_and_nothing_else() {
+        let root = std::env::temp_dir().join(format!("qw-prune-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let put = |p: &str| {
+            let p = root.join(p);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, b"{}\n").unwrap();
+            p
+        };
+        let deleted = put("-w-a/gone.jsonl");
+        let deleted_sub = put("-w-a/gone/subagents/agent-ses_k.jsonl");
+        let deleted_tmp = put("-w-a/gone2.jsonl.tmp");
+        let kept = put("-w-a/kept.jsonl");
+        let kept_sub = put("-w-a/kept/subagents/agent-ses_k.jsonl");
+        let other_engine = put("-w-a/elsewhere.jsonl");
+        let moved_old = put("-w-old/moved.jsonl");
+        let moved_old_sub = put("-w-old/moved/subagents/agent-ses_m.jsonl");
+        let moved_new = put("-w-new/moved.jsonl");
+        let not_ours = put("-w-a/notes.txt");
+        let keep: HashSet<String> = ["kept", "elsewhere", "moved"]
+            .into_iter()
+            .map(String::from)
+            .collect();
+        let current: HashMap<String, PathBuf> = [
+            ("kept".to_string(), kept.clone()),
+            ("moved".to_string(), moved_new.clone()),
+        ]
+        .into_iter()
+        .collect();
+
+        let n = prune(&root, &keep, &current);
+
+        assert_eq!(n, 3, "gone, gone2 and the moved chat's old place");
+        for p in [
+            &deleted,
+            &deleted_sub,
+            &deleted_tmp,
+            &moved_old,
+            &moved_old_sub,
+        ] {
+            assert!(!p.exists(), "removed: {}", p.display());
+        }
+        assert!(
+            !root.join("-w-a/gone").exists(),
+            "with its sub-agents' folder"
+        );
+        assert!(!root.join("-w-old").exists(), "a folder no chat is left in");
+        for p in [&kept, &kept_sub, &other_engine, &moved_new, &not_ours] {
+            assert!(p.exists(), "kept: {}", p.display());
+        }
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
