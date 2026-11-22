@@ -2918,9 +2918,13 @@ searchBox.addEventListener("click", event => {
 });
 // A tap outside dismisses the TOP layer only (#s49, the owner: "after opening and closing the filter
 // menu, the layout of the search pill changed"): with the filter open it closes the filter and leaves
-// the box as it was; the next one closes the box.
+// the box as it was; the next one closes the box. The ✕ that ends the search is the search's own, though
+// it sits in the dock beside the cluster (#s651): taken for a press outside, its press closed the box at
+// the touch, the field let go of the focus and the keyboard went down with the dock, and the tap's
+// click, which a phone sends at the lift, met the transcript where the ✕ had been. Its click ends the
+// search itself, closing the filter first.
 document.addEventListener("pointerdown", event => {
-  if (!searchBox.classList.contains("phone-open") || event.target.closest(".header-search-cluster")) return;
+  if (!searchBox.classList.contains("phone-open") || event.target.closest(".header-search-cluster, #phoneSearchDone")) return;
   if (phoneSearch.matches && byId("navigatorOptions").classList.contains("open")) { setPopover(null); return; }
   setPhoneSearch(false);
 }, { capture: true, signal });

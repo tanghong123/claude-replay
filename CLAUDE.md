@@ -134,7 +134,9 @@ with it. **The filter and the keyboard never share a phone's screen** (#s49, the
 filter opening puts the keyboard down and keeps the box open (`setPopover`, which also reopens a box
 closed with its query held); the field taking focus closes the filter; the box closing closes it too;
 and a tap outside dismisses the TOP layer only — the filter first, the box on the next tap — so
-closing the menu never refolds the pill. The funnel is lit (`.on`, the selected tint) only while a
+closing the menu never refolds the pill. The ✕ beside the find pill is the search's own, never a tap
+outside (#s651: its press closed the box, the keyboard went down with the dock, and the tap's click
+missed it, so one tap left the query). The funnel is lit (`.on`, the selected tint) only while a
 filter narrows the search, never because its menu is open (the owner). On iOS a tapped button keeps
 focus off it, so the cases click the funnel by script, which leaves focus where it was as iOS does;
 Chrome would move focus to the button and hide the bug (`a_phone_s_filter_and_keyboard_never_share_the_screen`). While the field has the keyboard the magnifier gives way and the FUNNEL NEVER DOES (#s41:
