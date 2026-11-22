@@ -277,10 +277,13 @@ body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){displa
    #162. One anatomy for every spot control, and a real slot for each. The classic page — the reference — makes its anchor a flex item (`.alink{flex:none}`, `margin-left:auto` in a fold head), so it can never land on anything; the app shell cannot copy that mechanism on a fold head, because the head is a <button> and the anchor cannot nest inside one. So the shell reserves the space instead: the controls stay absolute, but they sit in the gutter beside the turn and the head reserves padding for them, and nothing is hung off a negative offset that reaches past the content edge. Measured before: the raw toggle rendered at 1388..1412 against a scroller content edge of 1390. The two controls share ONE right offset and stack, because the gutter is 47px and two 24px boxes side by side need more than that. */.spot-link{--spot-top:16px;position:absolute;right:-28px;top:var(--spot-top);width:24px;height:24px;padding:0;border:1px solid transparent;border-radius:7px;display:grid;place-items:center;background:transparent;color:var(--faint);font:600 12px/1 var(--mono);cursor:pointer;transition:opacity .14s,color .14s,background .14s,border-color .14s,transform .14s}.turn.user .spot-link{--spot-top:12px}.turn.proposed-plan>.spot-link{right:7px;--spot-top:8px;z-index:2}/* #170. Info is not a drawer any more. Two of its values were never reference material — the
    COST the reader watches climb through a long run, and CONTEXT LEFT which predicts the next
    compaction — so they stay ambient in a one-line strip at the foot of the column, in the same
-   ~40px the card head used to cost. Everything else is behind the glyph beside them. */
+   ~40px the card head used to cost. Everything else is behind the glyph beside them.
+   #s646: the strip ends at the page's foot, so on an iPad it keeps the home indicator's inset below
+   it, or the glyph sat 4 to 8 points inside it, where a swipe goes to the system. A desktop has no
+   inset, and a phone's rule further down collapses the strip to an empty box with no padding. */
 .outline-footer {
   flex: 0 0 auto; position: relative; display: flex; align-items: center; gap: 8px;
-  min-height: 30px; padding: 4px 6px 2px 18px; margin-top: 2px;
+  min-height: 30px; padding: 4px 6px calc(2px + env(safe-area-inset-bottom, 0px)) 18px; margin-top: 2px;
   color: var(--faint); font: 10.5px/1 var(--sans);
 }
 .outline-footer-cost { color: var(--sub); font-variant-numeric: tabular-nums; }
@@ -310,13 +313,14 @@ body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){displa
    the strip at the column's edge hung half out of line with the glyphs above it. */
 .workspace.navigator-off .outline-footer {
   flex-direction: column; gap: 3px; width: 40px; min-height: 0;
-  padding: 6px 2px; margin-left: 18px; border-top: 0; align-items: center;
+  padding: 6px 2px calc(6px + env(safe-area-inset-bottom, 0px)); margin-left: 18px; border-top: 0; align-items: center;
 }
 .workspace.navigator-off .outline-footer-context { display: none; }
 .workspace.navigator-off .outline-footer-cost { font-size: 0; }
 .workspace.navigator-off .outline-footer-cost:after { content: attr(data-short); font-size: 9px; }
 .workspace.navigator-off .outline-footer-info { margin-left: 0; }
-.workspace.navigator-off .info-popover { right: auto; left: calc(100% + 8px); bottom: 0; }
+/* Beside the rail the card hangs from the strip's foot, which is the page's: above the inset (#s646). */
+.workspace.navigator-off .info-popover { right: auto; left: calc(100% + 8px); bottom: env(safe-area-inset-bottom, 0px); }
 
 /* #166. The ranking the transcript should read at a glance: what the agent CHOSE to tell the
    reader outranks what it did to get there. It was inverted — the background labels (Thinking,
