@@ -116,7 +116,8 @@ pub(crate) struct Session {
 /// session there is one of its generations. In a folder several chats share, the sessions no chat
 /// names now are earlier generations of one of them, which says whose only when one chat there is
 /// missing any, and they are exactly as many as it misses and began before its current one. Every
-/// join must come to the count the binding gives; any other case is the bound session alone.
+/// join must come to the count the binding gives; any other case, a binding that gives no count
+/// included, is the bound session alone.
 pub(crate) fn generations<'a>(
     chat: &Chat,
     chats: &[Chat],
@@ -152,8 +153,8 @@ pub(crate) fn generations<'a>(
     out.push(native);
     out.sort_by(|a, b| a.created_ms.cmp(&b.created_ms).then(a.id.cmp(&b.id)));
     match chat.generation {
-        Some(g) if out.len() as u64 != g => vec![native],
-        _ => out,
+        Some(g) if out.len() as u64 == g => out,
+        _ => vec![native],
     }
 }
 
@@ -335,6 +336,13 @@ struct Projector<'a> {
     parts: BTreeMap<String, Value>,
     done: HashMap<String, Done>,
     version: String,
+    /// Each message's own times (`created`, `completed`), and the latest time any of its parts
+    /// named: what a part with no time of its own is dated by (a prompt's text, a step's end).
+    created: HashMap<String, i64>,
+    completed: HashMap<String, i64>,
+    latest: HashMap<String, i64>,
+    /// The latest time written, the last resort, so no record is ever dated 1970.
+    last_ms: i64,
 }
 
 impl<'a> Projector<'a> {
@@ -348,7 +356,22 @@ impl<'a> Projector<'a> {
             parts: BTreeMap::new(),
             done: HashMap::new(),
             version: String::new(),
+            created: HashMap::new(),
+            completed: HashMap::new(),
+            latest: HashMap::new(),
+            last_ms: 0,
         }
+    }
+
+    /// When a record of message `msg` happened: its part's own time when it has one, else the
+    /// latest its message's parts named, else the message's end, else its start, else the latest
+    /// time written.
+    fn when(&self, msg: &str, own: Option<i64>) -> i64 {
+        own.filter(|t| *t > 0)
+            .or_else(|| self.latest.get(msg).copied())
+            .or_else(|| self.completed.get(msg).copied())
+            .or_else(|| self.created.get(msg).copied())
+            .unwrap_or(self.last_ms)
     }
 
     fn emit(&mut self, uuid: String, ms: i64, kind: &str, mut rec: Value) {
@@ -357,6 +380,7 @@ impl<'a> Projector<'a> {
         o.insert("uuid".into(), json!(uuid));
         o.insert("parentUuid".into(), json!(self.last_uuid));
         o.insert("timestamp".into(), json!(iso(ms)));
+        self.last_ms = self.last_ms.max(ms);
         o.insert("sessionId".into(), json!(self.chat.id));
         o.insert("cwd".into(), json!(self.chat.dir));
         o.insert("isSidechain".into(), json!(false));
@@ -404,6 +428,20 @@ impl<'a> Projector<'a> {
         let ty = part.get("type").and_then(Value::as_str).unwrap_or("");
         let start = part.pointer("/time/start").and_then(Value::as_i64);
         let end = part.pointer("/time/end").and_then(Value::as_i64);
+        let seen = [
+            start,
+            end,
+            part.pointer("/state/time/start").and_then(Value::as_i64),
+            part.pointer("/state/time/end").and_then(Value::as_i64),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(|t| *t > 0)
+        .max();
+        if let Some(t) = seen {
+            let l = self.latest.entry(msg.to_string()).or_insert(t);
+            *l = (*l).max(t);
+        }
         let mut now = done;
         match ty {
             "text" if !done.call => {
@@ -413,17 +451,20 @@ impl<'a> Projector<'a> {
                 let text = part.get("text").and_then(Value::as_str).unwrap_or("");
                 if role == "user" {
                     let meta = part.get("synthetic").and_then(Value::as_bool) == Some(true);
-                    let mut rec = json!({ "message": { "role": "user", "content": [{ "type": "text", "text": text }] } });
+                    // A typed prompt's shape in the family's files: the text as a string.
+                    let mut rec = json!({ "message": { "role": "user", "content": text } });
                     if meta {
                         rec["isMeta"] = json!(true);
                     }
-                    self.emit(id.to_string(), start.unwrap_or(0), "user", rec);
+                    let at = self.when(msg, start);
+                    self.emit(id.to_string(), at, "user", rec);
                     now.call = true;
                 } else if end.is_some() || flush {
                     if !text.is_empty() {
+                        let at = self.when(msg, end.or(start));
                         self.assistant(
                             id.into(),
-                            end.or(start).unwrap_or(0),
+                            at,
                             msg,
                             json!({ "type": "text", "text": text }),
                             None,
@@ -435,9 +476,10 @@ impl<'a> Projector<'a> {
             "reasoning" if !done.call && (end.is_some() || flush) => {
                 let text = part.get("text").and_then(Value::as_str).unwrap_or("");
                 if !text.is_empty() {
+                    let at = self.when(msg, end.or(start));
                     self.assistant(
                         id.into(),
-                        end.or(start).unwrap_or(0),
+                        at,
                         msg,
                         json!({ "type": "thinking", "thinking": text, "signature": "" }),
                         None,
@@ -458,9 +500,10 @@ impl<'a> Projector<'a> {
                 if !done.call && (status == "running" || finished || flush) {
                     let tool = part.get("tool").and_then(Value::as_str).unwrap_or("tool");
                     let (name, input) = tool_call(tool, &input);
+                    let at = self.when(msg, began);
                     self.assistant(
                         id.into(),
-                        began.unwrap_or(0),
+                        at,
                         msg,
                         json!({ "type": "tool_use", "id": call_id, "name": name, "input": input }),
                         None,
@@ -492,27 +535,29 @@ impl<'a> Projector<'a> {
                     if let Some(r) = tool_result(tool, part, error, out) {
                         rec["toolUseResult"] = r;
                     }
-                    self.emit(
-                        format!("{id}-result"),
-                        ended.or(began).unwrap_or(0),
-                        "user",
-                        rec,
-                    );
+                    let at = self.when(msg, ended.or(began));
+                    self.emit(format!("{id}-result"), at, "user", rec);
                     now.result = true;
                 }
             }
             "step-finish" if !done.call => {
-                if let Some(u) = part.get("tokens").and_then(usage) {
-                    // The step's tokens, on a record of the step's own: a reply drawn earlier
-                    // had them unknown, and the metrics credit a message's usage once.
-                    let mut m = json!({ "id": id, "type": "message", "role": "assistant", "model": self.models.get(msg).cloned().unwrap_or_default(), "content": [], "stop_reason": null, "stop_sequence": null });
-                    m["usage"] = u;
-                    self.emit(
-                        id.to_string(),
-                        end.or(start).unwrap_or(0),
-                        "assistant",
-                        json!({ "message": m }),
-                    );
+                // The step's tokens and how it ended, on a record of the step's own: a reply
+                // drawn earlier had them unknown, and the metrics credit a message's usage once.
+                // A step that stopped ends the turn (`end_turn`), one that called tools does not.
+                let stop = match part.get("reason").and_then(Value::as_str) {
+                    Some("stop") => json!("end_turn"),
+                    Some("tool-calls") => json!("tool_use"),
+                    Some("length") => json!("max_tokens"),
+                    _ => Value::Null,
+                };
+                let tokens = part.get("tokens").and_then(usage);
+                if tokens.is_some() || !stop.is_null() {
+                    let mut m = json!({ "id": id, "type": "message", "role": "assistant", "model": self.models.get(msg).cloned().unwrap_or_default(), "content": [], "stop_reason": stop, "stop_sequence": null });
+                    if let Some(u) = tokens {
+                        m["usage"] = u;
+                    }
+                    let at = self.when(msg, end.or(start));
+                    self.emit(id.to_string(), at, "assistant", json!({ "message": m }));
                 }
                 now.call = true;
             }
@@ -534,6 +579,18 @@ impl<'a> Projector<'a> {
                 }
                 if let Some(m) = info.get("modelID").and_then(Value::as_str) {
                     self.models.insert(id.to_string(), m.to_string());
+                }
+                for (key, times) in [
+                    ("created", &mut self.created),
+                    ("completed", &mut self.completed),
+                ] {
+                    if let Some(t) = info
+                        .pointer(&format!("/time/{key}"))
+                        .and_then(Value::as_i64)
+                        .filter(|t| *t > 0)
+                    {
+                        times.insert(id.to_string(), t);
+                    }
                 }
                 // Parts that came before their message are written now it is known.
                 let mine: Vec<Value> = self
@@ -619,9 +676,10 @@ pub(crate) fn head(chat: &Chat, model: &str, built_ms: i64) -> String {
 
 /// Brings the mirror at `path` to `lines`: nothing when it holds them; the new lines appended when
 /// it holds a beginning of them; otherwise a new file under a new head (`head_at`, given when it
-/// was begun). Written whole by a rename; appended under a lock beside it, so two processes
-/// bringing one mirror up at once write it once. Files 0600 in 0700 folders: they are a copy of the
-/// person's conversations.
+/// was begun), written whole and moved into place. The caller holds the mirrors' lock
+/// ([`lock_mirrors`]) from its read of the engine's log to here, so a process that read an older
+/// log can never write after one that read a newer. Files 0600 in 0700 folders: they are a copy of
+/// the person's conversations.
 pub(crate) fn write_mirror(
     path: &Path,
     head_at: impl Fn(i64) -> String,
@@ -633,9 +691,6 @@ pub(crate) fn write_mirror(
         .parent()
         .ok_or_else(|| std::io::Error::other("no parent"))?;
     create_private_dir(dir)?;
-    let lock_path = path.with_extension("jsonl.lock");
-    let lock = private_file(&lock_path, false)?;
-    lock.lock()?;
     let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
     let old = std::fs::read_to_string(path).ok();
     if let Some(old) = &old {
@@ -735,6 +790,26 @@ fn private_file(path: &Path, truncate: bool) -> std::io::Result<std::fs::File> {
         .open(path)
 }
 
+/// The lock every process holds while it brings this root's mirrors up to date, beside the root
+/// (so the store's walk never meets it). `None` when another process holds it for longer than a
+/// second: that one is bringing them up to date, and this one leaves them to it.
+pub(crate) fn lock_mirrors(root: &Path) -> Option<std::fs::File> {
+    let parent = root.parent()?;
+    create_private_dir(parent).ok()?;
+    let name = format!("{}.lock", root.file_name()?.to_string_lossy());
+    let f = private_file(&parent.join(name), false).ok()?;
+    for _ in 0..20 {
+        match f.try_lock() {
+            Ok(()) => return Some(f),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                std::thread::sleep(std::time::Duration::from_millis(50))
+            }
+            Err(std::fs::TryLockError::Error(_)) => return None,
+        }
+    }
+    None
+}
+
 /// The slug the store gives a folder: '/' and '.' as '-'.
 fn slug_for(dir: &str) -> String {
     dir.replace(['/', '.'], "-")
@@ -794,9 +869,13 @@ mod db {
             "select session_id, ext from sub_chats \
              where json_valid(ext) and json_extract(ext, '$.engineSessionBindingV1.engineId') = 'opencode'",
         )?;
-        let rows = q.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        // A step that fails is an error, never the end of the rows: a list cut short would read as
+        // the whole of it.
+        let rows = q
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
         let mut out = Vec::new();
-        for row in rows.flatten() {
+        for row in rows {
             let Ok(ext) = serde_json::from_str::<Value>(&row.1) else {
                 continue;
             };
@@ -836,7 +915,7 @@ mod db {
                 r.get::<_, i64>(4)?,
             ))
         })?;
-        Ok(rows.flatten().collect())
+        rows.collect()
     }
 
     fn events(c: &Connection, id: &str) -> rusqlite::Result<Vec<(i64, String, Value)>> {
@@ -850,7 +929,8 @@ mod db {
             ))
         })?;
         Ok(rows
-            .flatten()
+            .collect::<rusqlite::Result<Vec<_>>>()?
+            .into_iter()
             .filter_map(|(seq, ty, d)| serde_json::from_str(&d).ok().map(|v| (seq, ty, v)))
             .collect())
     }
@@ -881,9 +961,17 @@ mod db {
         }
         let m = memo.as_mut().expect("set above");
         m.at = Some(Instant::now());
+        // Held from the read of the log to the last write (see `write_mirror`).
+        let Some(_lock) = lock_mirrors(&root) else {
+            return;
+        };
         let Ok(chats) = chats(&app) else { return };
         let Ok(c) = open(&engine) else { return };
-        let Ok(mut sessions) = positions(&c) else {
+        // One snapshot of the engine's log for the positions and every session's events.
+        if c.execute_batch("begin").is_err() {
+            return;
+        }
+        let Ok(sessions) = positions(&c) else {
             return;
         };
         let now_ms = SystemTime::now()
@@ -934,7 +1022,7 @@ mod db {
                 m.seen.insert(chat.id.clone(), at);
             }
         }
-        sessions.clear();
+        let _ = c.execute_batch("commit");
     }
 }
 
@@ -1011,7 +1099,7 @@ mod tests {
                 json!({ "id": "prt_4", "messageID": "msg_a", "type": "text", "text": "One file: a.txt.", "time": { "start": 2400, "end": 2500 } }),
             ),
             part(
-                json!({ "id": "prt_5", "messageID": "msg_a", "type": "step-finish", "tokens": { "input": 100, "output": 20, "reasoning": 5, "cache": { "read": 50, "write": 0 } }, "time": { "start": 2600 } }),
+                json!({ "id": "prt_5", "messageID": "msg_a", "type": "step-finish", "reason": "stop", "tokens": { "input": 100, "output": 20, "reasoning": 5, "cache": { "read": 50, "write": 0 } } }),
             ),
             msg("msg_a", "assistant", true),
         ]
@@ -1023,11 +1111,14 @@ mod tests {
             .map(|l| {
                 let v: Value = serde_json::from_str(l).unwrap();
                 let c = &v["message"]["content"];
-                let k = c
-                    .get(0)
-                    .and_then(|b| b.get("type"))
-                    .and_then(Value::as_str)
-                    .unwrap_or("usage");
+                let k = if c.is_string() {
+                    "text"
+                } else {
+                    c.get(0)
+                        .and_then(|b| b.get("type"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("usage")
+                };
                 format!("{}:{k}", v["type"].as_str().unwrap())
             })
             .collect()
@@ -1057,6 +1148,26 @@ mod tests {
         );
         let usage: Value = serde_json::from_str(&lines[5]).unwrap();
         assert_eq!(usage["message"]["usage"]["output_tokens"], 25);
+        // A step that stopped ends the turn.
+        assert_eq!(usage["message"]["stop_reason"], "end_turn");
+        // A prompt is a typed prompt's shape: its text as a string.
+        let prompt: Value = serde_json::from_str(&lines[0]).unwrap();
+        assert_eq!(prompt["message"]["content"], "list the files");
+        // Parts with no time of their own take their message's: the prompt its message's start,
+        // the step the latest its message's parts named. Nothing is dated 1970.
+        let at = |i: usize| -> String {
+            let v: Value = serde_json::from_str(&lines[i]).unwrap();
+            v["timestamp"].as_str().unwrap().to_string()
+        };
+        assert_eq!(at(0), iso(1000));
+        assert_eq!(at(5), iso(2500));
+        for i in 0..lines.len() {
+            assert!(
+                parse_iso_ms(&at(i)).unwrap() >= 1000,
+                "record {i} at {}",
+                at(i)
+            );
+        }
         assert_eq!(usage["message"]["usage"]["cache_read_input_tokens"], 50);
         // Every record names the chat and its folder, and links to the one before.
         for (i, l) in lines.iter().enumerate() {
@@ -1158,6 +1269,19 @@ mod tests {
         assert_eq!(
             ids(generations(&c, &[c.clone(), neighbour.clone()], &with_x)),
             ["ses_a", "ses_b"]
+        );
+        // A binding that gives no count: the bound session alone, even in its own folder.
+        let uncounted = Chat {
+            generation: None,
+            ..c.clone()
+        };
+        assert_eq!(
+            ids(generations(
+                &uncounted,
+                std::slice::from_ref(&uncounted),
+                &all
+            )),
+            ["ses_b"]
         );
         // …unless the other chat misses one too.
         let wanting = Chat {
@@ -1264,6 +1388,19 @@ mod tests {
             "mcp__qw-builtin__app_tool"
         );
         assert!(v[5].get("toolUseResult").is_none());
+    }
+
+    /// Two processes never bring the mirrors up to date at once: the second waits, then leaves
+    /// them to the first, and takes the lock once it is let go.
+    #[test]
+    fn one_process_at_a_time_brings_the_mirrors_up_to_date() {
+        let dir = std::env::temp_dir().join(format!("qw-lock-{}", std::process::id()));
+        let root = dir.join("mirror");
+        let held = lock_mirrors(&root).expect("the first takes it");
+        assert!(lock_mirrors(&root).is_none(), "the second leaves it");
+        drop(held);
+        assert!(lock_mirrors(&root).is_some(), "and takes it once let go");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
