@@ -2597,15 +2597,29 @@ pub fn spawn_streaming_listener_gated(
 
 /// The listener itself. With a `stop` (#s529, [`ListenerStop`]) its loop ends at the first
 /// accept once the stop is set, closes its port and then drops its handler, so whoever sees the
-/// handler gone finds the port closed too; without one it runs for the process's life.
+/// handler gone finds the port closed too; without one it runs for the process's life. It closes
+/// its own descriptor only: a copy of the socket held elsewhere keeps the port listening until
+/// that copy goes too (#s656), as a child process does that inherited it (on macOS std marks a
+/// new socket close-on-exec only after creating it, so a process spawned by another thread in
+/// between keeps it for its life).
 fn spawn_listener_until(
     port: u16,
     handler: StreamingRouteHandler,
     gate: AuthGate,
     stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 ) -> Result<u16> {
-    use std::net::TcpListener;
-    let listener = TcpListener::bind(("127.0.0.1", port)).context("bind loopback HTTP server")?;
+    let listener =
+        std::net::TcpListener::bind(("127.0.0.1", port)).context("bind loopback HTTP server")?;
+    spawn_listener_on(listener, handler, gate, stop)
+}
+
+/// [`spawn_listener_until`] on a listener already bound, so a test can keep a copy of its socket.
+fn spawn_listener_on(
+    listener: std::net::TcpListener,
+    handler: StreamingRouteHandler,
+    gate: AuthGate,
+    stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+) -> Result<u16> {
     let port = listener.local_addr()?.port();
     let gate = std::sync::Arc::new(gate);
     std::thread::Builder::new()
@@ -8758,66 +8772,188 @@ mod tests {
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// Whether descriptor `fd` of this process is still a socket bound to 127.0.0.1:`port` (#s656):
+    /// a listener's own descriptor, still open. A closed one fails the lookup (EBADF), and one the
+    /// process has reused since practically never reads true: it would have to be a socket of this
+    /// process that got both the freed port and the descriptor's number. A connect to the port
+    /// cannot tell this: the port reads open while any socket listens on it, which after the
+    /// listener let go can be a copy of its socket held elsewhere (a child process that inherited
+    /// it) or another listener the kernel gave the freed port to, and a connect whose source port
+    /// is the freed port joins itself.
+    #[cfg(unix)]
+    fn descriptor_holds(fd: std::os::fd::RawFd, port: u16) -> bool {
+        use std::os::fd::FromRawFd;
+        // SAFETY: this knowingly goes outside `from_raw_fd`'s contract, which wants the
+        // descriptor open and owned: here it may be closed, or reused by another thread. That is
+        // harmless because the descriptor is only read (one getsockname, which on a closed
+        // descriptor fails) and never closed (ManuallyDrop), so nothing of the owner's changes.
+        let socket = std::mem::ManuallyDrop::new(unsafe { std::net::TcpListener::from_raw_fd(fd) });
+        socket
+            .local_addr()
+            .is_ok_and(|at| at == std::net::SocketAddr::from(([127, 0, 0, 1], port)))
+    }
+
+    /// What a handler's probe found as the handler went (#s656).
+    #[cfg(unix)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    struct AtDrop {
+        /// The listener's own descriptor was still open ([`descriptor_holds`]).
+        descriptor_open: bool,
+        /// A connect to the port went through, which is all the old probe read.
+        port_connects: bool,
+    }
+
+    /// A listener with a stop whose handler holds a probe: as the handler goes, the probe looks at
+    /// the listener's descriptor and port and keeps what it found.
+    #[cfg(unix)]
+    struct Probed {
+        port: u16,
+        fd: std::os::fd::RawFd,
+        stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        found: std::sync::Arc<std::sync::Mutex<Option<AtDrop>>>,
+    }
+
+    #[cfg(unix)]
+    impl Probed {
+        /// Start it on `listener` and show it answers while its stop is held, with its handler
+        /// still there. It returns once the answer's connection has let its copy of the handler
+        /// go, so the listener's own thread holds the last copy and the probe runs there, where
+        /// the order of the port's close and the handler's drop is the thread's own.
+        fn start(listener: std::net::TcpListener) -> Probed {
+            use std::os::fd::AsRawFd;
+            struct Probe {
+                port: u16,
+                fd: std::os::fd::RawFd,
+                found: std::sync::Arc<std::sync::Mutex<Option<AtDrop>>>,
+            }
+            impl Drop for Probe {
+                fn drop(&mut self) {
+                    let to = std::net::SocketAddr::from(([127, 0, 0, 1], self.port));
+                    let found = AtDrop {
+                        descriptor_open: descriptor_holds(self.fd, self.port),
+                        port_connects: std::net::TcpStream::connect_timeout(
+                            &to,
+                            std::time::Duration::from_secs(1),
+                        )
+                        .is_ok(),
+                    };
+                    *self.found.lock().unwrap() = Some(found);
+                }
+            }
+            let port = listener.local_addr().expect("a bound listener").port();
+            let fd = listener.as_raw_fd();
+            let found = std::sync::Arc::new(std::sync::Mutex::new(None));
+            let probe = Probe {
+                port,
+                fd,
+                found: found.clone(),
+            };
+            let handler: StreamingRouteHandler = std::sync::Arc::new(move |_request: &Request| {
+                let _ = &probe;
+                HttpResponse::ok("text/plain", b"ok".to_vec()).into()
+            });
+            let copies = std::sync::Arc::downgrade(&handler);
+            let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let started =
+                spawn_listener_on(listener, handler, AuthGate::same_user(), Some(stop.clone()))
+                    .expect("the listener starts");
+            assert_eq!(started, port);
+            let body =
+                http_post(port, "/anything").expect("the listener answers while its stop is held");
+            assert_eq!(body, "ok");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while copies.strong_count() > 1 && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert_eq!(
+                copies.strong_count(),
+                1,
+                "the answer's connection lets its copy of the handler go"
+            );
+            assert_eq!(
+                *found.lock().unwrap(),
+                None,
+                "the handler is held while the stop is"
+            );
+            Probed {
+                port,
+                fd,
+                stop,
+                found,
+            }
+        }
+
+        /// Drop the stop, as its owner does.
+        fn stop(&self) {
+            drop(ListenerStop {
+                port: self.port,
+                stop: self.stop.clone(),
+            });
+        }
+
+        /// What the probe found, once the handler has gone; `None` if it has not within the
+        /// bound, which only guards a loaded machine.
+        fn found_once_gone(&self) -> Option<AtDrop> {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while self.found.lock().unwrap().is_none() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            *self.found.lock().unwrap()
+        }
+    }
+
     /// #s529: a listener whose stop is dropped closes its port and lets its handler go, with
     /// whatever the handler holds (a `LiveServer`'s session state and the files it keeps open),
     /// the port first: what the handler holds finds the port closed as it goes. The browser
     /// suite starts a classic server per case in one process, and each case's port and records
-    /// used to stay open to the end of the run (595 descriptors over 278 cases).
+    /// used to stay open to the end of the run (595 descriptors over 278 cases). The probe reads
+    /// the listener's own descriptor (#s656): it read a connect to the port, which also goes
+    /// through while anything else holds the port, and failed the 1.551.0 gate on a loaded Mac.
+    #[cfg(unix)]
     #[test]
     fn a_dropped_listener_stop_closes_its_port_and_lets_its_handler_go() {
-        use std::sync::atomic::{AtomicU16, Ordering};
-        /// Held by the handler: as it goes, it tries the listener's port and keeps the answer.
-        struct Probe {
-            port: std::sync::Arc<AtomicU16>,
-            open_at_drop: std::sync::Arc<std::sync::Mutex<Option<bool>>>,
-        }
-        impl Drop for Probe {
-            fn drop(&mut self) {
-                let to =
-                    std::net::SocketAddr::from(([127, 0, 0, 1], self.port.load(Ordering::SeqCst)));
-                let open =
-                    std::net::TcpStream::connect_timeout(&to, std::time::Duration::from_secs(1))
-                        .is_ok();
-                *self.open_at_drop.lock().unwrap() = Some(open);
-            }
-        }
-        let port_cell = std::sync::Arc::new(AtomicU16::new(0));
-        let open_at_drop = std::sync::Arc::new(std::sync::Mutex::new(None));
-        let probe = Probe {
-            port: port_cell.clone(),
-            open_at_drop: open_at_drop.clone(),
-        };
-        let handler: StreamingRouteHandler = std::sync::Arc::new(move |_request: &Request| {
-            let _ = &probe;
-            HttpResponse::ok("text/plain", b"ok".to_vec()).into()
-        });
-        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let port = spawn_listener_until(0, handler, AuthGate::same_user(), Some(stop.clone()))
-            .expect("the listener starts");
-        port_cell.store(port, Ordering::SeqCst);
-        let body =
-            http_post(port, "/anything").expect("the listener answers while its stop is held");
-        assert_eq!(body, "ok");
-        assert_eq!(
-            *open_at_drop.lock().unwrap(),
-            None,
-            "the handler is held while the stop is"
-        );
-        drop(ListenerStop { port, stop });
-        // Returns as soon as the handler is gone; the bound only guards a loaded machine.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        while open_at_drop.lock().unwrap().is_none() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
-        assert_eq!(
-            *open_at_drop.lock().unwrap(),
-            Some(false),
-            "the accept loop ended and dropped its handler, with the port already closed"
+        let listener =
+            std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind a loopback listener");
+        let probed = Probed::start(listener);
+        probed.stop();
+        let found = probed.found_once_gone();
+        assert!(
+            found.is_some_and(|found| !found.descriptor_open),
+            "the accept loop ended and dropped its handler, with its port already closed: found {found:?}"
         );
         assert!(
-            std::net::TcpStream::connect(("127.0.0.1", port)).is_err(),
-            "the port no longer listens"
+            !descriptor_holds(probed.fd, probed.port),
+            "the listener's descriptor stays closed"
         );
+    }
+
+    /// #s656: a copy of the listener's socket held elsewhere keeps the port listening after the
+    /// listener closed its own descriptor, so a connect still goes through there, which the old
+    /// probe read as the listener still open. That is the reading the 1.551.0 gate failed on; a
+    /// copy is one thing that gives it (on macOS std marks a new socket close-on-exec only after
+    /// creating it, so a child another thread spawns in between inherits it), another listener
+    /// on the freed port and a connect that joins itself are the others. Which one it was cannot
+    /// be known after the fact. The probe reads the listener's own descriptor, closed.
+    #[cfg(unix)]
+    #[test]
+    fn a_copy_of_the_listeners_socket_held_elsewhere_is_not_read_as_the_listener() {
+        let listener =
+            std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind a loopback listener");
+        let copy = listener
+            .try_clone()
+            .expect("a copy of the socket, as a child process that inherited it holds");
+        let probed = Probed::start(listener);
+        probed.stop();
+        assert_eq!(
+            probed.found_once_gone(),
+            Some(AtDrop {
+                descriptor_open: false,
+                port_connects: true,
+            }),
+            "the listener's own descriptor is closed as its handler goes, while a connect still \
+             goes through the copy"
+        );
+        drop(copy);
     }
 
     /// #s632: a stop that finds its loop already ended says nothing and waits for nothing. The loop
