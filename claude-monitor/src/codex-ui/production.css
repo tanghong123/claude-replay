@@ -1950,6 +1950,12 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #sessionView .image-run-open-all{min-height:36px;padding:0 14px;border-radius:18px}
   #sessionView .renderer-open-all{display:inline-flex;align-items:center;min-height:32px;padding:0 12px;border-radius:16px}
   #sessionView .image-run-strip{gap:8px}
+  /* #s647: an agent process's fold (the chevron at its head) and its expand-every-detail control are
+     25px glyphs in a 25px row, measured 25x25 on every phone layout of the app's layout walk (kit
+     1.547.0). A finger takes 44px around each: an invisible hit area, square, that moves nothing
+     drawn. The row's words between them stay inert, as on the desktop. */
+  #sessionView :is(.process-section-toggle,.process-bulk-toggle){position:relative}
+  #sessionView :is(.process-section-toggle,.process-bulk-toggle)::after{content:"";position:absolute;inset:-9.5px}
   .toast{bottom:calc(max(calc(64px + env(safe-area-inset-bottom,0px)),calc(var(--phone-kb,0px) + 64px)) + 10px)}
   #sessionView .sv-session-main .transcript-inner{padding-bottom:calc(var(--phone-dock-h) + 16px)}
   /* #s39 (design/phone-landscape.md §3.5c, approved by the owner): the compose box is the dock's third
