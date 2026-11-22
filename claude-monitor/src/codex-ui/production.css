@@ -1867,6 +1867,9 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      the head is 57 tall, so the row keeps its height. */
   #sessionView .preview-tab-step{width:44px;height:44px}
   #sessionView .preview-tab{height:44px}
+  /* Each control in the head is its own 44 points, so they abut: the gap went to the strip, whose open tab
+     keeps 85% of it (#337) and, with six files open, its title whole (a_phone_pane_counts_its_open_files…). */
+  #sessionView .preview-head{gap:0}
   /* #s30: the head's file controls are a finger's target on a phone too. */
   #sessionView .preview-head .preview-print,#sessionView .preview-head .preview-download,#sessionView .preview-head .preview-reveal{width:44px;height:44px}
 
