@@ -711,7 +711,7 @@ function renderTree() {
   // controls stay.
   const grouped = !arranged && groupedByMachine();
   drawnGroupedFlat = grouped && flat;
-  for (const control of [collapseBtn, expandBtn]) control.toggleAttribute("data-flat", (flat && !grouped) || arranged);
+  for (const control of [collapseBtn, expandBtn, filterSheet.querySelector("[data-group-part]")]) control?.toggleAttribute("data-flat", (flat && !grouped) || arranged);
   if (arranged) html = arrangedSessionsHtml(layout, agents, shownAgents);
   else if (grouped) html = machineGroupsHtml(shownAgents, flat, filtered);
   else if (flat) html = flatSessionsHtml(shownAgents);
@@ -815,7 +815,16 @@ if (shows("filter")) sheetParts[0] += `
 <div data-machine-part><div class="scope-menu-divider"></div><div class="scope-menu-list">
 <button class="scope-option" type="button" role="checkbox" aria-checked="false" data-by-machine title="A head for each machine, holding its own agents and projects"><span class="scope-check"></span><span>Group by machine</span></button>
 </div></div>`;
-filterSheet.innerHTML = sheetParts.join(`\n<div class="scope-menu-divider"></div>\n`);
+// #s664 (Hong's choice on #s661): Collapse every group and Expand every group as the sheet's first two
+// rows. They are drawn with any sheet and shown only where the app's layout takes the two glyphs out of
+// the head: on a wide phone held sideways, whose column head cannot give eight glyphs a finger's 44
+// points each. Elsewhere the glyphs stay and the rows are not shown. They go where the glyphs go
+// (`data-flat`, at each draw), and a row closes the sheet, so the list it folded is in view.
+const groupPart = `<div data-group-part><div class="scope-menu-list">
+<button class="scope-option" type="button" data-group-action="collapse" title="Fold every agent, project and machine">${svg("collapseStack")}<span>Collapse every group</span></button>
+<button class="scope-option" type="button" data-group-action="expand" title="Open every agent, project and machine">${svg("expandStack")}<span>Expand every group</span></button>
+</div><div class="scope-menu-divider"></div></div>`;
+filterSheet.innerHTML = (sheetParts.length ? `${groupPart}\n` : "") + sheetParts.join(`\n<div class="scope-menu-divider"></div>\n`);
 // Hidden at once, before the first index answer draws anything: the sheet can be opened during the
 // first scan.
 paintMachinePart();
@@ -871,6 +880,8 @@ addEventListener("resize", fitFilterSheet, { signal });
 filterBtn.onclick = () => toggleFilterSheet(filterSheet.hidden);
 filterMini.onclick = () => { if (railFlyoutFor === "filter" && railFlyoutPinned) closeRailFlyout(false); else openRailFlyout("filter", filterMini, true); };
 filterSheet.addEventListener("click", event => {
+  const group = event.target.closest("[data-group-action]");
+  if (group) { toggleFilterSheet(false); (group.dataset.groupAction === "collapse" ? collapseBtn : expandBtn).onclick(); return; }
   if (event.target.closest("[data-filter-reset]")) { setBuckets(FILTER_BUCKETS); return; }
   if (event.target.closest("[data-include-hidden]")) { indexState.showHidden = !indexState.showHidden; renderTree(); return; }
   if (event.target.closest("[data-by-machine]")) { indexState.byMachine = !indexState.byMachine; persist(); renderTree(); return; }
