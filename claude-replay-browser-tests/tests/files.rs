@@ -750,6 +750,78 @@ fn the_app_shell_preview_pinch_zooms_an_image_on_a_phone() {
     assert!(zoom() > fit, "zoomed in from {fit}");
 }
 
+/// #s649, found by the app's layout walk: on a phone the pane's head kept its Download and reveal 40
+/// points wide, its tab 36 tall, and the image's zoom bar 40 tall, under the 44 points a phone's
+/// targets are (#313). With an image in the pane each is a finger's 44 points, side by side without
+/// overlapping, and every point of the 3×3 grid 21 points around a control's centre hits it.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_s_pane_controls_take_a_finger_s_44_points() {
+    let _serial = serial();
+    let (base, stores, repo) = fixture("files-pane-targets");
+    std::fs::write(repo.join("shot.png"), big_png(1200, 800)).unwrap();
+    let m = Monitor::spawn(Kind::V1, 3205, &base, Some(&stores), true);
+    let (_browser, tab) = chrome_tab();
+    harness::phone(&tab, 390, 844);
+    open_shell(&m, &tab, true);
+    click_path(&tab, &repo, "shot.png");
+    until(
+        &tab,
+        "(function(){ var s = document.querySelector('#previewBody .artifact-stage'); var i = s && s.querySelector('img'); var z = document.querySelector('#previewBody [data-zoom-bar]'); return !!i && i.complete && i.naturalWidth === 1200 && !!z && !z.hidden; })()",
+        "the image in the pane, with its zoom bar",
+        Duration::from_secs(20),
+        PANE,
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    let sels = [
+        "#previewTabs .preview-tab.on",
+        "#previewHead .preview-download",
+        "#previewHead .preview-reveal",
+        "#previewHead #closePreview",
+        "#previewBody [data-zoom=\"out\"]",
+        "#previewBody [data-zoom=\"fit\"]",
+        "#previewBody [data-zoom=\"in\"]",
+        "#previewBody [data-zoom=\"actual\"]",
+    ];
+    let list = serde_json::to_string(&sels).unwrap();
+    let raw = eval(
+        &tab,
+        &format!("(function(){{ var out = {{}}, boxes = {{}}; {list}.forEach(function (sel) {{ var e = document.querySelector(sel); if (!e || e.hidden || !e.getClientRects().length) {{ out[sel] = null; return; }} var r = e.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2; var missed = []; [-21, 0, 21].forEach(function (dx) {{ [-21, 0, 21].forEach(function (dy) {{ var h = document.elementFromPoint(cx + dx, cy + dy); if (!h || (h !== e && !e.contains(h))) missed.push([dx, dy, h ? (h.id || String(h.className) || h.tagName) : null]); }}); }}); boxes[sel] = r; out[sel] = {{ w: Math.round(r.width), h: Math.round(r.height), missed: missed, gap: null }}; }}); Object.keys(boxes).forEach(function (a) {{ var r = boxes[a]; Object.keys(boxes).forEach(function (b) {{ var o = boxes[b]; if (a === b || o.left >= r.left || o.bottom <= r.top || o.top >= r.bottom) return; var g = Math.round(r.left - o.right); if (out[a].gap === null || g < out[a].gap) out[a].gap = g; }}); }}); return JSON.stringify(out); }})()"),
+    );
+    let seen: serde_json::Value = serde_json::from_str(raw.as_str().unwrap_or("null"))
+        .unwrap_or_else(|_| panic!("the pane's controls: unreadable: {raw}"));
+    // A reader at this machine is offered the reveal beside the file; one elsewhere the Download, which
+    // takes the same rule.
+    for sel in [
+        "#previewTabs .preview-tab.on",
+        "#previewHead .preview-reveal",
+        "#previewBody [data-zoom=\"out\"]",
+        "#previewBody [data-zoom=\"in\"]",
+    ] {
+        assert!(!seen[sel].is_null(), "{sel} is drawn: {seen}");
+    }
+    for (sel, c) in seen.as_object().unwrap() {
+        if c.is_null() {
+            continue;
+        }
+        assert!(
+            c["h"].as_i64().unwrap_or(0) >= 44 && c["w"].as_i64().unwrap_or(0) >= 44,
+            "{sel} is a finger's 44 points: {seen}"
+        );
+        assert_eq!(
+            c["missed"].as_array().map(Vec::len),
+            Some(0),
+            "a finger anywhere in the 44 points around {sel}'s centre takes it: {seen}"
+        );
+        if let Some(gap) = c["gap"].as_i64() {
+            assert!(
+                gap >= 0,
+                "{sel} does not overlap the control beside it: {seen}"
+            );
+        }
+    }
+}
+
 /// #374: what a session HANDS to the reader is downloadable wherever it lives, on a phone too. The
 /// owner sent two films with `SendUserFile` from `~/Movies` and could only reveal them in Finder or
 /// copy the path — useless on a paired phone — because a page reads a file only where the render
