@@ -32037,7 +32037,7 @@ fn phone_process_targets_hold(seen: &serde_json::Value, what: &str) {
 /// targets are (#313): upright, held sideways and on a wide phone held sideways, in the open box with a
 /// query and a chip and in the closed pill holding the query, each step, the clear, the funnel and the
 /// field are 44 points tall at least and the controls 44 wide, side by side without overlapping, every
-/// point of the 3×3 grid 21 points around a control's centre hits it, and the glyphs are drawn at the
+/// point of the 44-point disc around a control's centre hits it, and the glyphs are drawn at the
 /// size they were (18 points for the steps, 14 for the clear). The field keeps room in the strip.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
@@ -32053,15 +32053,16 @@ fn a_phone_s_find_steps_and_clear_take_a_finger_s_44_points() {
 }
 
 /// The measures of the controls `sels` name in `tab` (null for one not drawn): each one's box (`w`, `h`), its glyph's box
-/// (`icon`, the `.icon` inside it), the points of the 3×3 grid 21 points around its centre that do not
-/// hit it (`missed`), and how far its left edge is from the right edge of the nearest of them to its
+/// (`icon`, the `.icon` inside it), the points of the 44-point disc around its centre that do not hit it
+/// (`missed`: the centre, 21 points out along each axis and 15 along each diagonal, since a round
+/// control is a disc and a 44-point square's corners lie outside it), and how far its left edge is from the right edge of the nearest of them to its
 /// left in the same row (`gap`, negative where they overlap). `strip` is the width of the open box's
 /// chips-and-field strip.
 fn find_targets(tab: &headless_chrome::Tab, sels: &[&str]) -> serde_json::Value {
     let list = serde_json::to_string(sels).unwrap();
     let raw = harness::eval(
         tab,
-        &format!("(function(){{ var out = {{ controls: {{}} }}, boxes = {{}}; {list}.forEach(function (sel) {{ var e = document.querySelector(sel); if (!e || !e.getClientRects().length) {{ out.controls[sel] = null; return; }} var r = e.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2, ic = e.querySelector('.icon'), ir = ic && ic.getBoundingClientRect(); var missed = []; [-21, 0, 21].forEach(function (dx) {{ [-21, 0, 21].forEach(function (dy) {{ var h = document.elementFromPoint(cx + dx, cy + dy); if (!h || (h !== e && !e.contains(h))) missed.push([dx, dy, h ? (h.id || h.className || h.tagName) : null]); }}); }}); boxes[sel] = r; out.controls[sel] = {{ w: Math.round(r.width), h: Math.round(r.height), icon: ir ? [Math.round(ir.width), Math.round(ir.height)] : null, missed: missed, gap: null }}; }}); Object.keys(boxes).forEach(function (a) {{ var r = boxes[a]; Object.keys(boxes).forEach(function (b) {{ var o = boxes[b]; if (a === b || o.left >= r.left || o.bottom <= r.top || o.top >= r.bottom) return; var g = Math.round(r.left - o.right); if (out.controls[a].gap === null || g < out.controls[a].gap) out.controls[a].gap = g; }}); }}); var s = document.querySelector('.header-searchbox .search-field'); out.strip = s ? Math.round(s.getBoundingClientRect().width) : null; out.w = innerWidth; out.h = innerHeight; return JSON.stringify(out); }})()")
+        &format!("(function(){{ var out = {{ controls: {{}} }}, boxes = {{}}; {list}.forEach(function (sel) {{ var e = document.querySelector(sel); if (!e || !e.getClientRects().length) {{ out.controls[sel] = null; return; }} var r = e.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2, ic = e.querySelector('.icon'), ir = ic && ic.getBoundingClientRect(); var missed = []; [[0, 0], [-21, 0], [21, 0], [0, -21], [0, 21], [-15, -15], [-15, 15], [15, -15], [15, 15]].forEach(function (d) {{ var dx = d[0], dy = d[1]; var h = document.elementFromPoint(cx + dx, cy + dy); if (!h || (h !== e && !e.contains(h))) missed.push([dx, dy, h ? (h.id || h.className || h.tagName) : null]); }}); boxes[sel] = r; out.controls[sel] = {{ w: Math.round(r.width), h: Math.round(r.height), icon: ir ? [Math.round(ir.width), Math.round(ir.height)] : null, missed: missed, gap: null }}; }}); Object.keys(boxes).forEach(function (a) {{ var r = boxes[a]; Object.keys(boxes).forEach(function (b) {{ var o = boxes[b]; if (a === b || o.left >= r.left || o.bottom <= r.top || o.top >= r.bottom) return; var g = Math.round(r.left - o.right); if (out.controls[a].gap === null || g < out.controls[a].gap) out.controls[a].gap = g; }}); }}); var s = document.querySelector('.header-searchbox .search-field'); out.strip = s ? Math.round(s.getBoundingClientRect().width) : null; out.w = innerWidth; out.h = innerHeight; return JSON.stringify(out); }})()")
     );
     serde_json::from_str(raw.as_str().unwrap_or("null"))
         .unwrap_or_else(|_| panic!("the find pill's controls: unreadable: {raw}"))
@@ -32173,8 +32174,8 @@ fn find_controls_hold(seen: &serde_json::Value, what: &str, place: &str) {
 
 /// #s649, the drawer's head: on a phone the theme, Collapse all, Expand all and the session filter sat
 /// 40 points wide (32 at the smallest), side by side. Each now takes a finger's 44 points, upright and
-/// on a phone held sideways that keeps the drawer, without overlapping, every point of the 3×3 grid
-/// 21 points around a control's centre hitting it, its glyph drawn at 18 points as before.
+/// on a phone held sideways that keeps the drawer, without overlapping, every point of the 44-point
+/// disc around a control's centre hitting it, its glyph drawn at 18 points as before.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_s_drawer_head_glyphs_take_a_finger_s_44_points() {
