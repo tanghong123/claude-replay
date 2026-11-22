@@ -12902,8 +12902,9 @@ fn the_app_shell_arranges_its_list_when_the_width_changes_without_a_resize_event
 /// 712 points tall to 284 and back, and `innerHeight` read the short height for 60 to 90 ms after the
 /// phone query already saw the tall one: the list was laid out short as the page grew back and nothing
 /// laid it out again, so it stayed a drawer on a page where it is a column. Here the case holds
-/// `innerHeight` at the short height while the window grows back, then lets it go: the list must be a
-/// column again with the hold still on, and stay one after.
+/// `innerHeight` at the short height while the window grows back, and swallows every `resize` the
+/// growth sends before the page's own listeners hear it, as the device's may have come before the query
+/// flipped: the list must be a column again from the query's own change.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_arranges_its_list_by_the_height_the_media_query_sees() {
@@ -12919,12 +12920,12 @@ fn the_app_shell_arranges_its_list_by_the_height_the_media_query_sees() {
     // An iPad mini held sideways: a touch screen 1133 wide, where the list is a column.
     harness::phone(&tab, 1133, 712);
     tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
-        source: "(function(){ var real = Object.getOwnPropertyDescriptor(window, 'innerHeight') || Object.getOwnPropertyDescriptor(Window.prototype, 'innerHeight'); window.__heldHeight = null; Object.defineProperty(window, 'innerHeight', { configurable: true, get: function(){ return window.__heldHeight === null ? real.get.call(window) : window.__heldHeight; } }); })();".to_string(),
+        source: "(function(){ var real = Object.getOwnPropertyDescriptor(window, 'innerHeight') || Object.getOwnPropertyDescriptor(Window.prototype, 'innerHeight'); window.__heldHeight = null; Object.defineProperty(window, 'innerHeight', { configurable: true, get: function(){ return window.__heldHeight === null ? real.get.call(window) : window.__heldHeight; } }); window.__swallowResize = false; window.__resizeSwallowed = 0; addEventListener('resize', function (e) { if (window.__swallowResize) { window.__resizeSwallowed++; e.stopImmediatePropagation(); } }, true); })();".to_string(),
         world_name: None,
         include_command_line_api: None,
         run_immediately: None,
     })
-    .expect("the innerHeight hold is installed");
+    .expect("the innerHeight hold and the resize swallower are installed");
     monitor.pair(&tab);
     let url = format!("http://127.0.0.1:{port}/?session={sid}");
     tab.navigate_to(&url).unwrap();
@@ -12937,7 +12938,7 @@ fn the_app_shell_arranges_its_list_by_the_height_the_media_query_sees() {
         std::time::Duration::from_secs(30),
         "document.body.innerText.slice(0, 120)",
     );
-    let state = "(function(){ var a = document.getElementById('app'); return { inner: innerHeight, short: matchMedia('(max-height:500px)').matches, coarse: matchMedia('(pointer:coarse)').matches, drawer: a.classList.contains('app-drawer'), rail: a.classList.contains('sidebar-off') }; })()";
+    let state = "(function(){ var a = document.getElementById('app'); return { inner: innerHeight, short: matchMedia('(max-height:500px)').matches, coarse: matchMedia('(pointer:coarse)').matches, drawer: a.classList.contains('app-drawer'), rail: a.classList.contains('sidebar-off'), swallowed: window.__resizeSwallowed }; })()";
     let seen = format!("JSON.stringify({state})");
     let column = "(function(){ var a = document.getElementById('app'); return !matchMedia('(max-height:500px)').matches && !a.classList.contains('app-drawer') && !a.classList.contains('sidebar-off'); })()";
     harness::until(
@@ -12963,8 +12964,12 @@ fn the_app_shell_arranges_its_list_by_the_height_the_media_query_sees() {
         &seen,
     );
 
-    // The keyboard down, with innerHeight still reading the short height, as the web view's did.
-    harness::probe(&tab, "(window.__heldHeight = 284, true)");
+    // The keyboard down, with innerHeight still reading the short height, as the web view's did, and
+    // no `resize` heard: only the query's change can lay the list out again.
+    harness::probe(
+        &tab,
+        "(window.__heldHeight = 284, window.__swallowResize = true, true)",
+    );
     harness::phone(&tab, 1133, 712);
     harness::until(
         &tab,
@@ -12975,14 +12980,9 @@ fn the_app_shell_arranges_its_list_by_the_height_the_media_query_sees() {
     );
     let held = harness::probe(&tab, state);
     assert_eq!(held["inner"], 284, "innerHeight was held short: {held}");
-
-    // innerHeight catches up: the list stays a column.
-    harness::probe(&tab, "(window.__heldHeight = null, true)");
-    std::thread::sleep(std::time::Duration::from_millis(300));
-    let after = harness::probe(&tab, state);
-    assert_eq!(
-        after["drawer"], false,
-        "the list stays a column once innerHeight catches up: {after}"
+    assert!(
+        held["swallowed"].as_i64().unwrap_or(0) > 0,
+        "the browser sent resize, and the page's listeners never heard it: {held}"
     );
     drop(monitor);
 }
