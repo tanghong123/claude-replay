@@ -2148,8 +2148,9 @@
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .input-answer{flex-direction:column;align-items:flex-start;gap:2px;width:100%}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .input-answer span{overflow:visible;overflow-wrap:break-word}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-newtab,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .session-newtab{display:none!important}
-#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-tab-step{width:40px;height:44px}
-#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-head .preview-print,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-head .preview-download,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-head .preview-reveal{width:40px;height:44px}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-tab-step{width:44px;height:44px}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-tab{height:44px}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-head .preview-print,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-head .preview-download,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-head .preview-reveal{width:44px;height:44px}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) input:not([type=checkbox]):not([type=radio]):not([type=range]),:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) textarea,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) select{font-size:16px!important}
 #sessionView:where(.pl-coarse.pl-max-h-500) .sv-session-main .transcript-inner{width:min(500px,calc(100% - 26px))}
 #sessionView:where(.pl-coarse.pl-max-h-500).wide .sv-session-main .transcript-inner{width:calc(100% - 26px)}
@@ -2186,7 +2187,7 @@
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) :is(.renderer-target-link,.pointer-run-file[data-reference-path]){padding:10px 0}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .image-thumb img{height:56px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .image-thumb{min-height:44px;min-width:44px}
-#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .artifact-stage .image-zoom-btn,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .artifact-stage .image-zoom-level{height:40px;min-width:44px}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .artifact-stage .image-zoom-btn,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .artifact-stage .image-zoom-level{height:44px;min-width:44px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .image-run-open-all{min-height:36px;padding:0 14px;border-radius:18px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .renderer-open-all{display:inline-flex;align-items:center;min-height:32px;padding:0 12px;border-radius:16px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .image-run-strip{gap:8px}
