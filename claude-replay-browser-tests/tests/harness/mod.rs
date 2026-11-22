@@ -2067,17 +2067,15 @@ impl Monitor {
     /// "Everything" would leave behind. A case that IS about the filter does not pair (or clears
     /// the key) and gets the product's default, untouched.
     ///
-    /// The seed is written from a page that runs none of the app ([`seed_every_bucket`]), and the
-    /// tab ends on the app's page again, loaded from the seed and checked to hold it (#s658).
+    /// The seed is written first, from a page that runs none of the app ([`seed_every_bucket`]),
+    /// so the app's page the pairing lands on loads from it, and is checked to hold it (#s658).
     pub fn pair(&self, tab: &headless_chrome::Tab) {
         let token = self
             .token()
             .map(|t| format!("?token={t}"))
             .unwrap_or_default();
-        tab.navigate_to(&self.url(&token)).unwrap();
-        tab.wait_until_navigated().unwrap();
         seed_every_bucket(tab, &self.url(""));
-        tab.navigate_to(&self.url("")).unwrap();
+        tab.navigate_to(&self.url(&token)).unwrap();
         tab.wait_until_navigated().unwrap();
         assert_seed_held(tab);
     }
@@ -3278,28 +3276,29 @@ pub fn renderer_verdict(tab: &headless_chrome::Tab) -> String {
 }
 
 /// Write the app shell's remembered session filter as all three buckets in `origin`'s storage
-/// (#202), from a page of that origin that runs none of the app: one of its public icons. The
-/// caller navigates next, and the page it opens reads the seed.
+/// (#202), from a page of that origin that runs none of the app: one of its public icons, which
+/// the gate serves unpaired. The caller navigates next, and the page it opens reads the seed.
 ///
 /// Not from a page of the app (#s658). A page of the app holds the filter it read as it loaded, and
-/// writes all of its choices back whenever it saves one (as it mounts, at a resize, at a layout), so
-/// a seed written under a page loaded before it could be written over with the default before the
-/// next page read it. That page's list then hid every idle fixture: on 2026-11-22
-/// `the_app_shell_contains_its_view_and_draws_everything_else_as_before`, which resizes the window
-/// right after pairing, found "No sessions in this filter" 4 times on a loaded Mac. Once the tab
-/// has left for the icon, no page holds the old filter when the seed lands.
+/// writes all of the list's choices back whenever it saves one: once as the index arrives and it
+/// picks a session, and at each choice in the list. So a seed written under a page loaded before it
+/// could be written over with the default before the next page read it, and that page's list hid
+/// every idle fixture: on 2026-11-22
+/// `the_app_shell_contains_its_view_and_draws_everything_else_as_before` found "No sessions in this
+/// filter" 4 times on a loaded Mac. Once this tab has left for the icon, no page of the app in this
+/// tab holds the old filter when the seed lands. (Another tab of the origin still could.)
 fn seed_every_bucket(tab: &headless_chrome::Tab, origin: &str) {
     tab.navigate_to(&format!("{}/icon-192.png", origin.trim_end_matches('/')))
         .unwrap();
     tab.wait_until_navigated().unwrap();
     let wrote = eval(
         tab,
-        "(function(){ try { localStorage.setItem('am-prod-session-filter', JSON.stringify(['recent','blocked','idle'])); return 'ok'; } catch (e) { return 'refused: ' + e; } })()",
+        "(function(){ if (location.pathname !== '/icon-192.png') return 'on ' + location.pathname; try { localStorage.setItem('am-prod-session-filter', JSON.stringify(['recent','blocked','idle'])); return 'ok'; } catch (e) { return 'refused: ' + e; } })()",
     );
     assert_eq!(
         wrote,
         "ok",
-        "the session filter seed (#202) is written on {}",
+        "the session filter seed (#202) is written on the icon, {}",
         tab.get_url()
     );
 }
@@ -3325,11 +3324,11 @@ fn assert_seed_held(tab: &headless_chrome::Tab) {
     );
 }
 
-/// The scheme, host and port of `url`, with no path.
-fn origin_of(url: &str) -> &str {
+/// The scheme, host and port of `url`, with no path, query or fragment.
+pub fn origin_of(url: &str) -> &str {
     let start = url.find("://").map_or(0, |at| at + 3);
     url[start..]
-        .find('/')
+        .find(['/', '?', '#'])
         .map_or(url, |end| &url[..start + end])
 }
 

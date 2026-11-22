@@ -388,9 +388,9 @@ fn the_downloads_guard_still_fails_a_save_where_the_folder_answers() {
 /// #s658: the session filter the harness seeds (#202) still holds for the page a case opens after
 /// the app's page saved its choices. Pairing used to write the seed under the app's page it had
 /// just loaded, which held the default filter and writes all its choices back whenever it saves
-/// one. So a save that landed after the seed (a resize right after pairing, a mount on a loaded
-/// machine) put the default back, and the next page hid the case's idle fixture: "No sessions in
-/// this filter". Here the save comes at once, on purpose: Expand all, then a resize.
+/// one. So a save that landed after the seed (the one as the index arrives and the list picks a
+/// session, on a loaded machine) put the default back, and the next page hid the case's idle
+/// fixture: "No sessions in this filter". Here the save comes at once, on purpose: Expand all.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_filter_seed_holds_after_the_page_pairing_leaves_saves() {
@@ -411,7 +411,6 @@ fn the_filter_seed_holds_after_the_page_pairing_leaves_saves() {
         "document.body.innerText.slice(0, 200)",
     );
     harness::eval(&tab, "document.getElementById('expandBtn').click(); 'ok'");
-    harness::mouse_window(&tab, 1440, 900);
     let saved = harness::eval(
         &tab,
         "String(localStorage.getItem('am-prod-session-filter'))",
@@ -428,4 +427,26 @@ fn the_filter_seed_holds_after_the_page_pairing_leaves_saves() {
         Duration::from_secs(30),
         "JSON.stringify({ filter: localStorage.getItem('am-prod-session-filter'), list: (document.getElementById('sessionList') || {}).innerText })",
     );
+}
+
+/// #s658: the origin the filter seed is written in is a URL's scheme, host and port alone.
+#[test]
+fn a_urls_origin_drops_its_path_query_and_fragment() {
+    for (url, origin) in [
+        (
+            "http://host.example:8080/?ui=app",
+            "http://host.example:8080",
+        ),
+        (
+            "http://host.example:8080?session=x",
+            "http://host.example:8080",
+        ),
+        (
+            "http://other.example:9090#turn-4",
+            "http://other.example:9090",
+        ),
+        ("http://host.example:8080", "http://host.example:8080"),
+    ] {
+        assert_eq!(harness::origin_of(url), origin, "the origin of {url}");
+    }
 }
