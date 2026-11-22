@@ -1500,7 +1500,7 @@
 :where(#sessionView) .turn.user .spot-link{--spot-top:12px}
 :where(#sessionView) .turn.proposed-plan>.spot-link{right:7px;--spot-top:8px;z-index:2}
 :where(#sessionView) .outline-footer{flex: 0 0 auto; position: relative; display: flex; align-items: center; gap: 8px;
-  min-height: 30px; padding: 4px 6px 2px 18px; margin-top: 2px;
+  min-height: 30px; padding: 4px 6px calc(2px + max(0px, env(safe-area-inset-bottom,0px) - var(--pl-cut-bottom,0px))) 18px; margin-top: 2px;
   color: var(--faint); font: 10.5px/1 var(--sans);}
 :where(#sessionView) .outline-footer-cost{color: var(--sub); font-variant-numeric: tabular-nums;}
 :where(#sessionView) .outline-footer-context{color: var(--faint); font-variant-numeric: tabular-nums;}
@@ -1518,12 +1518,12 @@
 :where(#sessionView) .info-popover:before{content: ""; position: absolute; left: 0; right: 0; bottom: -9px; height: 9px;}
 :where(#sessionView) .info-popover.open{opacity: 1; visibility: visible; transform: none; pointer-events: auto;}
 :where(#sessionView) .workspace.navigator-off .outline-footer{flex-direction: column; gap: 3px; width: 40px; min-height: 0;
-  padding: 6px 2px; margin-left: 18px; border-top: 0; align-items: center;}
+  padding: 6px 2px calc(6px + max(0px, env(safe-area-inset-bottom,0px) - var(--pl-cut-bottom,0px))); margin-left: 18px; border-top: 0; align-items: center;}
 :where(#sessionView) .workspace.navigator-off .outline-footer-context{display: none;}
 :where(#sessionView) .workspace.navigator-off .outline-footer-cost{font-size: 0;}
 :where(#sessionView) .workspace.navigator-off .outline-footer-cost:after{content: attr(data-short); font-size: 9px;}
 :where(#sessionView) .workspace.navigator-off .outline-footer-info{margin-left: 0;}
-:where(#sessionView) .workspace.navigator-off .info-popover{right: auto; left: calc(100% + 8px); bottom: 0;}
+:where(#sessionView) .workspace.navigator-off .info-popover{right: auto; left: calc(100% + 8px); bottom: max(0px, env(safe-area-inset-bottom,0px) - var(--pl-cut-bottom,0px));}
 :where(#sessionView) .renderer[data-renderer-kind="thinking"]>.renderer-head>.renderer-title,:where(#sessionView) .renderer[data-renderer-kind="activity"]>.renderer-head>.renderer-title{color: var(--faint); font-size: 11.5px; font-weight: 520;}
 :where(#sessionView) .process-commentary-label{color: var(--sub); font-weight: 620;}
 :where(#sessionView) .process-commentary-copy{color: var(--ink); font-size: 13.5px;}
