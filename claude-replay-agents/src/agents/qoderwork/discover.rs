@@ -1334,10 +1334,11 @@ mod tests {
 
         let e = Connection::open(harness.join("qwenwork.db")).unwrap();
         e.execute_batch(
-            "create table session (id text, parent_id text, directory text, version text, time_created integer, agent text);
+            // An engine schema with no `agent` column reads as before (#s659).
+            "create table session (id text, parent_id text, directory text, version text, time_created integer);
              create table event_sequence (aggregate_id text, seq integer);
              create table event (aggregate_id text, seq integer, type text, data text);
-             insert into session values ('ses_one', null, '/work/chats/opencode-1', '1.0.0', 1000, 'build');
+             insert into session values ('ses_one', null, '/work/chats/opencode-1', '1.0.0', 1000);
              insert into event_sequence values ('ses_one', 0);",
         )
         .unwrap();
@@ -1407,7 +1408,7 @@ mod tests {
         // one as a chat would mirror it.
         for n in 0..4 {
             e.execute(
-                "insert into session values (?1, null, ?2, '1.0.0', 1000, 'build')",
+                "insert into session values (?1, null, ?2, '1.0.0', 1000)",
                 params![format!("ses_bad{n}"), format!("/work/chats/bad-{n}")],
             )
             .unwrap();
@@ -1481,6 +1482,58 @@ mod tests {
         );
         super::super::opencode::refresh_now(&QWENWORK);
         let rebuilt = std::fs::read_to_string(&path).unwrap();
+        // The log goes back to before the second reply (the engine's database put back from an
+        // older copy): what was written from the events it lost goes, and the removal with them.
+        e.execute(
+            "delete from event where aggregate_id = 'ses_one' and seq > 8",
+            [],
+        )
+        .unwrap();
+        e.execute(
+            "update event_sequence set seq = 8 where aggregate_id = 'ses_one'",
+            [],
+        )
+        .unwrap();
+        super::super::opencode::refresh_now(&QWENWORK);
+        let gone_back = std::fs::read_to_string(&path).unwrap();
+        // The session's version changes, which every record carries: built again under it.
+        e.execute(
+            "update session set version = '1.0.1' where id = 'ses_one'",
+            [],
+        )
+        .unwrap();
+        add(&e, "message.updated.1", message("msg_u3", "user", false));
+        super::super::opencode::refresh_now(&QWENWORK);
+        let re_versioned = std::fs::read_to_string(&path).unwrap();
+        // The log's position runs ahead of its events for a moment (a sequence written before its
+        // event, which the engine has not been seen to do): the event is read once it is there,
+        // though the position no longer moves.
+        let ahead: i64 = e
+            .query_row(
+                "select seq + 1 from event_sequence where aggregate_id = 'ses_one'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        e.execute(
+            "update event_sequence set seq = ?1 where aggregate_id = 'ses_one'",
+            [ahead],
+        )
+        .unwrap();
+        super::super::opencode::refresh_now(&QWENWORK);
+        e.execute(
+            "insert into event values ('ses_one', ?1, 'message.part.updated.1', ?2)",
+            params![
+                ahead,
+                part(
+                    serde_json::json!({ "id": "prt_u3", "messageID": "msg_u3", "type": "text", "text": "and the summary" })
+                )
+                .to_string()
+            ],
+        )
+        .unwrap();
+        super::super::opencode::refresh_now(&QWENWORK);
+        let caught_up = std::fs::read_to_string(&path).unwrap();
         std::env::remove_var("QWENWORK_PROJECTS_DIR");
         std::env::remove_var("QWENWORK_DB");
 
@@ -1526,6 +1579,19 @@ mod tests {
             "a rebuild has a new first line"
         );
         assert!(!rebuilt.contains("\"Done.\""), "the removed reply is gone");
+        assert!(
+            !gone_back.contains("Indexed.") && gone_back.contains("\"Done.\""),
+            "a log that went back is read whole again"
+        );
+        assert!(
+            re_versioned.contains("\"version\":\"1.0.1\"")
+                && !re_versioned.contains("\"version\":\"1.0.0\""),
+            "every record under the session's new version"
+        );
+        assert!(
+            caught_up.contains("and the summary"),
+            "an event behind a position already reached is still read"
+        );
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
@@ -1644,6 +1710,16 @@ mod tests {
             "message.updated.1",
             message("ses_main", "msg_a1", "assistant", false),
         );
+        // A command first, so the chat clears the store's size floor and is listed.
+        add(
+            &e,
+            "ses_main",
+            "message.part.updated.1",
+            part(
+                "ses_main",
+                json!({ "id": "prt_b0", "messageID": "msg_a1", "type": "tool", "tool": "bash", "callID": "call_ls", "state": { "status": "completed", "input": { "command": "ls" }, "output": long, "time": { "start": 1500, "end": 1600 } } }),
+            ),
+        );
         add(
             &e,
             "ses_main",
@@ -1713,6 +1789,8 @@ mod tests {
             .join("agent-ses_kid.jsonl");
         let meta = child.with_file_name("agent-ses_kid.meta.json");
         let first_child = std::fs::read_to_string(&child).expect("the sub-agent's mirror");
+        let running_main = std::fs::read_to_string(&main).unwrap();
+        let listed_mains = store_transcripts_for(&QWENWORK);
         let meta_body = std::fs::read_to_string(&meta).expect("the sub-agent's sidecar");
         let child_mode = {
             use std::os::unix::fs::PermissionsExt;
@@ -1747,6 +1825,31 @@ mod tests {
         let finished = claude_replay_core::parse_session_enriched_as(Agent::QWENWORK, &main)
             .unwrap()
             .blocks();
+        let finished_main = std::fs::read_to_string(&main).unwrap();
+        let finished_child = std::fs::read_to_string(&child).unwrap();
+        // The same log taken whole, into a mirror root of its own.
+        std::env::set_var("QWENWORK_MIRROR_DIR", root.join("whole-again"));
+        super::super::opencode::refresh_now(&QWENWORK);
+        let whole_main_path =
+            transcript_by_id_for(&QWENWORK, chat).expect("the chat's mirror, taken whole");
+        let whole_main = std::fs::read_to_string(&whole_main_path).unwrap();
+        let whole_child = std::fs::read_to_string(
+            whole_main_path
+                .parent()
+                .unwrap()
+                .join(chat)
+                .join("subagents")
+                .join("agent-ses_kid.jsonl"),
+        )
+        .unwrap();
+        std::env::remove_var("QWENWORK_MIRROR_DIR");
+        // The engine no longer has the child (it never drops one; the test does): its files go,
+        // and it is no longer listed, so no cost of it is banked onto the chat.
+        e.execute("delete from session where id = 'ses_kid'", [])
+            .unwrap();
+        super::super::opencode::refresh_now(&QWENWORK);
+        let kid_gone = (child.exists(), meta.exists());
+        let subs_after_kid_gone = subagent_transcripts_for(&QWENWORK);
         // The chat is deleted in the app (its row goes): its mirror goes, sub-agents and all.
         let a = Connection::open(&app).unwrap();
         a.execute("delete from sub_chats where session_id = ?1", [chat])
@@ -1831,6 +1934,57 @@ mod tests {
         let f = sub(&finished).expect("still a sub-agent block");
         assert_eq!(f.agent_id, "ses_kid");
         assert!(f.blocks.len() >= r.blocks.len());
+        assert!(listed_mains.contains(&main), "{listed_mains:?}");
+        assert!(
+            first_child.len() as u64 >= MIN_TRANSCRIPT_BYTES,
+            "the child is big enough to be listed, were it a session"
+        );
+        assert!(
+            !listed_mains
+                .iter()
+                .any(|p| p.components().any(|c| c.as_os_str() == "subagents")),
+            "a sub-agent is never a session of its own: {listed_mains:?}"
+        );
+        assert!(
+            finished_main.starts_with(&running_main) && finished_main.len() > running_main.len(),
+            "the chat's mirror grew in place"
+        );
+        assert!(finished_child.starts_with(&grown_child), "and the child's");
+        assert!(
+            whole_main_path.starts_with(root.join("whole-again")),
+            "{}",
+            whole_main_path.display()
+        );
+        let rest = |s: &str| s.lines().skip(1).map(str::to_owned).collect::<Vec<_>>();
+        assert_eq!(
+            rest(&finished_main),
+            rest(&whole_main),
+            "grown, the chat's mirror holds what the whole log writes"
+        );
+        let unstamped = |s: &str| {
+            let mut v: Vec<serde_json::Value> = s
+                .lines()
+                .map(|l| serde_json::from_str(l).unwrap())
+                .collect();
+            if let Some(o) = v.first_mut().and_then(|f| f.as_object_mut()) {
+                o.remove("promptId");
+            }
+            v
+        };
+        assert_eq!(
+            unstamped(&finished_child),
+            unstamped(&whole_child),
+            "and so does the sub-agent's"
+        );
+        assert_eq!(
+            kid_gone,
+            (false, false),
+            "a child the chat no longer has: its files go"
+        );
+        assert!(
+            !subs_after_kid_gone.iter().any(|(p, _, _)| p == &child),
+            "and it is no longer listed: {subs_after_kid_gone:?}"
+        );
         assert!(!main.exists(), "a deleted chat's mirror goes");
         assert!(!child.exists(), "and its sub-agents with it");
         assert!(

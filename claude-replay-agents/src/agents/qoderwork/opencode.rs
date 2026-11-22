@@ -38,8 +38,9 @@
 //! reader draws the child under it ([`super::discover::spawn_links`]). A child's growth is its
 //! chat's, so the chat's position counts its children's.
 //!
-//! Nothing here writes to either database: both are opened read-only, one short read each, and a
-//! read that fails leaves the mirror as it was.
+//! Nothing here writes to either database: both are opened read-only, each read in one short
+//! transaction (the app's twice a refresh: its chats, then, once the mirrors are written, every
+//! chat id it names, for pruning), and a read that fails leaves the mirror as it was.
 
 // Off macOS there is no engine database to read (rusqlite is a macOS dependency), so the
 // projection and the writer go unused there; the listing still finds mirrors made elsewhere.
@@ -1086,6 +1087,56 @@ pub(crate) fn lock_mirrors(root: &Path) -> Option<std::fs::File> {
     None
 }
 
+/// The mark a folder `QWENWORK_MIRROR_DIR` names carries once the mirror has taken it (#s659).
+const ROOT_MARK: &str = ".opencode-mirror";
+
+/// Whether the mirror may write and prune under `root` (#s659). A root of its own naming is its
+/// own. One `QWENWORK_MIRROR_DIR` names (`overridden`) is its own once it carries the mark, which
+/// the mirror puts in a folder that is new or empty: a folder holding anything else is someone's,
+/// and prune would delete there whatever it took for a deleted chat's mirror.
+pub(crate) fn owns_root(root: &Path, overridden: bool) -> bool {
+    if !overridden {
+        return true;
+    }
+    let mark = root.join(ROOT_MARK);
+    if mark.is_file() {
+        return true;
+    }
+    let empty = match std::fs::read_dir(root) {
+        Ok(mut entries) => entries.next().is_none(),
+        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+    };
+    empty && create_private_dir(root).is_ok() && private_file(&mark, true).is_ok()
+}
+
+/// Removes the files of `chat`'s sub-agents that are not among `kids` (#s659): a child whose
+/// generation stopped being the chat's (a neighbour in its folder gained one), or one the engine
+/// no longer has. Left there, they would stay listed, and the monitor would bank a child's cost
+/// onto a chat whose mirror no longer shows it. Only the writer's own names are touched.
+fn remove_gone_subagents(root: &Path, chat: &Chat, kids: &HashSet<&str>) {
+    let dir = root
+        .join(slug_for(&chat.dir))
+        .join(&chat.id)
+        .join("subagents");
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let Some(id) = name.to_str().and_then(|n| {
+            let n = n.strip_prefix("agent-")?;
+            n.strip_suffix(".jsonl")
+                .or_else(|| n.strip_suffix(".jsonl.tmp"))
+                .or_else(|| n.strip_suffix(".meta.json"))
+        }) else {
+            continue;
+        };
+        if !kids.contains(id) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
 /// The slug the store gives a folder: '/' and '.' as '-'.
 fn slug_for(dir: &str) -> String {
     dir.replace(['/', '.'], "-")
@@ -1147,7 +1198,10 @@ pub(crate) fn prune(
                 continue;
             };
             let here = dir.join(format!("{id}.jsonl"));
-            let stale = !keep.contains(id) || current.get(id).is_some_and(|now| now != &here);
+            let stale = !keep.contains(id)
+                || current.get(id).is_some_and(|now| {
+                    now != &here && !now.parent().is_some_and(|p| same_folder(p, &dir))
+                });
             if !stale {
                 continue;
             }
@@ -1164,6 +1218,23 @@ pub(crate) fn prune(
         let _ = std::fs::remove_dir(&dir);
     }
     gone.len()
+}
+
+/// Whether two paths name one folder: the same spelling, or one folder on disk under two (a
+/// case-insensitive disk, as a Mac's is by default, takes `-w-A` and `-w-a` for one folder, and so
+/// do two chats whose folders differ only in case: the first one's spelling is the folder's).
+fn same_folder(a: &Path, b: &Path) -> bool {
+    if a == b {
+        return true;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if let (Ok(x), Ok(y)) = (std::fs::metadata(a), std::fs::metadata(b)) {
+            return (x.dev(), x.ino()) == (y.dev(), y.ino());
+        }
+    }
+    false
 }
 
 /// Whether an engine id can name a file as it is: the engine's ids are `ses_` and letters and
@@ -1223,6 +1294,8 @@ mod db {
         read: HashMap<String, i64>,
         /// What every removal in the chat's sessions took out.
         removed: HashSet<String>,
+        /// Each session's engine version, which every record of it carries.
+        versions: HashMap<String, String>,
         main: Mirror,
         kids: HashMap<String, Mirror>,
         spawns: Vec<Spawn>,
@@ -1348,12 +1421,26 @@ mod db {
 
     /// Every engine session with its log position: a chat's own, and the sub-agents' (#s659),
     /// whose parent says whose.
+    ///
+    /// A session with no sequence row yet is at -1: the engine numbers a session's events from 0,
+    /// so 0 is a session holding one. A schema with no `agent` column (an engine older than the
+    /// one measured) reads each agent as empty, which only a sub-agent's sidecar shows.
     fn positions(c: &Connection) -> rusqlite::Result<Vec<(Session, i64)>> {
-        let mut q = c.prepare(
-            "select s.id, s.directory, s.version, s.time_created, coalesce(q.seq, 0), \
-                    s.parent_id, coalesce(s.agent, '') \
-             from session s left join event_sequence q on q.aggregate_id = s.id",
+        let has_agent: bool = c.query_row(
+            "select count(*) > 0 from pragma_table_info('session') where name = 'agent'",
+            [],
+            |r| r.get(0),
         )?;
+        let agent = if has_agent {
+            "coalesce(s.agent, '')"
+        } else {
+            "''"
+        };
+        let mut q = c.prepare(&format!(
+            "select s.id, s.directory, s.version, s.time_created, coalesce(q.seq, -1), \
+                    s.parent_id, {agent} \
+             from session s left join event_sequence q on q.aggregate_id = s.id"
+        ))?;
         let rows = q.query_map([], |r| {
             Ok((
                 Session {
@@ -1387,7 +1474,8 @@ mod db {
                 ))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        let last = rows.last().map_or(after, |(seq, _, _)| *seq);
+        // Nothing read from the start is -1, the position of a session with nothing yet.
+        let last = rows.last().map_or(after.max(-1), |(seq, _, _)| *seq);
         let events = rows
             .into_iter()
             .filter_map(|(seq, ty, d)| serde_json::from_str(&d).ok().map(|v| (seq, ty, v)))
@@ -1456,6 +1544,8 @@ mod db {
             }
             kids.insert(k.id.clone(), Mirror { p, file });
         }
+        let ids: HashSet<&str> = t.kids.iter().map(|s| s.id.as_str()).collect();
+        remove_gone_subagents(t.root, t.chat, &ids);
         let model = refs
             .last()
             .and_then(|s| {
@@ -1476,6 +1566,12 @@ mod db {
             gens: t.gens.iter().map(|s| s.id.clone()).collect(),
             read,
             removed,
+            versions: t
+                .gens
+                .iter()
+                .chain(t.kids.iter())
+                .map(|s| (s.id.clone(), s.version.clone()))
+                .collect(),
             main: Mirror { p: main, file },
             kids,
             spawns: calls,
@@ -1484,11 +1580,12 @@ mod db {
 
     /// Brings what this process kept of a chat to the log's new positions from the events past
     /// what it read, appending what they add to each mirror: `None` when only the whole log can
-    /// say. That is when an earlier generation moved (its events come before the later one's), the
-    /// generations or the sub-agents are not the ones kept, a removal came (it takes out what was
-    /// written), a sub-agent's call is named only now (it is in every record of the child's), a
-    /// file is not the one this process left (another process wrote it, or the chat was pruned),
-    /// or a write failed.
+    /// say. That is when an earlier generation moved or was not read to its end (its events come
+    /// before the later one's), the generations are not the ones kept, a sub-agent kept is gone (a
+    /// new one is taken in), a position went back, a session's version changed (every record of
+    /// it carries the version), a removal came (it takes out what was written), a sub-agent's call
+    /// is named only now (it is in every record of the child's), a file is not the one this
+    /// process left (another process wrote it, or the chat was pruned), or a write failed.
     fn grow(c: &Connection, mut k: Kept, t: &Target) -> rusqlite::Result<Option<Kept>> {
         let (Some(last), earlier) = (t.gens.last(), &t.gens[..t.gens.len().saturating_sub(1)])
         else {
@@ -1496,11 +1593,25 @@ mod db {
         };
         let gens: Vec<&str> = t.gens.iter().map(|s| s.id.as_str()).collect();
         let pos = |at: &[(String, i64)], id: &str| at.iter().find(|(s, _)| s == id).map(|x| x.1);
+        // A position that went back is a log that lost events (the engine's database put back
+        // from an older copy): what was written from them only the whole log can take out.
         if gens != k.gens
             || earlier
                 .iter()
                 .any(|g| pos(t.at, &g.id) != pos(&k.at, &g.id))
             || k.kids.keys().any(|id| !t.kids.iter().any(|s| &s.id == id))
+            || std::iter::once(last)
+                .chain(t.kids.iter())
+                .any(|s| pos(t.at, &s.id) < pos(&k.at, &s.id))
+            || earlier.iter().any(|g| {
+                k.read
+                    .get(&g.id)
+                    .is_none_or(|r| Some(*r) < pos(t.at, &g.id))
+            })
+            || t.gens
+                .iter()
+                .chain(t.kids.iter())
+                .any(|s| k.versions.get(&s.id).is_some_and(|v| v != &s.version))
         {
             return Ok(None);
         }
@@ -1512,14 +1623,15 @@ mod db {
             return Ok(None);
         }
         // What the log added, the chat's own and then its sub-agents', as the whole log is taken;
-        // a session whose position has not moved is not read at all.
+        // a session already read to its position is not read again.
         let mut new: Vec<(&Session, Vec<Event>)> = Vec::new();
         for s in std::iter::once(last).chain(t.kids.iter()) {
             let read = k.read.get(&s.id).copied();
-            if read.is_some() && pos(t.at, &s.id) == pos(&k.at, &s.id) {
+            if read.is_some_and(|r| Some(r) >= pos(t.at, &s.id)) {
                 new.push((s, Vec::new()));
                 continue;
             }
+            k.versions.insert(s.id.clone(), s.version.clone());
             let (upto, events) = events_after(c, &s.id, read.unwrap_or(i64::MIN))?;
             if events.iter().any(|(_, ty, _)| is_removal(ty)) {
                 return Ok(None);
@@ -1579,6 +1691,9 @@ mod db {
         ) else {
             return;
         };
+        if !owns_root(&root, std::env::var_os(super::MIRROR_DIR_ENV).is_some()) {
+            return;
+        }
         let mut memo = MEMO.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(m) = memo.as_ref() {
             if throttle
@@ -1631,10 +1746,15 @@ mod db {
             let at: Vec<(String, i64)> = gens
                 .iter()
                 .chain(kids.iter())
-                .map(|s| (s.id.clone(), seqs.get(&s.id).copied().unwrap_or(0)))
+                .map(|s| (s.id.clone(), seqs.get(&s.id).copied().unwrap_or(-1)))
                 .collect();
-            if m.kept.get(&chat.id).is_some_and(|k| k.at == at)
-                && mirror_path(&root, chat).is_file()
+            // Nothing to do where the log has not moved and what was kept was read to its end.
+            if m.kept.get(&chat.id).is_some_and(|k| {
+                k.at == at
+                    && k.at
+                        .iter()
+                        .all(|(id, p)| k.read.get(id).is_some_and(|r| r >= p))
+            }) && mirror_path(&root, chat).is_file()
             {
                 continue;
             }
@@ -2107,6 +2227,69 @@ mod tests {
             assert!(p.exists(), "kept: {}", p.display());
         }
         std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    /// A folder QWENWORK_MIRROR_DIR names is the mirror's only if it was new or empty, and it is
+    /// marked so; one holding anything else is never written or pruned in (#s659).
+    #[test]
+    fn a_mirror_root_named_by_hand_is_taken_only_new_or_empty() {
+        let base = std::env::temp_dir().join(format!("qw-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let fresh = base.join("fresh");
+        let empty = base.join("empty");
+        std::fs::create_dir_all(&empty).unwrap();
+        let someones = base.join("someones");
+        std::fs::create_dir_all(someones.join("-w-a/ses/subagents")).unwrap();
+        std::fs::write(someones.join("-w-a/notes.jsonl"), b"{}\n").unwrap();
+
+        assert!(
+            owns_root(&someones, false),
+            "a root of its own naming is its own"
+        );
+        assert!(
+            !owns_root(&someones, true),
+            "a folder holding anything else is not"
+        );
+        assert!(!someones.join(ROOT_MARK).exists(), "and is left as it was");
+        assert!(owns_root(&fresh, true), "a new folder is taken");
+        assert!(fresh.join(ROOT_MARK).is_file(), "and marked");
+        assert!(owns_root(&empty, true), "so is an empty one");
+        std::fs::write(empty.join("-w-b.jsonl"), b"{}\n").unwrap();
+        assert!(
+            owns_root(&empty, true),
+            "marked, it stays the mirror's as it fills"
+        );
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A chat whose folder differs from another's only in case shares that one's slug folder on a
+    /// case-insensitive disk, spelled the first one's way: its mirror is where it is, not moved.
+    #[test]
+    fn prune_keeps_a_mirror_whose_folder_is_spelled_another_way_on_disk() {
+        let root = std::env::temp_dir().join(format!("qw-prune-case-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let on_disk = root.join("-w-Notes/second.jsonl");
+        std::fs::create_dir_all(on_disk.parent().unwrap()).unwrap();
+        std::fs::write(&on_disk, b"{}\n").unwrap();
+        let spelled = root.join("-w-notes/second.jsonl");
+        let insensitive = spelled.exists();
+        let keep: HashSet<String> = ["second".to_string()].into_iter().collect();
+        let current: HashMap<String, PathBuf> =
+            [("second".to_string(), spelled)].into_iter().collect();
+
+        let n = prune(&root, &keep, &current);
+
+        if insensitive {
+            assert_eq!(n, 0, "one folder under two spellings");
+            assert!(on_disk.exists());
+        } else {
+            assert_eq!(
+                n, 1,
+                "a case-sensitive disk: another folder, so the chat moved"
+            );
+            assert!(!on_disk.exists());
+        }
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

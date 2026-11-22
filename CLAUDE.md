@@ -1772,7 +1772,21 @@ presentation-agnostic".
   it again under a new first line. A chat's engine sessions are joined only where the folder or
   the app's binding says whose they are. With `QWENWORK_PROJECTS_DIR` moved (every test), the
   engine database and the mirrors are found beside it; `QWENWORK_ENGINE_DB` and
-  `QWENWORK_MIRROR_DIR` move each alone.
+  `QWENWORK_MIRROR_DIR` move each alone (a folder that variable names is written in only if it was
+  new or empty, and is marked so, since prune deletes by name).
+  **A task call's child session is a sub-agent** (#s659): mirrored in the family's layout,
+  `<chat stem>/subagents/agent-<child id>.jsonl` on the sidechain, with `agent-<id>.meta.json`
+  naming the call (`toolUseId`), so a call still running links to its child in the Agents pane and
+  the sweeps and the monitor's cost read it with the store's sub-agents; a child the chat no longer
+  has loses its files. A chat deleted in the app (its `sub_chats` row gone) or moved to another
+  folder loses its mirror at the next refresh, judged on a second, whole read of every chat id
+  (one that fails or misses a chat the first read had removes nothing). A chat that grew is read
+  past its last position only and its mirrors appended to, from projectors this process keeps;
+  the whole log is read again where only it can say (an earlier generation moved, a removal, a
+  call naming its child only now, a position that went back, a session's version changed, a file
+  this process did not leave, a failed write), and a new process reads each chat whole once, as
+  nothing of it is written down. The projector takes a log in pieces as it takes it whole, and
+  `a_log_taken_in_pieces_writes_what_it_writes_taken_whole` holds it.
 
 Also in core (beside the vocabulary they index): `fold.rs` the `FoldPolicy` (clap-free
 `from_flags`; the CLI bridge is `Args::fold_policy`) and the agent-neutral diff-row model
