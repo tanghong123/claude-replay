@@ -278,7 +278,8 @@ switcher (Sessions / Turns / Tasks / Agents, borrowing the outline's live lists 
 Sessions wears a conversation glyph, never the sidebar glyph, which every desktop reads as "hide the
 sidebar": the owner tapped it to hide the column and called it dead, #s41), then
 the sidebar's own (Collapse all, Expand all and the session filter go while a pane is shown: they act
-on the list alone); the pill keeps only Aa beside search — and takes the panes back while the column
+on the list alone; Collapse all and Expand all are never glyphs there but the session filter sheet's
+first two rows, so the six glyphs left take a finger's 44 points each, #s664, Hong's choice on #s661); the pill keeps only Aa beside search — and takes the panes back while the column
 is hidden, or nothing would reach them. The handle sits at the session's top left, by
 the title (as iPad apps keep their sidebar button, and wearing its sidebar glyph there; ☰ is the
 drawer's), and hides and shows the column under its own key
