@@ -32239,6 +32239,249 @@ fn drawer_head_targets_hold(tab: &headless_chrome::Tab, what: &str) {
     }
 }
 
+/// #s664, Hong's choice on #s661: on a wide phone held sideways the session list is a 280-point column
+/// whose head is one row of glyphs, and its eight (Sessions, Turns, Tasks, Agents, the theme, Collapse
+/// all, Expand all, the session filter) sat 32 points wide, since eight at 44 need 352. There Collapse
+/// all and Expand all leave the head for two rows at the top of the session filter's sheet:
+/// - the head's six glyphs each take a finger's 44 points (#313), in one row inside the column, without
+///   overlapping, every point of the 44-point disc around each one's centre hitting it;
+/// - each row does what its glyph did and closes the sheet; the rows go where the glyphs go (one list
+///   by activity) and come back with the tree;
+/// - with a pane in the column the five glyphs left take 44 points too;
+/// - upright, in the drawer, and on a desktop the glyphs stay in the head and the sheet draws no rows.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_wide_phone_held_sideways_folds_the_session_list_from_the_filter_sheet() {
+    let _serial = serial();
+    let (m, _b, tab) = drawer_world(
+        3388,
+        "wide-column-head",
+        956,
+        440,
+        false,
+        3,
+        Some(harness::SIDEWAYS_INSETS),
+    );
+    const TABS: [&str; 4] = [
+        "#columnSwitch [data-column-tab=sessions]",
+        "#columnSwitch [data-column-tab=turns]",
+        "#columnSwitch [data-column-tab=tasks]",
+        "#columnSwitch [data-column-tab=agents]",
+    ];
+    let head = [TABS.as_slice(), &["#themeBtn", "#filterBtn"]].concat();
+    column_head_holds(
+        &tab,
+        "the session list showing",
+        &head,
+        &["#collapseBtn", "#expandBtn"],
+    );
+
+    // The two rows at the top of the sheet, each a finger's 44 points.
+    let rows = open_group_rows(&tab, "the session list showing");
+    for key in ["collapse", "expand"] {
+        let row = &rows["rows"][key];
+        assert!(
+            row["shown"] == true && row["hit"] == true && row["h"].as_i64().unwrap_or(0) >= 44,
+            "the sheet's {key} row is drawn, on top and a finger's 44 points tall: {rows}"
+        );
+        assert!(
+            row["top"].as_f64().unwrap_or(9999.0) < rows["firstHead"].as_f64().unwrap_or(0.0),
+            "the sheet's {key} row comes before its first heading: {rows}"
+        );
+    }
+    // Collapse all folds every group and closes the sheet; Expand all opens them again.
+    tap_group_row(&tab, "collapse");
+    harness::until(
+        &tab,
+        &format!("document.getElementById('sessionFilter').hidden && {VISIBLE_SESSION_ROWS} === 0 && document.querySelectorAll('#app>.sidebar .tree-row').length > 0"),
+        "Collapse all from the sheet to fold every group and close the sheet",
+        Duration::from_secs(5),
+        &format!("document.getElementById('sessionFilter').hidden + ' rows ' + {VISIBLE_SESSION_ROWS}"),
+    );
+    open_group_rows(&tab, "after Collapse all");
+    tap_group_row(&tab, "expand");
+    harness::until(
+        &tab,
+        &format!("document.getElementById('sessionFilter').hidden && {VISIBLE_SESSION_ROWS} > 30"),
+        "Expand all from the sheet to open every group and close the sheet",
+        Duration::from_secs(5),
+        &format!(
+            "document.getElementById('sessionFilter').hidden + ' rows ' + {VISIBLE_SESSION_ROWS}"
+        ),
+    );
+    // One list by activity has nothing to fold: the rows go, as the glyphs did; the tree brings them back.
+    open_group_rows(&tab, "before one list by activity");
+    phone_tap(&tab, "#sessionFilter [data-arrange=flat]");
+    harness::until(
+        &tab,
+        "!document.getElementById('sessionFilter').hidden && [...document.querySelectorAll('#sessionFilter [data-group-action]')].every(function (r) { return !r.getClientRects().length; })",
+        "one list by activity to take the sheet's fold rows away",
+        Duration::from_secs(5),
+        "[...document.querySelectorAll('#sessionFilter [data-group-action]')].map(function (r) { return r.getClientRects().length; }).join()",
+    );
+    phone_tap(&tab, "#sessionFilter [data-arrange=tree]");
+    harness::until(
+        &tab,
+        "!document.getElementById('sessionFilter').hidden && [...document.querySelectorAll('#sessionFilter [data-group-action]')].length === 2 && [...document.querySelectorAll('#sessionFilter [data-group-action]')].every(function (r) { return r.getClientRects().length > 0; })",
+        "the tree to bring the sheet's fold rows back",
+        Duration::from_secs(5),
+        "[...document.querySelectorAll('#sessionFilter [data-group-action]')].map(function (r) { return r.getClientRects().length; }).join()",
+    );
+    phone_tap(&tab, "#filterBtn");
+    harness::until(
+        &tab,
+        "document.getElementById('sessionFilter').hidden",
+        "the sheet to close",
+        Duration::from_secs(5),
+        "document.getElementById('sessionFilter').hidden",
+    );
+    // A pane in the column: the five glyphs left take 44 points too.
+    phone_tap(&tab, TABS[1]);
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('column-pane-on')",
+        "the column to show the Turns pane",
+        Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    let pane = [TABS.as_slice(), &["#themeBtn"]].concat();
+    column_head_holds(
+        &tab,
+        "a pane showing",
+        &pane,
+        &["#collapseBtn", "#expandBtn", "#filterBtn"],
+    );
+    phone_tap(&tab, TABS[0]);
+
+    // Upright the drawer keeps both glyphs in its head, and the sheet has no fold rows.
+    let (_bu, up) = phone_tab(&m, 440, 956);
+    phone_tap(&up, "#drawerHandle");
+    harness::until(
+        &up,
+        DRAWER_OPEN,
+        "upright: the drawer",
+        Duration::from_secs(5),
+        DRAWER_STATE,
+    );
+    glyphs_stay_and_rows_do_not_show(&up, "upright");
+    // A desktop the same.
+    let (_bd, desk) = desktop_tab(&m);
+    glyphs_stay_and_rows_do_not_show(&desk, "a desktop");
+    drop(m);
+}
+
+/// Session rows a reader can see in the app's list.
+const VISIBLE_SESSION_ROWS: &str = "[...document.querySelectorAll('#app>.sidebar .tree-row.session')].filter(function (r) { return r.getClientRects().length > 0; }).length";
+
+/// The column head's controls `shown` each take a finger's 44 points, side by side without
+/// overlapping, in one row inside the column; `gone` are not drawn.
+fn column_head_holds(tab: &headless_chrome::Tab, what: &str, shown: &[&str], gone: &[&str]) {
+    let all = [shown, gone].concat();
+    let seen = find_targets(tab, &all);
+    for sel in gone {
+        assert!(
+            seen["controls"][sel].is_null(),
+            "{what}: the column head draws no {sel}: {seen}"
+        );
+    }
+    for sel in shown {
+        let c = &seen["controls"][sel];
+        assert!(!c.is_null(), "{what}: the column head draws {sel}: {seen}");
+        assert!(
+            c["w"].as_i64().unwrap_or(0) >= 44 && c["h"].as_i64().unwrap_or(0) >= 44,
+            "{what}: the column head's {sel} is a finger's 44 points: {seen}"
+        );
+        assert_eq!(
+            c["missed"].as_array().map(Vec::len),
+            Some(0),
+            "{what}: a finger anywhere in the 44 points around the column head's {sel} takes it: {seen}"
+        );
+        if let Some(gap) = c["gap"].as_i64() {
+            assert!(
+                gap >= 0,
+                "{what}: the column head's {sel} does not overlap the control before it: {seen}"
+            );
+        }
+        assert!(
+            !c["icon"].is_null(),
+            "{what}: the column head's {sel} draws its glyph: {seen}"
+        );
+    }
+    let list = serde_json::to_string(shown).unwrap();
+    let row = harness::eval(
+        tab,
+        &format!("(function(){{ var col = document.querySelector('#app>.sidebar').getBoundingClientRect(); return JSON.stringify({{ col: [Math.round(col.left), Math.round(col.right)], boxes: {list}.map(function (s) {{ var r = document.querySelector(s).getBoundingClientRect(); return [Math.round(r.left), Math.round(r.right), Math.round(r.top)]; }}) }}); }})()"),
+    );
+    let row: serde_json::Value =
+        serde_json::from_str(row.as_str().unwrap_or("{}")).unwrap_or_default();
+    let (left, right) = (
+        row["col"][0].as_i64().unwrap_or(0),
+        row["col"][1].as_i64().unwrap_or(0),
+    );
+    let boxes = row["boxes"].as_array().cloned().unwrap_or_default();
+    let top = boxes.first().and_then(|b| b[2].as_i64()).unwrap_or(-1);
+    assert!(
+        boxes.len() == shown.len()
+            && boxes.iter().all(|b| b[0].as_i64().unwrap_or(-1) >= left
+                && b[1].as_i64().unwrap_or(9999) <= right
+                && (b[2].as_i64().unwrap_or(-99) - top).abs() <= 1),
+        "{what}: the column head's glyphs keep one row inside the column: {row}"
+    );
+}
+
+/// Opens the session filter's sheet with a finger and reads its fold rows: each one's display, height,
+/// top, and whether a tap at its middle reaches it, with the top of the sheet's first heading.
+fn open_group_rows(tab: &headless_chrome::Tab, what: &str) -> serde_json::Value {
+    let f = page_point(tab, "the filter", "(function(){ var b = document.getElementById('filterBtn').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); })()");
+    harness::finger_tap(tab, f[0], f[1]);
+    harness::until(
+        tab,
+        "!document.getElementById('sessionFilter').hidden",
+        &format!("{what}: the session filter's sheet"),
+        Duration::from_secs(5),
+        "document.getElementById('sessionFilter').hidden",
+    );
+    harness::pause("the sheet to rest", Duration::from_millis(300));
+    group_rows(tab)
+}
+
+fn group_rows(tab: &headless_chrome::Tab) -> serde_json::Value {
+    let raw = harness::eval(
+        tab,
+        &format!("(function(){{ var s = document.getElementById('sessionFilter'), out = {{ open: !s.hidden, rows: {{}} }}; ['collapse', 'expand'].forEach(function (k) {{ var r = s.querySelector('[data-group-action=' + k + ']'); if (!r) {{ out.rows[k] = null; return; }} var b = r.getBoundingClientRect(); out.rows[k] = {{ shown: r.getClientRects().length > 0, h: Math.round(b.height), top: b.top, hit: ({PHONE_HITTABLE})(r) }}; }}); var h = s.querySelector('.scope-menu-head'); out.firstHead = h ? h.getBoundingClientRect().top : null; return JSON.stringify(out); }})()"),
+    );
+    serde_json::from_str(raw.as_str().unwrap_or("null")).unwrap_or_default()
+}
+
+fn tap_group_row(tab: &headless_chrome::Tab, key: &str) {
+    let p = page_point(tab, key, &format!("(function(){{ var b = document.querySelector('#sessionFilter [data-group-action={key}]').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); }})()"));
+    harness::finger_tap(tab, p[0], p[1]);
+}
+
+/// Collapse all and Expand all stay in the list's head, and the filter's sheet draws no fold rows.
+fn glyphs_stay_and_rows_do_not_show(tab: &headless_chrome::Tab, what: &str) {
+    let seen = find_targets(tab, &["#collapseBtn", "#expandBtn"]);
+    assert!(
+        !seen["controls"]["#collapseBtn"].is_null() && !seen["controls"]["#expandBtn"].is_null(),
+        "{what}: Collapse all and Expand all stay in the head: {seen}"
+    );
+    phone_tap(tab, "#filterBtn");
+    harness::until(
+        tab,
+        "!document.getElementById('sessionFilter').hidden",
+        &format!("{what}: the session filter's sheet"),
+        Duration::from_secs(5),
+        "document.getElementById('sessionFilter').hidden",
+    );
+    let rows = group_rows(tab);
+    for key in ["collapse", "expand"] {
+        assert!(
+            rows["rows"][key].is_null() || rows["rows"][key]["shown"] == false,
+            "{what}: the sheet draws no {key} row: {rows}"
+        );
+    }
+}
+
 const SWITCH_FROM: &str = "48900000-0000-4000-8000-00000000000a";
 const SWITCH_TO: &str = "48900000-0000-4000-8000-00000000000b";
 
