@@ -1148,13 +1148,19 @@ const DERIVED_FROM_VIA_KNOWN: &[&str] = &["compact", "fork", "resume", "subproce
 /// by a known via, a `resume` or `compact` of ANOTHER session (measured, every one names the
 /// session itself), or a `started` naming another session than the record's own.
 fn derived_from_unknown(v: &Value) -> Vec<String> {
-    let own = v.get("sessionId").and_then(Value::as_str);
     let mut out = Vec::new();
-    match v.get("v") {
-        Some(n) if n.as_u64() == Some(1) => {}
-        Some(n) => out.push(format!("derived-from v{n}")),
+    // A number only: a sweep name carries no text a record holds.
+    match v.get("v").map(Value::as_u64) {
+        Some(Some(1)) => {}
+        Some(Some(n)) => out.push(format!("derived-from v{n}")),
+        Some(None) => out.push("derived-from v(not a whole number)".to_string()),
         None => out.push("derived-from v(absent)".to_string()),
     }
+    let Some(own) = v.get("sessionId").and_then(Value::as_str) else {
+        out.push("derived-from (no sessionId)".to_string());
+        return out;
+    };
+    let own = Some(own);
     let Some(entries) = v.get("sessions").and_then(Value::as_array) else {
         out.push("derived-from (no sessions)".to_string());
         return out;

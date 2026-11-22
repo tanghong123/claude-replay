@@ -540,7 +540,8 @@ struct Row {
     /// The FIRST content timestamp — the session's start, for the rail's span display
     /// (#129), and `start_probed` so it is derived exactly ONCE: an append-only log's head
     /// never changes, and a miss costs the wide window (a re-probe per mtime tick would
-    /// re-read a megabyte forever for the one session that has no head timestamp).
+    /// re-read a megabyte forever for the one session that has no head timestamp). A Claude
+    /// head is settled once it holds its first prompt (#s653), and the start is read then.
     first_event: Option<u64>,
     start_probed: bool,
     /// The transcript's head says a one-shot run wrote it (`"entrypoint":"sdk-cli"`, what
@@ -551,8 +552,9 @@ struct Row {
     /// once with the start. A worker's own title is its project's — on aries-black every knack
     /// worker read "knack" — so the Agents pane names a worker by what it was asked to do.
     brief: Option<String>,
-    /// The session this one was forked from (#142), and whether we have looked. Read once:
-    /// a fork's origin is fixed when it is created and no later write changes it.
+    /// The session this one was forked from (#142), and whether we have looked. Read once the
+    /// head is settled (`start_probed`): a fork's origin is fixed when it is created and no later
+    /// write changes it. An edge `note_forks_from_argv` gave stands where the head names none.
     fork_from: Option<String>,
     fork_probed: bool,
     /// The session whose tools started this one (#s653), as its own transcript says (Claude Code
@@ -1405,7 +1407,6 @@ impl Index {
                         .unwrap_or(0);
                     row.continued_in = read_continuation(row.agent, &row.path, now_secs);
                     if !row.start_probed {
-                        row.first_event = first_event_ts(&row.path);
                         let entry = head_entry(&row.path);
                         let seen = !matches!(entry, HeadEntry::Unseen);
                         row.brief = match entry {
@@ -1421,6 +1422,11 @@ impl Index {
                         row.start_probed = seen
                             || row.agent != Agent::CLAUDE
                             || now_len.is_some_and(|n| n >= 64 * 1024);
+                        // The start once, with the head that settles: a head with no timestamp
+                        // costs `first_event_ts` its wide window, which a re-ask must not pay.
+                        if row.start_probed {
+                            row.first_event = first_event_ts(&row.path);
+                        }
                     }
                     // #142: which session this one was forked from, and (#s653) which one's
                     // tools started it, from the head with the start: a fork's origin is fixed
@@ -1623,8 +1629,8 @@ impl Index {
     /// scratchpad (since then its `derived-from` names it, which the adapter's `fork_origin`
     /// reads, #s653). So while the engine lives, the process table is how an older Claude fork
     /// joins its #142 family, and the edge is kept once seen (a fork's origin is fixed at
-    /// creation). Independent of `fork_probed`, which the transcript probe sets to `true` with
-    /// `None` once the head is whole.
+    /// creation). Independent of `fork_probed`: the transcript probe keeps this edge where the
+    /// head names no parent, and replaces it with the head's where it does.
     fn note_forks_from_argv(&self, st: &mut State) {
         let edges: Vec<(String, String)> = st
             .procs
@@ -3032,10 +3038,10 @@ enum HeadEntry {
 }
 
 /// Whether the transcript's head says a one-shot run wrote it — Claude Code records
-/// `"entrypoint":"sdk-cli"` for `claude -p` (measured 2026-10-08) where an interactive session
-/// says `cli` — and if so, its BRIEF: the first line of its first prompt, at most 120 characters
-/// (empty when the head holds no prompt). 64 KB is the head of any transcript: the first prompt
-/// record carries the entrypoint.
+/// `"entrypoint":"sdk-cli"` on the first prompt of a `claude -p` (measured 2026-10-08) where an
+/// interactive session says `cli` — and if so, its BRIEF: the first line of its first prompt, at
+/// most 120 characters (empty when the prompt holds no text). `Unseen` until the head holds that
+/// first `user` record. 64 KB is the head of any transcript.
 fn head_entry(path: &Path) -> HeadEntry {
     head_entry_read(path).unwrap_or(HeadEntry::Unseen)
 }
@@ -3055,9 +3061,14 @@ fn head_entry_read(path: &Path) -> Option<HeadEntry> {
         .lines()
         .filter_map(|line| serde_json::from_str(line).ok())
         .collect();
+    // The first PROMPT's entrypoint (#s653): a record the client writes before it (`mode`, a
+    // hook's attachment) may carry the key too, and settling on it would read a head caught before
+    // its prompt as whole: a one-shot with no brief, a fork before its `derived-from` is read.
     let entry = records
         .iter()
-        .find_map(|r| r.get("entrypoint").and_then(Value::as_str))?;
+        .find(|r| r.get("type").and_then(Value::as_str) == Some("user"))?
+        .get("entrypoint")
+        .and_then(Value::as_str)?;
     if entry != "sdk-cli" {
         return Some(HeadEntry::Interactive);
     }
@@ -10363,6 +10374,8 @@ n/Users/x/proj
         let worker = "6a5c0f2e-1d64-4b2e-9a51-6530000000c3";
         let own = "6a5c0f2e-1d64-4b2e-9a51-6530000000d4";
         let resumed = "6a5c0f2e-1d64-4b2e-9a51-6530000000e5";
+        // A fork from before 2.1.329: its head names no parent, its engine's argv did.
+        let older = "6a5c0f2e-1d64-4b2e-9a51-6530000000f6";
         let derived = |sid: &str, from: &str, via: &str| {
             json!({"type":"derived-from","v":1,"sessionId":sid,
                 "sessions":[{"type":"claude_code_session","id":from,"via":via}]})
@@ -10407,6 +10420,13 @@ n/Users/x/proj
         )
         .unwrap();
         std::fs::write(
+            dir.join(format!("{older}.jsonl")),
+            lines(vec![
+                json!({"type":"mode","mode":"normal","sessionId":older}),
+            ]),
+        )
+        .unwrap();
+        std::fs::write(
             dir.join(format!("{worker}.jsonl")),
             lines(vec![json!({"type":"derived-from","v":1,"sessionId":worker,
                 "sessions":[{"type":"claude_code_session","id":parent,"via":"subprocess",
@@ -10425,6 +10445,8 @@ n/Users/x/proj
                 !w.start_probed && !w.one_shot,
                 "nor is the worker taken for interactive"
             );
+            // As `note_forks_from_argv` does while the older fork's engine runs.
+            st.rows.get_mut(older).unwrap().fork_from = Some(parent.to_string());
             // Past the scan floor, as two seconds later.
             st.scanned_at = None;
         }
@@ -10462,6 +10484,13 @@ n/Users/x/proj
             "cli",
             "Carry on",
             20,
+        );
+        write(
+            older,
+            vec![json!({"type":"mode","mode":"normal","sessionId":older})],
+            "cli",
+            "An older fork",
+            25,
         );
 
         let listed: Value = serde_json::from_str(&index.sessions_json(|_| {})).unwrap();
@@ -10508,6 +10537,11 @@ n/Users/x/proj
             resumed,
             "a resume names the session itself"
         );
+        assert_eq!(
+            row(older)["family"],
+            parent,
+            "the argv's edge stands where the head names no parent"
+        );
         assert!(row(resumed).get("startedBy").is_none());
         let _ = std::fs::remove_dir_all(&scratch);
     }
@@ -10543,8 +10577,6 @@ n/Users/x/proj
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// #s53: a one-shot session's head names it and its brief (the first line of its first
-    /// prompt, a string or text parts); an interactive session has no brief at all.
     fn head_one_shot(path: &Path) -> Option<String> {
         match head_entry(path) {
             HeadEntry::OneShot(brief) => Some(brief),
@@ -10552,6 +10584,8 @@ n/Users/x/proj
         }
     }
 
+    /// #s53: a one-shot session's head names it and its brief (the first line of its first
+    /// prompt, a string or text parts); an interactive session has no brief at all.
     #[test]
     fn a_one_shot_head_gives_its_brief() {
         let dir = std::env::temp_dir().join(format!("cm-brief-{}", std::process::id()));
@@ -10599,6 +10633,12 @@ n/Users/x/proj
             r#"{"type":"derived-from","v":1,"sessionId":"e","sessions":[{"type":"claude_code_session","id":"p","via":"subprocess","started":"e"}]}"#,
         );
         assert!(matches!(head_entry(&early), HeadEntry::Unseen));
+        // Nor does a record before the prompt that carries the key: only the prompt's counts.
+        let before = file(
+            "b.jsonl",
+            r#"{"type":"attachment","entrypoint":"sdk-cli","sessionId":"b","timestamp":"2026-10-08T10:00:00Z"}"#,
+        );
+        assert!(matches!(head_entry(&before), HeadEntry::Unseen));
     }
 
     /// #s59, measured on hong-devserver: a Claude session and a Codex session in one repo, the
