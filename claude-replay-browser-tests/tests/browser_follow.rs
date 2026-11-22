@@ -27989,6 +27989,57 @@ fn a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_wh
     );
 }
 
+/// #s651 (the iOS app's layout walk): the find pill's ✕ ends the search on ONE tap with the keyboard
+/// up. It sits in the dock beside the search cluster, not inside it, so the tap-outside rule (#s49)
+/// took its press for a press outside and closed the box at the touch: the field lost the focus, the
+/// keyboard went down and the dock with it, and the tap's click, which a phone sends at the lift, met
+/// the transcript where the ✕ had been. The keyboard was down, the query and its marks stayed. Headless
+/// Chrome has no soft keyboard; the case gives the page one as `a_phone_find_pill_rides_the_keyboard`
+/// does, and taps with the click coming after the lift.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_ends_the_search_on_one_tap_of_its_done_with_the_keyboard_up() {
+    let _serial = serial();
+    let (_m, _b, tab) = phone_world(3175, "phone-search-done", 390, 844);
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, gx, gy);
+    harness::until(
+        &tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')",
+        "a tap on the search to open it",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    tab.type_str("question").unwrap();
+    tab.press_key("Enter").unwrap();
+    let state = "JSON.stringify((function(){ var b = document.querySelector('.header-searchbox'); return { open: b.classList.contains('phone-open'), query: b.classList.contains('has-query'), value: document.getElementById('transcriptSearchInput').value, focused: document.activeElement === document.getElementById('transcriptSearchInput'), marks: document.querySelectorAll('mark.search-mark').length, pill: getComputedStyle(document.getElementById('dockPill')).display !== 'none', count: document.getElementById('transcriptSearchCount').textContent }; })())";
+    harness::until(
+        &tab,
+        "/[1-9]/.test(document.getElementById('transcriptSearchCount').textContent) && !!document.querySelector('mark.search-mark') && document.activeElement === document.getElementById('transcriptSearchInput')",
+        "the word's hits, with the field still holding the focus",
+        Duration::from_secs(10),
+        state,
+    );
+    // The keyboard (and its accessory bar) up: 336px of the layout viewport's foot covered.
+    harness::eval(&tab, "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 336; } }); visualViewport.dispatchEvent(new Event('resize')); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "(function(){ var d = document.getElementById('phoneDock').getBoundingClientRect(); return Math.abs(d.bottom - (innerHeight - 336 - 8)) <= 1; })()",
+        "the find pill resting just above the keyboard",
+        Duration::from_secs(5),
+        "Math.round(document.getElementById('phoneDock').getBoundingClientRect().bottom) + ' of ' + innerHeight",
+    );
+    let (x, y) = phone_point(&tab, "(function(){ var r = document.getElementById('phoneSearchDone').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    harness::finger_tap_late_click(&tab, x, y, Duration::from_millis(250));
+    harness::until(
+        &tab,
+        "(function(){ var b = document.querySelector('.header-searchbox'); return !b.classList.contains('phone-open') && !b.classList.contains('has-query') && document.getElementById('transcriptSearchInput').value === '' && document.activeElement !== document.getElementById('transcriptSearchInput') && !document.querySelector('mark.search-mark') && getComputedStyle(document.getElementById('dockPill')).display !== 'none'; })()",
+        "one tap on the ✕ to end the search: the query and its marks gone, the field let go, the toolbar pill back",
+        Duration::from_secs(5),
+        state,
+    );
+}
+
 /// #s37 (design/phone-landscape.md §3.5): the search docked at the keyboard, as Safari's Find on
 /// Page is. iOS never lifts a fixed bottom element above its keyboard — the layout viewport keeps its
 /// height and the keyboard covers its foot — so the find pill rides the VISUAL viewport. Headless
