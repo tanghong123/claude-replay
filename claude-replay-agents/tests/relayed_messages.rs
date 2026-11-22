@@ -216,18 +216,22 @@ fn replied(before: Vec<String>, named: Option<&str>) {
     ]);
     let (expected, resumed) = every_resume_point(&lines);
     assert_eq!(inbox_ids(&expected), ["dash-41"], "{expected:#?}");
-    let to = sent_to(&expected);
-    assert_eq!(to.len(), 1, "{expected:#?}");
-    match named {
-        Some(name) => assert!(to[0].contains(name), "{to:?}"),
-        None => assert!(!to[0].contains("aries-tell"), "{to:?}"),
-    }
-    let copies = lines.len() - 4;
+    assert_eq!(
+        sent_to(&expected),
+        [named.unwrap_or("uds:/tmp/cc-socks/9.sock")],
+        "{expected:#?}"
+    );
+    // A resume past every block before the reply, the copy's included: only the saved book can
+    // name it there.
+    let before_reply = expected
+        .iter()
+        .position(|b| matches!(b, Block::UserText(t) if t.contains("and reply to it")))
+        .expect("the reply's prompt");
     assert!(
         resumed
             .iter()
-            .any(|&(split, committed)| split >= copies && committed >= 1),
-        "the test must resume after what came before the reply committed: {resumed:?}"
+            .any(|&(_, committed)| committed >= before_reply),
+        "the test must resume after everything before the reply committed: {resumed:?}"
     );
 }
 
