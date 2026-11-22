@@ -145,7 +145,7 @@ fn removed_in<'a>(sessions: &[&'a Session]) -> HashSet<&'a str> {
     sessions
         .iter()
         .flat_map(|s| s.events.iter())
-        .filter(|(_, ty, _)| ty == "message.removed.1" || ty == "message.part.removed.1")
+        .filter(|(_, ty, _)| is_removal(ty))
         .filter_map(|(_, ty, d)| {
             let key = if ty == "message.removed.1" {
                 "messageID"
@@ -157,8 +157,16 @@ fn removed_in<'a>(sessions: &[&'a Session]) -> HashSet<&'a str> {
         .collect()
 }
 
+/// Whether an event of type `ty` takes a message or a part out.
+fn is_removal(ty: &str) -> bool {
+    ty == "message.removed.1" || ty == "message.part.removed.1"
+}
+
 /// Whether an event writes a message or part a removal took out.
-fn is_removed(data: &Value, removed: &HashSet<&str>) -> bool {
+fn is_removed<T: std::borrow::Borrow<str> + Eq + std::hash::Hash>(
+    data: &Value,
+    removed: &HashSet<T>,
+) -> bool {
     data.pointer("/part/id")
         .or_else(|| data.pointer("/part/messageID"))
         .or_else(|| data.pointer("/info/id"))
@@ -175,40 +183,51 @@ pub(crate) fn spawns(sessions: &[&Session]) -> Vec<Spawn> {
     let removed = removed_in(sessions);
     let mut out: Vec<Spawn> = Vec::new();
     for (_, ty, data) in sessions.iter().flat_map(|s| s.events.iter()) {
-        if ty != "message.part.updated.1" || is_removed(data, &removed) {
-            continue;
-        }
-        let Some(part) = data.get("part") else {
-            continue;
-        };
-        if part.get("tool").and_then(Value::as_str) != Some("task") {
-            continue;
-        }
-        let Some(child) = part
-            .pointer("/state/metadata/sessionId")
-            .and_then(Value::as_str)
-        else {
-            continue;
-        };
-        if out.iter().any(|s| s.child == child) {
-            continue;
-        }
-        let call = part
-            .get("callID")
-            .or_else(|| part.get("id"))
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        out.push(Spawn {
-            child: child.to_string(),
-            call: call.to_string(),
-            description: part
-                .pointer("/state/input/description")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string(),
-        });
+        note_spawn(&mut out, ty, data, &removed);
     }
     out
+}
+
+/// Adds to `out` the sub-agent call an event names, unless its child is there already or a
+/// removal took the call out: [`spawns`], one event at a time.
+fn note_spawn<T: std::borrow::Borrow<str> + Eq + std::hash::Hash>(
+    out: &mut Vec<Spawn>,
+    ty: &str,
+    data: &Value,
+    removed: &HashSet<T>,
+) {
+    if ty != "message.part.updated.1" || is_removed(data, removed) {
+        return;
+    }
+    let Some(part) = data.get("part") else {
+        return;
+    };
+    if part.get("tool").and_then(Value::as_str) != Some("task") {
+        return;
+    }
+    let Some(child) = part
+        .pointer("/state/metadata/sessionId")
+        .and_then(Value::as_str)
+    else {
+        return;
+    };
+    if out.iter().any(|s| s.child == child) {
+        return;
+    }
+    let call = part
+        .get("callID")
+        .or_else(|| part.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    out.push(Spawn {
+        child: child.to_string(),
+        call: call.to_string(),
+        description: part
+            .pointer("/state/input/description")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string(),
+    });
 }
 
 /// Every session run below `roots` as a sub-agent, at any depth, in the order they began: the
@@ -453,11 +472,16 @@ struct Done {
     result: bool,
 }
 
-/// The projection of a chat's engine sessions into the family's records.
-struct Projector<'a> {
-    chat: &'a Chat,
+/// The projection of a chat's engine sessions into the family's records. It takes the log in
+/// pieces as well as whole (#s659): what it has read is all it keeps of it, never the events, and
+/// of a part only what more it can write.
+struct Projector {
+    chat: Chat,
     /// A sub-agent's projection: its records are the sidechain's, as the family writes them.
-    side: Option<&'a Side>,
+    side: Option<Side>,
+    /// What the removals in the whole log took out, left out of every piece.
+    removed: HashSet<String>,
+    /// The records written since [`Projector::take`] was last asked.
     lines: Vec<String>,
     last_uuid: Option<String>,
     roles: HashMap<String, String>,
@@ -474,11 +498,12 @@ struct Projector<'a> {
     last_ms: i64,
 }
 
-impl<'a> Projector<'a> {
-    fn new(chat: &'a Chat, side: Option<&'a Side>) -> Self {
+impl Projector {
+    fn new(chat: &Chat, side: Option<&Side>) -> Self {
         Projector {
-            chat,
-            side,
+            chat: chat.clone(),
+            side: side.cloned(),
+            removed: HashSet::new(),
             lines: Vec::new(),
             last_uuid: None,
             roles: HashMap::new(),
@@ -491,6 +516,22 @@ impl<'a> Projector<'a> {
             latest: HashMap::new(),
             last_ms: 0,
         }
+    }
+
+    /// Takes the next of a session's events (`version` the session's own), leaving out what a
+    /// removal took out.
+    fn feed(&mut self, version: &str, events: &[(i64, String, Value)]) {
+        self.version = version.to_string();
+        for (_, ty, data) in events {
+            if !is_removed(data, &self.removed) {
+                self.event(ty, data);
+            }
+        }
+    }
+
+    /// The records written since this was last asked.
+    fn take(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.lines)
     }
 
     /// When a record of message `msg` happened: its part's own time when it has one, else the
@@ -514,7 +555,7 @@ impl<'a> Projector<'a> {
         o.insert("sessionId".into(), json!(self.chat.id));
         o.insert("cwd".into(), json!(self.chat.dir));
         o.insert("isSidechain".into(), json!(self.side.is_some()));
-        if let Some(side) = self.side {
+        if let Some(side) = &self.side {
             // The family's sub-agent records: the child's id, and the call that ran it.
             o.insert("agentId".into(), json!(side.agent_id));
             o.insert("parent_tool_use_id".into(), json!(side.tool_use_id));
@@ -581,6 +622,8 @@ impl<'a> Projector<'a> {
         match ty {
             "text" if !done.call => {
                 if part.get("ignored").and_then(Value::as_bool) == Some(true) {
+                    // Never written as it stands: let go until an update says otherwise.
+                    self.parts.remove(id);
                     return;
                 }
                 let text = part.get("text").and_then(Value::as_str).unwrap_or("");
@@ -699,6 +742,17 @@ impl<'a> Projector<'a> {
             _ => {}
         }
         self.done.insert(id.to_string(), now);
+        // A part that can write nothing more is let go, so what is kept between refreshes is
+        // what is still to come (#s659): a message's end writes only what is unwritten, and an
+        // update of the part brings it back. A kind this does not draw never writes.
+        let spent = match ty {
+            "tool" => now.call && now.result,
+            "text" | "reasoning" | "step-finish" => now.call,
+            _ => true,
+        };
+        if spent {
+            self.parts.remove(id);
+        }
     }
 
     fn event(&mut self, ty: &str, data: &Value) {
@@ -756,26 +810,27 @@ impl<'a> Projector<'a> {
 }
 
 /// The mirror's records for `chat`, made of its `sessions` (its generations, in order), without
-/// the first line. Deterministic: the same log gives the same lines, and a longer log gives these
-/// lines and more, unless something was removed.
+/// the first line: [`projected`]'s, taken.
+#[cfg(test)]
 pub(crate) fn project(chat: &Chat, sessions: &[&Session]) -> Vec<String> {
-    project_as(chat, sessions, None)
+    projected(chat, sessions, None).take()
 }
 
-/// [`project`], as a sub-agent's transcript when `side` says whose (#s659): the same records,
-/// on the sidechain.
-pub(crate) fn project_as(chat: &Chat, sessions: &[&Session], side: Option<&Side>) -> Vec<String> {
+/// The projector that has taken `sessions` (a chat's generations, in order) whole, its records not
+/// yet taken: what a refresh keeps to take what the log adds later (#s659). As a sub-agent's
+/// transcript when `side` says whose: the same records, on the sidechain. Deterministic: the same
+/// log gives the same records, and a longer log gives these and more, unless something was
+/// removed; taken in pieces it gives what it gives taken whole.
+fn projected(chat: &Chat, sessions: &[&Session], side: Option<&Side>) -> Projector {
     let mut p = Projector::new(chat, side);
-    let removed = removed_in(sessions);
+    p.removed = removed_in(sessions)
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
     for s in sessions {
-        p.version = s.version.clone();
-        for (_, ty, data) in &s.events {
-            if !is_removed(data, &removed) {
-                p.event(ty, data);
-            }
-        }
+        p.feed(&s.version, &s.events);
     }
-    p.lines
+    p
 }
 
 /// The mirror's first line: the family's head record, naming the engine's model of the chat's last
@@ -894,6 +949,18 @@ pub(crate) fn write_mirror(
     write_whole(path, format!("{first}\n{body}").as_bytes(), lines)
 }
 
+/// Appends `lines` to the mirror at `path`, which the caller knows holds the records before them
+/// (#s659: the file as this process left it), and dates it by `latest_ms`, the latest time any of
+/// its records names. Under the mirrors' lock, as every write is.
+fn append(path: &Path, lines: &[String], latest_ms: i64) -> std::io::Result<()> {
+    use std::io::Write;
+    let body: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    let mut f = std::fs::OpenOptions::new().append(true).open(path)?;
+    f.write_all(body.as_bytes())?;
+    drop(f);
+    set_modified_at(path, latest_ms)
+}
+
 /// `bytes` at `path`, written beside it and moved into place, 0600, dated by the latest of `lines`
 /// ([`set_modified`]): a reader sees the old file or the new one, never part of one.
 fn write_whole(path: &Path, bytes: &[u8], lines: &[String]) -> std::io::Result<()> {
@@ -966,9 +1033,14 @@ fn latest_ms(lines: &[String]) -> Option<i64> {
 }
 
 fn set_modified(path: &Path, lines: &[String]) -> std::io::Result<()> {
-    let Some(ms) = latest_ms(lines).filter(|ms| *ms > 0) else {
+    set_modified_at(path, latest_ms(lines).unwrap_or(0))
+}
+
+/// Dates the file at `path` by `ms`, the latest time its records name (none when it is 0).
+fn set_modified_at(path: &Path, ms: i64) -> std::io::Result<()> {
+    if ms <= 0 {
         return Ok(());
-    };
+    }
     let at = std::time::UNIX_EPOCH + std::time::Duration::from_millis(ms as u64);
     std::fs::OpenOptions::new()
         .append(true)
@@ -1125,15 +1197,103 @@ mod db {
     use std::sync::Mutex;
     use std::time::{Duration, Instant, SystemTime};
 
-    /// The engine's log positions each chat's mirror was last brought to, and when this process
-    /// last looked, so an unchanged chat costs one small query.
+    /// What this process keeps of each chat it brought up to date, and when it last looked, so an
+    /// unchanged chat costs one small query and one that grew costs what it grew by.
     struct Memo {
         at: Option<Instant>,
         /// The database looked at, so a test moving it starts afresh.
         db: PathBuf,
-        seen: HashMap<String, Vec<(String, i64)>>,
+        kept: HashMap<String, Kept>,
     }
     static MEMO: Mutex<Option<Memo>> = Mutex::new(None);
+
+    type Event = (i64, String, Value);
+
+    /// A chat as this process last brought its mirrors up to date (#s659): each mirror's projector
+    /// past the events it read, and the file it left, so the next refresh reads and projects only
+    /// what the log added. Nothing of it is written down: a process that has kept nothing (a new
+    /// one, or one that cannot grow what it kept) projects the chat's whole log once, as every
+    /// refresh did before.
+    struct Kept {
+        /// The log positions it was brought to: the chat's generations, then its sub-agents.
+        at: Vec<(String, i64)>,
+        /// The chat's generations, in order.
+        gens: Vec<String>,
+        /// The last event read of each session.
+        read: HashMap<String, i64>,
+        /// What every removal in the chat's sessions took out.
+        removed: HashSet<String>,
+        main: Mirror,
+        kids: HashMap<String, Mirror>,
+        spawns: Vec<Spawn>,
+    }
+
+    /// One mirror's projector, and the file as this process left it holding exactly its records
+    /// (`None` while it has written none).
+    struct Mirror {
+        p: Projector,
+        file: Option<FileId>,
+    }
+
+    /// What tells a file another process changed from the one this process left.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    struct FileId {
+        dev: u64,
+        ino: u64,
+        len: u64,
+        modified: Option<SystemTime>,
+    }
+
+    fn file_id(path: &Path) -> Option<FileId> {
+        use std::os::unix::fs::MetadataExt;
+        let m = std::fs::metadata(path).ok()?;
+        m.is_file().then(|| FileId {
+            dev: m.dev(),
+            ino: m.ino(),
+            len: m.len(),
+            modified: m.modified().ok(),
+        })
+    }
+
+    /// What one refresh brings a chat's mirrors to.
+    struct Target<'a> {
+        chat: &'a Chat,
+        root: &'a Path,
+        gens: &'a [&'a Session],
+        kids: &'a [&'a Session],
+        at: &'a [(String, i64)],
+        now_ms: i64,
+    }
+
+    /// A sub-agent's side: its own id, and the call that ran it where the log names one.
+    fn side_of(s: &Session, spawns: &[Spawn]) -> Side {
+        Side {
+            agent_id: s.id.clone(),
+            tool_use_id: spawns
+                .iter()
+                .find(|x| x.child == s.id)
+                .map(|x| x.call.clone())
+                .unwrap_or_default(),
+        }
+    }
+
+    /// A sub-agent's sidecar beside its mirror at `file`, when the log names the call that ran it.
+    fn write_spawn_meta(
+        file: &Path,
+        side: &Side,
+        s: &Session,
+        spawns: &[Spawn],
+    ) -> std::io::Result<()> {
+        match spawns.iter().find(|x| x.child == s.id) {
+            Some(spawn) => write_meta(
+                &file.with_file_name(format!("agent-{}.meta.json", s.id)),
+                side,
+                &s.agent,
+                &spawn.description,
+            ),
+            None => Ok(()),
+        }
+    }
 
     fn open(path: &Path) -> rusqlite::Result<Connection> {
         let c = Connection::open_with_flags(
@@ -1211,35 +1371,204 @@ mod db {
         rows.collect()
     }
 
-    fn events(c: &Connection, id: &str) -> rusqlite::Result<Vec<(i64, String, Value)>> {
-        let mut q =
-            c.prepare("select seq, type, data from event where aggregate_id = ?1 order by seq")?;
-        let rows = q.query_map([id], |r| {
-            Ok((
-                r.get::<_, i64>(0)?,
-                r.get::<_, String>(1)?,
-                r.get::<_, String>(2)?,
-            ))
-        })?;
-        Ok(rows
-            .collect::<rusqlite::Result<Vec<_>>>()?
+    /// A session's events past `after`, and the last seq read (`after` when there are none): the
+    /// last seq of the rows themselves, so what the next read starts past is what this one read,
+    /// whatever the log's position says.
+    fn events_after(c: &Connection, id: &str, after: i64) -> rusqlite::Result<(i64, Vec<Event>)> {
+        let mut q = c.prepare(
+            "select seq, type, data from event where aggregate_id = ?1 and seq > ?2 order by seq",
+        )?;
+        let rows = q
+            .query_map(rusqlite::params![id, after], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        let last = rows.last().map_or(after, |(seq, _, _)| *seq);
+        let events = rows
             .into_iter()
             .filter_map(|(seq, ty, d)| serde_json::from_str(&d).ok().map(|v| (seq, ty, v)))
-            .collect())
+            .collect();
+        Ok((last, events))
     }
 
-    /// `s` with its events, each session's read once per refresh.
+    /// `s` with all its events and the last seq read, each session's read once per refresh.
     fn with_events(
         c: &Connection,
-        loaded: &mut HashMap<String, Vec<(i64, String, Value)>>,
+        loaded: &mut HashMap<String, (i64, Vec<Event>)>,
         s: &Session,
-    ) -> rusqlite::Result<Session> {
+    ) -> rusqlite::Result<(Session, i64)> {
         if !loaded.contains_key(&s.id) {
-            loaded.insert(s.id.clone(), events(c, &s.id)?);
+            loaded.insert(s.id.clone(), events_after(c, &s.id, i64::MIN)?);
         }
+        let (last, events) = &loaded[&s.id];
         let mut out = s.clone();
-        out.events = loaded[&s.id].clone();
-        Ok(out)
+        out.events = events.clone();
+        Ok((out, *last))
+    }
+
+    /// Projects a chat's whole log and brings its mirrors to it, its sub-agents' first so a call's
+    /// result never names a child whose file is not there yet: what a chat costs the first time
+    /// this process brings it up to date, and whenever what it kept cannot grow. `None` when the
+    /// chat has nothing to write yet or a write failed, so the next refresh tries again.
+    fn build(
+        c: &Connection,
+        loaded: &mut HashMap<String, (i64, Vec<Event>)>,
+        t: &Target,
+    ) -> rusqlite::Result<Option<Kept>> {
+        let mut read: HashMap<String, i64> = HashMap::new();
+        let mut full: Vec<Session> = Vec::new();
+        let mut subs: Vec<Session> = Vec::new();
+        for (i, s) in t.gens.iter().chain(t.kids.iter()).enumerate() {
+            let (s, last) = with_events(c, loaded, s)?;
+            read.insert(s.id.clone(), last);
+            if i < t.gens.len() {
+                full.push(s);
+            } else {
+                subs.push(s);
+            }
+        }
+        let refs: Vec<&Session> = full.iter().collect();
+        let mut main = projected(t.chat, &refs, None);
+        let lines = main.take();
+        if lines.is_empty() {
+            return Ok(None);
+        }
+        let named: Vec<&Session> = full.iter().chain(subs.iter()).collect();
+        let removed: HashSet<String> = removed_in(&named).into_iter().map(str::to_owned).collect();
+        let calls = spawns(&named);
+        let mut ok = true;
+        let mut kids: HashMap<String, Mirror> = HashMap::new();
+        for k in &subs {
+            let side = side_of(k, &calls);
+            let mut p = projected(t.chat, &[k], Some(&side));
+            let lines = p.take();
+            let mut file = None;
+            if !lines.is_empty() {
+                let path = subagent_path(t.root, t.chat, &k.id);
+                ok &= write_mirror(&path, Lead::Stamp, &lines, t.now_ms).is_ok();
+                ok &= write_spawn_meta(&path, &side, k, &calls).is_ok();
+                file = file_id(&path);
+                ok &= file.is_some();
+            }
+            kids.insert(k.id.clone(), Mirror { p, file });
+        }
+        let model = refs
+            .last()
+            .and_then(|s| {
+                s.events
+                    .iter()
+                    .rev()
+                    .find_map(|(_, _, d)| d.pointer("/info/modelID").and_then(Value::as_str))
+            })
+            .unwrap_or("")
+            .to_string();
+        let head_at = |ms: i64| head(t.chat, &model, ms);
+        let path = mirror_path(t.root, t.chat);
+        ok &= write_mirror(&path, Lead::Head(&head_at), &lines, t.now_ms).is_ok();
+        let file = file_id(&path);
+        ok &= file.is_some();
+        Ok(ok.then(|| Kept {
+            at: t.at.to_vec(),
+            gens: t.gens.iter().map(|s| s.id.clone()).collect(),
+            read,
+            removed,
+            main: Mirror { p: main, file },
+            kids,
+            spawns: calls,
+        }))
+    }
+
+    /// Brings what this process kept of a chat to the log's new positions from the events past
+    /// what it read, appending what they add to each mirror: `None` when only the whole log can
+    /// say. That is when an earlier generation moved (its events come before the later one's), the
+    /// generations or the sub-agents are not the ones kept, a removal came (it takes out what was
+    /// written), a sub-agent's call is named only now (it is in every record of the child's), a
+    /// file is not the one this process left (another process wrote it, or the chat was pruned),
+    /// or a write failed.
+    fn grow(c: &Connection, mut k: Kept, t: &Target) -> rusqlite::Result<Option<Kept>> {
+        let (Some(last), earlier) = (t.gens.last(), &t.gens[..t.gens.len().saturating_sub(1)])
+        else {
+            return Ok(None);
+        };
+        let gens: Vec<&str> = t.gens.iter().map(|s| s.id.as_str()).collect();
+        let pos = |at: &[(String, i64)], id: &str| at.iter().find(|(s, _)| s == id).map(|x| x.1);
+        if gens != k.gens
+            || earlier
+                .iter()
+                .any(|g| pos(t.at, &g.id) != pos(&k.at, &g.id))
+            || k.kids.keys().any(|id| !t.kids.iter().any(|s| &s.id == id))
+        {
+            return Ok(None);
+        }
+        if file_id(&mirror_path(t.root, t.chat)) != k.main.file
+            || k.kids.iter().any(|(id, m)| {
+                m.file.is_some() && file_id(&subagent_path(t.root, t.chat, id)) != m.file
+            })
+        {
+            return Ok(None);
+        }
+        // What the log added, the chat's own and then its sub-agents', as the whole log is taken;
+        // a session whose position has not moved is not read at all.
+        let mut new: Vec<(&Session, Vec<Event>)> = Vec::new();
+        for s in std::iter::once(last).chain(t.kids.iter()) {
+            let read = k.read.get(&s.id).copied();
+            if read.is_some() && pos(t.at, &s.id) == pos(&k.at, &s.id) {
+                new.push((s, Vec::new()));
+                continue;
+            }
+            let (upto, events) = events_after(c, &s.id, read.unwrap_or(i64::MIN))?;
+            if events.iter().any(|(_, ty, _)| is_removal(ty)) {
+                return Ok(None);
+            }
+            k.read.insert(s.id.clone(), upto);
+            new.push((s, events));
+        }
+        for (_, events) in &new {
+            for (_, ty, data) in events {
+                note_spawn(&mut k.spawns, ty, data, &k.removed);
+            }
+        }
+        let mut ok = true;
+        for (s, events) in &new[1..] {
+            let side = side_of(s, &k.spawns);
+            let m = k.kids.entry(s.id.clone()).or_insert_with(|| Mirror {
+                p: Projector::new(t.chat, Some(&side)),
+                file: None,
+            });
+            if m.p.side.as_ref() != Some(&side) {
+                return Ok(None);
+            }
+            m.p.feed(&s.version, events);
+            let lines = m.p.take();
+            let path = subagent_path(t.root, t.chat, &s.id);
+            if !lines.is_empty() {
+                ok &= match m.file {
+                    Some(_) => append(&path, &lines, m.p.last_ms).is_ok(),
+                    // Its first records: the whole of what it has written.
+                    None => write_mirror(&path, Lead::Stamp, &lines, t.now_ms).is_ok(),
+                };
+                m.file = file_id(&path);
+                ok &= m.file.is_some();
+            }
+            if m.file.is_some() {
+                ok &= write_spawn_meta(&path, &side, s, &k.spawns).is_ok();
+            }
+        }
+        let (_, events) = &new[0];
+        k.main.p.feed(&last.version, events);
+        let lines = k.main.p.take();
+        if !lines.is_empty() {
+            let path = mirror_path(t.root, t.chat);
+            ok &= append(&path, &lines, k.main.p.last_ms).is_ok();
+            k.main.file = file_id(&path);
+            ok &= k.main.file.is_some();
+        }
+        k.at = t.at.to_vec();
+        Ok(ok.then_some(k))
     }
 
     pub(super) fn refresh(home: &Home, throttle: bool) {
@@ -1263,7 +1592,7 @@ mod db {
             *memo = Some(Memo {
                 at: None,
                 db: engine.clone(),
-                seen: HashMap::new(),
+                kept: HashMap::new(),
             });
         }
         let m = memo.as_mut().expect("set above");
@@ -1288,7 +1617,7 @@ mod db {
         let seqs: HashMap<String, i64> = sessions.iter().map(|(s, q)| (s.id.clone(), *q)).collect();
         let all: Vec<Session> = sessions.iter().map(|(s, _)| s.clone()).collect();
         let top: Vec<Session> = all.iter().filter(|s| s.parent.is_none()).cloned().collect();
-        let mut loaded: HashMap<String, Vec<(i64, String, Value)>> = HashMap::new();
+        let mut loaded: HashMap<String, (i64, Vec<Event>)> = HashMap::new();
         for chat in &chats {
             let gens = generations(chat, &chats, &top);
             if gens.is_empty() {
@@ -1304,67 +1633,40 @@ mod db {
                 .chain(kids.iter())
                 .map(|s| (s.id.clone(), seqs.get(&s.id).copied().unwrap_or(0)))
                 .collect();
-            let path = mirror_path(&root, chat);
-            if m.seen.get(&chat.id) == Some(&at) && path.is_file() {
+            if m.kept.get(&chat.id).is_some_and(|k| k.at == at)
+                && mirror_path(&root, chat).is_file()
+            {
                 continue;
             }
-            let mut full: Vec<Session> = Vec::new();
-            let mut subs: Vec<Session> = Vec::new();
-            for g in &gens {
-                let Ok(s) = with_events(&c, &mut loaded, g) else {
-                    return;
-                };
-                full.push(s);
-            }
-            for k in &kids {
-                let Ok(s) = with_events(&c, &mut loaded, k) else {
-                    return;
-                };
-                subs.push(s);
-            }
-            let refs: Vec<&Session> = full.iter().collect();
-            let lines = project(chat, &refs);
-            if lines.is_empty() {
-                continue;
-            }
-            // The sub-agents first, so a call's result never names a child whose file is not
-            // there yet; each linked to the call that ran it, which its parent's events name.
-            let named: Vec<&Session> = full.iter().chain(subs.iter()).collect();
-            let calls = spawns(&named);
-            let mut ok = true;
-            for k in &subs {
-                let spawn = calls.iter().find(|s| s.child == k.id);
-                let side = Side {
-                    agent_id: k.id.clone(),
-                    tool_use_id: spawn.map(|s| s.call.clone()).unwrap_or_default(),
-                };
-                let lines = project_as(chat, &[k], Some(&side));
-                if lines.is_empty() {
-                    continue;
-                }
-                let file = subagent_path(&root, chat, &k.id);
-                ok &= write_mirror(&file, Lead::Stamp, &lines, now_ms).is_ok();
-                if let Some(spawn) = spawn {
-                    let meta = file.with_file_name(format!("agent-{}.meta.json", k.id));
-                    ok &= write_meta(&meta, &side, &k.agent, &spawn.description).is_ok();
-                }
-            }
-            let model =
-                refs.last()
-                    .and_then(|s| {
-                        s.events.iter().rev().find_map(|(_, _, d)| {
-                            d.pointer("/info/modelID").and_then(Value::as_str)
-                        })
-                    })
-                    .unwrap_or("")
-                    .to_string();
-            let head_at = |ms: i64| head(chat, &model, ms);
-            ok &= write_mirror(&path, Lead::Head(&head_at), &lines, now_ms).is_ok();
-            if ok {
-                m.seen.insert(chat.id.clone(), at);
+            let t = Target {
+                chat,
+                root: &root,
+                gens: &gens,
+                kids: &kids,
+                at: &at,
+                now_ms,
+            };
+            // What was kept grows by what the log added; else the whole log is projected again.
+            let grown = match m.kept.remove(&chat.id) {
+                Some(k) => match grow(&c, k, &t) {
+                    Ok(g) => g,
+                    Err(_) => return,
+                },
+                None => None,
+            };
+            let kept = match grown {
+                Some(k) => Some(k),
+                None => match build(&c, &mut loaded, &t) {
+                    Ok(k) => k,
+                    Err(_) => return,
+                },
+            };
+            if let Some(k) = kept {
+                m.kept.insert(chat.id.clone(), k);
             }
         }
         let _ = c.execute_batch("commit");
+        m.kept.retain(|id, _| chats.iter().any(|c| &c.id == id));
         // Read after the chats were: a chat mirrored above is named here unless it was deleted
         // since, and a read that fails or is cut short removes nothing. Nor does one that misses
         // a chat the first read had (a table caught empty while the app rewrites it): the next
@@ -1469,6 +1771,83 @@ mod tests {
             ),
             msg("msg_a", "assistant", true),
         ]
+    }
+
+    /// A longer log than [`turn`]: it, then a turn whose first part comes before its message and
+    /// whose tool never ends, and one with a sub-agent call, a question, the app's own tool, a
+    /// part left out (`ignored`) and a kind nothing draws.
+    fn long_log() -> Vec<(String, Value)> {
+        let mut ev = turn();
+        ev.extend([
+            part(
+                json!({ "id": "prt_6", "messageID": "msg_b", "type": "text", "text": "early", "time": { "start": 3000, "end": 3100 } }),
+            ),
+            msg("msg_b", "assistant", false),
+            part(
+                json!({ "id": "prt_7", "messageID": "msg_b", "type": "tool", "tool": "read", "callID": "c7", "state": { "status": "running", "input": { "filePath": "/a" }, "time": { "start": 3200 } } }),
+            ),
+            part(json!({ "id": "prt_8", "messageID": "msg_b", "type": "text", "text": "cut off" })),
+            part(json!({ "id": "prt_9", "messageID": "msg_b", "type": "step-start" })),
+            msg("msg_b", "assistant", true),
+            msg("msg_c", "assistant", false),
+            part(
+                json!({ "id": "prt_t", "messageID": "msg_c", "type": "tool", "tool": "task", "callID": "c1", "state": { "status": "running", "input": { "description": "look", "prompt": "look around" }, "time": { "start": 4000 } } }),
+            ),
+            part(
+                json!({ "id": "prt_t", "messageID": "msg_c", "type": "tool", "tool": "task", "callID": "c1", "state": { "status": "completed", "input": { "description": "look", "prompt": "look around" }, "output": "found it", "metadata": { "sessionId": "ses_child" }, "time": { "start": 4000, "end": 4500 } } }),
+            ),
+            part(
+                json!({ "id": "prt_q", "messageID": "msg_c", "type": "tool", "tool": "question", "callID": "c2", "state": { "status": "completed", "input": { "questions": [{ "question": "Which one?", "header": "Pick", "options": [] }] }, "output": "", "metadata": { "answers": [["Left"]] } } }),
+            ),
+            part(
+                json!({ "id": "prt_i", "messageID": "msg_c", "type": "text", "text": "hidden", "ignored": true }),
+            ),
+            part(
+                json!({ "id": "prt_r", "messageID": "msg_c", "type": "text", "text": "Done looking.", "time": { "start": 4600 } }),
+            ),
+            msg("msg_c", "assistant", true),
+        ]);
+        ev
+    }
+
+    /// #s659: a projector that took the log in two pieces, cut anywhere, wrote what one that took
+    /// it whole wrote; so did one that took it an event at a time, and it kept no part once every
+    /// message had ended.
+    #[test]
+    fn a_log_taken_in_pieces_writes_what_it_writes_taken_whole() {
+        let c = chat();
+        let first = session("ses_a", 1, turn());
+        let s = session("ses_b", 2, long_log());
+        let whole = project(&c, &[&first, &s]);
+        assert!(whole.len() > 12, "{}", whole.len());
+        for n in 0..=s.events.len() {
+            let mut p = Projector::new(&c, None);
+            p.feed(&first.version, &first.events);
+            p.feed(&s.version, &s.events[..n]);
+            let mut lines = p.take();
+            p.feed(&s.version, &s.events[n..]);
+            lines.extend(p.take());
+            assert_eq!(lines, whole, "cut at {n}");
+        }
+        let mut p = Projector::new(&c, None);
+        let mut lines = Vec::new();
+        for g in [&first, &s] {
+            for e in &g.events {
+                p.feed(&g.version, std::slice::from_ref(e));
+                lines.extend(p.take());
+            }
+        }
+        assert_eq!(lines, whole);
+        assert!(
+            p.parts.is_empty(),
+            "kept: {:?}",
+            p.parts.keys().collect::<Vec<_>>()
+        );
+        assert_eq!(
+            latest_ms(&whole),
+            Some(p.last_ms),
+            "what a mirror is dated by"
+        );
     }
 
     fn kinds(lines: &[String]) -> Vec<String> {

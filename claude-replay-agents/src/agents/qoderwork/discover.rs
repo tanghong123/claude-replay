@@ -1436,7 +1436,14 @@ mod tests {
             .unwrap()
             .blocks();
 
-        // The log grows: the mirror grows in place.
+        // The engine never rewrites an event; the test does, to see what a refresh reads (#s659).
+        e.execute(
+            "update event set data = replace(data, 'tidy the notes', 'a rewritten prompt') \
+             where aggregate_id = 'ses_one' and seq = 2",
+            [],
+        )
+        .unwrap();
+        // The log grows: the mirror grows in place, from the events past what was read.
         add(&e, "message.updated.1", message("msg_u2", "user", false));
         add(
             &e,
@@ -1447,6 +1454,25 @@ mod tests {
         );
         super::super::opencode::refresh_now(&QWENWORK);
         let grown = std::fs::read_to_string(&path).unwrap();
+        // Another process's copy of the file (the same bytes under a new inode): what this process
+        // kept no longer says what the file holds, so the whole log is read again.
+        let copy = path.with_extension("copy");
+        std::fs::copy(&path, &copy).unwrap();
+        std::fs::rename(&copy, &path).unwrap();
+        add(
+            &e,
+            "message.updated.1",
+            message("msg_a2", "assistant", false),
+        );
+        add(
+            &e,
+            "message.part.updated.1",
+            part(
+                serde_json::json!({ "id": "prt_t2", "messageID": "msg_a2", "type": "text", "text": "Indexed.", "time": { "start": 3000, "end": 3100 } }),
+            ),
+        );
+        super::super::opencode::refresh_now(&QWENWORK);
+        let reread = std::fs::read_to_string(&path).unwrap();
         // A part is removed: built again.
         add(
             &e,
@@ -1481,7 +1507,19 @@ mod tests {
         assert!(kinds.contains(&BlockKind::User), "{kinds:?}");
         assert!(kinds.contains(&BlockKind::Assistant), "{kinds:?}");
         assert!(grown.starts_with(&first), "a growing log only appends");
-        assert!(grown.len() > first.len());
+        assert!(grown.contains("and the index"), "what the log added");
+        assert!(
+            !grown.contains("a rewritten prompt"),
+            "a chat that grew is read past its last position only"
+        );
+        assert!(
+            reread.contains("a rewritten prompt") && reread.contains("Indexed."),
+            "a file this process did not leave: the whole log is read again"
+        );
+        assert!(
+            rebuilt.contains("a rewritten prompt"),
+            "a removal: the whole log is read again"
+        );
         assert_ne!(
             rebuilt.lines().next(),
             first.lines().next(),
@@ -1612,12 +1650,6 @@ mod tests {
             "message.part.updated.1",
             part("ses_main", task("running", false, None)),
         );
-        add(
-            &e,
-            "ses_main",
-            "message.part.updated.1",
-            part("ses_main", task("running", true, None)),
-        );
         // The child: its prompt, a tool, and a reply still being written.
         add(
             &e,
@@ -1652,6 +1684,25 @@ mod tests {
 
         std::env::set_var("QWENWORK_PROJECTS_DIR", &store);
         std::env::set_var("QWENWORK_DB", &app);
+        // The child is under way before its call names it: mirrored, linked to no call yet.
+        super::super::opencode::refresh_now(&QWENWORK);
+        let early = transcript_by_id_for(&QWENWORK, chat).expect("the chat's mirror");
+        let early_child = std::fs::read_to_string(
+            early
+                .parent()
+                .unwrap()
+                .join(chat)
+                .join("subagents")
+                .join("agent-ses_kid.jsonl"),
+        )
+        .expect("a child under way is mirrored");
+        // The call names it: every record of the child's now names the call.
+        add(
+            &e,
+            "ses_main",
+            "message.part.updated.1",
+            part("ses_main", task("running", true, None)),
+        );
         super::super::opencode::refresh_now(&QWENWORK);
         let main = transcript_by_id_for(&QWENWORK, chat).expect("the chat's mirror");
         let child = main
@@ -1707,6 +1758,21 @@ mod tests {
         std::env::remove_var("QWENWORK_PROJECTS_DIR");
         std::env::remove_var("QWENWORK_DB");
 
+        let early_records: Vec<serde_json::Value> = early_child
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert!(
+            early_records
+                .iter()
+                .all(|r| r["parent_tool_use_id"] == json!("")),
+            "no call names it yet"
+        );
+        assert_ne!(
+            early_child.lines().next(),
+            first_child.lines().next(),
+            "named, it is built again under a new first line"
+        );
         let records: Vec<serde_json::Value> = first_child
             .lines()
             .map(|l| serde_json::from_str(l).unwrap())
