@@ -2076,7 +2076,7 @@
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.phone-open{position:absolute;left:6px;right:6px;bottom:2px;top:auto;width:auto;height:44px;z-index:6;padding:0 4px 0 12px;background:var(--panel);box-shadow:0 0 0 1px var(--line),0 8px 20px -12px rgba(34,43,73,.25)}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.phone-open input{display:block!important;flex:1 1 auto;min-width:0}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.phone-open .find-count{display:block!important;flex:none}
-#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.phone-open .find-nav{display:grid!important;flex:none;width:34px;height:40px}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.phone-open .find-nav{display:grid!important;flex:none;width:44px;height:44px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-filter{width:40px;height:40px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-search-cluster>.navigator-options,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .reading-cluster>.reading-options,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-search-cluster>.search-suggest{position:fixed;left:8px;right:8px;top:auto;bottom:calc(var(--phone-bottom,var(--phone-dock-h)) + 8px);width:auto;max-height:calc(calc(100 * var(--pl-dvh)) - var(--phone-top,100px) - var(--phone-bottom,var(--phone-dock-h)) - 72px);overflow:auto;background:var(--bg);transition:none;animation:none}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .navigator-options .scope-option,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .navigator-options .tool-type-option,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .reading-options .reading-row{height:44px;font-size:14px}
@@ -2129,17 +2129,17 @@
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .jump-to-bottom.has-new{border-radius:22px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.has-query:not(.phone-open){width:auto;padding:0 2px 0 12px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.has-query:not(.phone-open) .find-count{display:block!important;flex:none;max-width:64px;margin:0 2px 0 6px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}
-#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.has-query:not(.phone-open) :is(#findPrev,#findNext){display:grid!important;flex:none;width:30px;height:44px}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.has-query:not(.phone-open) :is(#findPrev,#findNext){display:grid!important;flex:none;width:44px;height:44px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.has-query:not(.phone-open) :is(.find-whole,#filterTranscriptBtn){display:none!important}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.has-query:not(.phone-open){max-width:100%;min-width:0}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.has-query:not(.phone-open) .find-count{flex:0 1 auto;min-width:0;max-width:none}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox:not(.phone-open) :is(.search-chips,.search-clear){display:none!important}
-#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.phone-open .search-clear{width:36px;height:40px}
-#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.phone-open{column-gap:2px}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.phone-open .search-clear{width:44px;height:44px}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.phone-open{column-gap:0}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.phone-open .find-whole{display:none!important}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.phone-open .search-field{gap:4px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.phone-open{z-index:27}
-#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.phone-open .search-field input{flex:none;min-width:48px}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.phone-open .search-field input{flex:none;min-width:48px;height:44px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.phone-open .search-field>.search-chips{flex:none;max-width:none;overflow:visible}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox:not(.phone-open) .search-field{display:none}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .header-searchbox.phone-open .find-count{position:absolute;top:auto;bottom:calc(100% + 6px);right:8px;max-width:calc(100% - 16px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px 9px;border-radius:11px;background:var(--panel);box-shadow:0 0 0 1px var(--line),0 6px 14px -10px rgba(34,43,73,.3);color:var(--sub);font-size:11.5px;line-height:16px;z-index:7}
