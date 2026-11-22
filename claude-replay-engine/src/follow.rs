@@ -152,16 +152,27 @@ impl<S: BlockStore> FollowParser<S> {
         // cursor, and a rollout compressed or resumed under a follower is still the same file.
         let len = crate::source::len(&self.path).unwrap_or(0);
         let cursor = self.src.as_ref().map(|s| s.offset()).unwrap_or(self.cursor);
-        let reset = len < cursor;
+        let mut reset = len < cursor;
         // The file under the path is no longer the one this reader holds (#s383): a Codex
         // rollout decompressed by a resume (which then appends), or one removed and written
-        // anew. Open again at the cursor, as after a brief failure to open.
-        if !reset
+        // anew. Open again at the cursor, as after a brief failure to open — unless the new file
+        // opens with another first line: then it is another transcript under the old name (a
+        // mirror built again, #s657), and the cursor means nothing in it, so read it from the
+        // start.
+        let replaced = !reset
             && self
                 .src
                 .as_ref()
-                .is_some_and(|s| !s.get_ref().get_ref().reads(&self.path))
+                .is_some_and(|s| !s.get_ref().get_ref().reads(&self.path));
+        if replaced
+            && self
+                .src
+                .as_ref()
+                .is_some_and(|s| !s.get_ref().get_ref().same_head(&self.path))
         {
+            reset = true;
+        }
+        if replaced && !reset {
             self.src = None;
             self.cursor = cursor;
             // The new reader counts its elisions from zero: bank its deltas against zero, or the

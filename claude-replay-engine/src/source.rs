@@ -218,6 +218,58 @@ impl Source {
             Inner::Plain(f) => same_file(f, &on_disk),
         }
     }
+
+    /// Whether the file `path` names now opens with the line this reader's file opened with: what
+    /// tells a file written anew that goes ON (a rollout decompressed by a resume, which then
+    /// appends: read on from the cursor) from one written anew as something else (a mirror built
+    /// again, #s657: read again from the start). The first line is a transcript's identity, as the
+    /// caches already take it (#222). Compared over its first 64 KiB. `true` when either cannot be
+    /// read, and for a reader of decoded bytes, which keeps going as before.
+    pub fn same_head(&self, path: &Path) -> bool {
+        let Inner::Plain(held) = &self.inner else {
+            return true;
+        };
+        let Some(on_disk) = resolve(path) else {
+            return true;
+        };
+        if is_compressed(&on_disk) {
+            return true;
+        }
+        let (Some(a), Some(b)) = (
+            first_line(held),
+            File::open(&on_disk).ok().and_then(|f| first_line(&f)),
+        ) else {
+            return true;
+        };
+        a == b
+    }
+}
+
+/// The first line of `f` (at most its first 64 KiB), read at offset 0 without moving the reader.
+#[cfg(unix)]
+fn first_line(f: &File) -> Option<Vec<u8>> {
+    use std::os::unix::fs::FileExt;
+    let mut buf = vec![0u8; 64 * 1024];
+    let mut got = 0;
+    while got < buf.len() {
+        let n = f.read_at(&mut buf[got..], got as u64).ok()?;
+        if n == 0 {
+            break;
+        }
+        if let Some(i) = buf[got..got + n].iter().position(|b| *b == b'\n') {
+            got += i;
+            buf.truncate(got);
+            return Some(buf);
+        }
+        got += n;
+    }
+    buf.truncate(got);
+    Some(buf)
+}
+
+#[cfg(not(unix))]
+fn first_line(_f: &File) -> Option<Vec<u8>> {
+    None
 }
 
 #[cfg(unix)]

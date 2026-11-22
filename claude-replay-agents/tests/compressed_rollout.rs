@@ -195,3 +195,52 @@ fn a_metrics_cursor_from_the_plain_rollout_resumes_on_the_compressed_one() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A transcript written anew under its old name as ANOTHER transcript (its first line differs; a
+/// Qwenwork mirror built again after a removal, #s657) is read again from the start by a follower
+/// that held the old one, even where the new file is longer than the follower's cursor: the
+/// cursor names a place in the old bytes, and reading on from it would start mid-record.
+#[test]
+fn a_follower_reads_a_transcript_written_anew_as_another_from_its_start() {
+    let dir = scratch("anew");
+    let plain = dir.join(NAME);
+    std::fs::write(&plain, body(LINES)).unwrap();
+    let mut follow = FollowParser::open(&CodexAdapter, &plain);
+    assert!(follow.poll().unwrap().is_some());
+
+    // Another first line (longer, so every offset after it moves, as a rebuild's do), the rest
+    // kept, and more after it: longer than the cursor.
+    let head = LINES[0]
+        .replace("00000000s383", "00000000a657")
+        .replace(r#""cwd":"/repo""#, r#""cwd":"/repo/another-checkout""#);
+    let more = r#"{"timestamp":"2026-10-01T09:00:09.000Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Now the second question, long enough to carry the file past the old cursor."}]}}"#;
+    let mut lines: Vec<&str> = vec![&head];
+    lines.extend_from_slice(&LINES[1..]);
+    lines.push(more);
+    let next = dir.join("next.jsonl");
+    std::fs::write(&next, body(&lines)).unwrap();
+    std::fs::rename(&next, &plain).unwrap();
+    assert!(std::fs::metadata(&plain).unwrap().len() > body(LINES).len() as u64);
+    let want = format!(
+        "{:?}",
+        parse_session_as(Agent::CODEX, &plain).unwrap().blocks()
+    );
+    let (blocks, _, _) = follow.poll().unwrap().expect("the new transcript");
+    assert_eq!(format!("{blocks:?}"), want, "read from its start");
+
+    // Written anew as the SAME transcript (its first line kept) and appended: read on from the
+    // cursor, as a resumed rollout is.
+    let again = dir.join("again.jsonl");
+    let tail = r#"{"timestamp":"2026-10-01T09:00:10.000Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Answered."}]}}"#;
+    std::fs::write(&again, body(&lines) + tail + "\n").unwrap();
+    std::fs::rename(&again, &plain).unwrap();
+    let (blocks, _, _) = follow.poll().unwrap().expect("the appended answer");
+    assert_eq!(
+        format!("{blocks:?}"),
+        format!(
+            "{:?}",
+            parse_session_as(Agent::CODEX, &plain).unwrap().blocks()
+        )
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
