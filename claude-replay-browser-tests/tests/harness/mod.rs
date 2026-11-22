@@ -2066,6 +2066,9 @@ impl Monitor {
     /// localStorage belongs to, so the set is written here: the same thing a reader who pressed
     /// "Everything" would leave behind. A case that IS about the filter does not pair (or clears
     /// the key) and gets the product's default, untouched.
+    ///
+    /// The seed is written from a page that runs none of the app ([`seed_every_bucket`]), and the
+    /// tab ends on the app's page again, loaded from the seed and checked to hold it (#s658).
     pub fn pair(&self, tab: &headless_chrome::Tab) {
         let token = self
             .token()
@@ -2073,21 +2076,26 @@ impl Monitor {
             .unwrap_or_default();
         tab.navigate_to(&self.url(&token)).unwrap();
         tab.wait_until_navigated().unwrap();
-        seed_every_bucket(tab);
+        seed_every_bucket(tab, &self.url(""));
+        tab.navigate_to(&self.url("")).unwrap();
+        tab.wait_until_navigated().unwrap();
+        assert_seed_held(tab);
     }
 
     /// Navigate the tab to a page of this monitor and wait for the navigation. On this monitor's
     /// origin already? Then the filter seed [`Monitor::pair`] left is still there.
     pub fn open(&self, tab: &headless_chrome::Tab, path_and_query: &str) {
         let url = self.url(path_and_query);
-        if !tab.get_url().starts_with(&self.url("")) {
+        let seeded = !tab.get_url().starts_with(&self.url(""));
+        if seeded {
             // localStorage is per origin: reach the origin first, seed, then go (#202).
-            tab.navigate_to(&self.url("")).unwrap();
-            let _ = tab.wait_until_navigated();
-            seed_every_bucket(tab);
+            seed_every_bucket(tab, &self.url(""));
         }
         tab.navigate_to(&url).unwrap();
         tab.wait_until_navigated().unwrap();
+        if seeded {
+            assert_seed_held(tab);
+        }
     }
 }
 
@@ -2176,9 +2184,10 @@ impl Monitor {
             .unwrap_or_default();
         tab.navigate_to(&self.remote_url(&token)).unwrap();
         tab.wait_until_navigated().unwrap();
-        seed_every_bucket(tab);
+        seed_every_bucket(tab, &self.remote_url(""));
         tab.navigate_to(&self.remote_url(path_and_query)).unwrap();
         tab.wait_until_navigated().unwrap();
+        assert_seed_held(tab);
     }
 }
 
@@ -3268,22 +3277,71 @@ pub fn renderer_verdict(tab: &headless_chrome::Tab) -> String {
     format!("renderer (frames, scroll events) in two 300 ms samples of scroll activity: {first:?}, {second:?} — none in either is the #204 signature: a renderer stall, not an engine bug")
 }
 
-/// Write the app shell's remembered session filter as all three buckets, on whatever origin the
-/// tab is already on (#202). No reload: the caller navigates next.
-fn seed_every_bucket(tab: &headless_chrome::Tab) {
-    eval(
+/// Write the app shell's remembered session filter as all three buckets in `origin`'s storage
+/// (#202), from a page of that origin that runs none of the app: one of its public icons. The
+/// caller navigates next, and the page it opens reads the seed.
+///
+/// Not from a page of the app (#s658). A page of the app holds the filter it read as it loaded, and
+/// writes all of its choices back whenever it saves one (as it mounts, at a resize, at a layout), so
+/// a seed written under a page loaded before it could be written over with the default before the
+/// next page read it. That page's list then hid every idle fixture: on 2026-11-22
+/// `the_app_shell_contains_its_view_and_draws_everything_else_as_before`, which resizes the window
+/// right after pairing, found "No sessions in this filter" 4 times on a loaded Mac. Once the tab
+/// has left for the icon, no page holds the old filter when the seed lands.
+fn seed_every_bucket(tab: &headless_chrome::Tab, origin: &str) {
+    tab.navigate_to(&format!("{}/icon-192.png", origin.trim_end_matches('/')))
+        .unwrap();
+    tab.wait_until_navigated().unwrap();
+    let wrote = eval(
         tab,
-        "(function(){ try { localStorage.setItem('am-prod-session-filter', JSON.stringify(['recent','blocked','idle'])); } catch (e) {} return 'ok'; })()",
+        "(function(){ try { localStorage.setItem('am-prod-session-filter', JSON.stringify(['recent','blocked','idle'])); return 'ok'; } catch (e) { return 'refused: ' + e; } })()",
     );
+    assert_eq!(
+        wrote,
+        "ok",
+        "the session filter seed (#202) is written on {}",
+        tab.get_url()
+    );
+}
+
+/// Panic, naming the seed, unless the page the tab has just loaded holds it: the remembered filter
+/// reads all three buckets (#s658). Read once the page has loaded, which is after the app read the
+/// key; a page that read the seed writes the seed back whenever it saves.
+fn assert_seed_held(tab: &headless_chrome::Tab) {
+    let held = eval(
+        tab,
+        "(function(){ try { return String(localStorage.getItem('am-prod-session-filter')); } catch (e) { return 'unreadable: ' + e; } })()",
+    );
+    let buckets: Vec<String> = held
+        .as_str()
+        .and_then(|held| serde_json::from_str(held).ok())
+        .unwrap_or_default();
+    assert!(
+        ["recent", "blocked", "idle"]
+            .iter()
+            .all(|bucket| buckets.iter().any(|b| b == bucket)),
+        "the session filter seed (#202) is not what {} holds: it reads {held}",
+        tab.get_url()
+    );
+}
+
+/// The scheme, host and port of `url`, with no path.
+fn origin_of(url: &str) -> &str {
+    let start = url.find("://").map_or(0, |at| at + 3);
+    url[start..]
+        .find('/')
+        .map_or(url, |end| &url[..start + end])
 }
 
 /// Show every session in the app shell's tree, whatever its state (#202) — for a case that
 /// navigated itself rather than through [`Monitor::open`]. Seeds the shell's own remembered set
-/// and reloads `url`, which is where the shell picks it up.
+/// from a page of `url`'s origin that runs none of the app ([`seed_every_bucket`]), then opens
+/// `url`, which is where the shell picks it up, and checks that page holds it.
 pub fn show_every_session(tab: &headless_chrome::Tab, url: &str) {
-    seed_every_bucket(tab);
+    seed_every_bucket(tab, origin_of(url));
     tab.navigate_to(url).unwrap();
     tab.wait_until_navigated().unwrap();
+    assert_seed_held(tab);
 }
 
 /// Wait until every OPEN outline drawer is painted at the height the app declared for it — the

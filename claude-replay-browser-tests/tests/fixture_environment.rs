@@ -384,3 +384,48 @@ fn the_downloads_guard_still_fails_a_save_where_the_folder_answers() {
         "the failure names the file: {text}"
     );
 }
+
+/// #s658: the session filter the harness seeds (#202) still holds for the page a case opens after
+/// the app's page saved its choices. Pairing used to write the seed under the app's page it had
+/// just loaded, which held the default filter and writes all its choices back whenever it saves
+/// one. So a save that landed after the seed (a resize right after pairing, a mount on a loaded
+/// machine) put the default back, and the next page hid the case's idle fixture: "No sessions in
+/// this filter". Here the save comes at once, on purpose: Expand all, then a resize.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn the_filter_seed_holds_after_the_page_pairing_leaves_saves() {
+    use std::time::Duration;
+    let _serial = harness::serial();
+    let base = harness::base("filter-seed-save");
+    let stores = harness::Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000658";
+    stores.claude_session(sid, &harness::long_session(2, harness::Shape::default()));
+    let monitor = harness::Monitor::spawn(harness::Kind::V1, 3277, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    harness::until(
+        &tab,
+        "!!document.getElementById('expandBtn')",
+        "the app's list, with its Expand all",
+        Duration::from_secs(30),
+        "document.body.innerText.slice(0, 200)",
+    );
+    harness::eval(&tab, "document.getElementById('expandBtn').click(); 'ok'");
+    harness::mouse_window(&tab, 1440, 900);
+    let saved = harness::eval(
+        &tab,
+        "String(localStorage.getItem('am-prod-session-filter'))",
+    );
+    assert!(
+        saved.as_str().is_some_and(|saved| saved.contains("idle")),
+        "the save writes the seeded filter back: {saved}"
+    );
+    monitor.open(&tab, &format!("?session={sid}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('#sessionList .tree-row.session')",
+        "the idle fixture listed in the session list",
+        Duration::from_secs(30),
+        "JSON.stringify({ filter: localStorage.getItem('am-prod-session-filter'), list: (document.getElementById('sessionList') || {}).innerText })",
+    );
+}
