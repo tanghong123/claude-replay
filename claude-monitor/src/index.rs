@@ -1408,7 +1408,6 @@ impl Index {
                         .unwrap_or(0);
                     row.continued_in = read_continuation(row.agent, &row.path, now_secs);
                     if !row.start_probed {
-                        row.first_event = first_event_ts(&row.path);
                         let entry = head_entry(&row.path);
                         let seen = !matches!(entry, HeadEntry::Unseen);
                         row.brief = match entry {
@@ -1424,6 +1423,11 @@ impl Index {
                         row.start_probed = seen
                             || row.agent != Agent::CLAUDE
                             || now_len.is_some_and(|n| n >= 64 * 1024);
+                        // The start AFTER the head is judged, so the file it reads holds at least
+                        // what settled it (a prompt appended between the two reads would settle a
+                        // head whose start was read before it); asked on each unsettled pass, and
+                        // a failed read keeps a start already found.
+                        row.first_event = first_event_ts(&row.path).or(row.first_event);
                     }
                     // #142: which session this one was forked from, and (#s653) which one's
                     // tools started it, from the head with the start: a fork's origin is fixed
@@ -3026,7 +3030,7 @@ fn write_started_by(path: &Path, edges: &BTreeMap<String, String>) {
 
 /// How a transcript's head says its session was launched (`head_entry`).
 enum HeadEntry {
-    /// No entrypoint yet: a head caught before its first prompt, or an agent that records none.
+    /// No `user` record yet: a head caught before its first prompt.
     Unseen,
     /// Any entrypoint but a one-shot's.
     Interactive,
@@ -10427,9 +10431,28 @@ n/Users/x/proj
         .unwrap();
         std::fs::write(
             dir.join(format!("{worker}.jsonl")),
-            lines(vec![json!({"type":"derived-from","v":1,"sessionId":worker,
+            lines(vec![
+                json!({"type":"derived-from","v":1,"sessionId":worker,
                 "sessions":[{"type":"claude_code_session","id":parent,"via":"subprocess",
-                    "started":worker}]})]),
+                    "started":worker}]}),
+                json!({"type":"queue-operation","operation":"enqueue","sessionId":worker,
+                    "timestamp":"2026-11-22T03:09:59.000Z"}),
+            ]),
+        )
+        .unwrap();
+        // A client that wrote no entrypoint on its prompt: an interactive launch, settled at once.
+        let keyless = "6a5c0f2e-1d64-4b2e-9a51-653000000107";
+        std::fs::write(
+            dir.join(format!("{keyless}.jsonl")),
+            lines(vec![
+                json!({"type":"user","sessionId":keyless,"cwd":cwd,"uuid":"u-k",
+                    "timestamp":"2026-11-22T03:30:01.000Z",
+                    "message":{"role":"user","content":"An older client"}}),
+                json!({"type":"assistant","sessionId":keyless,"cwd":cwd,"uuid":"a-k",
+                    "parentUuid":"u-k","timestamp":"2026-11-22T03:30:02.000Z",
+                    "message":{"role":"assistant","model":"claude-opus-5-5",
+                        "content":[{"type":"text","text":"ok"}]}}),
+            ]),
         )
         .unwrap();
         let _ = index.sessions_json(|_| {});
@@ -10443,6 +10466,15 @@ n/Users/x/proj
             assert!(
                 !w.start_probed && !w.one_shot,
                 "nor is the worker taken for interactive"
+            );
+            assert!(
+                w.first_event.is_some(),
+                "its start is read while it settles"
+            );
+            let k = &st.rows[keyless];
+            assert!(
+                k.start_probed && !k.one_shot && k.first_event.is_some(),
+                "a prompt without the key settles as interactive, with its start"
             );
             // As `note_forks_from_argv` does while the older fork's engine runs.
             st.rows.get_mut(older).unwrap().fork_from = Some(parent.to_string());
@@ -10526,7 +10558,7 @@ n/Users/x/proj
             "the one-shot is its starter's"
         );
         assert_eq!(row(worker)["brief"], "Review the diff");
-        for sid in [parent, fork, worker] {
+        for sid in [parent, fork, worker, keyless] {
             assert!(
                 row(sid)["startTs"].is_u64(),
                 "{sid} has its start: {rows:?}"

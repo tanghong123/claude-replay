@@ -10414,7 +10414,9 @@ mod tests {
             ],
             "what else was not measured is reported too"
         );
-        let unnamed = [r#"{"type":"derived-from","v":"one","sessions":[]}"#];
+        let unnamed = [
+            r#"{"type":"derived-from","v":"one","sessions":[{"type":"claude_code_session","id":"x","via":"teleport"}]}"#,
+        ];
         let _ = parse(&unnamed.join("\n"));
         let mut got: Vec<String> = unknown_shapes()
             .into_iter()
@@ -10429,6 +10431,12 @@ mod tests {
                 "derived-from (no sessionId)".to_string(),
                 "derived-from v(not a count)".to_string()
             ]
+        );
+        assert!(
+            !unknown_shapes()
+                .into_iter()
+                .any(|s| s.name.contains("via teleport")),
+            "a record that names no session has its entries left unjudged"
         );
     }
 
