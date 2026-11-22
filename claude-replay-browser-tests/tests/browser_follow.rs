@@ -32052,15 +32052,16 @@ fn a_phone_s_find_steps_and_clear_take_a_finger_s_44_points() {
     drop(m);
 }
 
-/// The measures of the controls `sels` name in `tab`: each one's box (`w`, `h`), its glyph's box
+/// The measures of the controls `sels` name in `tab` (null for one not drawn): each one's box (`w`, `h`), its glyph's box
 /// (`icon`, the `.icon` inside it), the points of the 3×3 grid 21 points around its centre that do not
-/// hit it (`missed`), and how far each one's left edge is from the right edge of the one before it
-/// (`gap`, negative where they overlap). `strip` is the width of the open box's chips-and-field strip.
+/// hit it (`missed`), and how far its left edge is from the right edge of the nearest of them to its
+/// left in the same row (`gap`, negative where they overlap). `strip` is the width of the open box's
+/// chips-and-field strip.
 fn find_targets(tab: &headless_chrome::Tab, sels: &[&str]) -> serde_json::Value {
     let list = serde_json::to_string(sels).unwrap();
     let raw = harness::eval(
         tab,
-        &format!("(function(){{ var out = {{ controls: {{}} }}, prev = null; {list}.forEach(function (sel) {{ var e = document.querySelector(sel); if (!e) {{ out.controls[sel] = null; return; }} var r = e.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2, ic = e.querySelector('.icon'), ir = ic && ic.getBoundingClientRect(); var missed = []; [-21, 0, 21].forEach(function (dx) {{ [-21, 0, 21].forEach(function (dy) {{ var h = document.elementFromPoint(cx + dx, cy + dy); if (!h || (h !== e && !e.contains(h))) missed.push([dx, dy, h ? (h.id || h.className || h.tagName) : null]); }}); }}); out.controls[sel] = {{ w: Math.round(r.width), h: Math.round(r.height), icon: ir ? [Math.round(ir.width), Math.round(ir.height)] : null, missed: missed, gap: prev ? Math.round(r.left - prev.right) : null }}; prev = r; }}); var s = document.querySelector('.header-searchbox .search-field'); out.strip = s ? Math.round(s.getBoundingClientRect().width) : null; out.w = innerWidth; out.h = innerHeight; return JSON.stringify(out); }})()")
+        &format!("(function(){{ var out = {{ controls: {{}} }}, boxes = {{}}; {list}.forEach(function (sel) {{ var e = document.querySelector(sel); if (!e || !e.getClientRects().length) {{ out.controls[sel] = null; return; }} var r = e.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2, ic = e.querySelector('.icon'), ir = ic && ic.getBoundingClientRect(); var missed = []; [-21, 0, 21].forEach(function (dx) {{ [-21, 0, 21].forEach(function (dy) {{ var h = document.elementFromPoint(cx + dx, cy + dy); if (!h || (h !== e && !e.contains(h))) missed.push([dx, dy, h ? (h.id || h.className || h.tagName) : null]); }}); }}); boxes[sel] = r; out.controls[sel] = {{ w: Math.round(r.width), h: Math.round(r.height), icon: ir ? [Math.round(ir.width), Math.round(ir.height)] : null, missed: missed, gap: null }}; }}); Object.keys(boxes).forEach(function (a) {{ var r = boxes[a]; Object.keys(boxes).forEach(function (b) {{ var o = boxes[b]; if (a === b || o.left >= r.left || o.bottom <= r.top || o.top >= r.bottom) return; var g = Math.round(r.left - o.right); if (out.controls[a].gap === null || g < out.controls[a].gap) out.controls[a].gap = g; }}); }}); var s = document.querySelector('.header-searchbox .search-field'); out.strip = s ? Math.round(s.getBoundingClientRect().width) : null; out.w = innerWidth; out.h = innerHeight; return JSON.stringify(out); }})()")
     );
     serde_json::from_str(raw.as_str().unwrap_or("null"))
         .unwrap_or_else(|_| panic!("the find pill's controls: unreadable: {raw}"))
@@ -32167,5 +32168,66 @@ fn find_controls_hold(seen: &serde_json::Value, what: &str, place: &str) {
                 "{what}, {place}: {sel}'s glyph is drawn at {n} points, as it was: {seen}"
             );
         }
+    }
+}
+
+/// #s649, the drawer's head: on a phone the theme, Collapse all, Expand all and the session filter sat
+/// 40 points wide (32 at the smallest), side by side. Each now takes a finger's 44 points, upright and
+/// on a phone held sideways that keeps the drawer, without overlapping, every point of the 3×3 grid
+/// 21 points around a control's centre hitting it, its glyph drawn at 18 points as before.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_s_drawer_head_glyphs_take_a_finger_s_44_points() {
+    let _serial = serial();
+    let (m, _b, tab) = phone_world(3386, "phone-drawer-head-targets", 390, 844);
+    drawer_head_targets_hold(&tab, "upright");
+    let (_bs, side) = phone_tab(&m, 844, 390);
+    drawer_head_targets_hold(&side, "sideways");
+    drop(m);
+}
+
+fn drawer_head_targets_hold(tab: &headless_chrome::Tab, what: &str) {
+    phone_tap(tab, "#drawerHandle");
+    harness::until(
+        tab,
+        DRAWER_OPEN,
+        &format!("{what}: the drawer"),
+        Duration::from_secs(5),
+        DRAWER_STATE,
+    );
+    harness::pause("the drawer to rest", Duration::from_millis(400));
+    let seen = find_targets(
+        tab,
+        &["#themeBtn", "#collapseBtn", "#expandBtn", "#filterBtn"],
+    );
+    assert!(
+        !seen["controls"]["#themeBtn"].is_null() && !seen["controls"]["#filterBtn"].is_null(),
+        "{what}: the theme and the session filter are in the drawer's head: {seen}"
+    );
+    // Collapse all and Expand all are drawn only over a tree (a flat list has nothing to fold).
+    for (sel, c) in seen["controls"].as_object().unwrap() {
+        if c.is_null() {
+            continue;
+        }
+        assert!(
+            c["w"].as_i64().unwrap_or(0) >= 44 && c["h"].as_i64().unwrap_or(0) >= 44,
+            "{what}: the drawer's {sel} is a finger's 44 points: {seen}"
+        );
+        assert_eq!(
+            c["missed"].as_array().map(Vec::len),
+            Some(0),
+            "{what}: a finger anywhere in the 44 points around the drawer's {sel} takes it: {seen}"
+        );
+        if let Some(gap) = c["gap"].as_i64() {
+            assert!(
+                gap >= 0,
+                "{what}: the drawer's {sel} does not overlap the control beside it: {seen}"
+            );
+        }
+        assert_eq!(
+            c["icon"],
+            serde_json::json!([18, 18]),
+            "{what}: the drawer's {sel} draws its glyph at 18 points, as it was: {seen}"
+        );
     }
 }
