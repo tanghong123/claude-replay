@@ -1691,7 +1691,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      host keeps its whole bar and a desktop layout under the drawer clears the handle. */
   #app:where(:has(>.drawer-handle)) #sessionView .workspace>.topbar{padding-left:calc(50px + env(safe-area-inset-left,0px))}
   #app .side-head{height:auto;min-height:52px;padding-left:52px}
-  #app .side-head .iconbtn{width:40px;height:44px}
+  /* #s649: a finger's 44 points each (#313); the row has the room in the drawer at every phone's width. */
+  #app .side-head .iconbtn{width:44px;height:44px;flex:none}
   /* #s387: an arranged section's menu. Upright it is a sheet at the foot (`.sheet`, set by the
      page), over a dim that takes the closing tap; held sideways it is a popover at its control's
      side over the same dim (#s41). The rows are the shell's 44px menu rows; Arrange's two-line rows
