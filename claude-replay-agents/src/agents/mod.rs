@@ -26,6 +26,7 @@ pub mod codex {
 }
 pub mod qoderwork {
     pub mod discover;
+    pub(crate) mod opencode;
 }
 pub mod qoder {
     pub mod discover;

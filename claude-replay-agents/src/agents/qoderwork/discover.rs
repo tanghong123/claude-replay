@@ -15,9 +15,9 @@ use std::path::{Path, PathBuf};
 pub(crate) struct Home {
     pub(crate) agent: Agent,
     /// `~/<dir>/projects/<slug>/<id>.jsonl` — the transcripts.
-    dir: &'static str,
+    pub(crate) dir: &'static str,
     /// Overrides the projects root (tests, alternate installs).
-    projects_env: &'static str,
+    pub(crate) projects_env: &'static str,
     /// `~/Library/Application Support/<app>/data/agents.db` — the title database (macOS).
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     app: &'static str,
@@ -170,12 +170,34 @@ pub fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
 
 /// [`candidates_scoped`] for any agent of the family.
 pub(crate) fn candidates_scoped_for(home: &Home, cwd: &Path) -> Vec<Candidate> {
-    crate::agents::claude::discover::candidates_scoped_in(
-        &projects_dir_for(home),
-        home.agent,
-        cwd,
-        claude_replay_engine::seam::home_dir().as_deref(),
-    )
+    let mut out = Vec::new();
+    for root in roots_for(home) {
+        out.extend(crate::agents::claude::discover::candidates_scoped_in(
+            &root,
+            home.agent,
+            cwd,
+            claude_replay_engine::seam::home_dir().as_deref(),
+        ));
+    }
+    out.sort_by_key(|c| std::cmp::Reverse(c.mtime));
+    out
+}
+
+/// Every root this home's transcripts are under: the store, and for an agent with a second
+/// engine the mirrors of its chats ([`super::opencode`], #s657), brought up to date first.
+pub(crate) fn roots_for(home: &Home) -> Vec<PathBuf> {
+    let mut roots = vec![projects_dir_for(home)];
+    if let Some(mirror) = super::opencode::mirror_root_for(home) {
+        super::opencode::refresh(home);
+        roots.push(mirror);
+    }
+    roots
+}
+
+/// Whether `path` is under one of this home's roots, read without bringing a mirror up to date.
+pub(crate) fn store_contains_for(home: &Home, path: &Path) -> bool {
+    path.starts_with(projects_dir_for(home))
+        || super::opencode::mirror_root_for(home).is_some_and(|m| path.starts_with(m))
 }
 
 /// A transcript smaller than this is single-prompt junk (measured: QoderWork's throwaway
@@ -226,7 +248,10 @@ pub(crate) fn store_transcripts() -> Vec<PathBuf> {
 
 /// Every transcript in the store of any agent of the family.
 pub(crate) fn store_transcripts_for(home: &Home) -> Vec<PathBuf> {
-    store_transcripts_in(&projects_dir_for(home))
+    roots_for(home)
+        .iter()
+        .flat_map(|r| store_transcripts_in(r))
+        .collect()
 }
 
 /// The same scan rooted at an explicit projects dir, so a caller holding an alternate store
@@ -325,7 +350,9 @@ pub fn transcript_by_id(id: &str) -> Option<PathBuf> {
 
 /// [`transcript_by_id`] for any agent of the family.
 pub(crate) fn transcript_by_id_for(home: &Home, id: &str) -> Option<PathBuf> {
-    crate::agents::claude::discover::transcript_by_id_in(&projects_dir_for(home), id)
+    roots_for(home)
+        .iter()
+        .find_map(|r| crate::agents::claude::discover::transcript_by_id_in(r, id))
 }
 
 /// Where QoderWork keeps its chat metadata. Overridable so a test — or a non-standard install —
@@ -1238,5 +1265,180 @@ mod tests {
             ]
         );
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #s657: a chat Qwenwork ran on its opencode engine is written out as a mirror beside the
+    /// store, from a database of the test's own: listed and found under its chat's id, Qwenwork by
+    /// provenance, titled from the chat's name, and drawn by the family's reader. As the engine's
+    /// log grows, the mirror grows in place; a removal builds it again under a new first line.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn an_opencode_chat_is_mirrored_listed_and_kept_current() {
+        use claude_replay_engine::seam::{block_kind, BlockKind};
+        use rusqlite::{params, Connection};
+        let _env = STORE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("qw-opencode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = root.join("projects");
+        std::fs::create_dir_all(&store).unwrap();
+        let harness = root.join(".harness/flash-cli/qwenwork");
+        std::fs::create_dir_all(&harness).unwrap();
+        let app = root.join("agents.db");
+        let dir = "/work/chats/opencode-1";
+        let chat = "c0ffee00-0000-4000-8000-000000000001";
+
+        let a = Connection::open(&app).unwrap();
+        a.execute_batch(
+            "create table sub_chats (session_id text, ext text, name text, updated_at integer);
+             create table chats (id text, name text, updated_at integer);",
+        )
+        .unwrap();
+        let ext = serde_json::json!({ "engineSessionBindingV1": {
+            "engineId": "opencode", "workingDirectory": dir, "nativeSessionId": "ses_one", "generation": 1,
+        }});
+        a.execute(
+            "insert into sub_chats values (?1, ?2, 'Tidy the notes', 5)",
+            params![chat, ext.to_string()],
+        )
+        .unwrap();
+        drop(a);
+
+        let e = Connection::open(harness.join("qwenwork.db")).unwrap();
+        e.execute_batch(
+            "create table session (id text, parent_id text, directory text, version text, time_created integer);
+             create table event_sequence (aggregate_id text, seq integer);
+             create table event (aggregate_id text, seq integer, type text, data text);
+             insert into session values ('ses_one', null, '/work/chats/opencode-1', '1.0.0', 1000);
+             insert into event_sequence values ('ses_one', 0);",
+        )
+        .unwrap();
+        let add = |e: &Connection, ty: &str, data: serde_json::Value| {
+            let seq: i64 = e
+                .query_row(
+                    "select seq + 1 from event_sequence where aggregate_id = 'ses_one'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            e.execute(
+                "insert into event values ('ses_one', ?1, ?2, ?3)",
+                params![seq, ty, data.to_string()],
+            )
+            .unwrap();
+            e.execute(
+                "update event_sequence set seq = ?1 where aggregate_id = 'ses_one'",
+                [seq],
+            )
+            .unwrap();
+        };
+        let message = |id: &str, role: &str, done: bool| {
+            let mut info = serde_json::json!({ "id": id, "role": role, "modelID": "mode-test", "time": { "created": 1000 } });
+            if done {
+                info["time"]["completed"] = serde_json::json!(9000);
+            }
+            serde_json::json!({ "sessionID": "ses_one", "info": info })
+        };
+        let part = |p: serde_json::Value| serde_json::json!({ "sessionID": "ses_one", "part": p, "time": 1 });
+        // A turn with enough in it to clear the store's size floor.
+        let long = "a line the agent printed\n".repeat(200);
+        add(&e, "message.updated.1", message("msg_u1", "user", false));
+        add(
+            &e,
+            "message.part.updated.1",
+            part(
+                serde_json::json!({ "id": "prt_u1", "messageID": "msg_u1", "type": "text", "text": "tidy the notes" }),
+            ),
+        );
+        add(
+            &e,
+            "message.updated.1",
+            message("msg_a1", "assistant", false),
+        );
+        add(
+            &e,
+            "message.part.updated.1",
+            part(
+                serde_json::json!({ "id": "prt_b1", "messageID": "msg_a1", "type": "tool", "tool": "bash", "callID": "call_1", "state": { "status": "completed", "input": { "command": "ls" }, "output": long, "time": { "start": 2000, "end": 2100 } } }),
+            ),
+        );
+        add(
+            &e,
+            "message.part.updated.1",
+            part(
+                serde_json::json!({ "id": "prt_t1", "messageID": "msg_a1", "type": "text", "text": "Done.", "time": { "start": 2200, "end": 2300 } }),
+            ),
+        );
+        add(
+            &e,
+            "message.updated.1",
+            message("msg_a1", "assistant", true),
+        );
+
+        std::env::set_var("QWENWORK_PROJECTS_DIR", &store);
+        std::env::set_var("QWENWORK_DB", &app);
+        super::super::opencode::refresh_now(&QWENWORK);
+        let listed = store_transcripts_for(&QWENWORK);
+        let found = transcript_by_id_for(&QWENWORK, chat);
+        let path = found.clone().expect("the chat's mirror is found by its id");
+        let claimed = claude_replay_core::discover::detect_agent_claimed(&path);
+        let card = session_card_for(&QWENWORK, &path, None);
+        let first = std::fs::read_to_string(&path).unwrap();
+        let blocks = claude_replay_core::parse_session_as(Agent::QWENWORK, &path)
+            .unwrap()
+            .blocks();
+
+        // The log grows: the mirror grows in place.
+        add(&e, "message.updated.1", message("msg_u2", "user", false));
+        add(
+            &e,
+            "message.part.updated.1",
+            part(
+                serde_json::json!({ "id": "prt_u2", "messageID": "msg_u2", "type": "text", "text": "and the index" }),
+            ),
+        );
+        super::super::opencode::refresh_now(&QWENWORK);
+        let grown = std::fs::read_to_string(&path).unwrap();
+        // A part is removed: built again.
+        add(
+            &e,
+            "message.part.removed.1",
+            serde_json::json!({ "sessionID": "ses_one", "messageID": "msg_a1", "partID": "prt_t1" }),
+        );
+        super::super::opencode::refresh_now(&QWENWORK);
+        let rebuilt = std::fs::read_to_string(&path).unwrap();
+        std::env::remove_var("QWENWORK_PROJECTS_DIR");
+        std::env::remove_var("QWENWORK_DB");
+
+        assert!(
+            path.starts_with(root.join("opencode-mirror")),
+            "{}",
+            path.display()
+        );
+        assert_eq!(path.file_stem().and_then(|s| s.to_str()), Some(chat));
+        assert!(listed.contains(&path), "listed with the store: {listed:?}");
+        assert_eq!(claimed, (Agent::QWENWORK, true), "Qwenwork by provenance");
+        match card {
+            CardOutcome::Fresh { card, .. } => {
+                assert_eq!(card.title.as_deref(), Some("Tidy the notes"))
+            }
+            other => panic!("no card: {other:?}"),
+        }
+        let kinds: Vec<BlockKind> = blocks.iter().map(block_kind).collect();
+        assert!(kinds.contains(&BlockKind::User), "{kinds:?}");
+        assert!(kinds.contains(&BlockKind::Assistant), "{kinds:?}");
+        assert!(grown.starts_with(&first), "a growing log only appends");
+        assert!(grown.len() > first.len());
+        assert_ne!(
+            rebuilt.lines().next(),
+            first.lines().next(),
+            "a rebuild has a new first line"
+        );
+        assert!(!rebuilt.contains("\"Done.\""), "the removed reply is gone");
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

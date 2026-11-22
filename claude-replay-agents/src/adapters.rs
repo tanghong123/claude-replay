@@ -562,7 +562,7 @@ macro_rules! qwork_family_adapter {
                 }
             }
             fn store_contains(&self, path: &Path) -> bool {
-                path.starts_with(agents::qoderwork::discover::projects_dir_for(&$home))
+                agents::qoderwork::discover::store_contains_for(&$home, path)
             }
             /// The one place the family cannot simply delegate: it keeps the spawn→child relation
             /// in SIDECARS rather than inline in the transcript, so the ids are adopted from those
