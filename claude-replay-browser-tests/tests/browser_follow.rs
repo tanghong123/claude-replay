@@ -31805,7 +31805,7 @@ fn a_phone_folds_an_agent_process_from_a_finger_s_target() {
 /// (`missed`, of a 3×3 grid 21 points apart), the points 24 points out that do (`beyond`), and the
 /// hit area's `::after` content.
 fn process_targets(tab: &headless_chrome::Tab, what: &str, key: Option<&str>) -> serde_json::Value {
-    let pick = "(function(){ var t = document.querySelector('.sv-session-main>.transcript'), r = t.getBoundingClientRect(); var ps = [...document.querySelectorAll('.virtual-window [data-process-surface]')].filter(function (p) { return !!p.querySelector('[data-renderer]:not(.noninteractive)') && p.getBoundingClientRect().top >= r.top && p.querySelector('.process-surface-summary').getBoundingClientRect().top < r.top + r.height / 2; }); var p = ps.pop(); if (!p) return JSON.stringify({ miss: document.querySelectorAll('[data-process-surface]').length }); var h = p.querySelector('.process-surface-summary').getBoundingClientRect(); return JSON.stringify({ key: p.dataset.processKey, dy: Math.round(h.top + h.height / 2 - (r.top + r.height / 2)) }); })()";
+    let pick = "(function(){ var t = document.querySelector('.sv-session-main>.transcript'), r = t.getBoundingClientRect(); var ps = [...document.querySelectorAll('.virtual-window [data-process-surface]')].filter(function (p) { return !!p.querySelector('[data-renderer]:not(.noninteractive)') && p.getBoundingClientRect().top >= r.top && p.querySelector('.process-surface-summary').getBoundingClientRect().top < r.top + r.height / 2; }); var p = ps.pop(); if (!p) return JSON.stringify({ miss: document.querySelectorAll('[data-process-surface]').length, h: Math.round(r.height) }); var h = p.querySelector('.process-surface-summary').getBoundingClientRect(); return JSON.stringify({ key: p.dataset.processKey, dy: Math.round(h.top + h.height / 2 - (r.top + r.height / 2)) }); })()";
     let read = |js: &str| -> serde_json::Value {
         let raw = harness::eval(tab, js);
         serde_json::from_str(raw.as_str().unwrap_or("null"))
@@ -31814,8 +31814,19 @@ fn process_targets(tab: &headless_chrome::Tab, what: &str, key: Option<&str>) ->
     let named = key.is_some();
     let key = match key {
         Some(key) => key.to_owned(),
+        // None in reach (a short view held sideways, at the session's end): up most of a view, and
+        // again.
         None => {
-            let picked = read(pick);
+            let mut picked = read(pick);
+            for _ in 0..8 {
+                if picked["key"].is_string() {
+                    break;
+                }
+                let up = picked["h"].as_f64().unwrap_or(300.0) * 0.7;
+                harness::scroll_by(tab, harness::Surface::AppShell, -(up as i64));
+                harness::pause("the scroll up to rest", Duration::from_millis(400));
+                picked = read(pick);
+            }
             picked["key"]
                 .as_str()
                 .unwrap_or_else(|| {
