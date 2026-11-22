@@ -3030,7 +3030,9 @@ fn write_started_by(path: &Path, edges: &BTreeMap<String, String>) {
 
 /// How a transcript's head says its session was launched (`head_entry`).
 enum HeadEntry {
-    /// No `user` record yet: a head caught before its first prompt.
+    /// No `user` record yet (a Claude head caught before its first prompt), a head that cannot be
+    /// read, or another agent's, which records no `user` record: the scan settles that one by its
+    /// agent, not by its head.
     Unseen,
     /// Any entrypoint but a one-shot's.
     Interactive,
