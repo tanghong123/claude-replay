@@ -31712,7 +31712,7 @@ fn a_primary_button_s_label_reads_in_either_theme() {
 fn a_phone_folds_an_agent_process_from_a_finger_s_target() {
     let _serial = serial();
     let (m, _b, tab) = phone_world(3384, "phone-process-targets", 390, 844);
-    let up = process_targets(&tab, "upright");
+    let up = process_targets(&tab, "upright", None);
     phone_process_targets_hold(&up, "upright");
 
     // A tap inside the square, off the glyph, folds the box, and opens it again.
@@ -31722,7 +31722,7 @@ fn a_phone_folds_an_agent_process_from_a_finger_s_target() {
     };
     for (n, (dx, dy)) in [(-19.0, 19.0), (19.0, -19.0)].into_iter().enumerate() {
         let was = closed(&tab);
-        let at = process_targets(&tab, "before a tap on the fold");
+        let at = process_targets(&tab, "before a tap on the fold", Some(&key));
         harness::finger_tap(
             &tab,
             at["fold"]["cx"].as_f64().unwrap() + dx,
@@ -31739,7 +31739,7 @@ fn a_phone_folds_an_agent_process_from_a_finger_s_target() {
     // Shut, a tap inside the square of the control at its right, off the glyph, opens the box with
     // every detail in it (#251).
     if !closed(&tab) {
-        let at = process_targets(&tab, "before shutting the box");
+        let at = process_targets(&tab, "before shutting the box", Some(&key));
         harness::finger_tap(
             &tab,
             at["fold"]["cx"].as_f64().unwrap(),
@@ -31753,7 +31753,7 @@ fn a_phone_folds_an_agent_process_from_a_finger_s_target() {
             "''",
         );
     }
-    let at = process_targets(&tab, "before a tap on the control at the right");
+    let at = process_targets(&tab, "before a tap on the control at the right", Some(&key));
     harness::finger_tap(
         &tab,
         at["bulk"]["cx"].as_f64().unwrap() - 19.0,
@@ -31769,12 +31769,12 @@ fn a_phone_folds_an_agent_process_from_a_finger_s_target() {
 
     // Held sideways, a fresh phone.
     let (_bs, side) = phone_tab(&m, 844, 390);
-    let sideways = process_targets(&side, "sideways");
+    let sideways = process_targets(&side, "sideways", None);
     phone_process_targets_hold(&sideways, "sideways");
 
     // A desktop: the glyphs are the targets, as before.
     let (_bd, desk) = desktop_tab(&m);
-    let d = process_targets(&desk, "desktop");
+    let d = process_targets(&desk, "desktop", None);
     for c in ["fold", "bulk"] {
         let seen = &d[c];
         assert_eq!(
@@ -31795,33 +31795,41 @@ fn a_phone_folds_an_agent_process_from_a_finger_s_target() {
     drop(m);
 }
 
-/// An agent process in `tab`'s session, its head brought to the middle of the transcript, and for
+/// An agent process in `tab`'s session (the one `key` names, else one with a detail whose head is above
+/// the middle), its head brought to the middle of the transcript, and for
 /// its fold (`fold`) and expand-every-detail (`bulk`) controls: the drawn box (`w`, `h`), the glyph's
 /// centre (`cx`, `cy`), the points of the 44-point square around it that do not hit the control
 /// (`missed`, of a 3×3 grid 21 points apart), the points 24 points out that do (`beyond`), and the
 /// hit area's `::after` content.
-fn process_targets(tab: &headless_chrome::Tab, what: &str) -> serde_json::Value {
+fn process_targets(tab: &headless_chrome::Tab, what: &str, key: Option<&str>) -> serde_json::Value {
     let pick = "(function(){ var t = document.querySelector('.sv-session-main>.transcript'), r = t.getBoundingClientRect(); var ps = [...document.querySelectorAll('.virtual-window [data-process-surface]')].filter(function (p) { return !!p.querySelector('[data-renderer]:not(.noninteractive)') && p.querySelector('.process-surface-summary').getBoundingClientRect().top < r.top + r.height / 2; }); var p = ps.pop(); if (!p) return JSON.stringify({ miss: document.querySelectorAll('[data-process-surface]').length }); var h = p.querySelector('.process-surface-summary').getBoundingClientRect(); return JSON.stringify({ key: p.dataset.processKey, dy: Math.round(h.top + h.height / 2 - (r.top + r.height / 2)) }); })()";
     let read = |js: &str| -> serde_json::Value {
         let raw = harness::eval(tab, js);
         serde_json::from_str(raw.as_str().unwrap_or("null"))
             .unwrap_or_else(|_| panic!("{what}: unreadable: {raw}"))
     };
-    let picked = read(pick);
-    let key = picked["key"]
-        .as_str()
-        .unwrap_or_else(|| {
-            panic!("{what}: an agent process with a detail above the middle: {picked}")
-        })
-        .to_owned();
-    harness::scroll_by(
-        tab,
-        harness::Surface::AppShell,
-        picked["dy"].as_i64().unwrap(),
-    );
+    let key = match key {
+        Some(key) => key.to_owned(),
+        None => {
+            let picked = read(pick);
+            picked["key"]
+                .as_str()
+                .unwrap_or_else(|| {
+                    panic!("{what}: an agent process with a detail above the middle: {picked}")
+                })
+                .to_owned()
+        }
+    };
     let surface = format!(
         "document.querySelector('[data-process-surface][data-process-key=\"' + CSS.escape({key:?}) + '\"]')"
     );
+    let dy = harness::eval(tab, &format!("(function(){{ var p = {surface}; if (!p) return null; var t = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(), h = p.querySelector('.process-surface-summary').getBoundingClientRect(); return Math.round(h.top + h.height / 2 - (t.top + t.height / 2)); }})()"));
+    let dy = dy
+        .as_i64()
+        .unwrap_or_else(|| panic!("{what}: the agent process {key} is drawn: {dy}"));
+    if dy.abs() > 40 {
+        harness::scroll_by(tab, harness::Surface::AppShell, dy);
+    }
     harness::until(
         tab,
         &format!("(function(){{ var p = {surface}; if (!p) return false; var t = document.querySelector('.sv-session-main>.transcript').getBoundingClientRect(), h = p.querySelector('.process-surface-summary').getBoundingClientRect(), c = h.top + h.height / 2; return c > t.top + t.height * 0.3 && c < t.top + t.height * 0.7; }})()"),
