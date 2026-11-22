@@ -28512,9 +28512,6 @@ fn a_phone_held_sideways_puts_the_keyboard_down_on_return_where_the_find_pill_ca
     );
 }
 
-/// #s53: a coordinator and the two headless workers it started, the edge as the monitor keeps it
-/// (`started-by.json` in its cache root — what a restart finds). Served on `port`, the coordinator
-/// open. Returns the monitor, the browser, the tab and the three ids.
 /// How a workers world's monitor knows who started the workers (#s653).
 #[derive(Clone, Copy)]
 enum Starter {
@@ -28524,6 +28521,10 @@ enum Starter {
     Transcript,
 }
 
+/// #s53: a coordinator and the two headless workers it started, the edge as the monitor keeps it
+/// (`started-by.json` in its cache root — what a restart finds), or, with `Starter::Transcript`,
+/// as the workers' own heads name it (#s653). Served on `port`, the coordinator open. Returns the
+/// monitor, the browser, the tab and the three ids.
 fn workers_world(
     port: u16,
     case: &str,
@@ -28727,7 +28728,8 @@ fn a_worker_s_own_transcript_files_it_under_its_starter() {
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_reaches_a_session_s_workers_from_its_agents_sheet() {
     let _serial = serial();
-    let (_m, _b, tab, [coord, w1, w2]) = workers_world(2755, "workers-phone", Some((440, 956)), Starter::Banked);
+    let (_m, _b, tab, [coord, w1, w2]) =
+        workers_world(2755, "workers-phone", Some((440, 956)), Starter::Banked);
     let listed = harness::eval(&tab, "[...document.querySelectorAll('[data-session]')].map(function (e) { return e.dataset.session; }).join(',')");
     let listed = listed.as_str().unwrap_or("");
     assert!(

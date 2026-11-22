@@ -401,19 +401,15 @@ fn derived_from(path: &Path, via: &str) -> Option<String> {
         .get("sessionId")
         .and_then(serde_json::Value::as_str)
         .unwrap_or("");
-    record
-        .get("sessions")?
-        .as_array()?
-        .iter()
-        .find_map(|e| {
-            let id = e.get("id")?.as_str()?;
-            (e.get("type")?.as_str()? == "claude_code_session"
-                && e.get("via")?.as_str()? == via
-                && !id.is_empty()
-                && id != own
-                && id != stem)
-                .then(|| id.to_string())
-        })
+    record.get("sessions")?.as_array()?.iter().find_map(|e| {
+        let id = e.get("id")?.as_str()?;
+        (e.get("type")?.as_str()? == "claude_code_session"
+            && e.get("via")?.as_str()? == via
+            && !id.is_empty()
+            && id != own
+            && id != stem)
+            .then(|| id.to_string())
+    })
 }
 
 /// The session a Claude session was FORKED from (#142, #s653), from its own `derived-from`
@@ -947,7 +943,11 @@ mod tests {
             a,
             &[user(a), derived(a, a, "resume"), derived(a, a, "compact")],
         );
-        assert_eq!(fork_origin(&resumed), None, "a resume names the session itself");
+        assert_eq!(
+            fork_origin(&resumed),
+            None,
+            "a resume names the session itself"
+        );
         assert_eq!(launched_by(&resumed), None);
         let plain = write("dddddddd-0000-4000-8000-000000000653", &[user("d")]);
         assert_eq!(fork_origin(&plain), None);

@@ -1080,10 +1080,12 @@ const RECORD_TYPES_KNOWN: &[&str] = &[
     // writes these and nothing else is no activity to the monitor's clock, so no growth. The
     // `derived-from` arm claims a record only when every entry is a `claude_code_session` reached
     // by one of `DERIVED_FROM_VIA_KNOWN`; any other entry reaches the sweep as `derived-from
-    // <type> via <via>`. REVISIT when it does: the client's code (read, not measured) also names
-    // `branch`, `teleport`, `cloud` and `launch`, and entries of type `unknown` with no id; a
-    // `branch` naming another session may belong in `fork_origin`. Also REVISIT a `started` that
-    // names a session other than the record's own, or a first `derived-from` past the head.
+    // <type> via <via>`, and so does what else was not measured (`derived_from_unknown`: another
+    // version, no list, a resume or compaction of another session, a `started` naming another).
+    // REVISIT when one does: the client's code (read, not measured) also names `branch`,
+    // `teleport`, `cloud` and `launch`, and entries of type `unknown` with no id; a `branch`
+    // naming another session may belong in `fork_origin`. Also REVISIT a first `derived-from`
+    // past the head's 64 KB, which the adapter would not read.
     "derived-from",
     "file-history-delta",
     "file-history-snapshot",
@@ -1140,6 +1142,38 @@ const RECORD_TYPES_KNOWN: &[&str] = &[
 /// fork's parent and `subprocess` the session whose tools started this one. Any other entry is
 /// reported by the `derived-from` arm.
 const DERIVED_FROM_VIA_KNOWN: &[&str] = &["compact", "fork", "resume", "subprocess"];
+
+/// What a `derived-from` record holds outside what was measured (#s653), one sweep name each: a
+/// version other than 1, no `sessions` list, an entry that is not a `claude_code_session` reached
+/// by a known via, a `resume` or `compact` of ANOTHER session (measured, every one names the
+/// session itself), or a `started` naming another session than the record's own.
+fn derived_from_unknown(v: &Value) -> Vec<String> {
+    let own = v.get("sessionId").and_then(Value::as_str);
+    let mut out = Vec::new();
+    match v.get("v") {
+        Some(n) if n.as_u64() == Some(1) => {}
+        Some(n) => out.push(format!("derived-from v{n}")),
+        None => out.push("derived-from v(absent)".to_string()),
+    }
+    let Some(entries) = v.get("sessions").and_then(Value::as_array) else {
+        out.push("derived-from (no sessions)".to_string());
+        return out;
+    };
+    for e in entries {
+        let kind = e.get("type").and_then(Value::as_str).unwrap_or("(absent)");
+        let via = e.get("via").and_then(Value::as_str).unwrap_or("(absent)");
+        let id = e.get("id").and_then(Value::as_str);
+        if kind != "claude_code_session" || !DERIVED_FROM_VIA_KNOWN.contains(&via) {
+            out.push(format!("derived-from {kind} via {via}"));
+        } else if matches!(via, "resume" | "compact") && id != own {
+            out.push(format!("derived-from via {via} of another session"));
+        }
+        if e.get("started").is_some_and(|s| s.as_str() != own) {
+            out.push(format!("derived-from via {via} started another session"));
+        }
+    }
+    out
+}
 
 /// `system` subtypes met in the corpus (census, 2026-09-20: 11).
 const SYSTEM_SUBTYPES_KNOWN: &[&str] = &[
@@ -5022,14 +5056,8 @@ pub(crate) fn decode_line_known(
         // parent and a worker's starter from the head (`discover.rs`). An entry outside what was
         // measured is reported by its type and via, so a new kind of derivation shows in the sweep.
         Some("derived-from") => {
-            let entries = v.get("sessions").and_then(Value::as_array);
-            for e in entries.into_iter().flatten() {
-                let kind = e.get("type").and_then(Value::as_str).unwrap_or("(absent)");
-                let via = e.get("via").and_then(Value::as_str).unwrap_or("(absent)");
-                if kind != "claude_code_session" || !DERIVED_FROM_VIA_KNOWN.contains(&via) {
-                    let name = format!("derived-from {kind} via {via}");
-                    note_unknown_shape(&v, UnknownAt::RecordType, Some(&name), &[]);
-                }
+            for name in derived_from_unknown(&v) {
+                note_unknown_shape(&v, UnknownAt::RecordType, Some(&name), &[]);
             }
         }
         // #264: a top-level record type no arm matched — Claude Code writing a row it did not
@@ -10360,6 +10388,24 @@ mod tests {
                 "derived-from unknown via launch".to_string()
             ],
             "an entry outside the measured set is reported, the known one beside it is not"
+        );
+        let odd = [
+            r#"{"type":"derived-from","v":2,"sessionId":"s-s653c","sessions":[]}"#,
+            r#"{"type":"derived-from","v":1,"sessionId":"s-s653c"}"#,
+            r#"{"type":"derived-from","v":1,"sessionId":"s-s653c","sessions":[{"type":"claude_code_session","id":"p-s653","via":"resume"},{"type":"claude_code_session","id":"p-s653","via":"subprocess","started":"q-s653"}]}"#,
+        ];
+        let _ = parse(&odd.join("\n"));
+        let mut got = mine("s-s653c");
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                "derived-from (no sessions)".to_string(),
+                "derived-from v2".to_string(),
+                "derived-from via resume of another session".to_string(),
+                "derived-from via subprocess started another session".to_string(),
+            ],
+            "what else was not measured is reported too"
         );
     }
 

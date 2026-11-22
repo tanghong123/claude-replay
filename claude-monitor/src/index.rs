@@ -556,8 +556,9 @@ struct Row {
     fork_from: Option<String>,
     fork_probed: bool,
     /// The session whose tools started this one (#s653), as its own transcript says (Claude Code
-    /// 2.1.329's `derived-from`, via `subprocess`), read with `fork_from`. A fact only: `started_by`
-    /// files a ONE-SHOT under it, never an interactive session someone started from an agent's Bash.
+    /// 2.1.329's `derived-from`, via `subprocess`), read with `fork_from` and for a one-shot only:
+    /// `started_by` files a ONE-SHOT under it, never an interactive session someone started from an
+    /// agent's Bash.
     launched_by: Option<String>,
     /// The session whose scratch this one's cwd lies in (#373) — a knack worktree under its
     /// scratchpad, a job's tmp — and whether we have looked. Read once: a cwd never moves. Groups
@@ -1405,9 +1406,36 @@ impl Index {
                     row.continued_in = read_continuation(row.agent, &row.path, now_secs);
                     if !row.start_probed {
                         row.first_event = first_event_ts(&row.path);
-                        row.brief = head_one_shot(&row.path);
+                        let entry = head_entry(&row.path);
+                        let seen = !matches!(entry, HeadEntry::Unseen);
+                        row.brief = match entry {
+                            HeadEntry::OneShot(brief) => Some(brief),
+                            _ => None,
+                        };
                         row.one_shot = row.brief.is_some();
-                        row.start_probed = true;
+                        // Settled once a Claude head says how it was launched (#s653): a one-shot
+                        // an agent's Bash starts opens with `derived-from`, which names no
+                        // entrypoint, so a head caught before its first prompt is asked again at
+                        // its next write rather than read as interactive for good. A head past
+                        // the 64 KB read is as whole as it gets; another agent's settles at once.
+                        row.start_probed = seen
+                            || row.agent != Agent::CLAUDE
+                            || now_len.is_some_and(|n| n >= 64 * 1024);
+                    }
+                    // #142: which session this one was forked from, and (#s653) which one's
+                    // tools started it, from the head with the start: a fork's origin is fixed
+                    // when it is created, and Claude writes its `derived-from` before the first
+                    // prompt, so the head that settles the start holds it. An edge the engine's
+                    // argv gave (`note_forks_from_argv`) is kept where the head names none.
+                    if !row.fork_probed {
+                        row.fork_from =
+                            discover::fork_origin(row.agent, &row.path).or(row.fork_from.take());
+                        row.launched_by = if row.one_shot {
+                            discover::launched_by(row.agent, &row.path)
+                        } else {
+                            None
+                        };
+                        row.fork_probed = row.start_probed;
                     }
                     match (prev_event, row.last_event) {
                         // The honest signal: the content clock advanced.
@@ -1429,20 +1457,6 @@ impl Index {
                 }
                 row.tree_mtime = now_mtime;
                 row.transcript_len = now_len;
-                // #142: which session this one was forked from, and (#s653) which one's tools
-                // started it. Read ONCE — a fork's origin is fixed when it is created, so no later
-                // write changes the answer — but only once the head is whole: Claude writes its
-                // `derived-from` before the session's first timestamped record (a fork's third
-                // line), so a head caught as it is made is asked again at the next scan rather
-                // than read as no origin. A head with no timestamp is whole past the 64 KB read.
-                if !row.fork_probed {
-                    row.fork_from = discover::fork_origin(row.agent, &path);
-                    row.launched_by = discover::launched_by(row.agent, &path);
-                    row.fork_probed = row.last_event.is_some()
-                        || row.fork_from.is_some()
-                        || row.launched_by.is_some()
-                        || row.transcript_len.is_some_and(|n| n >= 64 * 1024);
-                }
                 // #373: started in another session's scratch? Asked once the cwd is known — the
                 // block below may be what first learns it, so the probe also runs after it.
                 if !row.spawn_probed {
@@ -3007,12 +3021,26 @@ fn write_started_by(path: &Path, edges: &BTreeMap<String, String>) {
     }
 }
 
+/// How a transcript's head says its session was launched (`head_entry`).
+enum HeadEntry {
+    /// No entrypoint yet: a head caught before its first prompt, or an agent that records none.
+    Unseen,
+    /// Any entrypoint but a one-shot's.
+    Interactive,
+    /// A one-shot run, with its BRIEF.
+    OneShot(String),
+}
+
 /// Whether the transcript's head says a one-shot run wrote it — Claude Code records
 /// `"entrypoint":"sdk-cli"` for `claude -p` (measured 2026-10-08) where an interactive session
 /// says `cli` — and if so, its BRIEF: the first line of its first prompt, at most 120 characters
-/// (`Some("")` when the head holds no prompt). `None` for any other session. 64 KB is the head of
-/// any transcript: the first prompt record carries the entrypoint.
-fn head_one_shot(path: &Path) -> Option<String> {
+/// (empty when the head holds no prompt). 64 KB is the head of any transcript: the first prompt
+/// record carries the entrypoint.
+fn head_entry(path: &Path) -> HeadEntry {
+    head_entry_read(path).unwrap_or(HeadEntry::Unseen)
+}
+
+fn head_entry_read(path: &Path) -> Option<HeadEntry> {
     use std::io::Read;
     let mut buf = Vec::new();
     // The JSONL's head, a compressed rollout decoded only that far (#s383).
@@ -3031,7 +3059,7 @@ fn head_one_shot(path: &Path) -> Option<String> {
         .iter()
         .find_map(|r| r.get("entrypoint").and_then(Value::as_str))?;
     if entry != "sdk-cli" {
-        return None;
+        return Some(HeadEntry::Interactive);
     }
     let prompt = records.iter().find_map(|rec| {
         if rec.get("type").and_then(Value::as_str) != Some("user") {
@@ -3047,7 +3075,7 @@ fn head_one_shot(path: &Path) -> Option<String> {
         let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
         Some(line.chars().take(120).collect::<String>())
     });
-    Some(prompt.unwrap_or_default())
+    Some(HeadEntry::OneShot(prompt.unwrap_or_default()))
 }
 
 /// Resolve which live agent process (if any) is behind session `sid` — the probe's §1
@@ -10300,7 +10328,9 @@ n/Users/x/proj
     /// fork joins its parent's family and the one-shot is filed under its starter; an interactive
     /// session started the same way stays the owner's own, and a resume (which names the session
     /// itself) changes nothing. Before, a finished Claude fork was a family of one and such a
-    /// worker a row of its own.
+    /// worker a row of its own. The fork and the worker are first seen as they are made, before
+    /// their first prompt (the fork's head without its `derived-from` yet, the worker's with only
+    /// its `derived-from`), and the scan asks their heads again once they are whole.
     #[test]
     fn a_claude_session_s_own_transcript_names_its_parent_and_its_starter() {
         struct RestoreStores([(&'static str, Option<std::ffi::OsString>); 2]);
@@ -10360,6 +10390,44 @@ n/Users/x/proj
                 .collect();
             std::fs::write(dir.join(format!("{sid}.jsonl")), body).unwrap();
         };
+        let lines =
+            |head: Vec<Value>| -> String { head.iter().map(|l| format!("{l}\n")).collect() };
+        let index = Index::new(
+            scratch.join("cache"),
+            scratch.join("state"),
+            vec![Agent::CLAUDE],
+        );
+        // Caught as they are made: the fork before its `derived-from`, the worker before its prompt.
+        std::fs::write(
+            dir.join(format!("{fork}.jsonl")),
+            lines(vec![
+                json!({"type":"mode","mode":"normal","sessionId":fork}),
+                json!({"type":"atis-latch","sessionId":fork}),
+            ]),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(format!("{worker}.jsonl")),
+            lines(vec![json!({"type":"derived-from","v":1,"sessionId":worker,
+                "sessions":[{"type":"claude_code_session","id":parent,"via":"subprocess",
+                    "started":worker}]})]),
+        )
+        .unwrap();
+        let _ = index.sessions_json(|_| {});
+        {
+            let mut st = index.state.lock().unwrap();
+            let (f, w) = (&st.rows[fork], &st.rows[worker]);
+            assert!(
+                !f.fork_probed && !f.start_probed,
+                "a head with no prompt is asked again"
+            );
+            assert!(
+                !w.start_probed && !w.one_shot,
+                "nor is the worker taken for interactive"
+            );
+            // Past the scan floor, as two seconds later.
+            st.scanned_at = None;
+        }
         write(parent, vec![], "cli", "Plan the release", 0);
         write(
             fork,
@@ -10396,11 +10464,6 @@ n/Users/x/proj
             20,
         );
 
-        let index = Index::new(
-            scratch.join("cache"),
-            scratch.join("state"),
-            vec![Agent::CLAUDE],
-        );
         let listed: Value = serde_json::from_str(&index.sessions_json(|_| {})).unwrap();
         let mut rows = Vec::new();
         fn walk(v: &Value, out: &mut Vec<Value>) {
@@ -10422,17 +10485,29 @@ n/Users/x/proj
                 .unwrap_or_else(|| panic!("{sid} is listed: {rows:?}"))
                 .clone()
         };
-        assert_eq!(row(fork)["family"], parent, "the fork is in its parent's family");
+        assert_eq!(
+            row(fork)["family"],
+            parent,
+            "the fork is in its parent's family"
+        );
         assert_eq!(row(fork)["isFork"], true);
         assert_eq!(row(parent)["family"], parent);
-        assert_eq!(row(worker)["startedBy"], parent, "the one-shot is its starter's");
+        assert_eq!(
+            row(worker)["startedBy"],
+            parent,
+            "the one-shot is its starter's"
+        );
         assert_eq!(row(worker)["brief"], "Review the diff");
         assert_eq!(row(worker)["family"], worker, "a worker is no fork");
         assert!(
             row(own).get("startedBy").is_none(),
             "an interactive session started from an agent's Bash is the owner's own"
         );
-        assert_eq!(row(resumed)["family"], resumed, "a resume names the session itself");
+        assert_eq!(
+            row(resumed)["family"],
+            resumed,
+            "a resume names the session itself"
+        );
         assert!(row(resumed).get("startedBy").is_none());
         let _ = std::fs::remove_dir_all(&scratch);
     }
@@ -10470,6 +10545,13 @@ n/Users/x/proj
 
     /// #s53: a one-shot session's head names it and its brief (the first line of its first
     /// prompt, a string or text parts); an interactive session has no brief at all.
+    fn head_one_shot(path: &Path) -> Option<String> {
+        match head_entry(path) {
+            HeadEntry::OneShot(brief) => Some(brief),
+            _ => None,
+        }
+    }
+
     #[test]
     fn a_one_shot_head_gives_its_brief() {
         let dir = std::env::temp_dir().join(format!("cm-brief-{}", std::process::id()));
@@ -10510,6 +10592,13 @@ n/Users/x/proj
             r#"{"type":"user","entrypoint":"cli","message":{"role":"user","content":"hi"},"timestamp":"2026-10-08T10:00:01Z"}"#,
         );
         assert_eq!(head_one_shot(&own), None);
+        assert!(matches!(head_entry(&own), HeadEntry::Interactive));
+        // #s653: a head with no prompt yet says nothing either way, so the scan asks again.
+        let early = file(
+            "e.jsonl",
+            r#"{"type":"derived-from","v":1,"sessionId":"e","sessions":[{"type":"claude_code_session","id":"p","via":"subprocess","started":"e"}]}"#,
+        );
+        assert!(matches!(head_entry(&early), HeadEntry::Unseen));
     }
 
     /// #s59, measured on hong-devserver: a Claude session and a Codex session in one repo, the
