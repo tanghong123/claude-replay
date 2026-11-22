@@ -73,7 +73,9 @@ session and the pane by the share the pane's drag sets (`am-demo-pane-share`, eq
 classes it sets), `arrangeApp` for the app's list from the window (`#app.app-drawer`, the rail, or
 the list at a width; the app's phone rules read `app-drawer` and the view's `pl-phone`); the app lays
 its list out again at every change of the root's width, also one no `resize` announces (#s593:
-Safari's page zoom on an iPad fires none). With a mouse
+Safari's page zoom on an iPad fires none), and reads a short screen from the phone query's own
+`max-height:500px`, never `innerHeight`, which the iOS app's web view reported 60 to 90 ms late as the
+keyboard went down, leaving the list a drawer (#s650). With a mouse
 the rail lasts down to 554px and the drawer is below it; a collapse the reader makes is remembered,
 and a fold the width forced comes back with the room. A host's page must still carry the compose box's write-mode and confirm
 elements the doc comment names (stage 7 passes them in). The reading tokens

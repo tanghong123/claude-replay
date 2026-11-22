@@ -474,13 +474,17 @@ else if (openTheme === "light") delete page.html().dataset.theme;
 // fold the width forced comes back once there is room. A decision of the app's never glides
 // (`app-holding`); the reader's own collapse and expand do.
 const coarseScreen = matchMedia("(pointer:coarse)");
+// A short screen is the phone query's own test (`max-height:500px`), never `innerHeight`: in the iOS
+// app's web view it read the short height 60 to 90 ms after the query saw the page grow back past 500,
+// so the list was laid out short as the keyboard went down and stayed a drawer (#s650).
+const shortScreen = matchMedia("(max-height:500px)");
 let listArranged = null, listGlideUntil = 0;
 /** What the order reads for the list: the window, the screen, the reader's width and collapse, and what
  *  the view has said of itself (its pane, and whether the reader wants its outline). */
 const listInputs = () => ({
   width: page.html()?.clientWidth || innerWidth,
   coarse: coarseScreen.matches,
-  short: innerHeight <= 500,
+  short: shortScreen.matches,
   list: readerListWidth(),
   collapsed: !indexState.sidebarOpen,
   view: { paneOpen: !app.classList.contains("preview-off"), outlineWanted: viewOutlineWanted },
@@ -528,6 +532,7 @@ page.byId("sidebarCollapse").onclick = () => toggleSidebar(false); page.byId("si
 page.byId("sidebarCollapse").title = `Collapse the sidebar into its icon rail  ( ${hintFor("sidebar-toggle")} )`;
 addEventListener("resize", () => arrangeList());
 coarseScreen.addEventListener("change", () => arrangeList());
+shortScreen.addEventListener("change", () => arrangeList());
 // #s593: the layout width can change with no `resize` event. Safari's page zoom on an iPad (⌘ and =)
 // took an 834px page to 725 and fired none, so the list stayed a column where the order gives the
 // drawer, until a reload. The root's own box sees every change of the width, however it came.
