@@ -86,33 +86,18 @@ pub enum Unavailable {
     UnknownSession,
 }
 
-/// Everything this tool writes, under ONE directory a person can find, inspect and delete.
-///
-/// `$CLAUDE_REPLAY_CACHE` wins outright when set — the explicit override, mirroring
-/// `agent-jdi`'s `AGENT_JDI_HOME`; otherwise `$XDG_CACHE_HOME` (or `~/.cache`)
-/// `/claude-replay`. `None` when nothing resolves, which denies durability rather than
-/// guessing at a writable location.
+/// Everything this tool writes, under ONE directory a person can find, inspect and delete:
+/// `$CLAUDE_REPLAY_CACHE`, else `$XDG_CACHE_HOME` (or `~/.cache`) `/claude-replay`. The rule
+/// is the engine's ([`claude_replay_core::discover::cache_home`], #s657), below every crate
+/// that writes there.
 ///
 /// The cache's own child of it is `sessions/` ([`default_root`]). A CLIENT that wants a root
 /// of its own builds a provider over its own directory (#167 §4.3) — where that goes is the
 /// client's business, not the cache's. It must be a SIBLING of `sessions/`, never nested
 /// inside it: [`gc`] walks `<root>/<presentation>/<entry>`, so a directory under `sessions/`
 /// would read as a presentation namespace and its contents as reapable entries.
-///
-/// `$TMPDIR` is not an option for any of them: on macOS it resolves to an opaque `/var/folders/…`
-/// path nothing sweeps and nobody finds, which is where 14 GB accumulated unnoticed (#161).
 pub fn cache_home() -> Option<PathBuf> {
-    if let Some(p) = std::env::var_os("CLAUDE_REPLAY_CACHE")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-    {
-        return Some(p);
-    }
-    let base = std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
-    Some(base.join("claude-replay"))
+    claude_replay_core::discover::cache_home()
 }
 
 /// Where SHARED durable entries live — the cache two viewers coordinate over.

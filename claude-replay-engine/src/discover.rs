@@ -203,6 +203,30 @@ pub fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Everything this tool writes, under ONE directory a person can find, inspect and delete.
+///
+/// `$CLAUDE_REPLAY_CACHE` wins outright when set — the explicit override, mirroring
+/// `agent-jdi`'s `AGENT_JDI_HOME`; otherwise `$XDG_CACHE_HOME` (or `~/.cache`)
+/// `/claude-replay`. `None` when nothing resolves, which denies durability rather than
+/// guessing at a writable location. Defined here, below every crate that writes there (the
+/// session cache in `claude-replay-present`, an adapter's mirror, #s657), so there is one rule.
+///
+/// `$TMPDIR` is not an option: on macOS it resolves to an opaque `/var/folders/…` path nothing
+/// sweeps and nobody finds, which is where 14 GB accumulated unnoticed (#161).
+pub fn cache_home() -> Option<PathBuf> {
+    if let Some(p) = std::env::var_os("CLAUDE_REPLAY_CACHE")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+    {
+        return Some(p);
+    }
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))?;
+    Some(base.join("claude-replay"))
+}
+
 /// The cwd recorded in one transcript record, in either shape: Claude's top-level `cwd` or
 /// Codex's `payload.cwd` on a `session_meta`. The shared extractor behind [`first_cwd`] /
 /// [`latest_cwd`].

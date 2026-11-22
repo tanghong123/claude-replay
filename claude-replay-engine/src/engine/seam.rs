@@ -30,7 +30,8 @@ pub use crate::adapter::{
     Continuation, LinePreprocessor, PreprocessedLine, SpawnLink, SpawnRoster, StatusLineHook,
 };
 pub use crate::discover::{
-    ancestors_below, home_dir, Candidate, CardMemo, CardOutcome, SessionCard, SNIPPET_CHARS,
+    ancestors_below, cache_home, home_dir, Candidate, CardMemo, CardOutcome, SessionCard,
+    SNIPPET_CHARS,
 };
 pub use crate::engine::builder::SessionAccumulator;
 // #193: the bounded eliding line reader — the one scanner every consumer shares (adapters
