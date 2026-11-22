@@ -1198,7 +1198,10 @@ const ATTACHMENT_TYPES_KNOWN: &[&str] = &[
     // the model. 3 met on this machine (2026-10-13), each job made by a CronCreate card earlier in
     // the same transcript, whose card the page draws with the schedule and prompt; firings are
     // `scheduled_task_fire`. Drawn nothing, the `todo_reminder`/`task_reminder` analogue for
-    // scheduled jobs. REVISIT: a carry naming a job id with no CronCreate earlier in its transcript
+    // scheduled jobs. Since client 2.1.330 (#s654) each job also carries `maxAgeMs`, its lifetime
+    // (`{id, cron, prompt, createdAt, recurring, maxAgeMs}`; one job carried four times in one
+    // session, measured 2026-11-22 on aries-black, 30 days each), as its CronCreate result does.
+    // REVISIT: a carry naming a job id with no CronCreate earlier in its transcript
     // (a session resumed into a new file, say) is then the only trace of a live job, and a note
     // naming it ("scheduled: <cron>, carried over") is the RENDER question for the owner.
     "session_cron_carry",
@@ -2814,9 +2817,17 @@ const QWENWORK_FILE_EDIT_SHAPE: &[&str] = &[
 /// with the client), plus `status` 2).
 const SKILL_SHAPE: &[&str] = &["allowedTools", "commandName", "status", "success"];
 
-/// Every key a CronCreate result was met with (#277; `nextFireAt` since client 2.1.300, #s166).
-/// CronDelete returns `{id}` alone, which the shape holds too.
-const CRON_CREATE_SHAPE: &[&str] = &["durable", "humanSchedule", "id", "nextFireAt", "recurring"];
+/// Every key a CronCreate result was met with (#277; `nextFireAt` since client 2.1.300, #s166;
+/// `maxAgeMs` since client 2.1.330, #s654). CronDelete returns `{id}` alone, which the shape holds
+/// too.
+const CRON_CREATE_SHAPE: &[&str] = &[
+    "durable",
+    "humanSchedule",
+    "id",
+    "maxAgeMs",
+    "nextFireAt",
+    "recurring",
+];
 
 const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // CronCreate returns `{id, humanSchedule, recurring, durable}` and CronDelete `{id}` alone; the
@@ -2832,6 +2843,16 @@ const TOOL_RESULT_KNOWN_IN_SHAPE: &[(&str, &[&str])] = &[
     // and this value could put a next-run line on the CronCreate card in the reader's own zone,
     // a RENDER question for the owner, not decided here.
     ("nextFireAt", CRON_CREATE_SHAPE),
+    // #s654 (client 2.1.330): CronCreate adds `maxAgeMs`, written last, the job's lifetime in
+    // milliseconds. Measured 2026-11-22 on aries-black, over every transcript: 3 results in 2
+    // sessions, each 2592000000 (30 days), and the result text of all three states the expiry
+    // and says 30 days, so the card already tells the reader when the job ends. `nextFireAt` is
+    // written with a fractional part on most values in the store (53 of 60), from before this
+    // key too: whoever draws it must read a float. A generic name, so known only in this shape,
+    // never in TOOL_RESULT_KNOWN_IGNORED. REVISIT: a result whose text stops naming the expiry,
+    // or a value other than 30 days: the number is then the only trace of when a job ends, a
+    // RENDER question for the owner, not decided here.
+    ("maxAgeMs", CRON_CREATE_SHAPE),
     // #s375 (client 2.1.296, one result in a sub-agent transcript, measured 2026-11-06 on
     // aries-black): Artifact's listing of an artifact's files. Its whole result is `{file_list:
     // {url, ver, type: {title, url}, files: [{path, content_type, size_bytes, sha256}], stored:
@@ -10275,6 +10296,9 @@ mod tests {
             serde_json::json!({"id": "12b4386c", "humanSchedule": "Every hour at :17", "recurring": true, "durable": false}),
             // #s166: CronCreate as client 2.1.300 writes it.
             serde_json::json!({"id": "12b4386c", "humanSchedule": "Every hour at :17", "recurring": true, "durable": false, "nextFireAt": 1760000000000_u64}),
+            // #s654: CronCreate as client 2.1.330 writes it, `maxAgeMs` last and `nextFireAt` with a
+            // fractional part, as most values in the store have it.
+            serde_json::json!({"id": "12b4386c", "humanSchedule": "Every hour at :17", "recurring": true, "durable": false, "nextFireAt": 1764000000000.25_f64, "maxAgeMs": 2592000000_u64}),
             serde_json::json!({"id": "12b4386c"}),
             serde_json::json!({"type": "file_unchanged", "file": {"filePath": "/w/CLAUDE.md"}, "source": "seeded"}),
             serde_json::json!({"success": true, "message": "sent", "display": "sent", "msg_id": "6a90484e"}),
@@ -10301,6 +10325,11 @@ mod tests {
             unknown(&serde_json::json!({"nextFireAt": 1, "aKeyFromTheFuture": 1})),
             vec!["aKeyFromTheFuture".to_string(), "nextFireAt".to_string()],
             "…and `nextFireAt` outside CronCreate's own shape (#s166)"
+        );
+        assert_eq!(
+            unknown(&serde_json::json!({"maxAgeMs": 2592000000_u64, "aKeyFromTheFuture": 1})),
+            vec!["aKeyFromTheFuture".to_string(), "maxAgeMs".to_string()],
+            "…and `maxAgeMs` outside CronCreate's own shape (#s654)"
         );
         // #285, #315, #349: Grep, in each shape it was met in — content mode, limited and not and
         // paged by an offset (client 2.1.285), count mode, and files_with_matches (client 2.1.283).
