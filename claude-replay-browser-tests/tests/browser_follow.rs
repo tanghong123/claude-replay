@@ -8650,6 +8650,101 @@ fn a_follower_s_page_up_with_the_focus_on_the_page_lets_go_of_the_end() {
     );
 }
 
+/// #s646: on an iPad the outline column ends in its footer (the cost, the context and the Session
+/// details glyph, `#outlineFooterInfo`), laid out from the page's bottom edge. With no room kept for
+/// the home indicator, the glyph ended 4 points inside its 20-point inset on an iPad Pro 11-inch held
+/// sideways and 8 inside on a 13-inch upright (the app's layout walk on the Simulators; this headless
+/// window reads 8 inside on the 11-inch's size), where a swipe up from the edge goes to the system.
+/// Each window keeps the glyph above the inset and still at the column's foot, with the outline open as
+/// a column and folded to its rail, Info's card opened from it ends above the inset too, and the page
+/// is shown to read the inset (`env(safe-area-inset-bottom)`) and the window's height.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn an_ipad_keeps_the_outline_footer_above_the_home_indicator() {
+    let _serial = serial();
+    let base = base("ipad-footer-inset");
+    let stores = Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000646".to_string();
+    stores.claude_session(&sid, &harness::long_session(12, harness::Shape::default()));
+    let monitor = Monitor::spawn(Kind::V1, 3646, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    let insets = (24u32, 0u32, 20u32, 0u32);
+    let read = "(function(){ var g = document.getElementById('outlineFooterInfo'), w = document.querySelector('#sessionView>.workspace'); var r = g ? g.getBoundingClientRect() : null; var probe = document.createElement('div'); probe.style.cssText = 'position:fixed;left:0;top:0;width:1px;height:env(safe-area-inset-bottom,0px)'; document.body.appendChild(probe); var inset = probe.getBoundingClientRect().height; probe.remove(); return JSON.stringify({ inner: [innerWidth, innerHeight], inset: inset, rail: !!w && w.classList.contains('navigator-off'), glyph: r && r.width ? [Math.round(r.left), Math.round(r.top), Math.round(r.right), Math.round(r.bottom)] : null, card: (function(){ var c = document.querySelector('#outlineFooter .info-popover.open'); if (!c) return null; var b = c.getBoundingClientRect(); return [Math.round(b.left), Math.round(b.top), Math.round(b.right), Math.round(b.bottom)]; })() }); })()";
+    for (scene, width, height) in [
+        ("an iPad Pro 11-inch held sideways", 1210u32, 802u32),
+        ("an iPad Pro 13-inch upright", 1032, 1344),
+    ] {
+        harness::phone(&tab, width, height);
+        harness::safe_area(&tab, insets);
+        for (outline, stored) in [
+            ("the outline open as a column", "1"),
+            ("the outline folded to its rail", "0"),
+        ] {
+            harness::eval(
+                &tab,
+                &format!("localStorage.setItem('am-demo-navigator', '{stored}'); 'ok'"),
+            );
+            monitor.open(&tab, &format!("?ui=app&session={sid}"));
+            let rail = stored == "0";
+            harness::until(
+                &tab,
+                &format!("innerWidth === {width} && !!document.querySelector('.virtual-window .turn.user') && {VIEW_CAUGHT_UP} && document.querySelector('#sessionView>.workspace').classList.contains('navigator-off') === {rail} && (function(){{ var g = document.getElementById('outlineFooterInfo'); return !!g && g.getBoundingClientRect().width > 0; }})()"),
+                &format!("{scene}, {outline}: the session drawn with the footer's glyph"),
+                Duration::from_secs(20),
+                read,
+            );
+            let seen: serde_json::Value =
+                serde_json::from_str(harness::eval(&tab, read).as_str().unwrap_or("null"))
+                    .unwrap_or(serde_json::Value::Null);
+            assert_eq!(
+                seen["inset"].as_f64(),
+                Some(f64::from(insets.2)),
+                "{scene}, {outline}: the page reads the home indicator's inset: {seen}"
+            );
+            assert_eq!(
+                seen["inner"][1].as_f64(),
+                Some(f64::from(height)),
+                "{scene}, {outline}: the window is the height asked: {seen}"
+            );
+            let bottom = seen["glyph"][3].as_f64().unwrap_or(f64::MAX);
+            let safe = f64::from(height) - f64::from(insets.2);
+            assert!(
+                bottom <= safe && bottom >= safe - 40.0,
+                "{scene}, {outline}: the Session details glyph ends above the home indicator's inset, and still at the column's foot (at {bottom}, the safe bottom {safe}): {seen}"
+            );
+            // Info's card, opened from the glyph, hangs above the inset too: beside the rail it is placed
+            // from the strip's foot, the page's.
+            harness::eval(
+                &tab,
+                "document.getElementById('outlineFooterInfo').click(); 'ok'",
+            );
+            harness::until(
+                &tab,
+                "(function(){ var c = document.querySelector('#outlineFooter .info-popover.open'); return !!c && getComputedStyle(c).transform === 'none' && c.getAnimations().length === 0; })()",
+                &format!("{scene}, {outline}: Info's card open and at rest (its 4px slide ended)"),
+                Duration::from_secs(5),
+                read,
+            );
+            let open: serde_json::Value =
+                serde_json::from_str(harness::eval(&tab, read).as_str().unwrap_or("null"))
+                    .unwrap_or(serde_json::Value::Null);
+            let card_bottom = open["card"][3].as_f64().unwrap_or(f64::MAX);
+            let card_top = open["card"][1].as_f64().unwrap_or(-1.0);
+            assert!(
+                card_top >= 0.0 && card_bottom <= safe,
+                "{scene}, {outline}: Info's card ends above the home indicator's inset (at {card_bottom}, the safe bottom {safe}): {open}"
+            );
+            harness::eval(
+                &tab,
+                "document.getElementById('outlineFooterInfo').click(); 'ok'",
+            );
+        }
+    }
+    harness::eval(&tab, "localStorage.removeItem('am-demo-navigator'); 'ok'");
+    harness::safe_area(&tab, (0, 0, 0, 0));
+}
+
 /// #s431, from the iOS Simulator walk: a touch's events go to the element it began on, wherever that
 /// element is by then. The live turn is redrawn as it grows, so a reader's drag that began on it ended
 /// on an element no longer in the transcript, whose touchend the view never heard: it still counted a
