@@ -32293,7 +32293,7 @@ fn a_wide_phone_held_sideways_folds_the_session_list_from_the_filter_sheet() {
     tap_group_row(&tab, "collapse");
     harness::until(
         &tab,
-        &format!("document.getElementById('sessionFilter').hidden && {VISIBLE_SESSION_ROWS} === 0 && document.querySelectorAll('#app>.sidebar .tree-row').length > 0"),
+        &format!("document.getElementById('sessionFilter').hidden && {VISIBLE_SESSION_ROWS} === 0 && document.querySelectorAll('#app>.sidebar .agent-label[aria-expanded=false]').length > 0"),
         "Collapse all from the sheet to fold every group and close the sheet",
         Duration::from_secs(5),
         &format!("document.getElementById('sessionFilter').hidden + ' rows ' + {VISIBLE_SESSION_ROWS}"),
