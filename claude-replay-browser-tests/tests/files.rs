@@ -753,15 +753,17 @@ fn the_app_shell_preview_pinch_zooms_an_image_on_a_phone() {
 /// #s649, found by the app's layout walk: on a phone the pane's head kept its Download and reveal 40
 /// points wide, its tab 36 tall, and the image's zoom bar 40 tall, under the 44 points a phone's
 /// targets are (#313). With an image in the pane each is a finger's 44 points, side by side without
-/// overlapping, and every point of the 44-point disc around a control's centre hits it (21 points out along each axis,
-/// 15 along each diagonal: a round control is a disc).
+/// overlapping, and every point of the 44-point disc around a control's centre hits it (21 points out
+/// along each axis, 15 along each diagonal: a round control is a disc). The reader here is at this
+/// machine, so the head offers the reveal; Download, offered to a reader elsewhere, and print take the
+/// same rule.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_s_pane_controls_take_a_finger_s_44_points() {
     let _serial = serial();
     let (base, stores, repo) = fixture("files-pane-targets");
     std::fs::write(repo.join("shot.png"), big_png(1200, 800)).unwrap();
-    let m = Monitor::spawn(Kind::V1, 3205, &base, Some(&stores), true);
+    let m = Monitor::spawn(Kind::V1, 3206, &base, Some(&stores), true);
     let (_browser, tab) = chrome_tab();
     harness::phone(&tab, 390, 844);
     open_shell(&m, &tab, true);
