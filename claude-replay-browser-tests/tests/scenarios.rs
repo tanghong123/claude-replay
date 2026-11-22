@@ -18685,13 +18685,15 @@ fn app_shell_command_k_is_a_jump_to_ranked_by_recency() {
     m.open(&tab, "?ui=app");
     // `Monitor::open` seeds EVERY bucket so an ordinary case can see its fixture (#202). This case
     // is about the sidebar's filter actually filtering, so it puts the shell's own default back —
-    // Active recently + Blocked — and reloads, which is where the shell reads it.
-    eval(
-        &tab,
-        "(function(){ try { localStorage.setItem('am-prod-session-filter', JSON.stringify(['recent','blocked'])); } catch (e) {} return 'ok'; })()",
-    );
+    // Active recently + Blocked — and reloads, which is where the shell reads it. Written from a page
+    // that runs none of the app (#s660): the page open now holds every bucket and writes them back
+    // whenever it saves a choice.
+    const DEFAULT_FILTER: [(&str, &str); 1] =
+        [("am-prod-session-filter", r#"["recent","blocked"]"#)];
+    harness::seed_storage(&tab, harness::origin_of(&m.url("")), &DEFAULT_FILTER);
     tab.navigate_to(&m.url("?ui=app")).unwrap();
     tab.wait_until_navigated().unwrap();
+    harness::assert_storage_held(&tab, &DEFAULT_FILTER);
     harness::until(
         &tab,
         "document.querySelectorAll('.tree-row, .session-row, [data-session-id]').length >= 1",
