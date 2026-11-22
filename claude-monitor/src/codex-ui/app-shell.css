@@ -501,7 +501,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 :where(#app.app-drawer) .drawer-handle .icon{width:22px;height:22px}
 #app:where(:has(>.drawer-handle)):where(.app-drawer) #sessionView .workspace>.topbar{padding-left:calc(50px + env(safe-area-inset-left,0px))}
 #app:where(.app-drawer) .side-head{height:auto;min-height:52px;padding-left:52px}
-#app:where(.app-drawer) .side-head .iconbtn{width:40px;height:44px}
+#app:where(.app-drawer) .side-head .iconbtn{width:44px;height:44px;flex:none}
 #app:where(.app-drawer) .section-view-scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:59;background:transparent}
 #app:where(.app-drawer) .section-view-scrim.dim:not([hidden]){background:rgba(14,19,31,.32)}
 #app:where(.app-drawer) .section-view-menu.sheet{left:calc(8px + env(safe-area-inset-left,0px))!important;right:calc(8px + env(safe-area-inset-right,0px));top:auto!important;bottom:calc(8px + env(safe-area-inset-bottom,0px));width:auto;max-height:calc(100dvh - 72px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));padding:12px 14px;border-radius:16px}
