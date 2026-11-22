@@ -40,7 +40,7 @@ pub use crate::engine::elide::{
     parse_marker, read_line_elided, Elision, LineOutcome, MarkerSpan, ELIDE_CEILING,
     ELIDE_STRING_BYTES, POSTFIX_KEEP, PREFIX_KEEP, SCAN_THRESHOLD,
 };
-pub use crate::engine::message::{Message, NoteKind, QueueOpKind};
+pub use crate::engine::message::{InboxPeer, Message, NoteKind, QueueOpKind};
 pub use crate::engine::path::relativize;
 pub use crate::engine::reader::{bounded_lines, ElisionCounts, LineSource, TornTail};
 pub use crate::engine::replay::Shaping;

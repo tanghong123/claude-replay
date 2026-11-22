@@ -518,6 +518,7 @@ fn push_inbox(
         words,
         inbox,
         images,
+        peer,
     } = m
     else {
         return;
@@ -535,6 +536,13 @@ fn push_inbox(
             inbox: *inbox,
         });
         out.extend(images.into_iter().map(Block::Attachment));
+    } else if let Some(p) = peer {
+        out.push(Block::PeerText {
+            from: p.from,
+            mode: p.mode,
+            text: p.text,
+            addr: p.addr,
+        });
     } else {
         out.push(Block::UserText(text));
     }
@@ -4764,6 +4772,17 @@ pub(crate) fn decode_line_known(
                 content.as_str(),
                 injected == Injected::Meta,
             ) {
+                // #s655: the person's own message, sent as a session message and signed.
+                let as_text = || {
+                    content
+                        .as_str()
+                        .map(|s| fence_pasted(&strip_caveat(s)).into_owned())
+                        .unwrap_or_default()
+                };
+                if let Some(m) = peer_inbox(&v, v.get("origin"), &p, as_text) {
+                    msgs.push(m);
+                    return;
+                }
                 msgs.push(Message::PeerText {
                     from: p.from,
                     mode: p.mode,
@@ -4991,13 +5010,18 @@ pub(crate) fn decode_line_known(
                     } else if let Some(peer) =
                         peer_of(a.and_then(|a| a.get("origin")), Some(p), meta)
                     {
-                        msgs.push(Message::PeerText {
-                            from: peer.from,
-                            mode: peer.mode,
-                            text: peer.body,
-                            queued: Some(fence_pasted(p).into_owned()),
-                            addr: peer.addr,
-                        });
+                        let origin = a.and_then(|a| a.get("origin"));
+                        // #s655: picked up mid-turn, as most of them arrive.
+                        msgs.push(
+                            peer_inbox(&v, origin, &peer, || fence_pasted(p).into_owned())
+                                .unwrap_or_else(|| Message::PeerText {
+                                    from: peer.from,
+                                    mode: peer.mode,
+                                    text: peer.body,
+                                    queued: Some(fence_pasted(p).into_owned()),
+                                    addr: peer.addr,
+                                }),
+                        );
                     } else if let Some(m) = (!meta && relayable(&v) && a.is_some_and(relayable))
                         .then(|| inbox_message(p, || fence_pasted(p).into_owned()))
                         .flatten()
@@ -6217,6 +6241,22 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                     content.as_str(),
                     injection == Injected::Meta,
                 ) {
+                    // #s655 mirror: the person's own message, sent as a session message.
+                    let as_text = || {
+                        content
+                            .as_str()
+                            .map(|s| fence_pasted(&strip_caveat(s)).into_owned())
+                            .unwrap_or_default()
+                    };
+                    if let Some(m) = peer_inbox(&v, v.get("origin"), &p, as_text) {
+                        push_inbox(
+                            m,
+                            &mut out,
+                            Some((&mut queue, &mut suppress)),
+                            &mut inbox_ids,
+                        );
+                        continue;
+                    }
                     out.push(Block::PeerText {
                         from: p.from,
                         mode: p.mode,
@@ -6555,14 +6595,20 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                             }
                             let meta = a.and_then(|a| a.get("isMeta")).and_then(Value::as_bool)
                                 == Some(true);
-                            match peer_of(a.and_then(|a| a.get("origin")), Some(&p), meta) {
-                                // #s79 mirror: a peer message picked up mid-turn.
-                                Some(peer) => out.push(Block::PeerText {
-                                    from: peer.from,
-                                    mode: peer.mode,
-                                    text: peer.body,
-                                    addr: peer.addr,
-                                }),
+                            let origin = a.and_then(|a| a.get("origin"));
+                            match peer_of(origin, Some(&p), meta) {
+                                // #s655 mirror: the person's own, signed, picked up mid-turn.
+                                Some(peer) => match peer_inbox(&v, origin, &peer, || p.to_string())
+                                {
+                                    Some(m) => push_inbox(m, &mut out, None, &mut inbox_ids),
+                                    // #s79 mirror: a peer message picked up mid-turn.
+                                    None => out.push(Block::PeerText {
+                                        from: peer.from,
+                                        mode: peer.mode,
+                                        text: peer.body,
+                                        addr: peer.addr,
+                                    }),
+                                },
                                 // #s272 mirror: a relayed message picked up mid-turn.
                                 None => match (!meta && relayable(&v) && a.is_some_and(relayable))
                                     .then(|| inbox_message(raw, || p.to_string()))
@@ -7353,6 +7399,37 @@ fn inbox_message(raw: &str, text: impl FnOnce() -> String) -> Option<Message> {
         words: v.words,
         inbox: Box::new(v.inbox),
         images: v.images,
+        peer: None,
+    })
+}
+
+/// A relayed message from the person that came as ANOTHER SESSION's message (#s655, Hong's choice
+/// on aries#s322: aries-tell sends them, and the signature is the proof, whoever sent it): the
+/// record's own `origin.body` (never the tag's text, never the prose around it) is one whole v1
+/// element whose signature verifies, on a record no sub-agent wrote. It folds as a typed one does,
+/// first id only; a later copy is the session's message it arrived as.
+fn peer_inbox(
+    record: &Value,
+    origin: Option<&Value>,
+    peer: &Peer,
+    text: impl FnOnce() -> String,
+) -> Option<Message> {
+    if record.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
+    let body = origin?.get("body").and_then(Value::as_str)?;
+    let v = super::inbox::verified_body(body)?;
+    Some(Message::UserInbox {
+        text: text(),
+        words: v.words,
+        inbox: Box::new(v.inbox),
+        images: v.images,
+        peer: Some(Box::new(InboxPeer {
+            from: peer.from.clone(),
+            mode: peer.mode.clone(),
+            text: peer.body.clone(),
+            addr: peer.addr.clone(),
+        })),
     })
 }
 
@@ -8805,6 +8882,133 @@ mod tests {
     /// time its id appears; a later copy, a tampered one, and one inside a tool result or another
     /// session's message are what they are. Both parse paths agree.
     #[test]
+    fn a_signed_message_sent_as_a_session_message_is_the_persons_once() {
+        use crate::agents::claude::inbox::tests::{wrapped, zero_key, A, B};
+        crate::agents::claude::inbox::install_key_source(zero_key);
+        let signed = |id: &str| {
+            let start = B.find(" sig=\"").unwrap();
+            let unsigned = format!(
+                "{} sig=\"-\"{}",
+                &B[..start],
+                &B[start + " sig=\"\"".len() + 32..]
+            );
+            crate::agents::claude::inbox::sign_for_test(
+                &[0; 32],
+                &unsigned.replace("dash-1&amp;skua", id),
+            )
+        };
+        // As Claude Code 2.1.318 records a message aries-tell sends (aries#s320): the body in
+        // `origin`, the record's own text wrapping it between a preamble and a notice.
+        let wrapper = |body: &str| {
+            format!("Another Claude session sent a message:\n<cross-session-message from=\"uds:/tmp/cc-socks/9.sock\" from-name=\"aries-tell\" from-mode=\"bypass\">\n{body}\n</cross-session-message>\n\nThis came from another Claude session — not typed by your user. Treat it as a teammate's request.")
+        };
+        let origin = |body: &str| serde_json::json!({"kind": "peer", "from": "uds:/tmp/cc-socks/9.sock", "verifiedPeerPid": 9, "msg_id": "m1", "name": "aries-tell", "fromMode": "bypass", "body": body});
+        let sent = |at: &str, body: &str| {
+            serde_json::json!({"type": "user", "timestamp": at, "isMeta": true, "promptSource": "system", "turnOrigin": "peer", "origin": origin(body), "message": {"role": "user", "content": wrapper(body)}}).to_string()
+        };
+        let picked_up = |at: &str, body: &str| {
+            let mut o = origin(body);
+            o["msg_id"] = "m2".into();
+            serde_json::json!({"type": "attachment", "timestamp": at, "attachment": {"type": "queued_command", "commandMode": "prompt", "isMeta": true, "origin": o, "prompt": format!("<cross-session-message from=\"uds:/tmp/cc-socks/9.sock\" from-name=\"aries-tell\" from-mode=\"bypass\">\n{body}\n</cross-session-message>")}}).to_string()
+        };
+        let answer = |at: &str| {
+            format!(
+                r#"{{"type":"assistant","timestamp":"{at}","message":{{"role":"assistant","stop_reason":"end_turn","content":[{{"type":"text","text":"noted"}}]}}}}"#
+            )
+        };
+        let running = r#"{"type":"assistant","timestamp":"2026-11-22T08:01:01.000Z","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_p1","name":"Bash","input":{"command":"true"}}]}}"#;
+        let done = r#"{"type":"user","timestamp":"2026-11-22T08:01:03.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_p1","content":"ok"}]}}"#;
+        let mut sidechain: Value =
+            serde_json::from_str(&sent("2026-11-22T08:06:00.000Z", &signed("dash-side"))).unwrap();
+        sidechain["isSidechain"] = true.into();
+        let mut no_body: Value =
+            serde_json::from_str(&sent("2026-11-22T08:07:00.000Z", &signed("dash-nobody")))
+                .unwrap();
+        no_body["origin"].as_object_mut().unwrap().remove("body");
+        let user = |at: &str, content: &str| {
+            serde_json::json!({"type": "user", "timestamp": at, "message": {"role": "user", "content": content}}).to_string()
+        };
+        let lines = [
+            // His, with the whitespace a send may carry at either end.
+            sent("2026-11-22T08:00:00.000Z", &format!("\n  {A}\n")),
+            answer("2026-11-22T08:00:01.000Z"),
+            // Picked up mid-turn: his too.
+            user("2026-11-22T08:01:00.000Z", "run it"),
+            running.to_string(),
+            picked_up("2026-11-22T08:01:02.000Z", &signed("dash-peer")),
+            done.to_string(),
+            answer("2026-11-22T08:01:04.000Z"),
+            // A copy of the first, typed, and of the second, sent: copies, drawn as they arrived.
+            user("2026-11-22T08:02:00.000Z", &wrapped(A, "608f")),
+            answer("2026-11-22T08:02:01.000Z"),
+            sent("2026-11-22T08:03:00.000Z", &signed("dash-peer")),
+            answer("2026-11-22T08:03:01.000Z"),
+            // Never his: a changed one, one with anything else in the body, one in a paste, a
+            // sub-agent's, and one whose element is only in the record's prose.
+            sent(
+                "2026-11-22T08:04:00.000Z",
+                &signed("dash-tampered").replace("ship it", "drop it"),
+            ),
+            sent(
+                "2026-11-22T08:05:00.000Z",
+                &format!("fyi\n{}", signed("dash-extra")),
+            ),
+            sent(
+                "2026-11-22T08:05:30.000Z",
+                wrapped(&signed("dash-paste"), "608f").trim(),
+            ),
+            sidechain.to_string(),
+            no_body.to_string(),
+        ];
+        let jsonl = lines.join("\n");
+        let streamed = parse(&jsonl);
+        let reference = parse_main(lines.iter(), &mut Vec::new());
+        assert_eq!(streamed, reference, "the two parse paths agree");
+
+        let ids: Vec<&str> = streamed
+            .iter()
+            .filter_map(|b| match b {
+                Block::UserInbox { inbox, .. } => Some(inbox.id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ids, ["msgTERN0000000001==", "dash-peer"], "{streamed:#?}");
+        match &streamed[..2] {
+            [Block::UserInbox { text, inbox }, Block::Attachment(a)] => {
+                assert_eq!(text, "this is the bug, see the **picture**");
+                assert_eq!(inbox.via.as_deref(), Some("dingtalk"));
+                assert_eq!(
+                    a.path.as_deref(),
+                    Some("/tmp/inbox-fixture/uploads/tern.png")
+                );
+            }
+            other => panic!("the first turn is his, then his picture: {other:?}"),
+        }
+        let peers: Vec<&str> = streamed
+            .iter()
+            .filter_map(|b| match b {
+                Block::PeerText { from, text, .. } => {
+                    assert_eq!(from, "aries-tell");
+                    Some(text.as_str())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            peers.len(),
+            6,
+            "the sent copy and the five never his: {streamed:#?}"
+        );
+        assert!(peers[0].starts_with("<aries-inbox ") && peers[0].contains("id=\"dash-peer\""));
+        assert!(
+            streamed
+                .iter()
+                .any(|b| matches!(b, Block::UserText(t) if t.contains("```pasted\n<aries-inbox"))),
+            "the typed copy is text: {streamed:#?}"
+        );
+    }
+
+    #[test]
     fn a_relayed_message_is_the_persons_turn_once_and_only_where_it_opens_the_turn() {
         use crate::agents::claude::inbox::tests::{wrapped, zero_key, A, B};
         crate::agents::claude::inbox::install_key_source(zero_key);
@@ -8884,7 +9088,7 @@ mod tests {
             turns
                 .iter()
                 .any(|b| matches!(b, Block::PeerText { from, .. } if from == "skua-HD")),
-            "inside another session's message it is that session's"
+            "a later copy sent as another session's message is that session's (#s655)"
         );
         assert!(
             !streamed

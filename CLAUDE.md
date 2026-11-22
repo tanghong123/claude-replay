@@ -1507,7 +1507,14 @@ check. The Claude adapter (`agents/claude/inbox.rs`) takes one as his only when 
 turn at its first character, its sig verifies, and its id is new to the session; anything else stays
 the text it is. It reads the element as `verify` does, and refuses where `verify` would read two
 ways (an attribute given twice), a sub-agent's record (`isSidechain`) and a queued pickup whose
-`origin` is not a person's. aries-inbox types a bracketed paste, and Claude Code 2.1.310 records a paste of four
+`origin` is not a person's. **One sent as ANOTHER SESSION's message is his on the same terms**
+(#s655, Hong's choice on aries#s322: "Count it as mine when its signature checks"; aries-tell sends
+them since aries#s320, so typing no longer interrupts Aries): the record's own `origin.body`, never
+its prose or the tag's text, with whitespace at its ends stripped, must be one whole v1 element (the
+tag at its first character, the closing tag at its last, no paste around it) whose sig verifies, on
+a record no sub-agent wrote, as a `user` record or a mid-turn pickup; who sent it does not matter.
+The first-id rule counts typed and sent alike, and a later copy sent that way is the session's
+message, drawn as before (`Message::UserInbox`'s `peer`). aries-inbox types a bracketed paste, and Claude Code 2.1.310 records a paste of four
 lines or about 800 characters inside `<pasted_content>` (measured in Aries' transcript: 8 of 193
 prompts before v1, and every v1 message is that long), so a turn that is WHOLLY one paste counts from
 the paste's first character (Aries' amendment). The paste also changes some characters (a tab, a

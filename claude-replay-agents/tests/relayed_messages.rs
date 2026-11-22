@@ -31,6 +31,21 @@ fn prompt(text: &str, at: u32) -> String {
     .to_string()
 }
 
+/// As Claude Code 2.1.318 records a message another session sends (#s655, aries-tell's): the
+/// body in `origin`, the record's own text wrapping it.
+fn sent(text: &str, at: u32) -> String {
+    json!({
+        "type": "user",
+        "timestamp": format!("2026-10-26T08:00:{at:02}.000Z"),
+        "isMeta": true,
+        "promptSource": "system",
+        "turnOrigin": "peer",
+        "origin": {"kind": "peer", "from": "uds:/tmp/cc-socks/9.sock", "msg_id": format!("m{at}"), "name": "aries-tell", "fromMode": "bypass", "body": format!("{text}\n")},
+        "message": {"role": "user", "content": format!("Another Claude session sent a message:\n<cross-session-message from=\"uds:/tmp/cc-socks/9.sock\" from-name=\"aries-tell\" from-mode=\"bypass\">\n{text}\n</cross-session-message>\n\nThis came from another Claude session.")},
+    })
+    .to_string()
+}
+
 fn reply(at: u32) -> String {
     json!({
         "type": "assistant",
@@ -50,33 +65,18 @@ fn inbox_ids(blocks: &[Block]) -> Vec<&str> {
         .collect()
 }
 
-#[test]
-fn a_copy_of_a_relayed_message_stays_a_copy_across_every_resume_point() {
+/// Folds `lines` cold, then resumed at every point a durable resume can take, and checks each
+/// resume folds to the cold blocks; returns them and where each resume was taken.
+fn every_resume_point(lines: &[String]) -> (Vec<Block>, Vec<(usize, usize)>) {
     use claude_replay_engine::engine::{meta_stream::align, session::InMemoryStore};
-    claude_inbox::install_key_source(zero_key);
     let adapter: &'static dyn TranscriptAdapter = &ClaudeAdapter;
-    let (first, second) = (message("dash-1"), message("dash-2"));
-    let lines = [
-        prompt(&first, 1),
-        reply(1),
-        prompt(&second, 2),
-        reply(2),
-        prompt(&first, 3),
-        reply(3),
-    ];
     let mut cold = SessionAccumulator::new(adapter);
     let mut offset = 0;
-    for line in &lines {
+    for line in lines {
         cold.advance_at(offset, line);
         offset += line.len() as u64 + 1;
     }
     let expected = cold.fold().0;
-    assert_eq!(inbox_ids(&expected), ["dash-1", "dash-2"], "{expected:#?}");
-    assert!(
-        matches!(expected.iter().rfind(|b| b.opens_turn()), Some(Block::UserText(t)) if t.contains("```pasted")),
-        "the later copy reads as the text it is: {expected:#?}"
-    );
-
     let mut resumed = Vec::new();
     for split in 1..=lines.len() {
         let mut acc = SessionAccumulator::new(adapter);
@@ -101,7 +101,7 @@ fn a_copy_of_a_relayed_message_stays_a_copy_across_every_resume_point() {
             &aligned.resume,
         );
         let mut offset = 0;
-        for line in &lines {
+        for line in lines {
             if offset >= aligned.resume.replay_from {
                 run.advance_at(offset, line);
             }
@@ -110,11 +110,70 @@ fn a_copy_of_a_relayed_message_stays_a_copy_across_every_resume_point() {
         assert_eq!(run.fold().0, expected, "resumed at line {split}");
         resumed.push((split, aligned.committed));
     }
+    (expected, resumed)
+}
+
+#[test]
+fn a_copy_of_a_relayed_message_stays_a_copy_across_every_resume_point() {
+    claude_inbox::install_key_source(zero_key);
+    let (first, second) = (message("dash-1"), message("dash-2"));
+    let lines = [
+        prompt(&first, 1),
+        reply(1),
+        prompt(&second, 2),
+        reply(2),
+        prompt(&first, 3),
+        reply(3),
+    ];
+    let (expected, resumed) = every_resume_point(&lines);
+    assert_eq!(inbox_ids(&expected), ["dash-1", "dash-2"], "{expected:#?}");
+    assert!(
+        matches!(expected.iter().rfind(|b| b.opens_turn()), Some(Block::UserText(t)) if t.contains("```pasted")),
+        "the later copy reads as the text it is: {expected:#?}"
+    );
     // A resume point AFTER the first message committed and BEFORE its copy is the one only the
     // persisted ids get right: without them the copy would be taken as his again.
     assert!(
         resumed.iter().any(|&(split, committed)| split < 5
             && inbox_ids(&expected[..committed.min(expected.len())]).contains(&"dash-1")),
+        "the test must resume between the message and its copy: {resumed:?}"
+    );
+}
+
+/// #s655: his message sent as a session message is his the first time its id is met, typed or sent
+/// alike, and a later copy sent the same way is the session's message across every resume point.
+#[test]
+fn a_sent_copy_of_a_relayed_message_stays_the_sessions_across_every_resume_point() {
+    claude_inbox::install_key_source(zero_key);
+    let (first, second) = (message("dash-31"), message("dash-32"));
+    let lines = [
+        sent(&first, 1),
+        reply(1),
+        prompt(&second, 2),
+        reply(2),
+        sent(&first, 3),
+        reply(3),
+        sent(&second, 4),
+        reply(4),
+    ];
+    let (expected, resumed) = every_resume_point(&lines);
+    assert_eq!(
+        inbox_ids(&expected),
+        ["dash-31", "dash-32"],
+        "{expected:#?}"
+    );
+    let peers: Vec<&Block> = expected
+        .iter()
+        .filter(|b| matches!(b, Block::PeerText { from, .. } if from == "aries-tell"))
+        .collect();
+    assert_eq!(
+        peers.len(),
+        2,
+        "both sent copies are the session's: {expected:#?}"
+    );
+    assert!(
+        resumed.iter().any(|&(split, committed)| split < 5
+            && inbox_ids(&expected[..committed.min(expected.len())]).contains(&"dash-31")),
         "the test must resume between the message and its copy: {resumed:?}"
     );
 }

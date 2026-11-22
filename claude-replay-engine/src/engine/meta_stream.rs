@@ -422,11 +422,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// person's turn with empty words before its images, where a v88 stream holds the images alone in the
 /// agent's running turn.
 ///
+/// v90: #s655 — a Claude message from another session whose `origin.body` is one whole signed v1
+/// element folds to the person's `UserInbox` the first time its id is met, where a v89 stream holds
+/// that session's `PeerText`.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 89;
+pub const FOLD_VERSION: u16 = 90;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

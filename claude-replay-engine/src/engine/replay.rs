@@ -8,7 +8,7 @@
 //! machinery that builds it. Byte-identical to the retired `parse_main`/`parse_lines` oracles
 //! (see the equivalence gates in `claude_model`/`codex_model`).
 
-use crate::engine::message::{Message, QueueOpKind};
+use crate::engine::message::{InboxPeer, Message, QueueOpKind};
 use crate::model::*;
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -455,7 +455,16 @@ impl<'a> Replayer<'a> {
                     words,
                     inbox,
                     images,
+                    peer,
                 } => {
+                    if let Some(InboxPeer {
+                        from,
+                        addr: Some(a),
+                        ..
+                    }) = peer.as_deref()
+                    {
+                        self.peer_names.insert(a.clone(), from.clone());
+                    }
                     // Delivered like any prompt: a queued copy is popped by the text it was
                     // queued under (#52), whether this arrived as the user record or the pickup.
                     if let Some(pos) = self.queue.iter().position(|q| q.content == text.trim()) {
@@ -465,7 +474,8 @@ impl<'a> Replayer<'a> {
                         }
                     }
                     // Only the first message with an id is the person's (#s272), its pictures
-                    // offered after it; a later copy reads as the text it is, and offers none.
+                    // offered after it; a later copy reads as the text it is, and offers none: a
+                    // session's message as that session's (#s655).
                     if self.inbox_ids.insert(inbox.id.clone()) {
                         self.out.push(Block::UserInbox {
                             text: words.clone(),
@@ -473,6 +483,13 @@ impl<'a> Replayer<'a> {
                         });
                         self.out
                             .extend(images.iter().cloned().map(Block::Attachment));
+                    } else if let Some(p) = peer {
+                        self.out.push(Block::PeerText {
+                            from: p.from.clone(),
+                            mode: p.mode.clone(),
+                            text: p.text.clone(),
+                            addr: p.addr.clone(),
+                        });
                     } else {
                         self.out.push(Block::UserText(text.clone()));
                     }

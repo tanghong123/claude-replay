@@ -68,6 +68,17 @@ pub enum NoteKind {
     ClientReply,
 }
 
+/// The session a relayed message arrived from as a session message (#s655): what a
+/// [`Message::PeerText`] would have carried, but the raw text it was queued under, which the
+/// `UserInbox`'s `text` already is.
+#[derive(Debug, Clone)]
+pub struct InboxPeer {
+    pub from: String,
+    pub mode: Option<String>,
+    pub text: String,
+    pub addr: Option<String>,
+}
+
 /// One entry in the canonical message log. Ordered exactly as the transcript's lines
 /// (and, within a line, its content items) appear.
 #[derive(Debug, Clone)]
@@ -139,6 +150,10 @@ pub enum Message {
         words: String,
         inbox: Box<crate::model::Inbox>,
         images: Vec<Attachment>,
+        /// The session it came from, when it arrived as another session's message (#s655): a
+        /// later copy of its id is then that session's `PeerText`, as it was before the check,
+        /// and the fold learns the sender's name for its address either way.
+        peer: Option<Box<InboxPeer>>,
     },
     /// A message from another agent session (#s79): opens a turn like a prompt and becomes a
     /// `PeerText` block, never a `UserText` — the person did not type it. `text` is the message
