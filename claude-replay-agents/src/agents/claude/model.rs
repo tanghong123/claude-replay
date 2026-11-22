@@ -1025,6 +1025,42 @@ const RECORD_TYPES_KNOWN: &[&str] = &[
     "continued-in",
     "cost-state",
     "custom-title",
+    // #s652 (client 2.1.329; 2.1.330 installed when measured): the client's data-flow ledger, two
+    // record types, measured 2026-11-22 on hong-devserver over the 109 transcripts of 14 days that
+    // carry them, sub-agents included (keys and value types only). `data-flow-records` is
+    // `{type, v: 1, sessionId, records}`, plus `agentId` on a sub-agent's (164 of 12,085) and
+    // `snapshot: true` on 77; type first on every one, with no timestamp, uuid, parentUuid or
+    // version. About one per API response, written right after it, so it is often a live
+    // transcript's LAST line (2 of the 109 ended on one, both sessions running). Its entries:
+    // `{response_id, listed, mark_sent_by}`, the API response chain (`listed` absent on the first;
+    // `mark_sent_by` the session's own id on all 12,004 that carry it); `{tool_name, tool_use_id}`
+    // or `{tool_name, event_id}`, a call, some with `touched: {kind, action, id}` (session, artifact
+    // or memory; write or read); `{event_id, source: {type, id}}`, where a piece of context came
+    // from: `claude_code_session` (136, its id another session a tool read) or `unknown` (92, id
+    // null). `data-flow-incomplete` is `{type, v: 1, sessionId, codes}` (plus `agentId`), codes 3,
+    // 4, 6 and 9, written at a resume point. From the client's code (read-only): its own ledger of
+    // where each piece of context came from, read back when it resumes a session; the codes mark
+    // sources it lost track of (an organisation change or a teleport among them). Nothing drawn:
+    // each response and each call is drawn already, and the ids and codes are opaque to a reader.
+    // The raw readers: a call entry carries `"tool_use_id"`, which the in-flight scan read as a
+    // result. Of 17,124 call entries, 16,791 come after their call's result, 331 before the call's
+    // own record (330 of them SendMessage) and 2 between the call and its result, every one of
+    // those answered within 5 s (median 0.19 s), so the misreading was brief; the scan, `turn_ended`
+    // and `local_role` now pass these lines by as they do the request log (`client_log_line`). The
+    // activity clock, `first_event_within` and the growth proof go by timestamps, of which these
+    // carry none, and `continued_in` stops only at a user or assistant record. The rendered record
+    // log never holds them. Bytes, the ledger being new since 2.1.329: 0.1% of each of the five
+    // largest transcripts (634 MB to 1.2 GB) and 0.6 to 4.9% of their last 512 KiB; over the 75
+    // above 1 MB a median of 0.0% and 0.1%, at most 0.6% and 6.9%.
+    // REVISIT: (1) a `dataFlowOn` value other than true; (2) one of these records with a timestamp,
+    // uuid or parentUuid (it would then reach the activity clock or the record chain), a `v` other
+    // than 1, or a type that is not its first key; (3) a source type other than
+    // `claude_code_session` and `unknown`, a `touched` kind or action outside these, or a
+    // `mark_sent_by` naming another session; (4) a reader asking which other sessions a session
+    // read: the `claude_code_session` source entries are the record of it, a RENDER question for
+    // the owner, queued with counts, never decided here.
+    "data-flow-incomplete",
+    "data-flow-records",
     "file-history-delta",
     "file-history-snapshot",
     // #s374: `{type, agentId, parentSessionId, parentLastUuid, contextLength}`, no version and no
@@ -1262,6 +1298,13 @@ const CONTENT_TYPES_KNOWN: &[&str] = &[
 const RECORD_KEYS_COMMON: &[&str] = &[
     "agentId",
     "cwd",
+    // #s652 (client 2.1.329): a boolean, `true` on every record that has it, the last key after
+    // `gitBranch`, on all four record types read (measured 2026-11-22 on hong-devserver over 14
+    // days: 22,548 assistant, 15,077 attachment, 13,399 user and 2,315 system records, no other
+    // value). It marks a record written while the client kept its data-flow ledger (see
+    // `RECORD_TYPES_KNOWN`). Nothing drawn. REVISIT: a value other than true, or the key on a
+    // record type other than these four (being common, it is known on every record read).
+    "dataFlowOn",
     "entrypoint",
     "gitBranch",
     "isSidechain",
@@ -3434,7 +3477,7 @@ pub(crate) fn tool_is_interactive(name: &str) -> bool {
 /// back) proves the conversation moved past whatever ended before. Field-level on
 /// purpose — this runs per tail line on the monitor's scan path, like the liveness scan.
 pub(crate) fn turn_ended(raw_line: &str) -> Option<bool> {
-    if request_log_line(raw_line) {
+    if client_log_line(raw_line) {
         return None;
     }
     if raw_line.contains("\"type\":\"assistant\"") {
@@ -3473,12 +3516,16 @@ fn thinking_not_returned(blk: &Value) -> bool {
         .is_some_and(|s| !s.is_empty())
 }
 
-/// A line of the client's API-call log (#s134): `api-request`, `api-request-blob` or
-/// `api-request-shape`, each with its type first (all of them on every transcript measured). A
-/// blob holds a whole message as sent, its JSON nested unescaped, so a tool call's input could
-/// carry `"type":"user"` and read, by substring, as the conversation it only copies.
-fn request_log_line(raw_line: &str) -> bool {
+/// A line of the client's own logs, never the conversation: its API-call log (#s134,
+/// `api-request`, `api-request-blob` or `api-request-shape`) and its data-flow ledger (#s652,
+/// `data-flow-records` or `data-flow-incomplete`), each with its type first (all of them on every
+/// transcript measured). A blob holds a whole message as sent, its JSON nested unescaped, so a tool
+/// call's input could carry `"type":"user"` and read, by substring, as the conversation it only
+/// copies; a ledger entry names a call by its `tool_use_id`, often as a live transcript's last line.
+/// The in-flight scan in `claude-replay-core`'s `liveness.rs` passes the same lines by.
+fn client_log_line(raw_line: &str) -> bool {
     raw_line.starts_with("{\"type\":\"api-request")
+        || raw_line.starts_with("{\"type\":\"data-flow-")
 }
 
 /// Which of a tail window's raw lines were written BESIDE the conversation (#s68, #s70): a slash
@@ -3590,7 +3637,7 @@ impl LocalRole {
 /// [`LocalRole`] of one raw line. Field-level first, like [`turn_ended`]: only a line that could
 /// be a command, its output or a system record is parsed.
 fn local_role(raw_line: &str) -> LocalRole {
-    if request_log_line(raw_line) {
+    if client_log_line(raw_line) {
         return LocalRole::Quiet;
     }
     let candidate = [
@@ -10144,7 +10191,7 @@ mod tests {
     /// blob carries a message as sent with its JSON nested unescaped, so a tool call's input can
     /// hold `"type":"user"`: by substring, that blob read as a user record (the turn moved on) and
     /// as a word between a command and its output (the command opened a turn). Without
-    /// `request_log_line` both answers below are wrong.
+    /// `client_log_line` both answers below are wrong.
     #[test]
     fn turn_ended_reads_no_request_log_line_as_the_conversation() {
         let blob = r#"{"type":"api-request-blob","sessionId":"s","hash":"h2","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Notify","input":{"to":{"type":"user","id":"u"}}}]}}"#;
@@ -10159,6 +10206,78 @@ mod tests {
             turn_aside(&[command, blob, output]),
             vec![true, false, true],
             "the client's own command is still answered by its output across a blob"
+        );
+    }
+
+    /// #s652: the data-flow ledger (client 2.1.329) says nothing about the turn, and a live
+    /// transcript often ends on one of its lines, right after the answer it follows: the monitor's
+    /// raw-line reads look past it to the record before. No ledger entry measured holds
+    /// `"type":"user"` or a command's marker, so the field rules alone already read these lines as
+    /// nothing; `client_log_line` keeps that so if one ever does, and its assertion is what pins
+    /// it here. The ids are made up.
+    #[test]
+    fn turn_ended_reads_the_data_flow_ledger_as_nothing() {
+        let records = r#"{"type":"data-flow-records","v":1,"sessionId":"s","records":[{"response_id":"msg_2","listed":["msg_1"],"mark_sent_by":"s"},{"tool_name":"Read","tool_use_id":"toolu_1","touched":{"kind":"session","action":"write","id":null}},{"event_id":"e1","source":{"type":"claude_code_session","id":"00000000-0000-4000-8000-000000000652"}}]}"#;
+        let incomplete = r#"{"type":"data-flow-incomplete","v":1,"sessionId":"s","codes":[6,9]}"#;
+        for line in [records, incomplete] {
+            assert!(client_log_line(line), "{line}");
+            assert_eq!(turn_ended(line), None, "{line}");
+        }
+        let answer = r#"{"type":"assistant","sessionId":"s","uuid":"a1","message":{"role":"assistant","content":[{"type":"text","text":"Done."}],"stop_reason":"end_turn"},"dataFlowOn":true}"#;
+        assert_eq!(
+            turn_ended(answer),
+            Some(true),
+            "the answer before it ends the turn"
+        );
+        let command = r#"{"type":"user","sessionId":"s","uuid":"c1","message":{"role":"user","content":"<command-name>/compact</command-name>\n<command-message>compact</command-message>"}}"#;
+        let output = r#"{"type":"user","sessionId":"s","uuid":"c2","message":{"role":"user","content":"<local-command-stdout>Compacted</local-command-stdout>"}}"#;
+        assert_eq!(
+            turn_aside(&[command, records, output]),
+            vec![true, false, true],
+            "the client's own command is still answered by its output across a ledger line"
+        );
+    }
+
+    /// #s652: Claude Code 2.1.329's data-flow ledger (`data-flow-records`, `data-flow-incomplete`,
+    /// and `dataFlowOn` on the records read) is known. The transcript folds to the same blocks with
+    /// the ledger as without it, and nothing is reported as new while the sweep asks, while a key
+    /// nobody has met beside `dataFlowOn` still is. Removing any of the three from its list turns
+    /// this red. The ids are made up.
+    #[test]
+    fn the_2_1_329_data_flow_ledger_is_known() {
+        unknown_watch_keys(true);
+        let prompt = r#"{"type":"user","version":"2.1.330","sessionId":"s-s652","uuid":"u1","timestamp":"2026-11-22T01:00:00.000Z","message":{"role":"user","content":"read the notes"},"gitBranch":"main","dataFlowOn":true}"#;
+        let first = r#"{"type":"data-flow-records","v":1,"sessionId":"s-s652","records":[]}"#;
+        let call = r#"{"type":"assistant","version":"2.1.330","sessionId":"s-s652","uuid":"a1","parentUuid":"u1","timestamp":"2026-11-22T01:00:02.000Z","requestId":"r1","message":{"id":"msg_1","role":"assistant","model":"claude-opus-5-5","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"/w/notes.md"}}],"stop_reason":"tool_use"},"gitBranch":"main","dataFlowOn":true}"#;
+        let result = r#"{"type":"user","version":"2.1.330","sessionId":"s-s652","uuid":"t1","parentUuid":"a1","timestamp":"2026-11-22T01:00:03.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"one note"}]},"gitBranch":"main","dataFlowOn":true}"#;
+        let ledger = r#"{"type":"data-flow-records","v":1,"sessionId":"s-s652","records":[{"response_id":"msg_1","mark_sent_by":"s-s652"},{"tool_name":"Read","tool_use_id":"toolu_1","touched":{"kind":"session","action":"write","id":null}},{"event_id":"e1","source":{"type":"unknown","id":null}}]}"#;
+        let answer = r#"{"type":"assistant","version":"2.1.330","sessionId":"s-s652","uuid":"a2","parentUuid":"t1","timestamp":"2026-11-22T01:00:05.000Z","requestId":"r2","message":{"id":"msg_2","role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"One note."}],"stop_reason":"end_turn"},"gitBranch":"main","dataFlowOn":true}"#;
+        let last = r#"{"type":"data-flow-records","v":1,"sessionId":"s-s652","records":[{"response_id":"msg_2","listed":["msg_1"],"mark_sent_by":"s-s652"}]}"#;
+        let resumed = r#"{"type":"data-flow-incomplete","v":1,"sessionId":"s-s652","codes":[6]}"#;
+        let with = [prompt, first, call, result, ledger, answer, last, resumed].join("\n");
+        let without = [prompt, call, result, answer].join("\n");
+        let blocks = parse(&with);
+        assert_eq!(
+            format!("{blocks:?}"),
+            format!("{:?}", parse(&without)),
+            "the ledger draws nothing"
+        );
+        let seen: Vec<_> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.example.as_deref() == Some("s-s652"))
+            .collect();
+        assert!(seen.is_empty(), "and is not reported as new: {seen:?}");
+        let future = r#"{"type":"user","version":"2.1.330","sessionId":"s-s652b","uuid":"u9","timestamp":"2026-11-22T01:00:09.000Z","message":{"role":"user","content":"again"},"dataFlowOn":true,"aKeyBesideDataFlowOnS652":1}"#;
+        let _ = parse(future);
+        let mine: Vec<String> = unknown_shapes()
+            .into_iter()
+            .filter(|s| s.at == UnknownAt::RecordKey && s.example.as_deref() == Some("s-s652b"))
+            .map(|s| s.name)
+            .collect();
+        assert_eq!(
+            mine,
+            vec!["user.aKeyBesideDataFlowOnS652".to_string()],
+            "dataFlowOn is known; the made-up key beside it is reported"
         );
     }
 

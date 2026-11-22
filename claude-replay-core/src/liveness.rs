@@ -89,8 +89,8 @@ const CODEX_TOOL_PATTERNS: &[CodexToolPattern] = &[
 /// Scans the last `INFLIGHT_TAIL_BYTES` (256 KiB) only; a use whose result predates the window
 /// can't appear dangling (uses are collected from within the window, results may close
 /// them from anywhere in it) — which holds only for the transcript's own WHOLE records, so a
-/// COPY of a call (Claude Code's API-call log, #s329) and the line the window's edge cuts
-/// (#s365) are never read. Covers sub-agent work too: while a child runs, the parent's spawning
+/// COPY of a call (Claude Code's API-call log, #s329), the client's data-flow ledger naming one
+/// (#s652) and the line the window's edge cuts (#s365) are never read. Covers sub-agent work too: while a child runs, the parent's spawning
 /// `tool_use` is itself unresolved in the ROOT tail.
 pub fn inflight_tool_in_tail(transcript: &Path) -> bool {
     !inflight_tools_in_tail(transcript).is_empty()
@@ -200,7 +200,13 @@ pub fn inflight_tools_in_tail(transcript: &Path) -> Vec<InflightTool> {
         // (11 of 131 that ended on `end_turn` on aries-black over three days, measured
         // 2026-10-30), and a live one could read as a permission wait. Each such line puts its
         // type first.
-        if line.starts_with("{\"type\":\"api-request") {
+        // #s652: nor is its data-flow ledger (client 2.1.329), whose call entries carry the
+        // call's `tool_use_id`, which read here as its result: 333 of 17,124 call entries on
+        // hong-devserver (14 days, 2026-11-22) came before the call's result (331 before the
+        // call's own record, 2 while it ran), and the pairing below ignores order, so each of
+        // those calls read as answered until it was. The type comes first there too.
+        if line.starts_with("{\"type\":\"api-request") || line.starts_with("{\"type\":\"data-flow-")
+        {
             continue;
         }
         if line.contains("\"type\":\"tool_use\"") {
@@ -319,6 +325,31 @@ mod tests {
             vec![InflightTool {
                 id: "toolu_new".into(),
                 name: "Read".into()
+            }]
+        );
+    }
+
+    /// #s652: a data-flow ledger entry naming a call is not the call's result. Here the entry is
+    /// written while the call runs, as 2 of 17,124 were (and 331 more before the call's own
+    /// record): the call has no result, so it is still in flight. The ledger line is the tail's
+    /// last, as it often is in a live session. Without the pass-by the scan reads it answered.
+    #[test]
+    fn a_data_flow_entry_naming_a_call_is_not_its_result() {
+        let p = fixture("claude-data-flow");
+        write_tail(
+            &p,
+            concat!(
+                r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_run","name":"Bash","input":{}}]},"dataFlowOn":true}"#,
+                "\n",
+                r#"{"type":"data-flow-records","v":1,"sessionId":"s","records":[{"response_id":"msg_1","mark_sent_by":"s"},{"tool_name":"Bash","tool_use_id":"toolu_run"}]}"#,
+                "\n",
+            ),
+        );
+        assert_eq!(
+            inflight_tools_in_tail(&p),
+            vec![InflightTool {
+                id: "toolu_run".into(),
+                name: "Bash".into()
             }]
         );
     }
