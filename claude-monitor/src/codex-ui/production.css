@@ -2151,6 +2151,13 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    session stays laid out at its half beneath, so going back costs nothing. Upright, the pane is
    the whole screen as before. */
 .preview-expand{display:none}
+/* #s663, Hong's choice on #s670: held sideways the pane's head folds the file's actions (reveal or
+   download, print, review) and full screen into one More menu (`.preview-more-wrap`, preview.js),
+   so the strip keeps their room, and there the current tab may take the whole strip: with six files
+   open each name is whole on an iPhone 17 Pro (the strip 182 points, the longest tab 153). The menu
+   hangs under its button inside the pane, its rows a finger's 44 points. Upright, on an iPad and on
+   a desktop nothing changes. */
+.preview-more-wrap{display:none}
 @media(pointer:coarse) and (max-height:500px){
   #sessionView:not(.preview-off)>.workspace{width:50%}
   #sessionView:not(.preview-off)>.preview{left:50%;right:0;width:auto;--pane-safe-left:0px;box-shadow:-1px 0 0 var(--line)}
@@ -2166,7 +2173,16 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #sessionView:not(.preview-off) .header-search-cluster>.navigator-options,#sessionView:not(.preview-off) .header-search-cluster>.search-suggest{right:calc(50% + 12px);width:min(380px,calc(50% - 24px - env(safe-area-inset-left,0px)))}
   #sessionView:not(.preview-off) .info-popover{right:calc(50% + 8px);width:min(420px,calc(50% - 16px - env(safe-area-inset-left,0px)))}
   #sessionView:not(.preview-off) .reading-cluster>.reading-options,#sessionView:not(.preview-off) .phone-pane-menu:not([hidden]){width:min(380px,calc(50% - 24px - env(safe-area-inset-left,0px)))}
-  #sessionView .preview-head .preview-expand{display:grid;place-items:center;width:44px;height:44px}
+  #sessionView .preview-head :is(.preview-reveal,.preview-download,.preview-print,.preview-review,.preview-expand){display:none}
+  #sessionView .preview-head>.preview-more-wrap{display:block;position:relative;flex:none}
+  #sessionView .preview-more{display:grid;place-items:center;width:44px;height:44px}
+  #sessionView .preview-tab.on{max-width:100%}
+  #sessionView .preview-more-menu{position:absolute;top:calc(100% + 4px);right:0;z-index:40;display:flex;flex-direction:column;width:min(260px,calc(100vw - 24px));padding:6px;border:1px solid var(--line);border-radius:12px;background:var(--bg);box-shadow:0 14px 38px rgba(34,43,73,.14)}
+  #sessionView .preview-more-menu[hidden]{display:none}
+  #sessionView .preview-more-item{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;gap:10px;min-height:44px;padding:0 10px;border-radius:8px;background:transparent;color:var(--ink);font-size:15px;text-align:left;cursor:pointer}
+  #sessionView .preview-more-glyph{display:grid;place-items:center;color:var(--sub);font-size:17px;line-height:1}
+  #sessionView .preview-more-glyph svg{width:17px;height:17px}
+  #sessionView .preview-more-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 }
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
   #sessionView:not(.preview-off) .reading-cluster>.reading-options,#sessionView:not(.preview-off) .phone-pane-menu:not([hidden]){right:calc(50% + 12px)}

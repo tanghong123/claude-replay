@@ -5998,6 +5998,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(vp, /\} finally \{ if \(own\) globalThis\.addEventListener = add; else delete globalThis\.addEventListener; \}/, "which it watched the engine bind as it was built, and no longer");
   const pv = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
   assert.match(pv, /  destroy\(\) \{\n    this\.reviewSheet\?\.close\?\.\(\);\n    this\.teardownMarkdown\(\);\n    this\.imageView\?\.destroy\(\);/, "the pane closes its review sheet, mdrev's viewer and its image viewer");
+  // #s663: the More menu's press-outside listener is on the page, so the pane stops it as the view unmounts.
+  assert.match(pv, /\}, \{ capture: true, signal: this\.listening\.signal \}\);/, "#s663: the More menu's listener on the page takes the pane's own signal");
+  assert.match(pv, /this\.imageView\?\.destroy\(\); this\.imageView = null;\n    this\.listening\.abort\(\);/, "#s663: and the pane's destroy stops it");
   // After the unmount the handle does nothing: run the fence over a handle like the view's.
   {
     const fencedFn = /^function fenced\(handle\) \{\n[\s\S]*?\n\}\n/m.exec(body);

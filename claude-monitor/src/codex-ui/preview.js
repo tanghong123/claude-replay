@@ -206,9 +206,34 @@ export class Preview {
     this.expandBtn = Object.assign(document.createElement("button"), { type: "button", className: "iconbtn preview-expand" });
     this.expandBtn.onclick = () => this.setFull(!viewRoot.element()?.classList.contains("preview-full"));
     this.setFull(false);
+    // #s663, Hong's choice on #s670: held sideways the pane is a column about 450 points wide, and its
+    // head held the steps, the strip, the file's actions, full screen and close, each a finger's 44
+    // points (#s649), which left the strip 138 points and cut every file's name. There the file's
+    // actions and full screen fold into one More menu (production.css shows it on a phone held
+    // sideways only, and takes them out of the head there); the steps, the strip and close stay, and
+    // the current tab may take the whole strip. The menu lists, as it opens, the controls the head
+    // would show, each in its own words, and a choice presses that control: what each does, and when
+    // it is offered, stays where it was.
+    this.listening = new AbortController();
+    this.moreWrap = Object.assign(document.createElement("span"), { className: "preview-more-wrap" });
+    this.moreBtn = Object.assign(document.createElement("button"), { type: "button", className: "iconbtn preview-more", title: "More" });
+    this.moreBtn.innerHTML = '<svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true" fill="currentColor"><circle cx="5" cy="12" r="1.9"/><circle cx="12" cy="12" r="1.9"/><circle cx="19" cy="12" r="1.9"/></svg>';
+    this.moreBtn.setAttribute("aria-label", "More for this file");
+    this.moreBtn.setAttribute("aria-haspopup", "menu");
+    this.moreBtn.setAttribute("aria-expanded", "false");
+    this.moreBtn.onclick = event => { event.stopPropagation(); this.setMore(this.moreMenu.hidden); };
+    this.moreMenu = Object.assign(document.createElement("div"), { className: "preview-more-menu", hidden: true });
+    this.moreMenu.setAttribute("role", "menu");
+    this.moreMenu.setAttribute("aria-label", "More for this file");
+    this.moreWrap.append(this.moreBtn, this.moreMenu);
+    // A press anywhere else closes it (the tap still does what it does there), as the session's
+    // copy menu closes; the view's Escape closes it too (session-view.js).
+    document.addEventListener("pointerdown", event => {
+      if (!this.moreMenu.hidden && !this.moreWrap.contains(event.target)) this.setMore(false);
+    }, { capture: true, signal: this.listening.signal });
     // A host that switched the ↗ off (`show: { detach: false }`, stage 6) gets none in the head:
     // the show paths still flip its `hidden`, on a button nobody can reach.
-    byId("closePreview").before(this.revealBtn, this.downloadBtn, this.printBtn, ...(this.actions.detach === false ? [] : [this.newTab]), this.reviewBtn, this.expandBtn);
+    byId("closePreview").before(this.revealBtn, this.downloadBtn, this.printBtn, ...(this.actions.detach === false ? [] : [this.newTab]), this.reviewBtn, this.expandBtn, this.moreWrap);
     // #337, the owner: with many files open the strip squeezed every tab to a few letters and the
     // CURRENT one to nothing. The tabs now keep their width and the strip scrolls; while it
     // overflows, ‹ and › beside it step to the previous and next tab (the pinned roster first),
@@ -255,6 +280,7 @@ export class Preview {
     this.reviewSheet?.close?.();
     this.teardownMarkdown();
     this.imageView?.destroy(); this.imageView = null;
+    this.listening.abort();
     this.stageObserver?.disconnect(); this.stageObserver = null;
     this.tabsObserver?.disconnect();
     this.renderGeneration++;
@@ -275,7 +301,30 @@ export class Preview {
     if (name === "preview-off" && view && view.classList.contains(name) !== on && this.actions.paneToggled) this.actions.paneToggled(change);
     else change();
   }
-  setOpen(open) { this.uiState.preview = open; this.paneState("preview-off", !open); byId("previewBtn").classList.toggle("active", open); if (!open) this.setFull(false); if (open) this.render(); this.actions.layoutChanged?.(); }
+  setOpen(open) { this.uiState.preview = open; this.paneState("preview-off", !open); byId("previewBtn").classList.toggle("active", open); if (!open) { this.setFull(false); this.setMore(false); } if (open) this.render(); this.actions.layoutChanged?.(); }
+  /** The head's More menu (#s663; a phone held sideways): opening lists the head's file controls
+   *  offered now — reveal or download, print, review, then full screen — each by its own title, with
+   *  its glyph where it has one. A choice closes the menu and presses its control, if that control is
+   *  still offered. */
+  setMore(open) {
+    if (!this.moreMenu) return;
+    if (open) {
+      const sources = [["reveal", this.revealBtn], ["download", this.downloadBtn], ["print", this.printBtn], ["review", this.reviewBtn], ["expand", this.expandBtn]];
+      this.moreMenu.replaceChildren(...sources.filter(([, source]) => !source.hidden).map(([name, source]) => {
+        const item = Object.assign(document.createElement("button"), { type: "button", className: "preview-more-item" });
+        item.setAttribute("role", "menuitem");
+        item.dataset.previewMore = name;
+        const glyph = Object.assign(document.createElement("span"), { className: "preview-more-glyph" });
+        glyph.setAttribute("aria-hidden", "true");
+        if (source.classList.contains("iconbtn")) glyph.innerHTML = source.innerHTML;
+        item.append(glyph, Object.assign(document.createElement("span"), { className: "preview-more-label", textContent: source.title }));
+        item.onclick = event => { event.stopPropagation(); this.setMore(false); if (!source.hidden) source.click(); };
+        return item;
+      }));
+    }
+    this.moreMenu.hidden = !open;
+    this.moreBtn.setAttribute("aria-expanded", String(open));
+  }
   setFull(full) {
     this.paneState("preview-full", full);
     this.expandBtn.innerHTML = full
@@ -380,6 +429,9 @@ export class Preview {
   fitTabs() {
     const strip = byId("previewTabs");
     if (!strip || !this.prevTabBtn) return;
+    // The strip's width changes as the phone turns: a More menu left open where the head no longer
+    // draws it (upright) closes, rather than coming back open when the phone is turned again.
+    if (this.moreMenu && !this.moreMenu.hidden && !this.moreWrap.getClientRects().length) this.setMore(false);
     const over = strip.scrollWidth > strip.clientWidth + 1;
     this.prevTabBtn.hidden = this.nextTabBtn.hidden = !over;
     const on = strip.querySelector(".preview-tab.on");

@@ -23031,6 +23031,25 @@ fn phone_files_world(
     std::sync::Arc<headless_chrome::Tab>,
     Vec<String>,
 ) {
+    phone_files_world_at(port, case, names, policy, artifact, (390, 844), None)
+}
+
+/// `phone_files_world` on a phone of `size`, with the safe area `insets` where given (#s663: held
+/// sideways).
+fn phone_files_world_at(
+    port: u16,
+    case: &str,
+    names: &[&str],
+    policy: &str,
+    artifact: bool,
+    (w, h): (u32, u32),
+    insets: Option<(u32, u32, u32, u32)>,
+) -> (
+    harness::Monitor,
+    harness::Chrome,
+    std::sync::Arc<headless_chrome::Tab>,
+    Vec<String>,
+) {
     let base = harness::base(case);
     let stores = harness::Stores::new(&base);
     let repo = base.join("repo");
@@ -23071,18 +23090,23 @@ fn phone_files_world(
     )
     .unwrap();
     let m = harness::Monitor::spawn_remote(harness::Kind::V1, port, &base, Some(&stores));
-    let (b, tab) = remote_phone_tab(&m, 390, 844);
+    let (b, tab) = remote_phone_tab(&m, w, h, insets);
     (m, b, tab, paths)
 }
 
 /// A phone reaching `m` over the tailnet (#s29): what these cases test is what a reader ELSEWHERE
 /// is offered, and since #s29 that is decided by where the reader is, not by the width.
+/// The safe area `insets` are set before the first load, where given (#s663: held sideways).
 fn remote_phone_tab(
     m: &harness::Monitor,
     w: u32,
     h: u32,
+    insets: Option<(u32, u32, u32, u32)>,
 ) -> (harness::Chrome, std::sync::Arc<headless_chrome::Tab>) {
     let (browser, tab) = harness::remote_phone(w, h);
+    if let Some(insets) = insets {
+        harness::safe_area(&tab, insets);
+    }
     m.open_remote(&tab, &format!("?ui=app&session={PHONE_SID}"));
     harness::until(
         &tab,
@@ -23361,6 +23385,253 @@ fn a_phone_pane_counts_its_open_files_and_steps_through_their_tabs() {
         "the last closed tab to take the badge away",
         Duration::from_secs(5),
         "(document.querySelector('#previewBtn .preview-badge') || {textContent: 'no badge'}).textContent",
+    );
+}
+
+/// #s663, Hong's choice on #s670 ("Fold the file actions and full screen into a More menu sideways
+/// (current tab may take the whole strip)"): held sideways the pane is a column beside the session,
+/// and with each control in its head a finger's 44 points (#s649) the strip left every one of six
+/// open files' names cut. There the file's actions and full screen are in one More menu, so the strip
+/// keeps their room and the current tab may take all of it: on an iPhone 17 Pro's size each name is
+/// whole at every step. The menu offers what the head would (here a download, for a reader over the
+/// tailnet, and full screen) in rows a finger can take, inside the pane; it closes on its choice, a
+/// tap elsewhere and Escape, and when the phone is turned upright, where the head is as it was.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_held_sideways_keeps_each_open_file_s_name_whole_in_its_pane_head() {
+    let _serial = serial();
+    let names = [
+        "release-notes.txt",
+        "tap-clean.txt",
+        "corp-publish.txt",
+        "vendor-mdrev.txt",
+        "unknown-review.txt",
+        "gate-readme.txt",
+    ];
+    let (_m, _b, tab, paths) = phone_files_world_at(
+        3015,
+        "phone-side-tabs",
+        &names,
+        "offered",
+        true,
+        (874, 402),
+        Some(harness::SIDEWAYS_INSETS),
+    );
+    harness::until(
+        &tab,
+        "document.querySelectorAll('[data-reference-path][data-reference-fsig]:not([data-reference-fsig=\"\"])').length >= 6",
+        "the session to offer the six files",
+        Duration::from_secs(20),
+        "document.querySelectorAll('[data-reference-path]').length + ' file links'",
+    );
+    for (i, path) in paths.iter().enumerate() {
+        harness::eval(
+            &tab,
+            &format!(
+                "document.querySelector('[data-reference-path={}]').click(); 'ok'",
+                serde_json::to_string(path).unwrap()
+            ),
+        );
+        harness::until(
+            &tab,
+            &format!(
+                "(document.querySelector('#previewBtn .preview-badge') || {{}}).textContent === '{}'",
+                i + 1
+            ),
+            "the badge to count the open files",
+            Duration::from_secs(10),
+            "(document.querySelector('#previewBtn .preview-badge') || {textContent: 'no badge'}).textContent",
+        );
+    }
+    harness::until(
+        &tab,
+        "!document.getElementById('app').classList.contains('preview-off')",
+        "the pane open",
+        Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    // The head: the steps, the strip, More and close; the file's actions and full screen are not in it.
+    let head = format!(
+        "JSON.stringify({{ actions: ['.preview-reveal', '.preview-download', '.preview-print', '.preview-review', '.preview-expand', '.preview-newtab'].filter(function (sel) {{ return ({PHONE_DRAWN})('#preview .preview-head ' + sel); }}), more: ({PHONE_HITTABLE})(document.querySelector('#preview .preview-more')), close: ({PHONE_HITTABLE})(document.getElementById('closePreview')), pane: Math.round(document.getElementById('preview').getBoundingClientRect().left), w: innerWidth }})"
+    );
+    let h: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, &head).as_str().unwrap_or("{}")).unwrap();
+    assert_eq!(
+        h["actions"],
+        serde_json::json!([]),
+        "held sideways the head draws none of the file's actions nor full screen: {h}"
+    );
+    assert_eq!(h["more"], true, "More takes a tap: {h}");
+    assert_eq!(h["close"], true, "close takes a tap: {h}");
+    let w = h["w"].as_i64().unwrap_or(0);
+    assert!(
+        (h["pane"].as_i64().unwrap_or(0) - w / 2).abs() <= 2,
+        "the premise: the pane is the second column, beside the session: {h}"
+    );
+    let strip = "(function(){ var s = document.getElementById('previewTabs'), box = s.getBoundingClientRect(), tabs = [].slice.call(s.querySelectorAll('.preview-tab:not(.sv-pinned)')), on = s.querySelector('.preview-tab.on'), label = on && on.querySelector('.preview-tab-label'), r = on ? on.getBoundingClientRect() : {}; return JSON.stringify({ n: tabs.length, over: s.scrollWidth > s.clientWidth + 1, on: label ? label.textContent : '', whole: !!label && label.scrollWidth <= label.clientWidth + 1, inView: r.left >= box.left - 1 && r.right <= box.right + 1, onW: Math.round(r.width || 0), stripW: Math.round(box.width) }); })()";
+    let read = || -> serde_json::Value {
+        serde_json::from_str(harness::eval(&tab, strip).as_str().unwrap_or("{}")).unwrap()
+    };
+    let s = read();
+    assert_eq!(s["n"], 6, "a tab per open file: {s}");
+    assert_eq!(s["over"], true, "six tabs overflow the column's strip: {s}");
+    assert_eq!(
+        s["on"], "gate-readme.txt",
+        "the last opened is current: {s}"
+    );
+    assert_eq!(s["whole"], true, "the current title is whole: {s}");
+    assert_eq!(s["inView"], true, "the current tab is in view: {s}");
+    // › walks every tab, wrapping through the pinned roster, each title whole and in view.
+    let mut seen = Vec::new();
+    for _ in 0..7 {
+        phone_tap(&tab, "[data-preview-tab-step=\"1\"]");
+        std::thread::sleep(Duration::from_millis(250));
+        let s = read();
+        assert_eq!(s["inView"], true, "the stepped-to tab is in view: {s}");
+        assert_eq!(s["whole"], true, "and its title whole: {s}");
+        seen.push(s["on"].as_str().unwrap_or_default().to_string());
+    }
+    let mut want = vec!["Artifacts (1)"];
+    want.extend(names);
+    assert_eq!(seen, want, "› cycles through every tab, wrapping");
+    for want in ["unknown-review.txt", "vendor-mdrev.txt"] {
+        phone_tap(&tab, "[data-preview-tab-step=\"-1\"]");
+        std::thread::sleep(Duration::from_millis(250));
+        let s = read();
+        assert_eq!(s["on"], want, "‹ steps back: {s}");
+        assert_eq!(s["whole"], true, "its title whole: {s}");
+    }
+    // More: a download (this reader is over the tailnet) and full screen, rows a finger takes, inside the pane.
+    let menu_shown = "!document.querySelector('#preview .preview-more-menu').hidden";
+    let menu_hidden = "document.querySelector('#preview .preview-more-menu').hidden";
+    phone_tap(&tab, "#preview .preview-more");
+    harness::until(
+        &tab,
+        menu_shown,
+        "the More menu to open",
+        Duration::from_secs(5),
+        "document.querySelector('#preview .preview-more').getAttribute('aria-expanded')",
+    );
+    let menu = format!(
+        "(function(){{ var m = document.querySelector('#preview .preview-more-menu'), p = document.getElementById('preview').getBoundingClientRect(), r = m.getBoundingClientRect(), rows = [].slice.call(m.querySelectorAll('[data-preview-more]')); return JSON.stringify({{ rows: rows.map(function (b) {{ return b.dataset.previewMore; }}), words: rows.map(function (b) {{ return b.innerText.trim(); }}), tall: Math.round(Math.min.apply(null, rows.map(function (b) {{ return b.getBoundingClientRect().height; }}))), hit: rows.every(function (b) {{ return ({PHONE_HITTABLE})(b); }}), inside: r.left >= p.left - 1 && r.right <= p.right + 1 && r.top >= p.top - 1 && r.bottom <= p.bottom + 1, expanded: document.querySelector('#preview .preview-more').getAttribute('aria-expanded') }}); }})()"
+    );
+    let mv: serde_json::Value =
+        serde_json::from_str(harness::eval(&tab, &menu).as_str().unwrap_or("{}")).unwrap();
+    assert_eq!(
+        mv["rows"],
+        serde_json::json!(["download", "expand"]),
+        "More offers the file's download and full screen: {mv}"
+    );
+    assert_eq!(
+        mv["words"],
+        serde_json::json!(["Download this file", "Take the whole screen"]),
+        "each row in its control's own words: {mv}"
+    );
+    assert!(
+        mv["tall"].as_i64().unwrap_or(0) >= 44,
+        "each row a finger's 44 points: {mv}"
+    );
+    assert_eq!(mv["hit"], true, "every row takes a tap: {mv}");
+    assert_eq!(mv["inside"], true, "the menu stays inside the pane: {mv}");
+    assert_eq!(mv["expanded"], "true", "More says it is open: {mv}");
+    // A tap elsewhere (on the file the pane shows) closes it, and the tab stays.
+    let at = page_point(
+        &tab,
+        "the pane's body",
+        "(function(){ var r = document.getElementById('previewBody').getBoundingClientRect(); return JSON.stringify([r.left + r.width / 2, r.top + r.height * 0.6]); })()",
+    );
+    harness::finger_tap(&tab, at[0], at[1]);
+    harness::until(
+        &tab,
+        menu_hidden,
+        "a tap elsewhere to close the More menu",
+        Duration::from_secs(5),
+        "document.querySelector('#preview .preview-more').getAttribute('aria-expanded')",
+    );
+    assert_eq!(
+        read()["on"],
+        "vendor-mdrev.txt",
+        "the tap that closed the menu changed no tab"
+    );
+    // Escape closes it too.
+    phone_tap(&tab, "#preview .preview-more");
+    harness::until(
+        &tab,
+        menu_shown,
+        "the More menu to open again",
+        Duration::from_secs(5),
+        "document.querySelector('#preview .preview-more').getAttribute('aria-expanded')",
+    );
+    harness::eval(
+        &tab,
+        "(document.activeElement || document.body).dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })); 'ok'",
+    );
+    harness::until(
+        &tab,
+        menu_hidden,
+        "Escape to close the More menu",
+        Duration::from_secs(5),
+        "document.querySelector('#preview .preview-more').getAttribute('aria-expanded')",
+    );
+    // Full screen from More, and back, the current title whole at the whole width too.
+    assert_eq!(more_choice(&tab, "expand"), "Take the whole screen");
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('preview-full')",
+        "the pane at the whole screen",
+        Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    let s = read();
+    assert_eq!(
+        s["whole"], true,
+        "at the whole screen the title is whole: {s}"
+    );
+    assert_eq!(more_choice(&tab, "expand"), "Back to two columns");
+    harness::until(
+        &tab,
+        "!document.getElementById('app').classList.contains('preview-full')",
+        "back to two columns",
+        Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    // Turned upright with the menu open: it closes, and the head is as it was (the download in it, no More).
+    phone_tap(&tab, "#preview .preview-more");
+    harness::until(
+        &tab,
+        menu_shown,
+        "the More menu to open before the turn",
+        Duration::from_secs(5),
+        "document.querySelector('#preview .preview-more').getAttribute('aria-expanded')",
+    );
+    harness::phone(&tab, 402, 874);
+    harness::until(
+        &tab,
+        &format!("{menu_hidden} && innerWidth === 402"),
+        "the More menu to close as the phone turns upright",
+        Duration::from_secs(5),
+        "innerWidth + ' ' + document.querySelector('#preview .preview-more').getAttribute('aria-expanded')",
+    );
+    let upright = format!(
+        "JSON.stringify({{ download: ({PHONE_DRAWN})('#preview .preview-head .preview-download'), more: ({PHONE_DRAWN})('#preview .preview-head .preview-more') }})"
+    );
+    assert_eq!(
+        harness::eval(&tab, &upright).as_str(),
+        Some("{\"download\":true,\"more\":false}"),
+        "upright the head keeps the download and draws no More"
+    );
+    harness::phone(&tab, 874, 402);
+    harness::until(
+        &tab,
+        &format!("innerWidth === 874 && ({PHONE_DRAWN})('#preview .preview-head .preview-more')"),
+        "sideways again",
+        Duration::from_secs(5),
+        "innerWidth",
+    );
+    assert_eq!(
+        harness::eval(&tab, menu_hidden),
+        serde_json::Value::Bool(true),
+        "turned back, the menu stays shut"
     );
 }
 
@@ -26184,6 +26455,40 @@ fn a_narrow_phone_held_sideways_keeps_a_pane_sheets_heading_clear_of_the_handle(
     );
 }
 
+/// On a phone held sideways (#s663): opens the pane head's More menu, chooses its `name` row
+/// (`reveal`, `download`, `print`, `review` or `expand`), and answers that row's words as they read.
+/// The menu is closed after the choice.
+fn more_choice(tab: &headless_chrome::Tab, name: &str) -> String {
+    phone_tap(tab, "#preview .preview-more");
+    let row = format!("#preview .preview-more-menu [data-preview-more=\"{name}\"]");
+    harness::until(
+        tab,
+        &format!("({PHONE_DRAWN})({})", serde_json::to_string(&row).unwrap()),
+        "the More menu to offer the row",
+        Duration::from_secs(5),
+        "(document.querySelector('#preview .preview-more-menu') || {outerHTML: 'no menu'}).outerHTML",
+    );
+    let words = harness::eval(
+        tab,
+        &format!(
+            "document.querySelector({}).innerText.trim()",
+            serde_json::to_string(&row).unwrap()
+        ),
+    )
+    .as_str()
+    .unwrap_or_default()
+    .to_string();
+    phone_tap(tab, &row);
+    harness::until(
+        tab,
+        "document.querySelector('#preview .preview-more-menu').hidden",
+        "the More menu to close on its choice",
+        Duration::from_secs(5),
+        "document.querySelector('#preview .preview-more').getAttribute('aria-expanded')",
+    );
+    words
+}
+
 /// #s49, the owner: "On landscape mode, opening of the right pane, I think it is better to do two
 /// columns. If the left side bar is already open, then right pane overlaps with the session view,
 /// otherwise, put both session view and right side pane side by side. User can further expand the
@@ -26202,7 +26507,7 @@ fn a_phone_held_sideways_opens_the_pane_as_a_second_column() {
         8,
         Some(harness::SIDEWAYS_INSETS),
     );
-    let facts = "(function(){ var w = document.querySelector('#sessionView>.workspace').getBoundingClientRect(), p = document.getElementById('preview').getBoundingClientRect(), s = document.querySelector('#app>.sidebar').getBoundingClientRect(), d = document.getElementById('phoneDock'), e = document.querySelector('.preview-expand'); return JSON.stringify({ ws: Math.round(w.width), pane: Math.round(p.left), paneW: Math.round(p.width), col: Math.round(s.right), dock: getComputedStyle(d).display === 'none' ? -1 : Math.round(d.getBoundingClientRect().right), w: innerWidth, expand: getComputedStyle(e).display, full: document.getElementById('app').classList.contains('preview-full') }); })()";
+    let facts = "(function(){ var w = document.querySelector('#sessionView>.workspace').getBoundingClientRect(), p = document.getElementById('preview').getBoundingClientRect(), s = document.querySelector('#app>.sidebar').getBoundingClientRect(), d = document.getElementById('phoneDock'), e = document.querySelector('.preview-expand'), m = document.querySelector('.preview-more'); return JSON.stringify({ ws: Math.round(w.width), pane: Math.round(p.left), paneW: Math.round(p.width), col: Math.round(s.right), dock: getComputedStyle(d).display === 'none' ? -1 : Math.round(d.getBoundingClientRect().right), w: innerWidth, expand: getComputedStyle(e).display, more: getComputedStyle(m).display, full: document.getElementById('app').classList.contains('preview-full') }); })()";
     let read = || -> serde_json::Value {
         serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
             .unwrap_or_default()
@@ -26219,8 +26524,8 @@ fn a_phone_held_sideways_opens_the_pane_as_a_second_column() {
     );
     let over = read();
     assert!(
-        (num(&over, "pane") - num(&over, "col")).abs() <= 1 && num(&over, "dock") == -1 && over["expand"] != "none",
-        "with the list shown the pane covers the session beside it, its expand control shown: {over}"
+        (num(&over, "pane") - num(&over, "col")).abs() <= 1 && num(&over, "dock") == -1 && over["expand"] == "none" && over["more"] != "none",
+        "with the list shown the pane covers the session beside it, its full screen in the head's More menu (#s663): {over}"
     );
     assert_eq!(
         harness::eval(
@@ -26246,8 +26551,12 @@ fn a_phone_held_sideways_opens_the_pane_as_a_second_column() {
         (num(&side, "ws") - half).abs() <= 2 && (num(&side, "pane") - half).abs() <= 2 && num(&side, "dock") <= half,
         "with the list hidden the session and the pane sit side by side, the dock in the session's half: {side}"
     );
-    // ⤢ takes the whole screen, and back.
-    phone_tap(&tab, ".preview-expand");
+    // ⤢, in the head's More menu (#s663), takes the whole screen, and back.
+    assert_eq!(
+        more_choice(&tab, "expand"),
+        "Take the whole screen",
+        "More offers the whole screen"
+    );
     harness::until(
         &tab,
         "document.getElementById('app').classList.contains('preview-full')",
@@ -26260,7 +26569,11 @@ fn a_phone_held_sideways_opens_the_pane_as_a_second_column() {
         num(&full, "pane") == 0 && num(&full, "paneW") == num(&full, "w"),
         "⤢ gives the pane the whole screen: {full}"
     );
-    phone_tap(&tab, ".preview-expand");
+    assert_eq!(
+        more_choice(&tab, "expand"),
+        "Back to two columns",
+        "More offers the two columns back"
+    );
     harness::until(
         &tab,
         "!document.getElementById('app').classList.contains('preview-full')",

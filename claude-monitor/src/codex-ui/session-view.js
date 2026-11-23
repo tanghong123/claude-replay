@@ -805,6 +805,13 @@ function openTab(kind, query) {
   if (href) window.open(href, "_blank");
 }
 const preview = new Preview({ openTab, phone: () => layout.phone(), layoutChanged: () => paneLayoutChanged(), paneToggled: change => (viewMounted ? layout.toggled(change) : (change(), layout.decide())), dragPane, paneLayout: (name, on) => options.paneLayout?.(name, on), opened: sayFile, detach: shows("detach"), frame: options.frame, reviewSheet: options.reviewSheet === true, rootProperty: (name, value) => writeStyle(viewRoot.styleRoot(), name, value), engaged: () => engaged, keysFirst: keyboardMode === "engaged", toast, reveal: item => attachmentViewer.reveal(item), download: item => attachmentViewer.download(item), jumpToRecord: at => jumpOrFetch(at, "artifact") }, uiState);
+// The pane head's More menu (#s663, a phone held sideways) closes on the view's Escape (#s535), as
+// its other menus do; a focus inside it goes back to its button.
+addEventListener("keydown", event => {
+  if (!viewEscape(event) || preview.moreMenu.hidden) return;
+  if (preview.moreMenu.contains(viewRoot.active())) preview.moreBtn.focus();
+  preview.setMore(false);
+}, { signal });
 const attachmentViewer = new AttachmentViewer({ toast });
 // What the compose box asks of the app goes nowhere once the view is unmounted: a dialog's answer
 // still settling, a send still out.
