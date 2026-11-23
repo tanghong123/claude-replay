@@ -1645,6 +1645,7 @@ mod tests {
         )
         .unwrap();
         std::env::set_var("QWENWORK_PROJECTS_DIR", &store);
+        std::env::set_var("QWENWORK_DB", root.join("no-agents.db"));
         std::env::set_var("QWENWORK_MIRROR_DIR", &someones);
         let listed = store_transcripts_for(&QWENWORK);
         let contained = store_contains_for(&QWENWORK, &theirs);
@@ -1654,6 +1655,7 @@ mod tests {
         let listed_taken = store_transcripts_for(&QWENWORK);
         let subs_taken = subagent_transcripts_for(&QWENWORK);
         std::env::remove_var("QWENWORK_MIRROR_DIR");
+        std::env::remove_var("QWENWORK_DB");
         std::env::remove_var("QWENWORK_PROJECTS_DIR");
         assert!(!listed.contains(&theirs), "{listed:?}");
         assert!(!contained);
@@ -1770,6 +1772,24 @@ mod tests {
         let b_after = read(chat_b).unwrap();
         let joins = super::super::opencode::read_joins(&root.join("opencode-mirror"));
 
+        // A restart, then both gain a generation before the next refresh (the review of #s662).
+        super::super::opencode::forget_kept();
+        begin(&e, "ses_a3", 5000, "the third go of three");
+        begin(&e, "ses_b3", 6000, "the third go of b");
+        a.execute(
+            "update sub_chats set ext = ?1 where session_id = ?2",
+            params![binding("ses_a3", 3), chat_a],
+        )
+        .unwrap();
+        a.execute(
+            "update sub_chats set ext = ?1 where session_id = ?2",
+            params![binding("ses_b3", 3), chat_b],
+        )
+        .unwrap();
+        super::super::opencode::refresh_now(&QWENWORK);
+        let a_both = read(chat_a).unwrap();
+        let b_both = read(chat_b).unwrap();
+
         // The neighbour is deleted in the app: its join goes, and the chat keeps its own.
         a.execute("delete from sub_chats where session_id = ?1", [chat_b])
             .unwrap();
@@ -1797,11 +1817,27 @@ mod tests {
         assert!(!b_after.contains("the first go of two"));
         assert_eq!(
             joins.get(chat_a).map(Vec::as_slice),
-            Some(["ses_a1".to_string()].as_slice())
+            Some(["ses_a1".to_string(), "ses_a2".to_string()].as_slice())
         );
         assert_eq!(
             joins.get(chat_b).map(Vec::as_slice),
-            Some(["ses_b1".to_string()].as_slice())
+            Some(["ses_b1".to_string(), "ses_b2".to_string()].as_slice())
+        );
+        assert!(
+            [
+                "the first go of two",
+                "the second go of two",
+                "the third go of three"
+            ]
+            .iter()
+            .all(|t| a_both.contains(t)),
+            "both gaining at once, the chat keeps its history"
+        );
+        assert!(
+            ["the only go so far", "the next go", "the third go of b"]
+                .iter()
+                .all(|t| b_both.contains(t)),
+            "and so does the neighbour"
         );
         assert!(!joins_left.contains_key(chat_b), "{joins_left:?}");
         assert!(joins_left.contains_key(chat_a), "{joins_left:?}");
