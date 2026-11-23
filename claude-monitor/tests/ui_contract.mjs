@@ -1556,6 +1556,7 @@ assert.match(productionCss, /\n:is\(#collapseBtn,#expandBtn\)\[data-flat\]\{disp
 assert.match(listSource, /const noGroups = \(flat && !grouped\) \|\| arranged;\n  for \(const control of \[collapseBtn, expandBtn\]\) control\.toggleAttribute\("data-flat", noGroups\);/, "…with the same verdict as its own sessions-flat, except that grouped by machine (#s561) the machines' heads still fold");
 assert.match(listSource, /filterSheet\.querySelector\("\[data-group-part\]"\)\?\.toggleAttribute\("data-no-groups", noGroups\);/, "#s664: the sheet's fold rows go with the glyphs, under a mark of their own");
 assert.equal((listSource.match(/\sdata-flat[\s>]/g) || []).length, 1, "data-flat is drawn on the One list by activity option alone, and only the two head glyphs outside the sheet are marked with it (#s664's landing: the fold rows wore it, and the cases' #sessionFilter [data-flat] found them first)");
+assert.equal((listSource.match(/toggleAttribute\("data-flat"/g) || []).length, 1, "…and the script sets data-flat in one place, on the two head glyphs: the #s664 landing's red came from a second element marked with it as the list went flat");
 // #s664 (Hong's choice on #s661): the filter sheet's first two rows are Collapse and Expand every group, drawn with any
 // sheet, shown only where the app's wide-phone column takes the two glyphs out of its head, and doing what the glyphs do.
 assert.match(listSource, /data-group-action="collapse"[^\n]*<span>Collapse every group<\/span>/, "#s664: the sheet's Collapse every group row");
