@@ -26,6 +26,10 @@
 //!   the families in `claude-replay-agents` — an intra-crate import there, no longer
 //!   a seam concern (#87 step 3).
 
+/// The adapter trait itself, for a family whose code folds a transcript through the adapter that
+/// is doing the work rather than one it names (#s668: a derived family's sub-agent tree, parsed
+/// by Claude's walk, must be folded by the family's own decoder).
+pub use crate::adapter::TranscriptAdapter;
 pub use crate::adapter::{
     Continuation, LinePreprocessor, PreprocessedLine, SpawnLink, SpawnRoster, StatusLineHook,
 };

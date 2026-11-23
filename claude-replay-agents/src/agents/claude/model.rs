@@ -3533,9 +3533,17 @@ pub(crate) fn parse(jsonl: &str) -> Vec<Block> {
 /// — any depth — share one flat `<session>/subagents/` dir, so one dir resolves the whole
 /// tree. No-op when the dir is absent. This is the enrichment behind `parse_session_enriched`
 /// (the Claude adapter's `TranscriptAdapter::enrich`).
-pub(crate) fn enrich_tree(path: &std::path::Path, blocks: &mut [Block]) {
+///
+/// `adapter` is the one enriching (#s668): a child is folded by its decoder, so a derived family's
+/// own records (an `api_retry`, a mirror's `files_changed`) are drawn inside the tree as they are
+/// in the child opened on its own. Claude passes its own.
+pub(crate) fn enrich_tree(
+    adapter: &'static dyn TranscriptAdapter,
+    path: &std::path::Path,
+    blocks: &mut [Block],
+) {
     if let Some(dir) = subagents_dir(path) {
-        enrich_subagents(blocks, &dir);
+        enrich_subagents(adapter, blocks, &dir);
     }
 }
 
@@ -3821,19 +3829,31 @@ fn is_slash_command(word: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | ':' | '.'))
 }
 
-pub(crate) fn enrich_tree_in(sadir: &std::path::Path, blocks: &mut [Block]) {
-    enrich_subagents(blocks, sadir);
+pub(crate) fn enrich_tree_in(
+    adapter: &'static dyn TranscriptAdapter,
+    sadir: &std::path::Path,
+    blocks: &mut [Block],
+) {
+    enrich_subagents(adapter, blocks, sadir);
 }
 
 /// Parse a transcript file into blocks WITHOUT loading sub-agent children — the raw pass
 /// the adapter's `parse_path_timed` builds on. `enrich_tree` (the adapter's `enrich`, backing
 /// `parse_session_enriched`) adds the children; that recursion reuses this so grandchildren
 /// resolve against the same session `subagents/` dir.
+#[cfg(test)]
 fn parse_file(path: &std::path::Path) -> std::io::Result<Vec<Block>> {
+    parse_file_with(&crate::adapters::ClaudeAdapter, path)
+}
+
+/// [`parse_file`] through `adapter`'s decoder.
+fn parse_file_with(
+    adapter: &'static dyn TranscriptAdapter,
+    path: &std::path::Path,
+) -> std::io::Result<Vec<Block>> {
     // Stream through the shared incremental fold in a single pass, one line resident, and keep
     // only the blocks (this sub-agent path doesn't need times or metrics).
-    let mut b =
-        claude_replay_engine::seam::SessionAccumulator::new(&crate::adapters::ClaudeAdapter);
+    let mut b = claude_replay_engine::seam::SessionAccumulator::new(adapter);
     let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
     b.advance_reader(&mut reader)?;
     Ok(b.fold().0)
@@ -4042,7 +4062,11 @@ fn child_file(sadir: &std::path::Path, agent_id: &str) -> Option<std::path::Path
 /// `<sadir>/agent-<id>.jsonl`, recursing into grandchildren against the same `sadir`.
 /// A missing child file (older session, a copied `.jsonl`) leaves `blocks` empty —
 /// never a dead affordance.
-fn enrich_subagents(blocks: &mut [Block], sadir: &std::path::Path) {
+fn enrich_subagents(
+    adapter: &'static dyn TranscriptAdapter,
+    blocks: &mut [Block],
+    sadir: &std::path::Path,
+) {
     for b in blocks.iter_mut() {
         if let Block::SubAgent(sa) = b {
             if sa.agent_id.is_empty() {
@@ -4051,15 +4075,15 @@ fn enrich_subagents(blocks: &mut [Block], sadir: &std::path::Path) {
             let Some(child) = child_file(sadir, &sa.agent_id) else {
                 continue;
             };
-            let Ok(mut cb) = parse_file(&child) else {
+            let Ok(mut cb) = parse_file_with(adapter, &child) else {
                 continue;
             };
-            enrich_subagents(&mut cb, sadir); // grandchildren (same flat dir)
-                                              // The completion `<task-notification>` is the sole authority for terminal
-                                              // status — a child file existing does NOT mean the agent finished (it keeps
-                                              // growing while it runs). Upgrading to Completed here would hide a live agent
-                                              // from `active`, so leave the status alone and only attach the transcript.
-            sa.subtree_cost = subtree_cost(&child, &cb);
+            enrich_subagents(adapter, &mut cb, sadir); // grandchildren (same flat dir)
+                                                       // The completion `<task-notification>` is the sole authority for terminal
+                                                       // status — a child file existing does NOT mean the agent finished (it keeps
+                                                       // growing while it runs). Upgrading to Completed here would hide a live agent
+                                                       // from `active`, so leave the status alone and only attach the transcript.
+            sa.subtree_cost = subtree_cost(adapter, &child, &cb);
             sa.blocks = cb;
         }
     }
@@ -4067,13 +4091,13 @@ fn enrich_subagents(blocks: &mut [Block], sadir: &std::path::Path) {
 
 /// A sub-agent's own cost (from its transcript's metrics) plus all descendants'
 /// rolled-up costs. `None` when neither is known.
-fn subtree_cost(child_path: &std::path::Path, child_blocks: &[Block]) -> Option<UsdCost> {
+fn subtree_cost(
+    adapter: &'static dyn TranscriptAdapter,
+    child_path: &std::path::Path,
+    child_blocks: &[Block],
+) -> Option<UsdCost> {
     let own = std::fs::File::open(child_path).ok().and_then(|f| {
-        claude_replay_engine::seam::parse_reader_with(
-            &crate::adapters::ClaudeAdapter,
-            std::io::BufReader::new(f),
-        )
-        .cost_usd
+        claude_replay_engine::seam::parse_reader_with(adapter, std::io::BufReader::new(f)).cost_usd
     });
     let desc: UsdCost = child_blocks
         .iter()
@@ -14992,6 +15016,67 @@ mod tests {
         assert_eq!(map["aX"].status, AgentStatus::Unknown);
     }
 
+    /// #s668: a derived family's sub-agent, loaded into its parent's tree by that family's own
+    /// `enrich`, is folded by the family's decoder, so its `api_retry` and the opencode mirror's
+    /// `files_changed` are drawn inside the tree as in the child opened alone; through Claude's
+    /// adapter they are not, and its cost rolls up either way.
+    #[test]
+    fn a_family_sub_agent_in_its_parent_s_tree_keeps_the_family_s_own_records() {
+        use std::io::Write;
+        let base = std::env::temp_dir().join(format!("cr-s668-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("proj").join("sid.jsonl");
+        let sadir = base.join("proj").join("sid").join("subagents");
+        std::fs::create_dir_all(&sadir).unwrap();
+        let parent = r##"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"general-purpose","description":"child","prompt":"go"}}]}}
+{"type":"user","toolUseResult":{"agentId":"achild68","status":"completed"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"done"}]}}
+"##;
+        std::fs::File::create(&sess)
+            .unwrap()
+            .write_all(parent.as_bytes())
+            .unwrap();
+        let child = r##"{"type":"user","message":{"content":"go"},"cwd":"/w/proj"}
+{"type":"system","subtype":"api_retry","level":"error","content":"Upstream answered 502 Bad Gateway","error":"server_error","error_status":502,"attempt":2,"max_retries":10,"retry_delay_ms":4000,"isSidechain":true,"agentId":"achild68","version":"1.1.71","sessionId":"s-s668","timestamp":"2026-11-23T01:00:00.000Z","uuid":"r668"}
+{"type":"assistant","message":{"model":"claude-opus-4-8","usage":{"input_tokens":1000,"output_tokens":500},"content":[{"type":"tool_use","id":"c1","name":"Write","input":{"file_path":"/w/proj/a.txt","content":"x"}}]},"cwd":"/w/proj"}
+{"type":"system","subtype":"files_changed","files":["/w/proj/a.txt"],"uuid":"prt_p","parentUuid":"prt_r","timestamp":"2026-11-23T01:00:01.000Z","sessionId":"s-s668","cwd":"/w/proj","isSidechain":true,"userType":"external","version":"1.0.0"}
+"##;
+        std::fs::File::create(sadir.join("agent-achild68.jsonl"))
+            .unwrap()
+            .write_all(child.as_bytes())
+            .unwrap();
+        let tree = |adapter: &'static dyn TranscriptAdapter| {
+            let mut blocks = parse_file_with(adapter, &sess).unwrap();
+            adapter.enrich(&sess, &mut blocks);
+            let sa = blocks
+                .iter()
+                .find_map(|b| match b {
+                    Block::SubAgent(sa) => Some(sa.clone()),
+                    _ => None,
+                })
+                .expect("a SubAgent");
+            (format!("{:?}", sa.blocks), sa.subtree_cost)
+        };
+        for family in [
+            &crate::adapters::QwenworkAdapter as &'static dyn TranscriptAdapter,
+            &crate::adapters::QoderWorkAdapter,
+        ] {
+            let (drawn, cost) = tree(family);
+            assert!(drawn.contains("Changed a.txt"), "{drawn}");
+            assert!(
+                drawn.contains("API error: Upstream answered 502"),
+                "{drawn}"
+            );
+            assert!(cost.unwrap_or(0.0) > 0.0);
+        }
+        let (claude, cost) = tree(&crate::adapters::ClaudeAdapter);
+        assert!(
+            !claude.contains("Changed a.txt") && !claude.contains("API error"),
+            "{claude}"
+        );
+        assert!(cost.unwrap_or(0.0) > 0.0);
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
     /// `enrich_tree` (via `parse_session_enriched`) loads each `SubAgent`'s child transcript
     /// from the flat `<session>/subagents/agent-<id>.jsonl`, so the spawn's tool count is
     /// **node-scoped** (the child's tools, not the parent's), and `subtree_cost` rolls up.
@@ -15030,7 +15115,7 @@ mod tests {
             .unwrap();
 
         let mut blocks = parse_file(&sess).unwrap();
-        enrich_tree(&sess, &mut blocks); // load the sub-agent tree
+        enrich_tree(&crate::adapters::ClaudeAdapter, &sess, &mut blocks); // load the sub-agent tree
         let Some(Block::SubAgent(sa)) = blocks.iter().find(|b| matches!(b, Block::SubAgent(_)))
         else {
             panic!("no SubAgent: {blocks:?}")

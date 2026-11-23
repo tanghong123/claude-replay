@@ -165,7 +165,7 @@ impl TranscriptAdapter for ClaudeAdapter {
         }
     }
     fn enrich(&self, path: &Path, blocks: &mut [Block]) {
-        agents::claude::model::enrich_tree(path, blocks)
+        agents::claude::model::enrich_tree(&ClaudeAdapter, path, blocks)
     }
     fn shaping(&self) -> &'static Shaping {
         &agents::claude::model::CLAUDE_SHAPING
@@ -431,7 +431,7 @@ impl TranscriptAdapter for QoderAdapter {
     /// resolve is left for the next.
     fn enrich(&self, path: &Path, blocks: &mut [Block]) {
         for dir in agents::qoder::discover::subagents_dirs(path) {
-            agents::claude::model::enrich_tree_in(&dir, blocks);
+            agents::claude::model::enrich_tree_in(&QoderAdapter, &dir, blocks);
         }
     }
     fn shaping(&self) -> &'static Shaping {
@@ -569,7 +569,7 @@ macro_rules! qwork_family_adapter {
             /// first — after which the shared Claude pass (which resolves children by exactly those
             /// ids) does the rest against an identical `subagents/` layout.
             fn enrich(&self, path: &Path, blocks: &mut [Block]) {
-                agents::claude::model::enrich_tree(path, blocks)
+                agents::claude::model::enrich_tree(&$name, path, blocks)
             }
             // A running spawn is nameless in the transcript; its id sits in a sidecar (#37).
             fn spawn_links(&self, path: &Path) -> Vec<claude_replay_engine::seam::SpawnLink> {
