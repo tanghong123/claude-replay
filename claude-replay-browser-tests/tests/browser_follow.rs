@@ -32352,6 +32352,38 @@ fn a_wide_phone_held_sideways_folds_the_session_list_from_the_filter_sheet() {
         &["#collapseBtn", "#expandBtn", "#filterBtn"],
     );
     phone_tap(&tab, TABS[0]);
+    // Held sideways in Safari with its tab bar the page is about 330 points tall (#s287): the sheet,
+    // two rows longer, still ends inside the window, and scrolls to its last row, which takes a tap.
+    harness::phone(&tab, 956, 330);
+    harness::until(
+        &tab,
+        "innerWidth === 956 && innerHeight === 330",
+        "the window at Safari's sideways height",
+        Duration::from_secs(10),
+        "innerWidth + 'x' + innerHeight",
+    );
+    open_group_rows(&tab, "in Safari's sideways height");
+    let end = harness::eval(
+        &tab,
+        &format!("(function(){{ var s = document.getElementById('sessionFilter'); var b = s.getBoundingClientRect(); var out = {{ bottom: Math.round(b.bottom), window: innerHeight, scrolls: s.scrollHeight > s.clientHeight + 1 }}; s.scrollTop = s.scrollHeight; var rows = [...s.querySelectorAll('[data-arrange], [data-include-hidden]')].filter(function (r) {{ return r.getClientRects().length > 0; }}); var last = rows[rows.length - 1]; out.last = last ? (last.dataset.arrange || 'include hidden') : null; out.atEnd = Math.abs(s.scrollTop + s.clientHeight - s.scrollHeight) <= 1; out.hit = !!last && ({PHONE_HITTABLE})(last); return JSON.stringify(out); }})()"),
+    );
+    let end: serde_json::Value =
+        serde_json::from_str(end.as_str().unwrap_or("null")).unwrap_or_default();
+    assert!(
+        end["bottom"].as_i64().unwrap_or(i64::MAX) <= 330
+            && end["scrolls"] == true
+            && end["atEnd"] == true
+            && end["hit"] == true,
+        "in Safari's sideways height the sheet ends inside the window and scrolls to its last row, which takes a tap: {end}"
+    );
+    phone_tap(&tab, "#filterBtn");
+    harness::until(
+        &tab,
+        "document.getElementById('sessionFilter').hidden",
+        "the sheet to close at Safari's sideways height",
+        Duration::from_secs(5),
+        "document.getElementById('sessionFilter').hidden",
+    );
 
     // Upright the drawer keeps both glyphs in its head, and the sheet has no fold rows.
     let (_bu, up) = phone_tab(&m, 440, 956);
