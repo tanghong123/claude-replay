@@ -3543,7 +3543,7 @@ pub(crate) fn enrich_tree(
     blocks: &mut [Block],
 ) {
     if let Some(dir) = subagents_dir(path) {
-        enrich_subagents(adapter, blocks, std::slice::from_ref(&dir));
+        enrich_subagents(adapter, blocks, std::slice::from_ref(&dir), &mut Vec::new());
     }
 }
 
@@ -3834,7 +3834,7 @@ pub(crate) fn enrich_tree_in(
     sadirs: &[std::path::PathBuf],
     blocks: &mut [Block],
 ) {
-    enrich_subagents(adapter, blocks, sadirs);
+    enrich_subagents(adapter, blocks, sadirs, &mut Vec::new());
 }
 
 /// Parse a transcript file into blocks WITHOUT loading sub-agent children, through Claude's
@@ -4067,17 +4067,21 @@ fn child_file_in(sadir: &std::path::Path, agent_id: &str) -> Option<std::path::P
 /// `<sadir>/agent-<id>.jsonl` from the first of `sadirs` holding it, recursing into
 /// grandchildren against the same `sadirs`. A child's own spawns still running are named only
 /// out of band (the family's sidecars, flat beside it), so they are adopted as the child opened
-/// alone adopts them, before the descent (#s669).
+/// alone adopts them, before the descent (#s669). `above` holds the agents from the root down to
+/// here: a spawn naming one of them (call ids colliding within a session's tree, which every
+/// level adopting links made reachable) is left without a transcript rather than recursed into
+/// without end.
 /// A missing child file (older session, a copied `.jsonl`) leaves `blocks` empty —
 /// never a dead affordance.
 fn enrich_subagents(
     adapter: &'static dyn TranscriptAdapter,
     blocks: &mut [Block],
     sadirs: &[std::path::PathBuf],
+    above: &mut Vec<String>,
 ) {
     for b in blocks.iter_mut() {
         if let Block::SubAgent(sa) = b {
-            if sa.agent_id.is_empty() {
+            if sa.agent_id.is_empty() || above.contains(&sa.agent_id) {
                 continue;
             }
             let Some(child) = child_file(sadirs, &sa.agent_id) else {
@@ -4087,11 +4091,14 @@ fn enrich_subagents(
                 continue;
             };
             claude_replay_engine::seam::adopt_spawn_ids(adapter, &child, &mut cb);
-            enrich_subagents(adapter, &mut cb, sadirs); // grandchildren (same flat dirs)
-                                                        // The completion `<task-notification>` is the sole authority for terminal
-                                                        // status — a child file existing does NOT mean the agent finished (it keeps
-                                                        // growing while it runs). Upgrading to Completed here would hide a live agent
-                                                        // from `active`, so leave the status alone and only attach the transcript.
+            // Grandchildren, against the same flat dirs.
+            above.push(sa.agent_id.clone());
+            enrich_subagents(adapter, &mut cb, sadirs, above);
+            above.pop();
+            // The completion `<task-notification>` is the sole authority for terminal status — a
+            // child file existing does NOT mean the agent finished (it keeps growing while it
+            // runs). Upgrading to Completed here would hide a live agent from `active`, so leave
+            // the status alone and only attach the transcript.
             sa.subtree_cost = subtree_cost(adapter, &child, &cb);
             sa.blocks = cb;
         }
@@ -15074,6 +15081,49 @@ mod tests {
         let grandchild = sub(&child.blocks).expect("the grandchild's spawn");
         assert_eq!(grandchild.agent_id, "ag669");
         assert!(format!("{:?}", grandchild.blocks).contains("grandchild words"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// #s669 review: a sidecar naming an agent above the spawn (here the child itself, as two
+    /// colliding call ids would) is not followed, so the walk ends; the spawn stays named.
+    #[test]
+    fn a_spawn_linked_to_an_agent_above_it_ends_the_walk() {
+        let base = std::env::temp_dir().join(format!("cr-s669-loop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let sess = base.join("proj").join("sid.jsonl");
+        let sadir = base.join("proj").join("sid").join("subagents");
+        std::fs::create_dir_all(&sadir).unwrap();
+        std::fs::write(
+            &sess,
+            r##"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_C","name":"Agent","input":{"subagent_type":"general-purpose","description":"child","prompt":"go"}}]}}
+{"type":"user","toolUseResult":{"agentId":"al669","status":"completed"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_C","content":"done"}]}}
+"##,
+        )
+        .unwrap();
+        std::fs::write(
+            sadir.join("agent-al669.jsonl"),
+            r##"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_L","name":"Agent","input":{"subagent_type":"general-purpose","description":"again","prompt":"go"}}]},"isSidechain":true,"agentId":"al669"}
+"##,
+        )
+        .unwrap();
+        std::fs::write(
+            sadir.join("task-loop.json"),
+            r#"{"parentToolUseId":"toolu_L","agentId":"al669"}"#,
+        )
+        .unwrap();
+        let sub = |blocks: &[Block]| {
+            blocks.iter().find_map(|b| match b {
+                Block::SubAgent(sa) => Some(sa.clone()),
+                _ => None,
+            })
+        };
+        let adapter: &'static dyn TranscriptAdapter = &crate::adapters::QwenworkAdapter;
+        let mut blocks = parse_file_with(adapter, &sess).unwrap();
+        adapter.enrich(&sess, &mut blocks);
+        let child = sub(&blocks).expect("the child");
+        let again = sub(&child.blocks).expect("the child's own spawn");
+        assert_eq!(again.agent_id, "al669");
+        assert!(again.blocks.is_empty());
         let _ = std::fs::remove_dir_all(&base);
     }
 

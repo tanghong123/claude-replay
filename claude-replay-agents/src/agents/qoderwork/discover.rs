@@ -626,7 +626,8 @@ fn sidecars_dir(path: &Path) -> Option<PathBuf> {
 /// This session's out-of-band spawn identity, read from the sidecars beside its children.
 ///
 /// The `is_dir` probe short-circuits every session that spawned nothing — one `stat`, which is
-/// what a live follower pays per poll for asking.
+/// what a live follower pays per poll for asking. A sub-agent's own file has its folder, so a
+/// view of a child lists it as a view of the session does (#s669).
 ///
 /// `task-*.json` is preferred because it names the agent id outright; `*.meta.json` is the
 /// fallback, where the id is the file's own stem. A sidecar that parses but does not name the
