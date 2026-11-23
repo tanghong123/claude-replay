@@ -611,6 +611,18 @@ fn subagents_dir(path: &Path) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
+/// Where `path`'s spawns keep their sidecars: a session's `<dir>/<id>/subagents`, and for a
+/// sub-agent's own transcript the folder it sits in, since every descendant of a session is
+/// filed there flat with its sidecar (#s669: a child read `<folder>/agent-<id>/subagents`, which
+/// never exists, so its own spawns still running were never named).
+fn sidecars_dir(path: &Path) -> Option<PathBuf> {
+    let parent = path.parent()?;
+    if parent.file_name().is_some_and(|n| n == "subagents") {
+        return Some(parent.to_path_buf());
+    }
+    subagents_dir(path)
+}
+
 /// This session's out-of-band spawn identity, read from the sidecars beside its children.
 ///
 /// The `is_dir` probe short-circuits every session that spawned nothing — one `stat`, which is
@@ -620,7 +632,7 @@ fn subagents_dir(path: &Path) -> Option<PathBuf> {
 /// fallback, where the id is the file's own stem. A sidecar that parses but does not name the
 /// parent is skipped rather than guessed at.
 pub(crate) fn spawn_links(path: &Path) -> Vec<SpawnLink> {
-    let Some(dir) = subagents_dir(path) else {
+    let Some(dir) = sidecars_dir(path) else {
         return Vec::new();
     };
     let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -692,6 +704,31 @@ mod tests {
     /// REAL store (68 live transcripts where the fixture has 1) — a flake that failed a
     /// different test on each run. Hold this for the whole env-scoped window.
     static STORE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// #s669: a sub-agent's own transcript reads its spawns' sidecars from the folder it sits
+    /// in, where every descendant of the session is filed flat, so a child opened alone names
+    /// its own spawn still running; a session reads its `<id>/subagents` as before.
+    #[test]
+    fn a_sub_agent_reads_its_spawns_sidecars_from_its_own_folder() {
+        let d = std::env::temp_dir().join(format!("qw-s669-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let sadir = d.join("sid").join("subagents");
+        std::fs::create_dir_all(&sadir).unwrap();
+        std::fs::write(
+            sadir.join("agent-ag2.meta.json"),
+            r#"{"toolUseId":"toolu_G","agentType":"general-purpose"}"#,
+        )
+        .unwrap();
+        let has = |links: Vec<SpawnLink>| {
+            links
+                .iter()
+                .any(|l| l.tool_use_id == "toolu_G" && l.agent_id == "ag2")
+        };
+        assert!(has(spawn_links(&sadir.join("agent-ac1.jsonl"))));
+        assert!(has(spawn_links(&d.join("sid.jsonl"))));
+        assert!(spawn_links(&d.join("other.jsonl")).is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 
     /// PROVENANCE-FIRST detection (#20 follow-up): a session under `~/.qoderwork/projects`
     /// keeps its QoderWork identity even with the KEYED `runtime-config` head — real

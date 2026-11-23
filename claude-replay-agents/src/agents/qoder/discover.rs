@@ -513,4 +513,65 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// #s669: a grandchild filed under another of the session's candidate dirs than its parent
+    /// (a `cwd` change between the two spawns) is still found: every child, at every depth, is
+    /// looked for in each dir.
+    #[test]
+    fn a_grandchild_under_another_candidate_dir_resolves_in_the_tree() {
+        use claude_replay_engine::seam::{Block, SessionAccumulator, TranscriptAdapter};
+        let _env = STORE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("qd-s669-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let here = root.join("-Users-dev-proj").join("sid69").join("subagents");
+        let there = root
+            .join("-Users-dev-proj--qoder-worktrees-wt")
+            .join("sid69")
+            .join("subagents");
+        std::fs::create_dir_all(&here).unwrap();
+        std::fs::create_dir_all(&there).unwrap();
+        let sess = root.join("-Users-dev-proj").join("sid69.jsonl");
+        std::fs::write(
+            &sess,
+            r##"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_C","name":"Agent","input":{"subagent_type":"general-purpose","description":"child","prompt":"go"}}]}}
+{"type":"user","toolUseResult":{"agentId":"aq1","status":"completed"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_C","content":"done"}]}}
+"##,
+        )
+        .unwrap();
+        std::fs::write(
+            here.join("agent-aq1.jsonl"),
+            r##"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_G","name":"Agent","input":{"subagent_type":"general-purpose","description":"grandchild","prompt":"deeper"}}]},"isSidechain":true}
+{"type":"user","toolUseResult":{"agentId":"aq2","status":"completed"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_G","content":"done"}]},"isSidechain":true}
+"##,
+        )
+        .unwrap();
+        std::fs::write(
+            there.join("agent-aq2.jsonl"),
+            r##"{"type":"assistant","message":{"content":[{"type":"text","text":"grandchild words"}]},"isSidechain":true}
+"##,
+        )
+        .unwrap();
+        std::env::set_var("QODER_PROJECTS_DIR", &root);
+        let adapter: &'static dyn TranscriptAdapter = &crate::adapters::QoderAdapter;
+        let mut acc = SessionAccumulator::new(adapter);
+        let mut reader = std::io::BufReader::new(std::fs::File::open(&sess).unwrap());
+        acc.advance_reader(&mut reader).unwrap();
+        let mut blocks = acc.fold().0;
+        adapter.enrich(&sess, &mut blocks);
+        std::env::remove_var("QODER_PROJECTS_DIR");
+        let sub = |blocks: &[Block]| {
+            blocks.iter().find_map(|b| match b {
+                Block::SubAgent(sa) => Some(sa.clone()),
+                _ => None,
+            })
+        };
+        let child = sub(&blocks).expect("the child");
+        let grandchild = sub(&child.blocks).expect("the grandchild's spawn");
+        assert!(
+            format!("{:?}", grandchild.blocks).contains("grandchild words"),
+            "{:?}",
+            grandchild.blocks
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

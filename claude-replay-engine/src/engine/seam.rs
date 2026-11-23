@@ -13,7 +13,8 @@
 //!   [`Metrics`], [`Candidate`].
 //! - **Feeding the fold** — [`Message`]/[`QueueOpKind`] (the L1 output), [`Shaping`]
 //!   (the L2 hook table), [`SessionAccumulator`], and [`TranscriptAdapter`] itself, for code
-//!   that folds through the adapter doing the work (#s668); doc-hidden, the frozen-reference
+//!   that folds through the adapter doing the work (#s668), with [`adopt_spawn_ids`] for the
+//!   spawns a child names only out of band (#s669); doc-hidden, the frozen-reference
 //!   vocabulary the equivalence gates drive (`QueueItem`, `stamp_user_turns`,
 //!   `replay`, `parse_path_timed_for`, `build_sub_agents`).
 //! - **Folding usage** — [`estimate_cost`], `parse_reader_for`, [`parse_ts`],
@@ -27,6 +28,9 @@
 //!   the families in `claude-replay-agents` — an intra-crate import there, no longer
 //!   a seam concern (#87 step 3).
 
+/// The batch half of spawn adoption, for a walk that folds a sub-agent's child itself (#s669: a
+/// family child's own spawns still running are named only by sidecars).
+pub use crate::adapter::adopt_spawn_ids;
 /// The adapter trait itself, for a family whose code folds a transcript through the adapter that
 /// is doing the work rather than one it names (#s668: a derived family's sub-agent tree, parsed
 /// by Claude's walk, must be folded by the family's own decoder).

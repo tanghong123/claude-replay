@@ -427,12 +427,11 @@ impl TranscriptAdapter for QoderAdapter {
     }
     /// Claude's enrichment over EVERY candidate `subagents/` dir: a mid-session `cwd`
     /// change files the companion dir under the new cwd's slug, away from the transcript
-    /// (see `qoder::discover::subagents_dirs`). Passes compose — a child one dir can't
-    /// resolve is left for the next.
+    /// (see `qoder::discover::subagents_dirs`). Each child, at any depth, is looked for in
+    /// each dir (#s669).
     fn enrich(&self, path: &Path, blocks: &mut [Block]) {
-        for dir in agents::qoder::discover::subagents_dirs(path) {
-            agents::claude::model::enrich_tree_in(&QoderAdapter, &dir, blocks);
-        }
+        let dirs = agents::qoder::discover::subagents_dirs(path);
+        agents::claude::model::enrich_tree_in(&QoderAdapter, &dirs, blocks);
     }
     fn shaping(&self) -> &'static Shaping {
         &agents::claude::model::CLAUDE_SHAPING
