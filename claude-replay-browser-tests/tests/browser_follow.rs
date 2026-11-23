@@ -20681,17 +20681,17 @@ fn a_phone_switch_closes_the_drawer_and_veils_the_load() {
     );
 }
 
+const GLIDE_A: &str = "a6670000-0000-4000-8000-00000000000a";
+const GLIDE_B: &str = "b6670000-0000-4000-8000-00000000000b";
+
 /// #s667: a phone reader who flings a session, opens another from the drawer and comes back to the
 /// first from the drawer lands where they left it. A session's place is kept 250 ms after a scroll
 /// that is the reader's own, and a scroll is theirs only within the intent window (320 ms) of their
 /// last touch, so a fling's glide that outlasted the window moved the view on and saved nothing: on
 /// the iOS Simulator the session came back one turn further down than it was left (1.554.0 and
 /// 1.555.0 alike, walk489). The session being left now keeps its place as the other one opens. The
-/// glide is the harness's iOS-style one (about 3.6 s), and the case records every write of a place
+/// glide is the harness's iOS-style one (about 4 s), and the case records every write of a place
 /// and the glide's window, so a failure says when the place was last written.
-const GLIDE_A: &str = "a6670000-0000-4000-8000-00000000000a";
-const GLIDE_B: &str = "b6670000-0000-4000-8000-00000000000b";
-
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_goes_back_to_a_session_where_its_glide_left_it() {
@@ -20738,6 +20738,10 @@ fn a_phone_goes_back_to_a_session_where_its_glide_left_it() {
         let text = harness::eval(tab, TOP_UNIT);
         serde_json::from_str(text.as_str().unwrap_or("null")).unwrap_or(serde_json::Value::Null)
     };
+    // Where the unit with `left`'s key starts against the transcript's top, or 'null' while it is not drawn.
+    let unit_at = |left: &serde_json::Value| -> String {
+        format!("(function () {{ var s = document.querySelector('.transcript'), w = s && s.querySelector('.virtual-window'); if (!w) return 'null'; for (var i = 0; i < w.children.length; i++) {{ var c = w.children[i]; if (c.dataset && c.dataset.unitKey === {key}) return JSON.stringify({{ key: c.dataset.unitKey, off: Math.round(c.getBoundingClientRect().top - s.getBoundingClientRect().top) }}); }} return 'null'; }})()", key = left["key"])
+    };
     let record = |tab: &headless_chrome::Tab| -> String {
         harness::eval(
             tab,
@@ -20754,6 +20758,15 @@ fn a_phone_goes_back_to_a_session_where_its_glide_left_it() {
     assert!(
         left["key"].is_string(),
         "a unit at the top once the glide is at rest: {left}"
+    );
+    // The bug's ground: a glide that ran on for seconds past the intent window and left the end far
+    // behind (a glide that never started would leave the session following, and pass on any build).
+    let ground = harness::eval(&tab, "JSON.stringify({ ms: Math.round((window.__glideT1 || 0) - (window.__glideT0 || 0)), gap: (function () { var s = document.querySelector('.transcript'); return Math.round(s.scrollHeight - s.clientHeight - s.scrollTop); })() })");
+    let ground: serde_json::Value =
+        serde_json::from_str(ground.as_str().unwrap_or("null")).unwrap_or(serde_json::Value::Null);
+    assert!(
+        ground["ms"].as_i64().unwrap_or(0) > 1000 && ground["gap"].as_i64().unwrap_or(0) > 2000,
+        "the glide ran over a second and left the end over 2000 px behind: {ground}"
     );
     let row = |sid: &str| format!(".tree-row.session[data-session=\"{sid}\"]");
     for (to, what) in [
@@ -20779,17 +20792,19 @@ fn a_phone_goes_back_to_a_session_where_its_glide_left_it() {
     }
     harness::until(
         &tab,
-        &format!("(function () {{ var u = {TOP_UNIT}; return u !== 'null' && JSON.parse(u).key === {key}; }})()", key = left["key"]),
-        "the first session back on the unit at its top when it was left",
+        &format!("(function () {{ var u = {UNIT_AT}; return u !== 'null' && Math.abs(JSON.parse(u).off - {off}) <= 40; }})()", UNIT_AT = unit_at(&left), off = left["off"]),
+        "the first session back with the unit left at its top where it was, within 40 px",
         Duration::from_secs(10),
-        &format!("JSON.stringify({{ now: JSON.parse({TOP_UNIT}), left: {left}, glide: [Math.round(window.__glideT0 || 0), Math.round(window.__glideT1 || 0)], places: window.__places }})"),
+        &format!("JSON.stringify({{ now: {UNIT_AT}, top: JSON.parse({TOP_UNIT}), left: {left}, glide: [Math.round(window.__glideT0 || 0), Math.round(window.__glideT1 || 0)], places: window.__places }})", UNIT_AT = unit_at(&left)),
     );
     std::thread::sleep(Duration::from_millis(300));
-    let now = top_unit(&tab);
+    let text = harness::eval(&tab, &unit_at(&left));
+    let now: serde_json::Value =
+        serde_json::from_str(text.as_str().unwrap_or("null")).unwrap_or(serde_json::Value::Null);
     let drift = (now["off"].as_i64().unwrap_or(9999) - left["off"].as_i64().unwrap_or(0)).abs();
     assert!(
-        now["key"] == left["key"] && drift <= 40,
-        "back where it was left, within 40 px: left {left}, back {now}; the writes of a place and the glide's window: {}",
+        drift <= 40,
+        "it stays where it was left, within 40 px: left {left}, back {now}; the writes of a place and the glide's window: {}",
         record(&tab)
     );
 }

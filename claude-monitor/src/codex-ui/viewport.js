@@ -365,7 +365,11 @@ export class Viewport extends VirtualWindow {
   /** Remember the current position for this session: following, or the anchor. */
   remember() {
     clearTimeout(this.rememberTimer);
-    if (!this.session || this.pending) return;
+    // Nothing is written for a session whose remembered place, or whose view choices, have not been
+    // applied yet: its records have not arrived, so what is on screen says nothing of it, and a
+    // write would replace what is kept (#s667's review: a switch away before the first batch
+    // landed wrote `following` with no folds over the folds it had).
+    if (!this.session || this.pending || this.pendingView) return;
     const value = this.state.following ? { following: true } : this.captureDomAnchor();
     if (!value) return;
     const view = viewChoices(this.state);
