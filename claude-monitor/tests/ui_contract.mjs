@@ -1579,6 +1579,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal(parseViewMemory('{"following":false}'), null, "not following without an anchor is nothing to restore");
   assert.match(viewportSource, /beginSession\(session\)/, "the viewport reads the memory when a session opens");
   assert.match(viewportSource, /beginSession\(session\) \{\n(?:\s*\/\/[^\n]*\n)*\s*this\.remember\(\);\n\s*this\.session = session \|\| "";/, "#s667: the session being left keeps where the reader left it, saved before the switch (a glide past the intent window saved nothing)");
+  assert.match(viewportSource, /if \(!this\.session \|\| this\.pending \|\| this\.pendingView\) return;/, "#s667's review: a session whose place or view choices are not applied yet is not written, so a switch away before its records land keeps its folds");
   assert.match(viewportSource, /addEventListener\("pagehide", \(\) => this\.remember\(\), \{ signal: this\.life\.signal \}\)/, "the last position is written on the way out");
   assert.match(viewportSource, /this\.state\.following = !this\.pending/, "a remembered anchor holds following off until it is applied, so the tail never flashes past");
   assert.match(viewSource, /viewport\.beginSession\(id\); recordStore\.open\(id\)/, "the memory is read before the stream starts");
