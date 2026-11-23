@@ -2255,6 +2255,7 @@
 #sessionView:where(.pl-coarse.pl-max-h-500) .compose-dialog:is([data-kind=permission],[data-kind=plan],[data-kind=review]) .dialog-choice{flex:1 1 auto}
 #sessionView:where(.pl-coarse.pl-max-h-500.pl-min-w-900) .reading-cluster>.reading-options,:where(#sessionView.pl-coarse.pl-max-h-500.pl-min-w-900) .phone-pane-menu:not([hidden]){left:auto;right:calc(12px + max(0px, env(safe-area-inset-right,0px) - var(--pl-cut-right,0px)))}
 :where(#sessionView) .preview-expand{display:none}
+:where(#sessionView) .preview-more-wrap{display:none}
 #sessionView:where(.pl-coarse.pl-max-h-500):not(.preview-off)>.workspace{width:50%}
 #sessionView:where(.pl-coarse.pl-max-h-500):not(.preview-off)>.preview{left:50%;right:0;width:auto;--pane-safe-left:0px;box-shadow:-1px 0 0 var(--line)}
 #sessionView:where(.pl-coarse.pl-max-h-500):not(.preview-off) .transcript{padding-right:0}
@@ -2265,7 +2266,16 @@
 #sessionView:where(.pl-coarse.pl-max-h-500):not(.preview-off) .header-search-cluster>.navigator-options,#sessionView:where(.pl-coarse.pl-max-h-500):not(.preview-off) .header-search-cluster>.search-suggest{right:calc(50% + 12px);width:min(380px,calc(50% - 24px - max(0px, env(safe-area-inset-left,0px) - var(--pl-cut-left,0px))))}
 #sessionView:where(.pl-coarse.pl-max-h-500):not(.preview-off) .info-popover{right:calc(50% + 8px);width:min(420px,calc(50% - 16px - max(0px, env(safe-area-inset-left,0px) - var(--pl-cut-left,0px))))}
 #sessionView:where(.pl-coarse.pl-max-h-500):not(.preview-off) .reading-cluster>.reading-options,#sessionView:where(.pl-coarse.pl-max-h-500):not(.preview-off) .phone-pane-menu:not([hidden]){width:min(380px,calc(50% - 24px - max(0px, env(safe-area-inset-left,0px) - var(--pl-cut-left,0px))))}
-#sessionView:where(.pl-coarse.pl-max-h-500) .preview-head .preview-expand{display:grid;place-items:center;width:44px;height:44px}
+#sessionView:where(.pl-coarse.pl-max-h-500) .preview-head :is(.preview-reveal,.preview-download,.preview-print,.preview-review,.preview-expand){display:none}
+#sessionView:where(.pl-coarse.pl-max-h-500) .preview-head>.preview-more-wrap{display:block;position:relative;flex:none}
+#sessionView:where(.pl-coarse.pl-max-h-500) .preview-more{display:grid;place-items:center;width:44px;height:44px}
+#sessionView:where(.pl-coarse.pl-max-h-500) .preview-tab.on{max-width:100%}
+#sessionView:where(.pl-coarse.pl-max-h-500) .preview-more-menu{position:absolute;top:calc(100% + 4px);right:0;z-index:40;display:flex;flex-direction:column;width:min(260px,calc(var(--pl-w) - 24px));padding:6px;border:1px solid var(--line);border-radius:12px;background:var(--bg);box-shadow:0 14px 38px rgba(34,43,73,.14)}
+#sessionView:where(.pl-coarse.pl-max-h-500) .preview-more-menu[hidden]{display:none}
+#sessionView:where(.pl-coarse.pl-max-h-500) .preview-more-item{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;gap:10px;min-height:44px;padding:0 10px;border-radius:8px;background:transparent;color:var(--ink);font-size:15px;text-align:left;cursor:pointer}
+#sessionView:where(.pl-coarse.pl-max-h-500) .preview-more-glyph{display:grid;place-items:center;color:var(--sub);font-size:17px;line-height:1}
+#sessionView:where(.pl-coarse.pl-max-h-500) .preview-more-glyph svg{width:17px;height:17px}
+#sessionView:where(.pl-coarse.pl-max-h-500) .preview-more-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 #sessionView:where(.pl-coarse.pl-max-h-500.pl-min-w-900):not(.preview-off) .reading-cluster>.reading-options,#sessionView:where(.pl-coarse.pl-max-h-500.pl-min-w-900):not(.preview-off) .phone-pane-menu:not([hidden]){right:calc(50% + 12px)}
 #sessionView:where(.pl-coarse.pl-max-h-500).preview-full:not(.preview-off)>.preview{left:0;--pane-safe-left:max(0px, env(safe-area-inset-left,0px) - var(--pl-cut-left,0px));box-shadow:none}
 :where(#sessionView:is(.pl-min-w-761.pl-pane-over.pl-min-h-501,.pl-min-w-761.pl-pane-over.pl-fine)).session-view:not(.preview-off)>.preview,:where(#sessionView:is(.pl-min-w-761.pl-pane-over.pl-min-h-501,.pl-min-w-761.pl-pane-over.pl-fine)) .session-view:not(.preview-off)>.preview{left:calc(var(--pane-x) - var(--pl-cut-left,0px) + 10px);width:auto}
