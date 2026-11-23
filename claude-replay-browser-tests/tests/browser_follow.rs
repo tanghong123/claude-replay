@@ -25256,7 +25256,7 @@ fn drawer_world(
         harness::safe_area(&tab, insets);
     }
     m.pair(&tab);
-    // The desktop's rail is written from a page that runs none of the app (#s660): pairing leaves a
+    // The desktop's rail is written from a page that runs none of the app (#s660): pairing ends on a
     // page of the app, which writes its own reading of the key back whenever it saves a choice.
     const RAIL: [(&str, &str); 1] = [("am-demo-sidebar", "0")];
     if rail {

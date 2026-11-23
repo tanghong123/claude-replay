@@ -3297,8 +3297,8 @@ fn seed_every_bucket(tab: &headless_chrome::Tab, origin: &str) {
 
 /// Write each of `keys` (a storage name and the string stored under it) in `origin`'s storage, from
 /// a page of that origin that runs none of the app: one of its public icons, which the gate serves
-/// unpaired. The caller navigates next, and the page it opens reads them; [`assert_storage_held`]
-/// then checks it did (#s660).
+/// unpaired. The caller navigates next, and the page it opens reads them; a check such as
+/// [`assert_storage_held`] then says it did (#s660).
 ///
 /// For the reason [`seed_every_bucket`] gives (#s658): a page of the app reads its remembered
 /// choices once as it loads and writes all of them back whenever it saves one, so a key written
@@ -3323,8 +3323,8 @@ pub fn seed_storage(tab: &headless_chrome::Tab, origin: &str, keys: &[(&str, &st
 
 /// Panic, naming the key, unless the page the tab has just loaded holds each of `keys` as
 /// [`seed_storage`] wrote it (#s660): read once the page has loaded, which is after the app read
-/// it. A JSON array is compared as a set, since the app writes a remembered set back in its own
-/// order.
+/// it. A JSON array is compared in any order, since the app writes a remembered set back in its
+/// own.
 pub fn assert_storage_held(tab: &headless_chrome::Tab, keys: &[(&str, &str)]) {
     for (key, want) in keys {
         let held = eval(
