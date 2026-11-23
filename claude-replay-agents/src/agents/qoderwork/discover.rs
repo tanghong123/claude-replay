@@ -1606,6 +1606,152 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// #s662: two chats share a folder; the one with two generations keeps its first one's history
+    /// when the other gains a generation, after a restart too (what a refresh found is kept on
+    /// disk, not in the process), and the other's earlier session joins it; a chat deleted in the
+    /// app loses its join.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_chat_in_a_shared_folder_keeps_its_history_when_a_neighbour_gains_a_generation() {
+        use rusqlite::{params, Connection};
+        use serde_json::json;
+        let _env = STORE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("qw-opencode-joins-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = root.join("projects");
+        std::fs::create_dir_all(&store).unwrap();
+        let harness = root.join(".harness/flash-cli/qwenwork");
+        std::fs::create_dir_all(&harness).unwrap();
+        let app = root.join("agents.db");
+        let dir = "/work/shared";
+        let (chat_a, chat_b) = (
+            "c0ffee00-0000-4000-8000-0000000000a1",
+            "c0ffee00-0000-4000-8000-0000000000b1",
+        );
+        let binding = |native: &str, generation: u64| {
+            json!({ "engineSessionBindingV1": {
+                "engineId": "opencode", "workingDirectory": dir, "nativeSessionId": native, "generation": generation,
+            }})
+            .to_string()
+        };
+        let a = Connection::open(&app).unwrap();
+        a.execute_batch(
+            "create table sub_chats (session_id text, ext text, name text, updated_at integer);
+             create table chats (id text, name text, updated_at integer);",
+        )
+        .unwrap();
+        a.execute(
+            "insert into sub_chats values (?1, ?2, 'Two goes', 5)",
+            params![chat_a, binding("ses_a2", 2)],
+        )
+        .unwrap();
+        a.execute(
+            "insert into sub_chats values (?1, ?2, 'One go', 6)",
+            params![chat_b, binding("ses_b1", 1)],
+        )
+        .unwrap();
+
+        let e = Connection::open(harness.join("qwenwork.db")).unwrap();
+        e.execute_batch(
+            "create table session (id text, parent_id text, directory text, version text, time_created integer);
+             create table event_sequence (aggregate_id text, seq integer);
+             create table event (aggregate_id text, seq integer, type text, data text);",
+        )
+        .unwrap();
+        // A session in the folder holding one prompt.
+        let begin = |e: &Connection, sid: &str, created: i64, prompt: &str| {
+            e.execute(
+                "insert into session values (?1, null, ?2, '1.0.0', ?3)",
+                params![sid, dir, created],
+            )
+            .unwrap();
+            let events = [
+                (
+                    "message.updated.1",
+                    json!({ "sessionID": sid, "info": { "id": format!("msg_{sid}"), "role": "user", "modelID": "mode-test", "time": { "created": created } } }),
+                ),
+                (
+                    "message.part.updated.1",
+                    json!({ "sessionID": sid, "part": { "id": format!("prt_{sid}"), "messageID": format!("msg_{sid}"), "type": "text", "text": prompt }, "time": 1 }),
+                ),
+            ];
+            for (n, (ty, data)) in events.iter().enumerate() {
+                e.execute(
+                    "insert into event values (?1, ?2, ?3, ?4)",
+                    params![sid, n as i64 + 1, ty, data.to_string()],
+                )
+                .unwrap();
+            }
+            e.execute(
+                "insert into event_sequence values (?1, ?2)",
+                params![sid, events.len() as i64],
+            )
+            .unwrap();
+        };
+        begin(&e, "ses_a1", 1000, "the first go of two");
+        begin(&e, "ses_b1", 2000, "the only go so far");
+        begin(&e, "ses_a2", 3000, "the second go of two");
+
+        let mirrors = root.join("opencode-mirror").join("-work-shared");
+        let read = |chat: &str| std::fs::read_to_string(mirrors.join(format!("{chat}.jsonl")));
+        std::env::set_var("QWENWORK_PROJECTS_DIR", &store);
+        std::env::set_var("QWENWORK_DB", &app);
+        super::super::opencode::refresh_now(&QWENWORK);
+        let a_first = read(chat_a).unwrap();
+        let b_first = read(chat_b).unwrap();
+
+        // A restart, then the neighbour gains a generation.
+        super::super::opencode::forget_kept();
+        begin(&e, "ses_b2", 4000, "the next go");
+        a.execute(
+            "update sub_chats set ext = ?1 where session_id = ?2",
+            params![binding("ses_b2", 2), chat_b],
+        )
+        .unwrap();
+        super::super::opencode::refresh_now(&QWENWORK);
+        let a_after = read(chat_a).unwrap();
+        let b_after = read(chat_b).unwrap();
+        let joins = super::super::opencode::read_joins(&root.join("opencode-mirror"));
+
+        // The neighbour is deleted in the app: its join goes, and the chat keeps its own.
+        a.execute("delete from sub_chats where session_id = ?1", [chat_b])
+            .unwrap();
+        super::super::opencode::forget_kept();
+        super::super::opencode::refresh_now(&QWENWORK);
+        let joins_left = super::super::opencode::read_joins(&root.join("opencode-mirror"));
+        let a_last = read(chat_a).unwrap();
+        std::env::remove_var("QWENWORK_PROJECTS_DIR");
+        std::env::remove_var("QWENWORK_DB");
+
+        assert!(
+            a_first.contains("the first go of two") && a_first.contains("the second go of two"),
+            "the chat that misses one joins the spare session"
+        );
+        assert!(b_first.contains("the only go so far"));
+        assert!(
+            a_after.contains("the first go of two") && a_after.contains("the second go of two"),
+            "its history stands when the neighbour gains a generation"
+        );
+        assert_eq!(a_after, a_first, "and its mirror is left alone");
+        assert!(
+            b_after.contains("the only go so far") && b_after.contains("the next go"),
+            "the neighbour's earlier session joins it"
+        );
+        assert!(!b_after.contains("the first go of two"));
+        assert_eq!(
+            joins.get(chat_a).map(Vec::as_slice),
+            Some(["ses_a1".to_string()].as_slice())
+        );
+        assert_eq!(
+            joins.get(chat_b).map(Vec::as_slice),
+            Some(["ses_b1".to_string()].as_slice())
+        );
+        assert!(!joins_left.contains_key(chat_b), "{joins_left:?}");
+        assert!(joins_left.contains_key(chat_a), "{joins_left:?}");
+        assert!(a_last.contains("the first go of two"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
     /// #s659: a sub-agent the engine ran for a chat's task call (a child session, `parent_id` the
     /// chat's) is mirrored in the family's layout beside the chat's mirror, on the sidechain, with
     /// a sidecar naming the call, so the call links to its child while it still runs and the reader

@@ -260,6 +260,11 @@ pub(crate) fn descendants<'a>(roots: &[&Session], all: &'a [Session]) -> Vec<&'a
     out
 }
 
+/// Which earlier sessions each chat was found to be made of (#s662): a chat's id, and the ids of
+/// its generations before the current one. Kept beside the mirrors ([`read_joins`]), so a join
+/// the folder said once is still known when it no longer says it.
+pub(crate) type Joins = BTreeMap<String, Vec<String>>;
+
 /// The engine sessions a chat is made of, in the order they began.
 ///
 /// The engine does not record which chat a session is; only the chat's binding names its current
@@ -269,14 +274,27 @@ pub(crate) fn descendants<'a>(roots: &[&Session], all: &'a [Session]) -> Vec<&'a
 /// missing any, and they are exactly as many as it misses and began before its current one. Every
 /// join must come to the count the binding gives; any other case, a binding that gives no count
 /// included, is the bound session alone.
+///
+/// A join found before (`joins`) stands while it still adds up ([`held`]), and the sessions it
+/// holds are no other chat's to take (#s662): without it, a neighbour gaining a generation made
+/// two chats miss one at once, and the chat that had its history lost it.
 pub(crate) fn generations<'a>(
     chat: &Chat,
     chats: &[Chat],
     sessions: &'a [Session],
+    joins: &Joins,
 ) -> Vec<&'a Session> {
     let Some(native) = sessions.iter().find(|s| s.id == chat.native) else {
         return Vec::new();
     };
+    let sorted = |mut out: Vec<&'a Session>| {
+        out.sort_by(|a, b| a.created_ms.cmp(&b.created_ms).then(a.id.cmp(&b.id)));
+        out
+    };
+    if let Some(mut earlier) = held(chat, chats, sessions, joins) {
+        earlier.push(native);
+        return sorted(earlier);
+    }
     let neighbours = chats.iter().any(|c| c.id != chat.id && c.dir == chat.dir);
     let in_dir = sessions
         .iter()
@@ -287,9 +305,17 @@ pub(crate) fn generations<'a>(
         let wanting: Vec<&Chat> = chats
             .iter()
             .filter(|c| c.dir == chat.dir && c.generation.is_some_and(|g| g > 1))
+            .filter(|c| held(c, chats, sessions, joins).is_none())
+            .collect();
+        let taken: HashSet<&str> = chats
+            .iter()
+            .filter(|c| c.id != chat.id)
+            .filter_map(|c| held(c, chats, sessions, joins))
+            .flatten()
+            .map(|s| s.id.as_str())
             .collect();
         let spare: Vec<&Session> = in_dir
-            .filter(|s| !chats.iter().any(|c| c.native == s.id))
+            .filter(|s| !chats.iter().any(|c| c.native == s.id) && !taken.contains(s.id.as_str()))
             .collect();
         let mine = wanting.len() == 1
             && wanting[0].id == chat.id
@@ -302,11 +328,80 @@ pub(crate) fn generations<'a>(
     };
     let mut out = earlier;
     out.push(native);
-    out.sort_by(|a, b| a.created_ms.cmp(&b.created_ms).then(a.id.cmp(&b.id)));
+    let out = sorted(out);
     match chat.generation {
         Some(g) if out.len() as u64 == g => out,
         _ => vec![native],
     }
+}
+
+/// The earlier sessions `chat`'s join in `joins` names, while it still adds up: each one a
+/// session in the chat's folder that no chat names now, that no other chat's join names, and
+/// that began before the chat's current one, and with the current one as many as its binding
+/// counts. `None` for a chat with no join, or one that no longer adds up.
+fn held<'a>(
+    chat: &Chat,
+    chats: &[Chat],
+    sessions: &'a [Session],
+    joins: &Joins,
+) -> Option<Vec<&'a Session>> {
+    let ids = joins.get(&chat.id)?;
+    let native = sessions.iter().find(|s| s.id == chat.native)?;
+    let distinct: HashSet<&String> = ids.iter().collect();
+    if distinct.len() != ids.len() || chat.generation != Some(ids.len() as u64 + 1) {
+        return None;
+    }
+    let shared = |id: &String| {
+        joins
+            .iter()
+            .any(|(other, theirs)| other != &chat.id && theirs.contains(id))
+    };
+    ids.iter()
+        .map(|id| {
+            sessions.iter().find(|s| {
+                &s.id == id
+                    && s.directory == chat.dir
+                    && s.created_ms <= native.created_ms
+                    && !chats.iter().any(|c| c.native == s.id)
+                    && !shared(id)
+            })
+        })
+        .collect()
+}
+
+/// The file beside the mirrors that keeps the joins (#s662), under the mirrors' root, which the
+/// store's walk and prune pass over (they read folders).
+const JOINS_FILE: &str = ".generations.json";
+
+/// The joins kept under `root`; none where the file is missing or does not read.
+pub(crate) fn read_joins(root: &Path) -> Joins {
+    std::fs::read_to_string(root.join(JOINS_FILE))
+        .ok()
+        .and_then(|t| serde_json::from_str::<Value>(&t).ok())
+        .and_then(|v| v.get("joins").cloned())
+        .and_then(|j| serde_json::from_value(j).ok())
+        .unwrap_or_default()
+}
+
+/// Keeps `joins` under `root`, written beside the file and moved into place, 0600 (it names the
+/// person's chats); none kept is no file. Under the mirrors' lock, as every write is.
+pub(crate) fn write_joins(root: &Path, joins: &Joins) -> std::io::Result<()> {
+    use std::io::Write;
+    let path = root.join(JOINS_FILE);
+    if joins.is_empty() {
+        return match std::fs::remove_file(&path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        };
+    }
+    create_private_dir(root)?;
+    let tmp = root.join(format!("{JOINS_FILE}.tmp"));
+    {
+        let mut f = private_file(&tmp, true)?;
+        f.write_all(json!({ "joins": joins }).to_string().as_bytes())?;
+        f.sync_all()?;
+    }
+    std::fs::rename(&tmp, &path)
 }
 
 /// A timestamp in the records' form, from the engine's milliseconds.
@@ -1297,6 +1392,13 @@ pub(crate) fn refresh_now(home: &Home) {
     db::refresh(home, false);
 }
 
+/// Forgets what this process kept of every chat, as a new process starts with nothing: for a test
+/// that a refresh after a restart reads what it needs from disk.
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) fn forget_kept() {
+    db::forget();
+}
+
 #[cfg(target_os = "macos")]
 mod db {
     use super::*;
@@ -1313,6 +1415,11 @@ mod db {
         kept: HashMap<String, Kept>,
     }
     static MEMO: Mutex<Option<Memo>> = Mutex::new(None);
+
+    #[cfg(test)]
+    pub(super) fn forget() {
+        *MEMO.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    }
 
     type Event = (i64, String, Value);
 
@@ -1768,9 +1875,36 @@ mod db {
         let seqs: HashMap<String, i64> = sessions.iter().map(|(s, q)| (s.id.clone(), *q)).collect();
         let all: Vec<Session> = sessions.iter().map(|(s, _)| s.clone()).collect();
         let top: Vec<Session> = all.iter().filter(|s| s.parent.is_none()).cloned().collect();
+        // Every chat's generations first, under the joins found before (#s662), and the joins
+        // this finds kept before anything is projected, so a refresh cut short keeps them too. A
+        // chat whose current session the log does not have yet keeps its join; one that no
+        // longer adds up loses it; a chat the app no longer lists loses it where prune decides.
+        let joins = read_joins(&root);
+        let gens_of: Vec<Vec<&Session>> = chats
+            .iter()
+            .map(|chat| generations(chat, &chats, &top, &joins))
+            .collect();
+        let mut found = joins.clone();
+        for (chat, gens) in chats.iter().zip(&gens_of) {
+            if gens.is_empty() {
+                continue;
+            }
+            let earlier: Vec<String> = gens
+                .iter()
+                .filter(|s| s.id != chat.native)
+                .map(|s| s.id.clone())
+                .collect();
+            if earlier.is_empty() {
+                found.remove(&chat.id);
+            } else {
+                found.insert(chat.id.clone(), earlier);
+            }
+        }
+        if found != joins {
+            let _ = write_joins(&root, &found);
+        }
         let mut loaded: HashMap<String, (i64, Vec<Event>)> = HashMap::new();
-        for chat in &chats {
-            let gens = generations(chat, &chats, &top);
+        for (chat, gens) in chats.iter().zip(gens_of) {
             if gens.is_empty() {
                 continue;
             }
@@ -1834,6 +1968,11 @@ mod db {
                 .map(|c| (c.id.clone(), mirror_path(&root, c)))
                 .collect();
             prune(&root, &keep, &current);
+            let kept = found.len();
+            found.retain(|id, _| keep.contains(id));
+            if found.len() != kept {
+                let _ = write_joins(&root, &found);
+            }
         }
     }
 
@@ -2231,9 +2370,10 @@ mod tests {
         let all = [b.clone(), a.clone(), other];
         let c = chat();
         let ids = |v: Vec<&Session>| v.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
+        let none = Joins::new();
         // Its own folder: both, in the order they began.
         assert_eq!(
-            ids(generations(&c, std::slice::from_ref(&c), &all)),
+            ids(generations(&c, std::slice::from_ref(&c), &all, &none)),
             ["ses_a", "ses_b"]
         );
         // A count the folder does not give: the bound session alone.
@@ -2242,7 +2382,12 @@ mod tests {
             ..c.clone()
         };
         assert_eq!(
-            ids(generations(&three, std::slice::from_ref(&three), &all)),
+            ids(generations(
+                &three,
+                std::slice::from_ref(&three),
+                &all,
+                &none
+            )),
             ["ses_b"]
         );
         // A shared folder where the other chat names the earlier session: not ours.
@@ -2252,7 +2397,10 @@ mod tests {
             generation: Some(1),
             ..c.clone()
         };
-        assert_eq!(ids(generations(&c, &[c.clone(), named], &all)), ["ses_b"]);
+        assert_eq!(
+            ids(generations(&c, &[c.clone(), named], &all, &none)),
+            ["ses_b"]
+        );
         // A shared folder where nobody names it and only this chat misses one: ours.
         let mut x = session("ses_x", 4, vec![]);
         x.directory = c.dir.clone();
@@ -2264,7 +2412,12 @@ mod tests {
             ..c.clone()
         };
         assert_eq!(
-            ids(generations(&c, &[c.clone(), neighbour.clone()], &with_x)),
+            ids(generations(
+                &c,
+                &[c.clone(), neighbour.clone()],
+                &with_x,
+                &none
+            )),
             ["ses_a", "ses_b"]
         );
         // A binding that gives no count: the bound session alone, even in its own folder.
@@ -2276,7 +2429,8 @@ mod tests {
             ids(generations(
                 &uncounted,
                 std::slice::from_ref(&uncounted),
-                &all
+                &all,
+                &none
             )),
             ["ses_b"]
         );
@@ -2286,9 +2440,134 @@ mod tests {
             ..neighbour
         };
         assert_eq!(
-            ids(generations(&c, &[c.clone(), wanting], &with_x)),
+            ids(generations(&c, &[c.clone(), wanting], &with_x, &none)),
             ["ses_b"]
         );
+    }
+
+    /// #s662: in a folder two chats share, a join found once stands when the neighbour gains a
+    /// generation (which, deduced afresh, leaves both chats missing one and neither its earlier
+    /// sessions), its sessions are not the neighbour's to take, and the neighbour's own earlier
+    /// session joins it; a join that no longer adds up gives way to what the folder says now.
+    #[test]
+    fn a_join_found_once_stands_when_a_neighbour_gains_a_generation() {
+        let at = |id: &str, created: i64| session(id, created, vec![]);
+        let chat_a = Chat {
+            id: "chat-a".into(),
+            native: "ses_a2".into(),
+            generation: Some(2),
+            ..chat()
+        };
+        let chat_b = Chat {
+            id: "chat-b".into(),
+            native: "ses_b1".into(),
+            generation: Some(1),
+            ..chat()
+        };
+        let ids = |v: Vec<&Session>| v.iter().map(|s| s.id.clone()).collect::<Vec<_>>();
+        let none = Joins::new();
+        let before = [at("ses_a1", 1), at("ses_b1", 2), at("ses_a2", 3)];
+        let chats = [chat_a.clone(), chat_b.clone()];
+        assert_eq!(
+            ids(generations(&chat_a, &chats, &before, &none)),
+            ["ses_a1", "ses_a2"]
+        );
+        let joins = Joins::from([("chat-a".to_string(), vec!["ses_a1".to_string()])]);
+
+        // The neighbour gains a generation: its first session is no chat's now.
+        let after = [
+            at("ses_a1", 1),
+            at("ses_b1", 2),
+            at("ses_a2", 3),
+            at("ses_b2", 4),
+        ];
+        let b2 = Chat {
+            native: "ses_b2".into(),
+            generation: Some(2),
+            ..chat_b.clone()
+        };
+        let chats = [chat_a.clone(), b2.clone()];
+        assert_eq!(
+            ids(generations(&chat_a, &chats, &after, &none)),
+            ["ses_a2"],
+            "deduced afresh, the history goes"
+        );
+        assert_eq!(
+            ids(generations(&chat_a, &chats, &after, &joins)),
+            ["ses_a1", "ses_a2"],
+            "the join stands"
+        );
+        assert_eq!(
+            ids(generations(&b2, &chats, &after, &joins)),
+            ["ses_b1", "ses_b2"],
+            "and the neighbour's own joins it"
+        );
+
+        // The chat gains a third: its join no longer adds up, and the folder says the rest.
+        let third = [
+            at("ses_a1", 1),
+            at("ses_b1", 2),
+            at("ses_a2", 3),
+            at("ses_b2", 4),
+            at("ses_a3", 5),
+        ];
+        let a3 = Chat {
+            native: "ses_a3".into(),
+            generation: Some(3),
+            ..chat_a.clone()
+        };
+        let both = Joins::from([
+            ("chat-a".to_string(), vec!["ses_a1".to_string()]),
+            ("chat-b".to_string(), vec!["ses_b1".to_string()]),
+        ]);
+        assert_eq!(
+            ids(generations(&a3, &[a3.clone(), b2.clone()], &third, &both)),
+            ["ses_a1", "ses_a2", "ses_a3"]
+        );
+
+        // A join naming a session a chat names now, or one another join names, does not stand.
+        let named = Joins::from([("chat-a".to_string(), vec!["ses_b1".to_string()])]);
+        assert_eq!(
+            ids(generations(
+                &chat_a,
+                &[chat_a.clone(), chat_b.clone()],
+                &before,
+                &named
+            )),
+            ["ses_a1", "ses_a2"],
+            "deduced afresh instead"
+        );
+        let twice = Joins::from([
+            ("chat-a".to_string(), vec!["ses_a1".to_string()]),
+            ("chat-b".to_string(), vec!["ses_a1".to_string()]),
+        ]);
+        assert!(held(&chat_a, &chats, &after, &twice).is_none());
+    }
+
+    /// #s662: the joins are kept under the root, 0600, read back whole; none kept is no file.
+    #[test]
+    fn the_joins_are_kept_beside_the_mirrors() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("qw-joins-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        assert!(read_joins(&root).is_empty(), "no file, no joins");
+        let joins = Joins::from([("chat-a".to_string(), vec!["ses_a1".to_string()])]);
+        write_joins(&root, &joins).unwrap();
+        assert_eq!(read_joins(&root), joins);
+        let file = root.join(JOINS_FILE);
+        assert_eq!(
+            std::fs::metadata(&file).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        std::fs::write(&file, "not json").unwrap();
+        assert!(
+            read_joins(&root).is_empty(),
+            "one that does not read is none"
+        );
+        write_joins(&root, &Joins::new()).unwrap();
+        assert!(!file.exists());
+        write_joins(&root, &Joins::new()).unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
