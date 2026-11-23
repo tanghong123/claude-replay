@@ -12,7 +12,8 @@
 //!   files need one import root: everything in [`crate::model`], plus [`Agent`],
 //!   [`Metrics`], [`Candidate`].
 //! - **Feeding the fold** — [`Message`]/[`QueueOpKind`] (the L1 output), [`Shaping`]
-//!   (the L2 hook table), [`SessionAccumulator`]; doc-hidden, the frozen-reference
+//!   (the L2 hook table), [`SessionAccumulator`], and [`TranscriptAdapter`] itself, for code
+//!   that folds through the adapter doing the work (#s668); doc-hidden, the frozen-reference
 //!   vocabulary the equivalence gates drive (`QueueItem`, `stamp_user_turns`,
 //!   `replay`, `parse_path_timed_for`, `build_sub_agents`).
 //! - **Folding usage** — [`estimate_cost`], `parse_reader_for`, [`parse_ts`],

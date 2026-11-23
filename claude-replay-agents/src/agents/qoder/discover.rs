@@ -464,4 +464,53 @@ mod tests {
         let _ = std::fs::remove_file(&outside);
         let _ = std::fs::remove_dir_all(&root);
     }
+
+    /// #s668: a Qoder sub-agent, loaded into its parent's tree by the adapter's own `enrich` (over
+    /// each candidate `subagents/` dir), is folded by the family's decoder, so its `api_retry` is
+    /// drawn inside the tree as in the child opened alone.
+    #[test]
+    fn a_sub_agent_in_its_parent_s_tree_keeps_the_family_s_own_records() {
+        use claude_replay_engine::seam::{Block, SessionAccumulator, TranscriptAdapter};
+        let _env = STORE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("qd-s668-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let slug = root.join("-Users-dev-proj");
+        let sadir = slug.join("sid68").join("subagents");
+        std::fs::create_dir_all(&sadir).unwrap();
+        let sess = slug.join("sid68.jsonl");
+        std::fs::write(
+            &sess,
+            r##"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_A","name":"Agent","input":{"subagent_type":"general-purpose","description":"child","prompt":"go"}}]}}
+{"type":"user","toolUseResult":{"agentId":"aq668","status":"completed"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_A","content":"done"}]}}
+"##,
+        )
+        .unwrap();
+        std::fs::write(
+            sadir.join("agent-aq668.jsonl"),
+            r##"{"type":"user","message":{"content":"go"}}
+{"type":"system","subtype":"api_retry","level":"error","content":"Upstream answered 502 Bad Gateway","error":"server_error","error_status":502,"attempt":2,"max_retries":10,"retry_delay_ms":4000,"isSidechain":true,"agentId":"aq668","version":"1.1.71","sessionId":"sid68","timestamp":"2026-11-23T01:00:00.000Z","uuid":"rq668"}
+"##,
+        )
+        .unwrap();
+        std::env::set_var("QODER_PROJECTS_DIR", &root);
+        let adapter: &'static dyn TranscriptAdapter = &crate::adapters::QoderAdapter;
+        let mut acc = SessionAccumulator::new(adapter);
+        let mut reader = std::io::BufReader::new(std::fs::File::open(&sess).unwrap());
+        acc.advance_reader(&mut reader).unwrap();
+        let mut blocks = acc.fold().0;
+        adapter.enrich(&sess, &mut blocks);
+        std::env::remove_var("QODER_PROJECTS_DIR");
+        let drawn = blocks
+            .iter()
+            .find_map(|b| match b {
+                Block::SubAgent(sa) => Some(format!("{:?}", sa.blocks)),
+                _ => None,
+            })
+            .expect("a SubAgent");
+        assert!(
+            drawn.contains("API error: Upstream answered 502"),
+            "{drawn}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

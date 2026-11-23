@@ -3837,10 +3837,10 @@ pub(crate) fn enrich_tree_in(
     enrich_subagents(adapter, blocks, sadir);
 }
 
-/// Parse a transcript file into blocks WITHOUT loading sub-agent children — the raw pass
-/// the adapter's `parse_path_timed` builds on. `enrich_tree` (the adapter's `enrich`, backing
-/// `parse_session_enriched`) adds the children; that recursion reuses this so grandchildren
-/// resolve against the same session `subagents/` dir.
+/// Parse a transcript file into blocks WITHOUT loading sub-agent children, through Claude's
+/// adapter: the tests' form of [`parse_file_with`], which `enrich_tree` (the adapter's `enrich`,
+/// backing `parse_session_enriched`) uses for each child, so grandchildren resolve against the
+/// same session `subagents/` dir.
 #[cfg(test)]
 fn parse_file(path: &std::path::Path) -> std::io::Result<Vec<Block>> {
     parse_file_with(&crate::adapters::ClaudeAdapter, path)
@@ -15018,8 +15018,8 @@ mod tests {
 
     /// #s668: a derived family's sub-agent, loaded into its parent's tree by that family's own
     /// `enrich`, is folded by the family's decoder, so its `api_retry` and the opencode mirror's
-    /// `files_changed` are drawn inside the tree as in the child opened alone; through Claude's
-    /// adapter they are not, and its cost rolls up either way.
+    /// `files_changed` are drawn inside the tree as in the child opened alone, and its cost rolls
+    /// up.
     #[test]
     fn a_family_sub_agent_in_its_parent_s_tree_keeps_the_family_s_own_records() {
         use std::io::Write;
@@ -15068,12 +15068,9 @@ mod tests {
             );
             assert!(cost.unwrap_or(0.0) > 0.0);
         }
-        let (claude, cost) = tree(&crate::adapters::ClaudeAdapter);
-        assert!(
-            !claude.contains("Changed a.txt") && !claude.contains("API error"),
-            "{claude}"
-        );
-        assert!(cost.unwrap_or(0.0) > 0.0);
+        // Not through Claude's adapter here: its decoder reports both subtypes as new, and the
+        // registry keeps the first example of a shape, which the decoder tests above pin
+        // (`the_mirror_s_changed_files_are_a_note_for_the_family_alone` and the `api_retry` one).
         let _ = std::fs::remove_dir_all(&base);
     }
 
