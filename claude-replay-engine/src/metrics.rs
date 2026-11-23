@@ -2090,6 +2090,8 @@ mod price_tests {
             ("gpt-5-mini", p("0.25", "0.25", "0.025", "2")),
             ("gpt-5.1-codex-mini", p("0.25", "0.25", "0.025", "2")),
             ("gpt-5-nano", p("0.05", "0.05", "0.005", "0.4")),
+            // Model Studio's Beijing / global tier, published in USD (read raw 2026-11-23).
+            ("qwen4-max", p("1.413", "1.767", "0.071", "4.24")),
         ] {
             assert_eq!(resolve(&PriceTable::new(), model), Some(want), "{model}");
         }
@@ -2864,6 +2866,55 @@ mod request_pricing_tests {
                     "{model} {tier:?}: no request rule, Standard rates as an estimate"
                 );
             }
+        }
+    }
+
+    /// Qwen4-Max (Model Studio, read raw 2026-11-23): one bracket to 1M input tokens, so a long
+    /// prompt pays no surcharge and an unknown length is not an estimate for want of one; Batch
+    /// is half. No Fast or Flex rate is published for it, so those tiers stay Standard estimates.
+    #[test]
+    fn qwen4_max_prices_batch_half_and_leaves_unpublished_tiers_estimated() {
+        let table = PriceTable::default();
+        let tokens = TokenCounts {
+            input: 1_000_000,
+            cache_creation: 1_000_000,
+            cache_read: 1_000_000,
+            output: 1_000_000,
+            ..Default::default()
+        };
+        let standard = 1.413 + 1.767 + 0.071 + 4.24;
+        let class = |tier| RequestPricing {
+            tier,
+            long_context: Some(false),
+            tier_confirmed: true,
+        };
+        let (cost, estimated) = class(ServiceTier::Standard).cost_with(&table, "qwen4-max", tokens);
+        assert!(
+            (cost.unwrap() - standard).abs() < 1e-9 && !estimated,
+            "Standard: {cost:?}, estimate {estimated}"
+        );
+        for long in [Some(true), None] {
+            let context = RequestPricing {
+                long_context: long,
+                ..class(ServiceTier::Standard)
+            };
+            let (cost, estimated) = context.cost_with(&table, "qwen4-max", tokens);
+            assert!(
+                (cost.unwrap() - standard).abs() < 1e-9 && !estimated,
+                "Standard, long {long:?}: {cost:?}, estimate {estimated}"
+            );
+        }
+        let (cost, estimated) = class(ServiceTier::Batch).cost_with(&table, "qwen4-max", tokens);
+        assert!(
+            (cost.unwrap() - standard / 2.0).abs() < 1e-9 && !estimated,
+            "Batch: {cost:?}, estimate {estimated}"
+        );
+        for tier in [ServiceTier::Fast, ServiceTier::Flex] {
+            let (cost, estimated) = class(tier).cost_with(&table, "qwen4-max", tokens);
+            assert!(
+                (cost.unwrap() - standard).abs() < 1e-9 && estimated,
+                "{tier:?}: no published rate, Standard rates as an estimate"
+            );
         }
     }
 
