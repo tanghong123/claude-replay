@@ -1553,14 +1553,16 @@ assert.match(viewSource, /if \(target && turnsFollow\) revealInPane\(target\);/,
   console.log("#s209 agent mark cases passed");
 }
 assert.match(productionCss, /\n:is\(#collapseBtn,#expandBtn\)\[data-flat\]\{display:none\}/, "flat, the group controls go: the list marks the two it places, since the head is outside its element (#s430 stage 3)");
-assert.match(listSource, /for \(const control of \[collapseBtn, expandBtn, filterSheet\.querySelector\("\[data-group-part\]"\)\]\) control\?\.toggleAttribute\("data-flat", \(flat && !grouped\) \|\| arranged\);/, "…with the same verdict as its own sessions-flat, except that grouped by machine (#s561) the machines' heads still fold");
+assert.match(listSource, /const noGroups = \(flat && !grouped\) \|\| arranged;\n  for \(const control of \[collapseBtn, expandBtn\]\) control\.toggleAttribute\("data-flat", noGroups\);/, "…with the same verdict as its own sessions-flat, except that grouped by machine (#s561) the machines' heads still fold");
+assert.match(listSource, /filterSheet\.querySelector\("\[data-group-part\]"\)\?\.toggleAttribute\("data-no-groups", noGroups\);/, "#s664: the sheet's fold rows go with the glyphs, under a mark of their own");
+assert.equal((listSource.match(/\sdata-flat[\s>]/g) || []).length, 1, "data-flat is drawn on the One list by activity option alone, and only the two head glyphs outside the sheet are marked with it (#s664's landing: the fold rows wore it, and the cases' #sessionFilter [data-flat] found them first)");
 // #s664 (Hong's choice on #s661): the filter sheet's first two rows are Collapse and Expand every group, drawn with any
 // sheet, shown only where the app's wide-phone column takes the two glyphs out of its head, and doing what the glyphs do.
 assert.match(listSource, /data-group-action="collapse"[^\n]*<span>Collapse every group<\/span>/, "#s664: the sheet's Collapse every group row");
 assert.match(listSource, /data-group-action="expand"[^\n]*<span>Expand every group<\/span>/, "#s664: the sheet's Expand every group row");
 assert.match(listSource, /if \(group\) \{ toggleFilterSheet\(false\); \(group\.dataset\.groupAction === "collapse" \? collapseBtn : expandBtn\)\.onclick\(\); return; \}/, "#s664: a fold row closes the sheet and does what its glyph does");
 assert.match(productionCss, /\n\.session-filter-options \[data-group-part\]\{display:none\}/, "#s664: the fold rows are not shown by default (a host, a desktop, the drawer)");
-assert.match(productionCss, /@media\(pointer:coarse\) and \(max-height:500px\) and \(min-width:900px\)\{[^@]*#app \.side-head :is\(#collapseBtn,#expandBtn\)\{display:none\}[^@]*#app \.session-filter-options \[data-group-part\]:not\(\[data-flat\]\)\{display:block\}/, "#s664: on a wide phone held sideways the two glyphs leave the column head and the sheet shows its fold rows");
+assert.match(productionCss, /@media\(pointer:coarse\) and \(max-height:500px\) and \(min-width:900px\)\{[^@]*#app \.side-head :is\(#collapseBtn,#expandBtn\)\{display:none\}[^@]*#app \.session-filter-options \[data-group-part\]:not\(\[data-no-groups\]\)\{display:block\}/, "#s664: on a wide phone held sideways the two glyphs leave the column head and the sheet shows its fold rows");
 assert.match(appSource, /indexState\.selectedWasRow && !selectedRow\(\)\) sessionGone\(\)/, "a sub-agent child, never a list row, is not declared gone by the index poll");
 assert.match(viewSource, /meta\?\.ancestors\?\.at\(-1\)/, "the parent control reads the last ancestor from the session's own meta");
 assert.match(productionCss, /\.session-parent\.is-live\{display:inline-flex;/, "the reference parent control is shown by a production state, not by editing the shell");

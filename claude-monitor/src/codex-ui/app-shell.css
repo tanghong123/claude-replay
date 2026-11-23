@@ -546,7 +546,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 #app .side-head .iconbtn{width:44px;height:44px;flex:none}
 #app .side-head>.head-actions{gap:0}
 #app .side-head :is(#collapseBtn,#expandBtn){display:none}
-#app .session-filter-options [data-group-part]:not([data-flat]){display:block}
+#app .session-filter-options [data-group-part]:not([data-no-groups]){display:block}
 #app:not(.phone-column-off) .column-switch{display:flex;flex:none;gap:0}
 .column-switch .iconbtn{position:relative;display:grid;place-items:center;border-radius:9px;background:transparent;color:var(--sub)}
 .column-switch .iconbtn.on{background:var(--hover);color:var(--ink)}
