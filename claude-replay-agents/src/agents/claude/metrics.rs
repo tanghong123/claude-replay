@@ -144,6 +144,27 @@ impl MetricsAcc {
                     field(m, "preTokens").saturating_sub(field(m, "postTokens")),
                 );
             }
+            // The summarization is a real API call the client bills and counts, but it
+            // arrives on this system line's `compactUsage`, never on a `/message/usage`
+            // an assistant line carries — so the usage fold below never sees it and the
+            // session's token and money totals silently omit every compaction. On Qoder
+            // CLI >= 1.1.86 credits live ONLY here, so without this fold that money is
+            // lost entirely. The line names no model: attribute the call to the session's
+            // active model, head-pick renamed like any other line. Tokens and counters
+            // are the resumable state, so a resumed fold keeps them without re-reading.
+            if let Some(cu) = v.get("compactUsage") {
+                let tokens = usage_tokens(cu);
+                if tokens != TokenCounts::default() {
+                    let m = self.named_model(&self.model);
+                    *self.per_model.entry(m).or_default() += tokens;
+                }
+                let billable = cu.get("billable").and_then(Value::as_bool).unwrap_or(true);
+                if let Some(c) = cu.get("credits").and_then(Value::as_f64) {
+                    if billable && c > 0.0 {
+                        self.bump("credits_micro", (c * 1e6).round() as u64);
+                    }
+                }
+            }
         }
         // The client's own cost tally (#240). Keyed by `startTime` because each CLI PROCESS
         // gets its own epoch and `totalCostUSD` RESETS across one — so the per-epoch MAXIMUM
@@ -1459,6 +1480,57 @@ mod tests {
             m.footer_segments().first().unwrap().0.contains("compacted"),
             "compactions shed first, so they sit ahead of `cached`"
         );
+    }
+
+    /// A `compact_boundary`'s `compactUsage` is the summarization call's own usage: real
+    /// tokens and credits that never appear on a `/message/usage`, so before v91 the fold
+    /// omitted them from both the token and the money totals. On Qoder CLI >= 1.1.86
+    /// credits live only here. The line names no model, so the call lands on the session's
+    /// active model, and the dropped counter still reads the metadata untouched.
+    #[test]
+    fn compaction_usage_folds_its_tokens_and_credits() {
+        let jsonl = r#"
+{"type":"assistant","timestamp":"2026-11-20T03:30:00.000Z","message":{"id":"a1","model":"ultimate","usage":{"input_tokens":100,"output_tokens":10,"credits":1.0}}}
+{"type":"system","subtype":"compact_boundary","timestamp":"2026-11-20T03:36:18.828Z","compactMetadata":{"trigger":"auto","preTokens":167713,"postTokens":5142},"compactUsage":{"input_tokens":168685,"output_tokens":9309,"cache_creation_input_tokens":0,"cache_read_input_tokens":167287,"credits":2.5,"billable":true}}
+"#;
+        let m = parse_reader(jsonl);
+        let t = m
+            .per_model
+            .get("ultimate")
+            .expect("compaction attributed to the active model");
+        assert_eq!(t.input, 100 + 168685);
+        assert_eq!(t.output, 10 + 9309);
+        assert_eq!(t.cache_read, 167287);
+        assert_eq!(m.per_model.len(), 1, "no phantom model bucket");
+        assert_eq!(m.credits(), Some(3.5), "1.0 conversation + 2.5 compaction");
+        assert_eq!(m.cost_usd, Some(3.5 * 0.01));
+        assert_eq!(m.compactions(), (1, 167713 - 5142));
+    }
+
+    /// A failed compaction deducts nothing (`billable:false`) but its tokens still count,
+    /// exactly as the conversation usage fold keeps them; a compaction whose tokens were
+    /// zeroed beside its credits contributes money but no false token count.
+    #[test]
+    fn compaction_usage_respects_billable_and_zeroed_tokens() {
+        let jsonl = r#"
+{"type":"assistant","timestamp":"2026-11-20T03:30:00.000Z","message":{"id":"a1","model":"ultimate","usage":{"input_tokens":100,"output_tokens":10,"credits":1.0}}}
+{"type":"system","subtype":"compact_boundary","timestamp":"2026-11-20T03:36:18.828Z","compactMetadata":{"trigger":"auto","preTokens":1000,"postTokens":100},"compactUsage":{"input_tokens":0,"output_tokens":0,"cache_read_input_tokens":0,"credits":9.4,"billable":true}}
+{"type":"system","subtype":"compact_boundary","timestamp":"2026-11-20T04:00:00.000Z","compactMetadata":{"trigger":"auto","preTokens":2000,"postTokens":200},"compactUsage":{"input_tokens":500,"output_tokens":50,"credits":7.0,"billable":false}}
+"#;
+        let m = parse_reader(jsonl);
+        let t = m.per_model.get("ultimate").unwrap();
+        assert_eq!(
+            t.input,
+            100 + 500,
+            "zeroed adds none; the failed call's tokens still count"
+        );
+        assert_eq!(t.output, 10 + 50);
+        assert_eq!(
+            m.credits(),
+            Some(10.4),
+            "1.0 + 9.4; the 7.0 failed call deducts nothing"
+        );
+        assert_eq!(m.compactions(), (2, (1000 - 100) + (2000 - 200)));
     }
 
     /// A session that never compacted keeps its footer exactly as it was — no empty
