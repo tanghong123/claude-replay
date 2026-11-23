@@ -543,7 +543,8 @@ macro_rules! qwork_family_adapter {
             }
 
             /// Qwenwork's routing modes (#s671), which its gateway resolves to a backend model
-            /// it never names. Qwenwork's alone: QoderWork's ids were never measured.
+            /// it never names. Qwenwork's alone: QoderWork's ids were never measured, so a
+            /// QoderWork session with such an id is still reported.
             fn deliberately_unpriced(&self, model: &str) -> bool {
                 $home.agent == Agent::QWENWORK
                     && agents::qoderwork::discover::is_routing_mode(model)

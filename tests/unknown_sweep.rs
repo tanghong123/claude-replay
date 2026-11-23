@@ -229,6 +229,25 @@ fn a_qwenwork_routing_mode_is_not_reported_unpriced_and_a_claude_model_still_is(
         ),
     )
     .unwrap();
+    // A near miss in the same store (uppercase hex) is still reported: the Qwenwork files are
+    // swept, read as Qwenwork's and priced, so the one left out is left out by the rule.
+    let near = mode.to_uppercase().replacen("MODE-", "mode-", 1);
+    let nsid = "0f0e0d0c-0000-4000-8000-000000000672";
+    std::fs::write(
+        qproject.join(format!("{nsid}.jsonl")),
+        format!(
+            "{}\n{}\n",
+            record(nsid, "1.1.71", "user", &prompt, "2026-09-25T00:00:00Z"),
+            record(
+                nsid,
+                "1.1.71",
+                "assistant",
+                &assistant.replace(&mode, &near),
+                "2026-09-25T00:00:01Z"
+            ),
+        ),
+    )
+    .unwrap();
     let cproject = root.join("claude").join("-work-models");
     std::fs::create_dir_all(&cproject).unwrap();
     std::fs::write(
@@ -248,18 +267,21 @@ fn a_qwenwork_routing_mode_is_not_reported_unpriced_and_a_claude_model_still_is(
     .unwrap();
     let (out, err, ok) = run(&root, &root, &["--unknown", "--json"]);
     assert!(ok, "{err}");
-    assert!(
-        err.contains("scanning 2 transcript"),
-        "both sessions are swept, so the Qwenwork one is left out by the rule: {err}"
-    );
-    let unpriced: Vec<_> = rows(&out)
+    assert!(err.contains("scanning 3 transcript"), "{err}");
+    let mut unpriced: Vec<_> = rows(&out)
         .into_iter()
         .filter(|r| r["where"] == "model.unpriced")
+        .map(|r| (r["agent"].clone(), r["name"].clone(), r["example"].clone()))
         .collect();
-    assert_eq!(unpriced.len(), 1, "{out}");
-    assert_eq!(unpriced[0]["agent"], "claude");
-    assert_eq!(unpriced[0]["name"], mode.as_str());
-    assert_eq!(unpriced[0]["example"], SID);
+    unpriced.sort_by_key(|r| r.0.to_string());
+    assert_eq!(
+        unpriced,
+        [
+            ("claude".into(), mode.as_str().into(), SID.into()),
+            ("qwenwork".into(), near.as_str().into(), nsid.into()),
+        ],
+        "{out}"
+    );
 }
 
 /// A Claude store whose one session spawned one sub-agent, in the session's own `subagents/` dir,
