@@ -231,6 +231,9 @@ export class Preview {
     document.addEventListener("pointerdown", event => {
       if (!this.moreMenu.hidden && !this.moreWrap.contains(event.target)) this.setMore(false);
     }, { capture: true, signal: this.listening.signal });
+    // A press inside an HTML page the pane shows reaches its sandboxed frame and not this page; the
+    // frame takes the focus, so the window's blur says where it went (as the search's hold hears it).
+    addEventListener("blur", () => { if (!this.moreMenu.hidden && viewRoot.active()?.tagName === "IFRAME") this.setMore(false); }, { signal: this.listening.signal });
     // A host that switched the ↗ off (`show: { detach: false }`, stage 6) gets none in the head:
     // the show paths still flip its `hidden`, on a button nobody can reach.
     byId("closePreview").before(this.revealBtn, this.downloadBtn, this.printBtn, ...(this.actions.detach === false ? [] : [this.newTab]), this.reviewBtn, this.expandBtn, this.moreWrap);
@@ -673,7 +676,10 @@ export class Preview {
       const inside = sheet.contains(viewRoot.active());
       state.handle?.unmount();
       sheet.remove();
-      if (inside && this.reviewBtn.isConnected && !this.reviewBtn.hidden) this.reviewBtn.focus({ preventScroll: true });
+      // The focus goes back to the control that opened the sheet: Review in the head, or More where the
+      // head folds it there (#s663, a phone held sideways).
+      const back = [this.reviewBtn, this.moreBtn].find(control => control?.isConnected && !control.hidden && control.getClientRects().length);
+      if (inside && back) back.focus({ preventScroll: true });
     };
     const onKey = event => {
       if (event.key === "Escape") { event.preventDefault(); close(); }

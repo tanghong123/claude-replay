@@ -248,9 +248,16 @@ it covers the session's area beside the list (the session keeps its width beneat
 remeasures; the dock goes under it; the handle by the title stays above it, the pane's head making
 room), with the list hidden or on a narrower phone the session and the pane sit side by side (the
 session at half the width, remeasured once through `paneLayoutChanged`; the dock, its sheets, Info
-and the reply box keep to that half), and ⤢ in the pane's head (`.preview-expand`, sideways only)
+and the reply box keep to that half), and ⤢ (`.preview-expand`, sideways only)
 takes the whole screen and back without disturbing the session beneath
 (`a_phone_held_sideways_opens_the_pane_as_a_second_column`). Upright the pane is the whole screen.
+**Held sideways the pane's head is ‹, the tab strip, ›, More and close** (#s663, Hong's choice on #s670):
+the file's actions (reveal or download, print, Review) and ⤢ fold into one More menu
+(`.preview-more-wrap`, `Preview.setMore`: its rows are the head's own controls offered as it opens, each
+pressing its control), so the strip keeps their room and the current tab may take all of it but the 8px
+either side `fitTabs` scrolls it in by; each of six open files' names is whole on an iPhone 17 Pro
+(`a_phone_held_sideways_keeps_each_open_file_s_name_whole_in_its_pane_head`). A case held sideways
+reaches those controls through More, never by waiting for them in the head.
 **The shell's phone rules for its own top bar are scoped to `.workspace>.topbar`** (#s49): mdrev's
 toolbar in the pane is a `header.topbar` too, and `#app .topbar` outranked mdrev's own rules there
 (no wrap, the row spread, the shell's padding) — the owner saw the toolbar wrap beside a cut title,
@@ -975,7 +982,8 @@ monitor's launchd PATH has `/opt/homebrew/bin`, where mdrev-plugin-alibaba puts 
 `the_detached_tab_reads_subscribes_and_notifies_through_draft_8` runs mdrev's own check's shape with
 a fake channel on that PATH.
 **On a phone the review prefix is a full-screen SHEET** (#s12, the owner's choice: a tab has no way
-back there): the pane's Markdown from a FILE shows a Review control on a phone only; `openReviewSheet`
+back there): the pane's Markdown from a FILE shows a Review control on a phone only (held sideways in
+the head's More menu, #s663); `openReviewSheet`
 (`preview.js`) mounts the document with `mountMarkdown(…, {review: true})` in `.review-sheet` over the
 whole app (z 95: above the drawer, below the toasts), and its 44px close control unmounts it — no
 navigation, so the transcript's offset is unchanged (`a_phone_reviews_in_a_full_screen_sheet_and_…`).
