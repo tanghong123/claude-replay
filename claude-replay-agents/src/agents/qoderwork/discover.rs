@@ -193,8 +193,11 @@ pub(crate) fn candidates_scoped_for(home: &Home, cwd: &Path) -> Vec<Candidate> {
 /// engine the mirrors of its chats ([`super::opencode`], #s657), brought up to date first.
 pub(crate) fn roots_for(home: &Home) -> Vec<PathBuf> {
     let mut roots = vec![projects_dir_for(home)];
-    if let Some(mirror) = super::opencode::mirror_root_for(home) {
+    if super::opencode::mirror_root_for(home).is_some() {
         super::opencode::refresh(home);
+    }
+    // A folder `QWENWORK_MIRROR_DIR` names that the mirror did not take is not walked (#s662).
+    if let Some(mirror) = super::opencode::listed_root_for(home) {
         roots.push(mirror);
     }
     roots
@@ -203,7 +206,7 @@ pub(crate) fn roots_for(home: &Home) -> Vec<PathBuf> {
 /// Whether `path` is under one of this home's roots, read without bringing a mirror up to date.
 pub(crate) fn store_contains_for(home: &Home, path: &Path) -> bool {
     path.starts_with(projects_dir_for(home))
-        || super::opencode::mirror_root_for(home).is_some_and(|m| path.starts_with(m))
+        || super::opencode::listed_root_for(home).is_some_and(|m| path.starts_with(m))
 }
 
 /// A transcript smaller than this is single-prompt junk (measured: QoderWork's throwaway
@@ -334,7 +337,7 @@ fn duplicates_a_project(slug: &str, dir: &Path) -> bool {
 /// steps' tokens, which no step of the parent's counts: a parent's step is its own model call.
 pub(crate) fn subagent_transcripts_for(home: &Home) -> Vec<(PathBuf, String, String)> {
     let mut out = subagent_transcripts_in(&projects_dir_for(home));
-    if let Some(mirror) = super::opencode::mirror_root_for(home) {
+    if let Some(mirror) = super::opencode::listed_root_for(home) {
         out.extend(subagent_transcripts_in(&mirror));
     }
     out
@@ -1540,6 +1543,15 @@ mod tests {
         .unwrap();
         super::super::opencode::refresh_now(&QWENWORK);
         let caught_up = std::fs::read_to_string(&path).unwrap();
+        // The version changes with no event to go with it (#s662): built again under it all the
+        // same, where the check for an unchanged log once skipped it.
+        e.execute(
+            "update session set version = '1.0.2' where id = 'ses_one'",
+            [],
+        )
+        .unwrap();
+        super::super::opencode::refresh_now(&QWENWORK);
+        let re_versioned_quietly = std::fs::read_to_string(&path).unwrap();
         std::env::remove_var("QWENWORK_PROJECTS_DIR");
         std::env::remove_var("QWENWORK_DB");
 
@@ -1598,11 +1610,56 @@ mod tests {
             caught_up.contains("and the summary"),
             "an event behind a position already reached is still read"
         );
+        assert!(
+            re_versioned_quietly.contains("\"version\":\"1.0.2\"")
+                && !re_versioned_quietly.contains("\"version\":\"1.0.1\""),
+            "a version that changed alone is read too"
+        );
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(
             std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
             0o600
         );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// #s662: a folder `QWENWORK_MIRROR_DIR` names that holds someone's files is not taken, and
+    /// its transcripts, sub-agents included, are neither listed nor read as Qwenwork's; one the
+    /// mirror took (it carries the mark) is.
+    #[test]
+    fn a_mirror_folder_not_taken_is_not_walked() {
+        let _env = STORE_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let root = std::env::temp_dir().join(format!("qw-not-taken-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let store = root.join("projects");
+        std::fs::create_dir_all(&store).unwrap();
+        let someones = root.join("someones");
+        let slug = someones.join("-work-theirs");
+        std::fs::create_dir_all(slug.join("t1").join("subagents")).unwrap();
+        let theirs = slug.join("t1.jsonl");
+        let line = r#"{"type":"user","message":{"role":"user","content":"theirs"},"sessionId":"t1","timestamp":"2026-11-23T01:00:00Z"}"#;
+        std::fs::write(&theirs, format!("{line}\n").repeat(60)).unwrap();
+        std::fs::write(
+            slug.join("t1").join("subagents").join("agent-x.jsonl"),
+            format!("{line}\n"),
+        )
+        .unwrap();
+        std::env::set_var("QWENWORK_PROJECTS_DIR", &store);
+        std::env::set_var("QWENWORK_MIRROR_DIR", &someones);
+        let listed = store_transcripts_for(&QWENWORK);
+        let contained = store_contains_for(&QWENWORK, &theirs);
+        let subs = subagent_transcripts_for(&QWENWORK);
+        // The same folder once it carries the mark: the mirror's.
+        std::fs::write(someones.join(".opencode-mirror"), b"").unwrap();
+        let listed_taken = store_transcripts_for(&QWENWORK);
+        let subs_taken = subagent_transcripts_for(&QWENWORK);
+        std::env::remove_var("QWENWORK_MIRROR_DIR");
+        std::env::remove_var("QWENWORK_PROJECTS_DIR");
+        assert!(!listed.contains(&theirs), "{listed:?}");
+        assert!(!contained);
+        assert!(subs.is_empty(), "{subs:?}");
+        assert!(listed_taken.contains(&theirs), "{listed_taken:?}");
+        assert_eq!(subs_taken.len(), 1, "{subs_taken:?}");
         let _ = std::fs::remove_dir_all(&root);
     }
 

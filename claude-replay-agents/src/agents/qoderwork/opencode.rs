@@ -1221,6 +1221,36 @@ pub(crate) fn lock_mirrors(root: &Path) -> Option<std::fs::File> {
 /// The mark a folder `QWENWORK_MIRROR_DIR` names carries once the mirror has taken it (#s659).
 const ROOT_MARK: &str = ".opencode-mirror";
 
+/// The mirrors' root to walk for transcripts (#s662): [`mirror_root_for`], unless
+/// `QWENWORK_MIRROR_DIR` names a folder the mirror has not taken ([`owns_root`]), whose files are
+/// someone else's and are not listed as chats. Read only: taking a new or empty folder is the
+/// refresh's.
+pub(crate) fn listed_root_for(home: &Home) -> Option<PathBuf> {
+    let root = mirror_root_for(home)?;
+    let overridden = std::env::var_os(MIRROR_DIR_ENV).is_some();
+    (!overridden || root.join(ROOT_MARK).is_file()).then_some(root)
+}
+
+/// One line on stderr, once a process, for a folder `QWENWORK_MIRROR_DIR` names that the mirror
+/// will not take (#s662): it holds something the mirror did not write (Finder's `.DS_Store` is
+/// enough), so no chat is mirrored, where before nothing said why.
+fn say_refused(root: &Path) {
+    static SAID: std::sync::Once = std::sync::Once::new();
+    SAID.call_once(|| {
+        let first = std::fs::read_dir(root)
+            .ok()
+            .and_then(|mut e| e.next())
+            .and_then(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().into_owned());
+        eprintln!(
+            "Qwenwork's opencode chats are not mirrored: {MIRROR_DIR_ENV} names {}, which holds \
+             files the mirror did not write{}; name a new or empty folder",
+            root.display(),
+            first.map(|f| format!(" ({f})")).unwrap_or_default()
+        );
+    });
+}
+
 /// Whether the mirror may write and prune under `root` (#s659). A root of its own naming is its
 /// own. One `QWENWORK_MIRROR_DIR` names (`overridden`) is its own once it carries the mark, which
 /// the mirror puts in a folder that is new or empty: a folder holding anything else is someone's,
@@ -1746,6 +1776,9 @@ mod db {
             || std::iter::once(last)
                 .chain(t.kids.iter())
                 .any(|s| pos(t.at, &s.id) < pos(&k.at, &s.id))
+            // An earlier generation not read to its position. Were its sequence to stay ahead of
+            // its events (written before them, which the engine has not been seen to do), the
+            // chat would be read whole on every refresh until they came.
             || earlier.iter().any(|g| {
                 k.read
                     .get(&g.id)
@@ -1782,6 +1815,11 @@ mod db {
             k.read.insert(s.id.clone(), upto);
             new.push((s, events));
         }
+        // The calls the new events name, after those kept: in the order the whole log takes them
+        // (the chat's sessions, then its sub-agents'), save that a child named by two calls in
+        // different sessions, which the engine has not been seen to write, keeps the first call
+        // seen here where the whole log would take the first in session order. A call naming a
+        // child already kept changes nothing, as in the whole log.
         for (_, events) in &new {
             for (_, ty, data) in events {
                 note_spawn(&mut k.spawns, ty, data, &k.removed);
@@ -1835,6 +1873,7 @@ mod db {
             return;
         };
         if !owns_root(&root, std::env::var_os(super::MIRROR_DIR_ENV).is_some()) {
+            say_refused(&root);
             return;
         }
         let mut memo = MEMO.lock().unwrap_or_else(|e| e.into_inner());
@@ -1918,12 +1957,17 @@ mod db {
                 .chain(kids.iter())
                 .map(|s| (s.id.clone(), seqs.get(&s.id).copied().unwrap_or(-1)))
                 .collect();
-            // Nothing to do where the log has not moved and what was kept was read to its end.
+            // Nothing to do where the log has not moved, what was kept was read to its end, and no
+            // session's version changed (every record of it carries the version).
             if m.kept.get(&chat.id).is_some_and(|k| {
                 k.at == at
                     && k.at
                         .iter()
                         .all(|(id, p)| k.read.get(id).is_some_and(|r| r >= p))
+                    && gens
+                        .iter()
+                        .chain(kids.iter())
+                        .all(|s| k.versions.get(&s.id).is_none_or(|v| v == &s.version))
             }) && mirror_path(&root, chat).is_file()
             {
                 continue;
