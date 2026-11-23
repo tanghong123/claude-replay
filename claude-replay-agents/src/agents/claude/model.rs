@@ -3846,7 +3846,8 @@ fn parse_file(path: &std::path::Path) -> std::io::Result<Vec<Block>> {
     parse_file_with(&crate::adapters::ClaudeAdapter, path)
 }
 
-/// [`parse_file`] through `adapter`'s decoder.
+/// Parse a transcript file into blocks WITHOUT loading sub-agent children, through `adapter`'s
+/// decoder: the raw pass the tree walk folds each child with.
 fn parse_file_with(
     adapter: &'static dyn TranscriptAdapter,
     path: &std::path::Path,
