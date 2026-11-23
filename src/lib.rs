@@ -432,7 +432,11 @@ fn print_unknown_shapes(args: &Args) -> anyhow::Result<()> {
                 t.output,
             )
             .is_some();
-            if tokens == 0 || priced {
+            // A model the agent says no catalog can price (a routing key, #s671) is no news.
+            if tokens == 0
+                || priced
+                || claude_replay_core::adapter(session.agent).deliberately_unpriced(model)
+            {
                 continue;
             }
             let sid = discover::session_id(path);

@@ -447,6 +447,13 @@ pub trait TranscriptAdapter: Sync {
         &[]
     }
 
+    /// A model id this agent records that no price catalog can know, by design (#s671): a routing
+    /// key its service resolves to a model it never names. `--unknown` does not report it as
+    /// unpriced; the session's cost still reads as unpriced, or as a lower bound. Default: none.
+    fn deliberately_unpriced(&self, _model: &str) -> bool {
+        false
+    }
+
     /// The client version a record says it was written by, for `--field-coverage`. The scan keeps
     /// the last one a file stated, so an agent that writes it once (in a session head) answers
     /// only there.

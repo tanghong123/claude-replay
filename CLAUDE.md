@@ -1574,7 +1574,10 @@ sessions (#s370; `--field-coverage` too): half the refusal notes and sandbox att
 machine held were in sub-agents alone, where a 2.1.310 shape went unreported for two weeks. A
 Claude sub-agent's row names its ROOT session as the example. It also names every MODEL that produced tokens
 with no price in `claude-replay-engine/pricing.json` (`where: model.unpriced`, counted in sessions):
-that session's cost silently becomes a lower bound. And every FILE a store holds that no reader can
+that session's cost silently becomes a lower bound. A model its adapter calls deliberately unpriced
+is left out (`TranscriptAdapter::deliberately_unpriced`, #s671: Qwenwork's routing modes, `mode-` and
+32 hex digits, which its gateway resolves to a model it never names); its cost still reads unpriced.
+And every FILE a store holds that no reader can
 open (`where: store.unread`, #s385, Hong's choice on #s384): a Codex rollout with an ending nothing
 reads, named by that ending, or a `.jsonl.zst` that does not decode, counted in files, the example
 its path. Codex compressed 3,416 of one machine's sessions to `.jsonl.zst` (#s383), and discovery

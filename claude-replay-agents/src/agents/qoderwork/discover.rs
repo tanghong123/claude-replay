@@ -611,6 +611,15 @@ fn subagents_dir(path: &Path) -> Option<PathBuf> {
     dir.is_dir().then_some(dir)
 }
 
+/// A routing mode written as a model id (#s671): `mode-` and 32 lowercase hex digits. Qwenwork's
+/// engine sends it to the Qwenwork gateway as its model and the gateway picks the backend model,
+/// which nothing local names, and Qwenwork bills in plan credits, so no catalog can price it.
+pub(crate) fn is_routing_mode(model: &str) -> bool {
+    model.strip_prefix("mode-").is_some_and(|hex| {
+        hex.len() == 32 && hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    })
+}
+
 /// Where `path`'s spawns keep their sidecars: a session's `<dir>/<id>/subagents`, and for a
 /// sub-agent's own transcript the folder it sits in, since every descendant of a session is
 /// filed there flat with its sidecar (#s669: a child read `<folder>/agent-<id>/subagents`, which
@@ -698,6 +707,20 @@ fn meta_link(path: &Path) -> Option<SpawnLink> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    /// #s671: a routing mode is `mode-` and exactly 32 lowercase hex digits, nothing near it.
+    #[test]
+    fn a_routing_mode_is_mode_and_32_lowercase_hex_digits() {
+        let hex = "0123456789abcdef".repeat(2);
+        assert!(is_routing_mode(&format!("mode-{hex}")));
+        assert!(!is_routing_mode(&format!("mode-{}", hex.to_uppercase())));
+        assert!(!is_routing_mode(&format!("mode-{}", &hex[1..])));
+        assert!(!is_routing_mode(&format!("mode-{hex}0")));
+        assert!(!is_routing_mode(&format!("mode-{}g", &hex[1..])));
+        assert!(!is_routing_mode(&format!("model-{hex}")));
+        assert!(!is_routing_mode("mode-test"));
+        assert!(!is_routing_mode("qwen3-coder-plus"));
+    }
 
     /// `QODERWORK_PROJECTS_DIR` is a PROCESS-global override, and cargo runs these tests on
     /// parallel threads in one binary: without this, whichever test called `remove_var`

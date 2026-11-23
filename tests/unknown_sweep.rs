@@ -188,6 +188,80 @@ fn a_model_with_no_price_is_reported_and_a_priced_one_is_not() {
     assert_eq!(unpriced[0]["example"], SID);
 }
 
+/// #s671: a Qwenwork routing mode (`mode-` and 32 hex digits) is a model id the Qwenwork gateway
+/// resolves to a backend model it never names, so no catalog can price it and the daily review
+/// should not report it every day. The skip is the family's: the same id from a Claude session is
+/// still news. The id is built from its shape; a real one never enters this repository.
+#[test]
+fn a_qwenwork_routing_mode_is_not_reported_unpriced_and_a_claude_model_still_is() {
+    let root = scratch("routing-mode");
+    let mode = format!("mode-{}", "0123456789abcdef".repeat(2));
+    let qsid = "0f0e0d0c-0000-4000-8000-000000000671";
+    let record = |sid: &str, version: &str, kind: &str, body: &str, ts: &str| {
+        format!(
+            r#"{{"type":"{kind}","cwd":"/work/models","sessionId":"{sid}","version":"{version}","message":{body},"timestamp":"{ts}"}}"#
+        )
+    };
+    let assistant = format!(
+        r#"{{"role":"assistant","model":"{mode}","content":[{{"type":"text","text":"ok"}}],"usage":{{"input_tokens":10,"output_tokens":5}}}}"#
+    );
+    // Over the family's 4 KB floor, so the store lists it as a session.
+    let prompt = format!(
+        r#"{{"role":"user","content":[{{"type":"text","text":"{}"}}]}}"#,
+        "count the terns ".repeat(300)
+    );
+    let qproject = root
+        .join("qwenwork")
+        .join("-Users-someone--qwenwork-workspace-models");
+    std::fs::create_dir_all(&qproject).unwrap();
+    std::fs::write(
+        qproject.join(format!("{qsid}.jsonl")),
+        format!(
+            "{}\n{}\n",
+            record(qsid, "1.1.71", "user", &prompt, "2026-09-25T00:00:00Z"),
+            record(
+                qsid,
+                "1.1.71",
+                "assistant",
+                &assistant,
+                "2026-09-25T00:00:01Z"
+            ),
+        ),
+    )
+    .unwrap();
+    let cproject = root.join("claude").join("-work-models");
+    std::fs::create_dir_all(&cproject).unwrap();
+    std::fs::write(
+        cproject.join(format!("{SID}.jsonl")),
+        format!(
+            "{}\n{}\n",
+            record(SID, "9.9.9", "user", &prompt, "2026-09-25T00:00:00Z"),
+            record(
+                SID,
+                "9.9.9",
+                "assistant",
+                &assistant,
+                "2026-09-25T00:00:01Z"
+            ),
+        ),
+    )
+    .unwrap();
+    let (out, err, ok) = run(&root, &root, &["--unknown", "--json"]);
+    assert!(ok, "{err}");
+    assert!(
+        err.contains("scanning 2 transcript"),
+        "both sessions are swept, so the Qwenwork one is left out by the rule: {err}"
+    );
+    let unpriced: Vec<_> = rows(&out)
+        .into_iter()
+        .filter(|r| r["where"] == "model.unpriced")
+        .collect();
+    assert_eq!(unpriced.len(), 1, "{out}");
+    assert_eq!(unpriced[0]["agent"], "claude");
+    assert_eq!(unpriced[0]["name"], mode.as_str());
+    assert_eq!(unpriced[0]["example"], SID);
+}
+
 /// A Claude store whose one session spawned one sub-agent, in the session's own `subagents/` dir,
 /// the sub-agent's records carrying the root session's id as Claude Code writes them. `main` and
 /// `sub` are extra lines for each transcript.

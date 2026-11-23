@@ -542,6 +542,13 @@ macro_rules! qwork_family_adapter {
                 $home.agent
             }
 
+            /// Qwenwork's routing modes (#s671), which its gateway resolves to a backend model
+            /// it never names. Qwenwork's alone: QoderWork's ids were never measured.
+            fn deliberately_unpriced(&self, model: &str) -> bool {
+                $home.agent == Agent::QWENWORK
+                    && agents::qoderwork::discover::is_routing_mode(model)
+            }
+
             /// A DESKTOP-collaboration agent: its sessions' cwd is usually `$HOME` or nothing
             /// meaningful, so a monitor groups them under the agent, not a project (#98 §4.2).
             fn workspace_anchored(&self) -> bool {
