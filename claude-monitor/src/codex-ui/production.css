@@ -2176,7 +2176,8 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #sessionView .preview-head :is(.preview-reveal,.preview-download,.preview-print,.preview-review,.preview-expand){display:none}
   #sessionView .preview-head>.preview-more-wrap{display:block;position:relative;flex:none}
   #sessionView .preview-more{display:grid;place-items:center;width:44px;height:44px}
-  #sessionView .preview-tab.on{max-width:100%}
+  /* The whole strip, less the 8px either side `fitTabs` scrolls a current tab in by, so its ✕ is never cut. */
+  #sessionView .preview-tab.on{max-width:calc(100% - 16px)}
   #sessionView .preview-more-menu{position:absolute;top:calc(100% + 4px);right:0;z-index:40;display:flex;flex-direction:column;width:min(260px,calc(100vw - 24px));padding:6px;border:1px solid var(--line);border-radius:12px;background:var(--bg);box-shadow:0 14px 38px rgba(34,43,73,.14)}
   #sessionView .preview-more-menu[hidden]{display:none}
   #sessionView .preview-more-item{display:grid;grid-template-columns:20px minmax(0,1fr);align-items:center;gap:10px;min-height:44px;padding:0 10px;border-radius:8px;background:transparent;color:var(--ink);font-size:15px;text-align:left;cursor:pointer}

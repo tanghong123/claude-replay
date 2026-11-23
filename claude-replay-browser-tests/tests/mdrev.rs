@@ -1586,6 +1586,14 @@ fn a_phone_pane_leaves_mdrevs_toolbar_its_own_layout() {
     }
 }
 
+/// Whether the pane offers its Review control: drawn in the head, or, on a phone held sideways, folded into the
+/// head's More menu (#s663), whose button is drawn.
+const REVIEW_OFFERED: &str = "(function(){ var b = document.querySelector('.preview-review'); if (!b || b.hidden) return false; if (b.offsetWidth > 0) return true; var m = document.querySelector('#preview .preview-more'); return !!m && m.offsetWidth > 0; })()";
+
+/// Presses the pane's Review control where the reader would find it: in the head (`"head"`), or through the
+/// head's More menu and its Review row (`"more"`, #s663).
+const PRESS_REVIEW: &str = "(function(){ var b = document.querySelector('.preview-review'); if (b.offsetWidth > 0) { b.click(); return 'head'; } document.querySelector('#preview .preview-more').click(); var r = document.querySelector('#preview .preview-more-menu [data-preview-more=\"review\"]'); if (!r) return 'no review row'; r.click(); return 'more'; })()";
+
 /// #s533: held sideways, the island and the rounded corners leave 62px of each side unsafe. mdrev's
 /// toolbar has a grey of its own, and inside the pane's safe-area padding it stopped 62px short of the
 /// screen's edge, a strip of the pane's white beside it, where iOS runs a bar's background to the edge
@@ -1698,14 +1706,15 @@ fn a_sideways_phone_runs_mdrevs_toolbar_to_the_screen_s_edge() {
     check("the whole screen", "#preview");
     until(
         &tab,
-        "(function(){ var b = document.querySelector('.preview-review'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+        REVIEW_OFFERED,
         "the pane's Review control",
         Duration::from_secs(10),
         PANE,
     );
-    eval(
-        &tab,
-        "document.querySelector('.preview-review').click(); 'ok'",
+    assert_eq!(
+        eval(&tab, PRESS_REVIEW).as_str(),
+        Some("more"),
+        "held sideways, Review is in the head's More menu (#s663)"
     );
     until(
         &tab,
@@ -1930,7 +1939,7 @@ fn host_review_sheet_keeps_a_note_above_the_keyboard(case: HostSheet) {
     open_guide(&tab, &repo);
     until(
         &tab,
-        "!!document.querySelector('#previewBody .mdrev-host h1') && (function(){ var b = document.querySelector('.preview-review'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+        &format!("!!document.querySelector('#previewBody .mdrev-host h1') && {REVIEW_OFFERED}"),
         "the guide in the pane, with its Review control",
         Duration::from_secs(30),
         PANE,
@@ -1948,9 +1957,10 @@ fn host_review_sheet_keeps_a_note_above_the_keyboard(case: HostSheet) {
             "document.getElementById('sessionView').className + ' | ' + getComputedStyle(document.getElementById('sessionView')).contain",
         );
     }
-    eval(
-        &tab,
-        "document.querySelector('.preview-review').click(); 'ok'",
+    let pressed = eval(&tab, PRESS_REVIEW);
+    assert!(
+        matches!(pressed.as_str(), Some("head" | "more")),
+        "the pane's Review control pressed, in the head or through More (#s663): {pressed}"
     );
     until(
         &tab,

@@ -23513,7 +23513,7 @@ fn a_phone_held_sideways_keeps_each_open_file_s_name_whole_in_its_pane_head() {
         "document.querySelector('#preview .preview-more').getAttribute('aria-expanded')",
     );
     let menu = format!(
-        "(function(){{ var m = document.querySelector('#preview .preview-more-menu'), p = document.getElementById('preview').getBoundingClientRect(), r = m.getBoundingClientRect(), rows = [].slice.call(m.querySelectorAll('[data-preview-more]')); return JSON.stringify({{ rows: rows.map(function (b) {{ return b.dataset.previewMore; }}), words: rows.map(function (b) {{ return b.innerText.trim(); }}), tall: Math.round(Math.min.apply(null, rows.map(function (b) {{ return b.getBoundingClientRect().height; }}))), hit: rows.every(function (b) {{ return ({PHONE_HITTABLE})(b); }}), inside: r.left >= p.left - 1 && r.right <= p.right + 1 && r.top >= p.top - 1 && r.bottom <= p.bottom + 1, expanded: document.querySelector('#preview .preview-more').getAttribute('aria-expanded') }}); }})()"
+        "(function(){{ var m = document.querySelector('#preview .preview-more-menu'), p = document.getElementById('preview').getBoundingClientRect(), r = m.getBoundingClientRect(), rows = [].slice.call(m.querySelectorAll('[data-preview-more]')); return JSON.stringify({{ rows: rows.map(function (b) {{ return b.dataset.previewMore; }}), words: rows.map(function (b) {{ return b.querySelector('.preview-more-label').textContent; }}), tall: Math.round(Math.min.apply(null, rows.map(function (b) {{ return b.getBoundingClientRect().height; }}))), hit: rows.every(function (b) {{ return ({PHONE_HITTABLE})(b); }}), inside: r.left >= p.left - 1 && r.right <= p.right + 1 && r.top >= p.top - 1 && r.bottom <= p.bottom + 1, expanded: document.querySelector('#preview .preview-more').getAttribute('aria-expanded') }}); }})()"
     );
     let mv: serde_json::Value =
         serde_json::from_str(harness::eval(&tab, &menu).as_str().unwrap_or("{}")).unwrap();
@@ -26456,7 +26456,7 @@ fn a_narrow_phone_held_sideways_keeps_a_pane_sheets_heading_clear_of_the_handle(
 }
 
 /// On a phone held sideways (#s663): opens the pane head's More menu, chooses its `name` row
-/// (`reveal`, `download`, `print`, `review` or `expand`), and answers that row's words as they read.
+/// (`reveal`, `download`, `print`, `review` or `expand`), and answers that row's words (its label's).
 /// The menu is closed after the choice.
 fn more_choice(tab: &headless_chrome::Tab, name: &str) -> String {
     phone_tap(tab, "#preview .preview-more");
@@ -26471,7 +26471,7 @@ fn more_choice(tab: &headless_chrome::Tab, name: &str) -> String {
     let words = harness::eval(
         tab,
         &format!(
-            "document.querySelector({}).innerText.trim()",
+            "document.querySelector({}).querySelector('.preview-more-label').textContent",
             serde_json::to_string(&row).unwrap()
         ),
     )
@@ -26507,7 +26507,7 @@ fn a_phone_held_sideways_opens_the_pane_as_a_second_column() {
         8,
         Some(harness::SIDEWAYS_INSETS),
     );
-    let facts = "(function(){ var w = document.querySelector('#sessionView>.workspace').getBoundingClientRect(), p = document.getElementById('preview').getBoundingClientRect(), s = document.querySelector('#app>.sidebar').getBoundingClientRect(), d = document.getElementById('phoneDock'), e = document.querySelector('.preview-expand'), m = document.querySelector('.preview-more'); return JSON.stringify({ ws: Math.round(w.width), pane: Math.round(p.left), paneW: Math.round(p.width), col: Math.round(s.right), dock: getComputedStyle(d).display === 'none' ? -1 : Math.round(d.getBoundingClientRect().right), w: innerWidth, expand: getComputedStyle(e).display, more: getComputedStyle(m).display, full: document.getElementById('app').classList.contains('preview-full') }); })()";
+    let facts = "(function(){ var w = document.querySelector('#sessionView>.workspace').getBoundingClientRect(), p = document.getElementById('preview').getBoundingClientRect(), s = document.querySelector('#app>.sidebar').getBoundingClientRect(), d = document.getElementById('phoneDock'), e = document.querySelector('.preview-expand'), m = document.querySelector('.preview-more-wrap'); return JSON.stringify({ ws: Math.round(w.width), pane: Math.round(p.left), paneW: Math.round(p.width), col: Math.round(s.right), dock: getComputedStyle(d).display === 'none' ? -1 : Math.round(d.getBoundingClientRect().right), w: innerWidth, expand: getComputedStyle(e).display, more: getComputedStyle(m).display, full: document.getElementById('app').classList.contains('preview-full') }); })()";
     let read = || -> serde_json::Value {
         serde_json::from_str(harness::eval(&tab, facts).as_str().unwrap_or("{}"))
             .unwrap_or_default()
