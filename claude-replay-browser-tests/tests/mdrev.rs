@@ -1724,6 +1724,25 @@ fn a_sideways_phone_runs_mdrevs_toolbar_to_the_screen_s_edge() {
         "(document.querySelector('.review-sheet') || {innerText: 'no sheet'}).innerText.slice(0, 200)",
     );
     check("the Review sheet", ".review-sheet");
+    // #s663's review: closed by Escape with the focus inside it, the sheet gives the focus back to
+    // More, where the head folds Review held sideways (upright it goes back to Review, as the iPad
+    // case below holds), never to a control the head does not draw.
+    eval(&tab, "(function(){ var h = document.querySelector('.review-sheet .mdrev-host h1'); h.tabIndex = -1; h.focus(); return 'ok'; })()");
+    until(
+        &tab,
+        "!!(document.activeElement && document.activeElement.closest('.review-sheet .mdrev-host'))",
+        "the focus inside the review sheet",
+        Duration::from_secs(5),
+        "(document.activeElement || {}).className || (document.activeElement || {}).tagName",
+    );
+    tab.press_key("Escape").unwrap();
+    until(
+        &tab,
+        "!document.querySelector('.review-sheet') && (document.activeElement || {}).classList?.contains('preview-more')",
+        "the sheet gone by Escape and the focus back on More",
+        Duration::from_secs(10),
+        "(document.activeElement || {}).className || (document.activeElement || {}).tagName",
+    );
 }
 
 /// #s627: on a phone held upright, the review sheet keeps a note started low on the screen above

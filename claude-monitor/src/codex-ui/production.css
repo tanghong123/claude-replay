@@ -2142,8 +2142,9 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .preview-expand{display:none}
 /* #s663, Hong's choice on #s670: held sideways the pane's head folds the file's actions (reveal or
    download, print, review) and full screen into one More menu (`.preview-more-wrap`, preview.js),
-   so the strip keeps their room, and there the current tab may take the whole strip: with six files
-   open each name is whole on an iPhone 17 Pro (the strip 182 points, the longest tab 153). The menu
+   so the strip keeps their room, and there the current tab may take the strip but the 8px either side
+   `fitTabs` scrolls it in by: with six files open each name is whole on an iPhone 17 Pro (the strip
+   182 points, the longest tab 153). The menu
    hangs under its button inside the pane, its rows a finger's 44 points. Upright, on an iPad and on
    a desktop nothing changes. */
 .preview-more-wrap{display:none}
