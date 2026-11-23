@@ -711,7 +711,11 @@ function renderTree() {
   // controls stay.
   const grouped = !arranged && groupedByMachine();
   drawnGroupedFlat = grouped && flat;
-  for (const control of [collapseBtn, expandBtn, filterSheet.querySelector("[data-group-part]")]) control?.toggleAttribute("data-flat", (flat && !grouped) || arranged);
+  const noGroups = (flat && !grouped) || arranged;
+  for (const control of [collapseBtn, expandBtn]) control.toggleAttribute("data-flat", noGroups);
+  // The sheet's fold rows (#s664) wear a mark of their own: in the sheet `data-flat` names the One list
+  // by activity option, which a reader (the cases' `#sessionFilter [data-flat]`) finds by it.
+  filterSheet.querySelector("[data-group-part]")?.toggleAttribute("data-no-groups", noGroups);
   if (arranged) html = arrangedSessionsHtml(layout, agents, shownAgents);
   else if (grouped) html = machineGroupsHtml(shownAgents, flat, filtered);
   else if (flat) html = flatSessionsHtml(shownAgents);
@@ -819,7 +823,7 @@ if (shows("filter")) sheetParts[0] += `
 // rows. They are drawn with any sheet and shown only where the app's layout takes the two glyphs out of
 // the head: on a wide phone held sideways, whose column head cannot give eight glyphs a finger's 44
 // points each. Elsewhere the glyphs stay and the rows are not shown. They go where the glyphs go
-// (`data-flat`, at each draw), and a row closes the sheet, so the list it folded is in view.
+// (`data-no-groups`, at each draw), and a row closes the sheet, so the list it folded is in view.
 const groupPart = `<div data-group-part><div class="scope-menu-list">
 <button class="scope-option" type="button" data-group-action="collapse" title="Fold every agent, project and machine">${svg("collapseStack")}<span>Collapse every group</span></button>
 <button class="scope-option" type="button" data-group-action="expand" title="Open every agent, project and machine">${svg("expandStack")}<span>Expand every group</span></button>
