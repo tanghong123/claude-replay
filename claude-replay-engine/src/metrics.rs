@@ -835,6 +835,18 @@ pub fn credits_cost(extra: &BTreeMap<String, u64>) -> Option<UsdCost> {
     }
 }
 
+/// The USD an agent says its calls cost, in its own figure (#s662: the Qwenwork opencode
+/// engine's, from its model's configured rates), or `None` when it reported none. Kept in
+/// micro-dollars under the reserved `cost_usd_micro` key, so the u64 bag carries a fraction.
+/// It is the agent's figure, not a deduction: a session whose model the catalog cannot price
+/// keeps its `≥`, since a step that reported no figure is not counted.
+pub fn stated_cost(extra: &BTreeMap<String, u64>) -> Option<UsdCost> {
+    match extra.get("cost_usd_micro") {
+        Some(&micro) if micro > 0 => Some(micro as f64 / 1e6),
+        _ => None,
+    }
+}
+
 /// Parse an RFC3339-ish timestamp ("2026-06-28T13:54:10.106Z") to unix seconds
 /// (integer — sub-second precision is dropped, matching the old byte-offset parser).
 /// Shares the one epoch-seconds converter with the parse layer (`engine::time`).

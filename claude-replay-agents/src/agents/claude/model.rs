@@ -4715,6 +4715,20 @@ pub(crate) fn decode_line_known(
                 });
             }
         }
+        // #s662: the files one of the opencode engine's steps changed, as the Qwenwork mirror
+        // writes them, for the family's adapters alone: a note naming them under the session's
+        // folder.
+        Some("system")
+            if v.get("subtype").and_then(|s| s.as_str()) == Some("files_changed")
+                && also_read_subtypes.contains(&"files_changed") =>
+        {
+            if let Some(text) = files_changed_note(&v, cwd) {
+                msgs.push(Message::SystemNote {
+                    text,
+                    kind: NoteKind::Plain,
+                });
+            }
+        }
         // The turn's own recap (#239). Verified against a real pair rather than assumed: the
         // summary reads "all queued tasks are done and released through v1.7.1… Next: your
         // decision on task #17", and the turn it follows is exactly that work. So it describes
@@ -5155,6 +5169,25 @@ fn api_retry_note(v: &Value) -> Option<String> {
         v.get("max_retries").and_then(Value::as_i64),
         false,
     ))
+}
+
+/// The note a `files_changed` record composes to (#s662): `Changed <file>`, or `Changed <n> files:
+/// <file>, <file>…`, each named under the session's folder as tool targets are; `None` for a
+/// record that names none.
+fn files_changed_note(v: &Value, cwd: &str) -> Option<String> {
+    let files: Vec<String> = v
+        .get("files")?
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_str)
+        .filter(|f| !f.trim().is_empty())
+        .map(|f| relativize(f, cwd))
+        .collect();
+    match files.as_slice() {
+        [] => None,
+        [one] => Some(format!("Changed {one}")),
+        many => Some(format!("Changed {} files: {}", many.len(), many.join(", "))),
+    }
 }
 
 /// `API error: <the message's first line> (HTTP <status>) — retry <n> of <max>[, network down]`,
@@ -11694,6 +11727,77 @@ mod tests {
             !reported("s-s377") && !reported("s-s377n"),
             "the family's own is not reported"
         );
+    }
+
+    /// #s662: the opencode mirror's `files_changed` folds, for the family's adapters alone, to a
+    /// plain note naming the files under the session's folder; through Claude's own decoder it
+    /// draws nothing and is reported as a new subtype, and its `files` key is the family's.
+    #[test]
+    fn the_mirror_s_changed_files_are_a_note_for_the_family_alone() {
+        use crate::agents::qoderwork::discover::{
+            FAMILY_RECORD_KEYS, FAMILY_RECORD_TYPES, FAMILY_SYSTEM_SUBTYPES,
+        };
+        let family = |line: &str| {
+            let (mut cwd, mut out) = (String::new(), Vec::new());
+            decode_line_known(
+                line,
+                &mut cwd,
+                &mut out,
+                FAMILY_RECORD_TYPES,
+                FAMILY_RECORD_KEYS,
+                FAMILY_SYSTEM_SUBTYPES,
+            );
+            out
+        };
+        let claude = |line: &str| {
+            let (mut cwd, mut out) = (String::new(), Vec::new());
+            decode_line(line, &mut cwd, &mut out);
+            out
+        };
+        let notes = |out: Vec<Message>| -> Vec<(String, NoteKind)> {
+            out.into_iter()
+                .filter_map(|m| match m {
+                    Message::SystemNote { text, kind } => Some((text, kind)),
+                    _ => None,
+                })
+                .collect()
+        };
+        let changed = |sid: &str, files: &str| {
+            format!(
+                r#"{{"type":"system","subtype":"files_changed","files":{files},"uuid":"prt_p","parentUuid":"prt_r","timestamp":"2026-11-23T01:00:00.000Z","sessionId":"{sid}","cwd":"/w/proj","isSidechain":false,"userType":"external","version":"1.0.0"}}"#
+            )
+        };
+        assert_eq!(
+            notes(family(&changed(
+                "s-s662",
+                r#"["/w/proj/src/a.rs","/w/proj/b.txt"]"#
+            ))),
+            vec![(
+                "Changed 2 files: src/a.rs, b.txt".to_string(),
+                NoteKind::Plain
+            )]
+        );
+        assert_eq!(
+            notes(family(&changed("s-s662o", r#"["/w/proj/a.txt"]"#))),
+            vec![("Changed a.txt".to_string(), NoteKind::Plain)],
+            "one file, by its name"
+        );
+        assert!(
+            notes(family(&changed("s-s662e", "[]"))).is_empty(),
+            "none named, no note"
+        );
+        assert!(
+            notes(claude(&changed("s-s662x", r#"["/w/proj/a.txt"]"#))).is_empty(),
+            "Claude's own decoder draws nothing for it"
+        );
+        let seen = unknown_shapes();
+        let reported = |sid: &str| {
+            seen.iter()
+                .any(|s| s.name == "files_changed" && s.example.as_deref() == Some(sid))
+        };
+        assert!(reported("s-s662x"), "and reports it as new");
+        assert!(!reported("s-s662"), "the family's own is not reported");
+        assert!(FAMILY_RECORD_KEYS.contains(&"files"));
     }
 
     /// #s215: the 2.1.308 sandbox flag on a Bash result — an object result and a failed command's

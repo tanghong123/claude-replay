@@ -4,9 +4,9 @@
 //! formatting live in [`claude_replay_engine::seam`].
 
 use claude_replay_engine::seam::{
-    credits_cost, epoch_secs, long_prompt_over, parse_ts, prices_fast, total_cost, AnswerClock,
-    AnswerLine, AnswerTiming, Metrics, ReportedCost, RequestPricing, RuntimeInfo, ServiceTier,
-    TimeSpan, TokenCounts,
+    credits_cost, epoch_secs, long_prompt_over, parse_ts, prices_fast, stated_cost, total_cost,
+    AnswerClock, AnswerLine, AnswerTiming, Metrics, ReportedCost, RequestPricing, RuntimeInfo,
+    ServiceTier, TimeSpan, TokenCounts,
 };
 use serde_json::Value;
 
@@ -334,6 +334,14 @@ impl MetricsAcc {
                     self.bump("credits_micro", (c * 1e6).round() as u64);
                 }
             }
+            // #s662: what the agent itself figured a call cost, in US dollars, as the Qwenwork
+            // opencode mirror writes it (`cost_usd`, only where above zero), into micro-dollars
+            // in `cost_usd_micro`. Claude Code writes no such key.
+            if let Some(c) = u.get("cost_usd").and_then(|x| x.as_f64()) {
+                if billable && c.is_finite() && c > 0.0 {
+                    self.bump("cost_usd_micro", (c * 1e6).round() as u64);
+                }
+            }
         }
         if v.pointer("/message/model")
             .and_then(|x| x.as_str())
@@ -590,7 +598,11 @@ impl MetricsAcc {
         // they were (INV-2); current QoderWork sessions with credits intentionally take this
         // path too. `cost_partial` is untouched — zero tokens report no omission, and a mixed
         // session keeps its honest `≥` marker.
-        let cost_usd = credits_cost(&self.extra).or(cost_usd);
+        // The same holds for an agent that reports its own dollar figure (#s662): it beats the
+        // estimate, and credits, a measured deduction, beat it.
+        let cost_usd = credits_cost(&self.extra)
+            .or_else(|| stated_cost(&self.extra))
+            .or(cost_usd);
         // The flat totals keep their meaning: the sum across models. Every existing consumer
         // reads these unchanged.
         let mut tot = TokenCounts::default();

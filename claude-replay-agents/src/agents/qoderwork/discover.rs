@@ -48,8 +48,10 @@ pub(crate) const FAMILY_RECORD_TYPES: &[&str] = &[
 /// request, the family's form of Claude Code's `api_error`, and is drawn as that is: `{level:
 /// "error", content, error, error_status, attempt, max_retries, retry_delay_ms}`. Measured
 /// 2026-11-06 on aries-black: 18 Qwenwork records (1.1.59, 1.1.71) and 15 QoderWork records, all in
-/// sub-agent transcripts, the assistant's reply right after it in 17 of the 18.
-pub(crate) const FAMILY_SYSTEM_SUBTYPES: &[&str] = &["api_retry"];
+/// sub-agent transcripts, the assistant's reply right after it in 17 of the 18. `files_changed` is
+/// the opencode mirror's own (#s662): the files one of the engine's steps changed, `{files: [<an
+/// absolute path>…]}`, drawn as a note naming them; neither client writes it.
+pub(crate) const FAMILY_SYSTEM_SUBTYPES: &[&str] = &["api_retry", super::opencode::FILES_CHANGED];
 
 /// The top-level keys the family writes on Claude's record types beyond Claude's own (#361), from
 /// the 2026-10-02 census of the QoderWork and Qwenwork stores (keys only): known to the family's
@@ -132,6 +134,10 @@ pub(crate) const FAMILY_RECORD_KEYS: &[&str] = &[
     // answer. REVISIT if one `responseGroupId` spans several `requestId`s: a retried or continued
     // answer the page might want to join.
     "responseGroupId",
+    // #s662: the opencode mirror's `files_changed` record, the absolute paths one of the
+    // engine's steps changed (measured 2026-11-23 on aries-black: 53 patch parts, 1 to 17 paths
+    // each, every one under its chat's folder). Read by the family's decoder (the note).
+    "files",
 ];
 
 /// QoderWork itself.

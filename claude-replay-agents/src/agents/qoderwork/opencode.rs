@@ -58,6 +58,10 @@ const ENGINE_DB_ENV: &str = "QWENWORK_ENGINE_DB";
 /// Overrides where the mirrors go.
 const MIRROR_DIR_ENV: &str = "QWENWORK_MIRROR_DIR";
 
+/// The `system` subtype the mirror writes for the files one of the engine's steps changed (#s662),
+/// one of the family's subtypes ([`super::discover::FAMILY_SYSTEM_SUBTYPES`]).
+pub(crate) const FILES_CHANGED: &str = "files_changed";
+
 /// The engine's database, if this home has one and it is there.
 ///
 /// Hermetic by construction: a process that moved the family's projects root (every test does)
@@ -729,7 +733,17 @@ impl Projector {
                     Some("length") => json!("max_tokens"),
                     _ => Value::Null,
                 };
-                let tokens = part.get("tokens").and_then(usage);
+                let mut tokens = part.get("tokens").and_then(usage);
+                // What the engine figured the step cost, in US dollars from its model's configured
+                // rates per million tokens (#s662), where it figured any: every step of this Mac's
+                // chats says 0, its custom model having no rates, and a 0 is no figure.
+                if let Some(cost) = part
+                    .get("cost")
+                    .and_then(Value::as_f64)
+                    .filter(|c| c.is_finite() && *c > 0.0)
+                {
+                    tokens.get_or_insert_with(|| json!({}))["cost_usd"] = json!(cost);
+                }
                 if tokens.is_some() || !stop.is_null() {
                     let mut m = json!({ "id": id, "type": "message", "role": "assistant", "model": self.models.get(msg).cloned().unwrap_or_default(), "content": [], "stop_reason": stop, "stop_sequence": null });
                     if let Some(u) = tokens {
@@ -737,6 +751,28 @@ impl Projector {
                     }
                     let at = self.when(msg, end.or(start));
                     self.emit(id.to_string(), at, "assistant", json!({ "message": m }));
+                }
+                now.call = true;
+            }
+            "patch" if !done.call => {
+                // The files a step changed (#s662): the engine compares its snapshot from the
+                // step's start with the folder at its end and writes this after the step-finish,
+                // once, when anything changed, whatever changed it (a command's change included,
+                // where a call names only its own file). On a `system` record of the family's own
+                // subtype, which the family's decoder draws as a note.
+                let files: Vec<&str> = part
+                    .get("files")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().filter_map(Value::as_str).collect())
+                    .unwrap_or_default();
+                if !files.is_empty() {
+                    let at = self.when(msg, None);
+                    self.emit(
+                        id.to_string(),
+                        at,
+                        "system",
+                        json!({ "subtype": FILES_CHANGED, "files": files }),
+                    );
                 }
                 now.call = true;
             }
@@ -748,7 +784,7 @@ impl Projector {
         // update of the part brings it back. A kind this does not draw never writes.
         let spent = match ty {
             "tool" => now.call && now.result,
-            "text" | "reasoning" | "step-finish" => now.call,
+            "text" | "reasoning" | "step-finish" | "patch" => now.call,
             _ => true,
         };
         if spent {
@@ -1895,7 +1931,7 @@ mod tests {
 
     /// A longer log than [`turn`]: it, then a turn whose first part comes before its message and
     /// whose tool never ends, and one with a sub-agent call, a question, the app's own tool, a
-    /// part left out (`ignored`) and a kind nothing draws.
+    /// part left out (`ignored`), the files a step changed and a kind nothing draws.
     fn long_log() -> Vec<(String, Value)> {
         let mut ev = turn();
         ev.extend([
@@ -1925,9 +1961,105 @@ mod tests {
             part(
                 json!({ "id": "prt_r", "messageID": "msg_c", "type": "text", "text": "Done looking.", "time": { "start": 4600 } }),
             ),
+            part(
+                json!({ "id": "prt_p", "messageID": "msg_c", "type": "patch", "hash": "h1", "files": ["/w/2026-01-02/abc/a.txt", "/w/2026-01-02/abc/src/b.rs"] }),
+            ),
             msg("msg_c", "assistant", true),
         ]);
         ev
+    }
+
+    /// #s662: a mirror holding a step's changed files and a step's cost reads, through the
+    /// Qwenwork adapter, as a note naming the files under the chat's folder and a session cost of
+    /// what the steps cost; a step that cost nothing writes no figure. Its model is one the
+    /// catalog cannot price, so the cost is a lower bound (`≥`). Checked on this fixture only:
+    /// every step on this Mac's real chats cost 0.
+    #[test]
+    fn a_mirror_shows_a_step_s_changed_files_and_its_cost() {
+        use claude_replay_engine::seam::{Agent, Block};
+        let c = chat();
+        let mut ev = turn();
+        let finish = ev.len() - 2;
+        ev[finish].1["part"]["cost"] = json!(0.25);
+        ev.insert(
+            ev.len() - 1,
+            part(
+                json!({ "id": "prt_p", "messageID": "msg_a", "type": "patch", "hash": "h1", "files": ["/w/2026-01-02/abc/a.txt", "/w/2026-01-02/abc/src/b.rs"] }),
+            ),
+        );
+        // A second step that cost nothing.
+        ev.extend([
+            msg("msg_d", "assistant", false),
+            part(
+                json!({ "id": "prt_d", "messageID": "msg_d", "type": "step-finish", "reason": "stop", "cost": 0, "tokens": { "input": 10, "output": 2, "reasoning": 0, "cache": { "read": 0, "write": 0 } } }),
+            ),
+            msg("msg_d", "assistant", true),
+        ]);
+        let lines = project(&c, &[&session("ses_b", 1, ev)]);
+        let figures: Vec<Value> = lines
+            .iter()
+            .filter_map(|l| {
+                let v: Value = serde_json::from_str(l).unwrap();
+                v["message"]["usage"].get("cost_usd").cloned()
+            })
+            .collect();
+        assert_eq!(figures, [json!(0.25)], "only the step that cost something");
+
+        let d = std::env::temp_dir().join(format!("qw-s662-cost-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        let path = mirror_path(&d, &c);
+        let head_at = |t: i64| head(&c, "mode-x", t);
+        write_mirror(&path, Lead::Head(&head_at), &lines, 10_000).unwrap();
+        let session = claude_replay_core::parse_session_as(Agent::QWENWORK, &path).unwrap();
+        let notes: Vec<String> = session
+            .blocks()
+            .into_iter()
+            .filter_map(|b| match b {
+                Block::ToolResult(t) if t.starts_with("Changed") => Some(t),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(notes, ["Changed 2 files: a.txt, src/b.rs"]);
+        let m = &session.metrics;
+        assert_eq!(m.extra.get("cost_usd_micro"), Some(&250_000));
+        assert!((m.cost_usd.expect("the steps' cost") - 0.25).abs() < 1e-12);
+        assert!(m.footer().contains("≥$0.25"), "footer: {}", m.footer());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// #s662: the files a step changed are a record of the family's own subtype, naming them as
+    /// the engine does, dated by their message; a patch that names none writes nothing, and one
+    /// is written once however often it is seen.
+    #[test]
+    fn a_step_s_changed_files_are_a_record_of_the_family_s_own() {
+        let c = chat();
+        let mut ev = turn();
+        let changed = json!({ "id": "prt_p", "messageID": "msg_a", "type": "patch", "hash": "h1", "files": ["/w/2026-01-02/abc/a.txt", "/elsewhere/b.rs"] });
+        ev.insert(ev.len() - 1, part(changed.clone()));
+        ev.insert(ev.len() - 1, part(changed));
+        ev.insert(
+            ev.len() - 1,
+            part(
+                json!({ "id": "prt_e", "messageID": "msg_a", "type": "patch", "hash": "h2", "files": [] }),
+            ),
+        );
+        let lines = project(&c, &[&session("ses_b", 1, ev)]);
+        let systems: Vec<Value> = lines
+            .iter()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap())
+            .filter(|v| v["type"] == "system")
+            .collect();
+        assert_eq!(systems.len(), 1, "{systems:?}");
+        let s = &systems[0];
+        assert_eq!(s["subtype"], FILES_CHANGED);
+        assert_eq!(
+            s["files"],
+            json!(["/w/2026-01-02/abc/a.txt", "/elsewhere/b.rs"])
+        );
+        assert_eq!(s["uuid"], "prt_p");
+        assert_eq!(s["cwd"], "/w/2026-01-02/abc");
+        assert_eq!(s["timestamp"], iso(2500), "the latest its message named");
+        assert!(super::super::discover::FAMILY_SYSTEM_SUBTYPES.contains(&FILES_CHANGED));
     }
 
     /// #s659: a projector that took the log in two pieces, cut anywhere, wrote what one that took
