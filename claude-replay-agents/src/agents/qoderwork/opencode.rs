@@ -277,13 +277,14 @@ pub(crate) type Joins = BTreeMap<String, Vec<String>>;
 /// included, is the bound session alone.
 ///
 /// What was found before (`joins`, read through [`known`]) stands while, with the current
-/// session, it adds up, and a session a neighbour's entry names is not this chat's to take
+/// session, it adds up, and a session another chat's entry names is not this chat's to take
 /// (#s662). Without it a neighbour gaining a generation made two chats miss one at once, and the
 /// chat that had its history lost it; since a chat's every current session is kept, one that
-/// gains a generation itself, at the same time or not, still adds up. A chat missing generations no refresh saw is
-/// filled from the folder's spare sessions on top of what it is known to hold, by the same rule:
-/// only while it is the one chat there missing any; where the folder cannot say, the chat is what
-/// it is known to hold and its current session, never a session the folder could not place.
+/// gains a generation itself, at the same time or not, still adds up. A chat missing generations
+/// no refresh saw is filled from the folder's spare sessions on top of what it is known to hold,
+/// by the same rule: only while it is the one chat there missing any; where the folder cannot
+/// say, the chat is what it is known to hold and its current session, never a session the folder
+/// could not place.
 pub(crate) fn generations<'a>(
     chat: &Chat,
     chats: &[Chat],
@@ -307,15 +308,11 @@ pub(crate) fn generations<'a>(
     let in_dir = sessions
         .iter()
         .filter(|s| s.directory == chat.dir && s.id != native.id);
+    // A session another chat's entry names is not this one's, even while that chat is missing
+    // from the list (its binding caught mid-rewrite, or the chat moved to another engine).
+    let theirs = claimed(chat, joins);
     let earlier: Vec<&Session> = if neighbours.len() < 2 {
-        // A session another chat's entry names is not this one's, even while that chat is
-        // missing from the list (its binding caught mid-rewrite, say).
-        let others: HashSet<&str> = joins
-            .iter()
-            .filter(|(id, _)| *id != &chat.id)
-            .flat_map(|(_, ids)| ids.iter().map(String::as_str))
-            .collect();
-        in_dir.filter(|s| !others.contains(s.id.as_str())).collect()
+        in_dir.filter(|s| !theirs.contains(s.id.as_str())).collect()
     } else {
         let mut earlier = mine.clone();
         let wanting: Vec<&Chat> = neighbours
@@ -323,14 +320,13 @@ pub(crate) fn generations<'a>(
             .copied()
             .filter(|c| missing(c, chats, sessions, joins) > 0)
             .collect();
-        let entered: HashSet<&str> = neighbours
-            .iter()
-            .filter_map(|c| joins.get(&c.id))
-            .flatten()
-            .map(String::as_str)
-            .collect();
+        let own: HashSet<&str> = mine.iter().map(|s| s.id.as_str()).collect();
         let spare: Vec<&Session> = in_dir
-            .filter(|s| !chats.iter().any(|c| c.native == s.id) && !entered.contains(s.id.as_str()))
+            .filter(|s| {
+                !chats.iter().any(|c| c.native == s.id)
+                    && !theirs.contains(s.id.as_str())
+                    && !own.contains(s.id.as_str())
+            })
             .collect();
         let mine = wanting.len() == 1
             && wanting[0].id == chat.id
@@ -357,7 +353,7 @@ pub(crate) fn generations<'a>(
 
 /// The earlier sessions `chat`'s entry in `joins` names that can still be its own: each one in
 /// the chat's folder, begun before its current one, named as no chat's current one and in no
-/// neighbour's entry.
+/// other chat's entry.
 fn known<'a>(
     chat: &Chat,
     chats: &[Chat],
@@ -370,7 +366,7 @@ fn known<'a>(
     ) else {
         return Vec::new();
     };
-    let theirs = claimed(chat, chats, joins);
+    let theirs = claimed(chat, joins);
     sessions
         .iter()
         .filter(|s| {
@@ -392,14 +388,12 @@ fn missing(chat: &Chat, chats: &[Chat], sessions: &[Session], joins: &Joins) -> 
     })
 }
 
-/// The sessions the entries of `chat`'s neighbours (the other chats listed in its folder) name.
-fn claimed<'a>(chat: &Chat, chats: &[Chat], joins: &'a Joins) -> HashSet<&'a str> {
-    chats
+/// The sessions every other chat's entry names, listed this refresh or not.
+fn claimed<'a>(chat: &Chat, joins: &'a Joins) -> HashSet<&'a str> {
+    joins
         .iter()
-        .filter(|c| c.id != chat.id && c.dir == chat.dir)
-        .filter_map(|c| joins.get(&c.id))
-        .flatten()
-        .map(String::as_str)
+        .filter(|(id, _)| *id != &chat.id)
+        .flat_map(|(_, ids)| ids.iter().map(String::as_str))
         .collect()
 }
 
@@ -2761,10 +2755,20 @@ mod tests {
         assert_eq!(
             ids(generations(
                 &chat_a,
-                &[chat_a.clone()],
+                std::slice::from_ref(&chat_a),
                 &[at("ses_b1", 2), at("ses_a2", 3)],
                 &gone_b
             )),
+            ["ses_a2"]
+        );
+
+        // Nor does a chat in a shared folder take a session the entry of a chat missing from the
+        // list names; it is what it is known to hold.
+        let c_away = Joins::from([("chat-c".to_string(), vec!["ses_c1".into()])]);
+        let listed = [chat_a.clone(), chat_b.clone()];
+        let away = [at("ses_c1", 1), at("ses_b1", 2), at("ses_a2", 3)];
+        assert_eq!(
+            ids(generations(&chat_a, &listed, &away, &c_away)),
             ["ses_a2"]
         );
 
