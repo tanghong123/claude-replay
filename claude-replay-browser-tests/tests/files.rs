@@ -120,6 +120,72 @@ fn click_path(tab: &headless_chrome::Tab, repo: &std::path::Path, file: &str) ->
     stamps
 }
 
+/// #s663's review: on a phone held sideways the pane head's More menu closes when the reader presses
+/// inside an HTML page the pane shows. That press reaches only the page's sandboxed frame, never this
+/// page's `pointerdown`, so it is the frame taking the focus (the window's blur, as the search hears it)
+/// that closes the menu. A headless tab is never the focused window, so focus is emulated, and the
+/// frame takes the focus by script, as a press into it gives it; the control is a blur that leaves
+/// the focus on this page, which keeps the menu open.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_held_sideways_closes_the_pane_s_more_menu_as_a_page_takes_the_focus() {
+    use headless_chrome::protocol::cdp::Emulation;
+    let _serial = serial();
+    let (base, stores, repo) = fixture("files-side-more");
+    let m = Monitor::spawn(Kind::V1, 3017, &base, Some(&stores), true);
+    let (_browser, tab) = chrome_tab();
+    harness::phone(&tab, 874, 402);
+    tab.call_method(Emulation::SetFocusEmulationEnabled { enabled: true })
+        .expect("focus emulation");
+    open_shell(&m, &tab, true);
+    click_path(&tab, &repo, "page.html");
+    until(
+        &tab,
+        "!!document.querySelector('#previewBody iframe.artifact-html-frame')",
+        "the page in the pane",
+        Duration::from_secs(20),
+        PANE,
+    );
+    let menu = "(function(){ var m = document.querySelector('#preview .preview-more-menu'), b = document.querySelector('#preview .preview-more'); return JSON.stringify({ open: !!m && !m.hidden, expanded: b && b.getAttribute('aria-expanded'), active: (document.activeElement || {}).tagName }); })()";
+    eval(
+        &tab,
+        "document.querySelector('#preview .preview-more').click(); 'ok'",
+    );
+    until(
+        &tab,
+        "!document.querySelector('#preview .preview-more-menu').hidden && document.querySelector('#preview .preview-more').offsetWidth > 0",
+        "the head's More menu open",
+        Duration::from_secs(5),
+        menu,
+    );
+    // The control: a blur that leaves the focus on this page is no press into the page.
+    eval(
+        &tab,
+        "document.querySelector('#preview .preview-more').focus(); window.dispatchEvent(new Event('blur')); 'ok'",
+    );
+    assert_eq!(
+        eval(
+            &tab,
+            "!document.querySelector('#preview .preview-more-menu').hidden"
+        )
+        .as_bool(),
+        Some(true),
+        "a blur with the focus on this page keeps the menu: {}",
+        eval(&tab, menu)
+    );
+    eval(
+        &tab,
+        "document.querySelector('#previewBody iframe.artifact-html-frame').focus(); 'ok'",
+    );
+    until(
+        &tab,
+        "document.activeElement.tagName === 'IFRAME' && document.querySelector('#preview .preview-more-menu').hidden && document.querySelector('#preview .preview-more').getAttribute('aria-expanded') === 'false'",
+        "the menu closed as the page took the focus",
+        Duration::from_secs(5),
+        menu,
+    );
+}
+
 /// The reveals the page asked for — as JSON text, since an array comes back from `eval` by
 /// reference, not by value.
 fn reveals(tab: &headless_chrome::Tab) -> Vec<String> {
