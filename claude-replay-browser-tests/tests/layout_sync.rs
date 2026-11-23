@@ -731,14 +731,13 @@ fn a_phone_sorts_an_arranged_section_from_a_sheet() {
     let (_browser, tab) = chrome_tab();
     harness::phone(&tab, 390, 844);
     let url = &format!("http://127.0.0.1:{port}/?ui=app");
+    // Written from a page that runs none of the app (#s665): a page of the app writes its own reading
+    // of the key back as the index arrives.
+    const ARRANGE: [(&str, &str); 1] = [("am-prod-session-arrange", "claude-app")];
+    harness::seed_storage(&tab, harness::origin_of(url), &ARRANGE);
     tab.navigate_to(url).unwrap();
     tab.wait_until_navigated().unwrap();
-    eval(
-        &tab,
-        "localStorage.setItem('am-prod-session-arrange', 'claude-app')",
-    );
-    tab.navigate_to(url).unwrap();
-    tab.wait_until_navigated().unwrap();
+    harness::assert_storage_held(&tab, &ARRANGE);
     let open_drawer = |tab: &headless_chrome::Tab| {
         until(
             tab,
@@ -961,14 +960,13 @@ fn a_desktop_section_menu_keeps_its_stylesheet_cap() {
     let (_browser, tab) = chrome_tab();
     harness::resize(&tab, 1280.0, 1100.0);
     let url = &format!("http://127.0.0.1:{port}/?ui=app");
+    // Written from a page that runs none of the app (#s665): a page of the app writes its own reading
+    // of the key back as the index arrives.
+    const ARRANGE: [(&str, &str); 1] = [("am-prod-session-arrange", "claude-app")];
+    harness::seed_storage(&tab, harness::origin_of(url), &ARRANGE);
     tab.navigate_to(url).unwrap();
     tab.wait_until_navigated().unwrap();
-    eval(
-        &tab,
-        "localStorage.setItem('am-prod-session-arrange', 'claude-app')",
-    );
-    tab.navigate_to(url).unwrap();
-    tab.wait_until_navigated().unwrap();
+    harness::assert_storage_held(&tab, &ARRANGE);
     until(
         &tab,
         "!!document.querySelector('#tree .arranged-head [data-section-view]') && innerHeight > 900",
