@@ -335,6 +335,12 @@ export class Viewport extends VirtualWindow {
    *  viewport does not follow, so the tail never flashes past before the restore. Nothing
    *  remembered — or "following" remembered — means the tail, as it always did. */
   beginSession(session) {
+    // #s667: the session being left keeps the place the reader left it at. A place is otherwise
+    // saved 250 ms after a scroll that is the reader's own, and a scroll is theirs only within the
+    // intent window of their last input, so a fling's glide that outlasts the window went on moving
+    // the view and saved nothing (measured on the iOS Simulator: one turn further up than the
+    // place kept for it). Its elements are still the old session's here: the stream starts after.
+    this.remember();
     this.session = session || "";
     this.pendingTries = 0;
     let memory = null;

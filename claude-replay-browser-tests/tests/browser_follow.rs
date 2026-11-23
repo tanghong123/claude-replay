@@ -20681,6 +20681,119 @@ fn a_phone_switch_closes_the_drawer_and_veils_the_load() {
     );
 }
 
+/// #s667: a phone reader who flings a session, opens another from the drawer and comes back to the
+/// first from the drawer lands where they left it. A session's place is kept 250 ms after a scroll
+/// that is the reader's own, and a scroll is theirs only within the intent window (320 ms) of their
+/// last touch, so a fling's glide that outlasted the window moved the view on and saved nothing: on
+/// the iOS Simulator the session came back one turn further down than it was left (1.554.0 and
+/// 1.555.0 alike, walk489). The session being left now keeps its place as the other one opens. The
+/// glide is the harness's iOS-style one (about 3.6 s), and the case records every write of a place
+/// and the glide's window, so a failure says when the place was last written.
+const GLIDE_A: &str = "a6670000-0000-4000-8000-00000000000a";
+const GLIDE_B: &str = "b6670000-0000-4000-8000-00000000000b";
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_goes_back_to_a_session_where_its_glide_left_it() {
+    let _serial = serial();
+    let base = harness::base("phone-glide-back");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        GLIDE_A,
+        &harness::long_session(40, harness::Shape::default()),
+    );
+    stores.claude_session(
+        GLIDE_B,
+        &harness::long_session(6, harness::Shape::default()),
+    );
+    let m = harness::Monitor::spawn(harness::Kind::V1, 3013, &base, Some(&stores), true);
+    let (_b, tab) = harness::chrome_tab();
+    harness::phone(&tab, 390, 844);
+    m.pair(&tab);
+    // The builders date both sessions in a fixed past hour (Idle): the drawer lists them only with
+    // every bucket shown.
+    harness::show_every_session(&tab, &m.url(&format!("?ui=app&session={GLIDE_A}")));
+    let shown = |sid: &str| {
+        format!("new URLSearchParams(location.search).get('session') === '{sid}' && document.getElementById('app').classList.contains('mobile-detail') && !!document.querySelector('.transcript .turn.user')")
+    };
+    harness::until(
+        &tab,
+        &shown(GLIDE_A),
+        "the phone on the first session",
+        Duration::from_secs(20),
+        "location.search + ' | ' + document.getElementById('app').className",
+    );
+    harness::until(
+        &tab,
+        "(function () { var s = document.querySelector('.transcript'); return s.scrollHeight - s.clientHeight - s.scrollTop <= 2; })()",
+        "the first session at its end",
+        Duration::from_secs(20),
+        "(function () { var s = document.querySelector('.transcript'); return s.scrollHeight - s.clientHeight - s.scrollTop; })()",
+    );
+    // Every write of a remembered place, with the transcript's offset as it was written.
+    harness::eval(&tab, "(function () { window.__places = []; var real = Storage.prototype.setItem; Storage.prototype.setItem = function (k, v) { if (String(k).indexOf('am-view:') === 0) { var s = document.querySelector('.transcript'); window.__places.push({ t: Math.round(performance.now()), key: String(k).slice(-12), value: String(v).slice(0, 80), top: s ? Math.round(s.scrollTop) : -1 }); } return real.apply(this, arguments); }; return 1; })()");
+    // The unit at the transcript's top and how far above the top it starts, as walk489 reads it.
+    const TOP_UNIT: &str = "(function () { var s = document.querySelector('.transcript'), w = s && s.querySelector('.virtual-window'); if (!w) return 'null'; var top = s.getBoundingClientRect().top, pick = null; for (var i = 0; i < w.children.length; i++) { var c = w.children[i]; if (!c.dataset || !c.dataset.unitKey) continue; var r = c.getBoundingClientRect(); if (r.top <= top + 1) pick = { key: c.dataset.unitKey, off: Math.round(r.top - top) }; } if (pick) pick.scrollTop = Math.round(s.scrollTop); return JSON.stringify(pick); })()";
+    let top_unit = |tab: &headless_chrome::Tab| -> serde_json::Value {
+        let text = harness::eval(tab, TOP_UNIT);
+        serde_json::from_str(text.as_str().unwrap_or("null")).unwrap_or(serde_json::Value::Null)
+    };
+    let record = |tab: &headless_chrome::Tab| -> String {
+        harness::eval(
+            tab,
+            "JSON.stringify({ glide: [Math.round(window.__glideT0 || 0), Math.round(window.__glideT1 || 0)], places: window.__places })",
+        )
+        .as_str()
+        .unwrap_or("")
+        .to_string()
+    };
+    let (_, _) = harness::touch_glide(&tab, -6000);
+    // What is left of the engine's own work at rest, and any place it would still write.
+    std::thread::sleep(Duration::from_millis(700));
+    let left = top_unit(&tab);
+    assert!(
+        left["key"].is_string(),
+        "a unit at the top once the glide is at rest: {left}"
+    );
+    let row = |sid: &str| format!(".tree-row.session[data-session=\"{sid}\"]");
+    for (to, what) in [
+        (GLIDE_B, "the other session"),
+        (GLIDE_A, "the first session again"),
+    ] {
+        phone_tap(&tab, "#drawerHandle");
+        harness::until(
+            &tab,
+            DRAWER_OPEN,
+            "the drawer",
+            Duration::from_secs(5),
+            DRAWER_STATE,
+        );
+        phone_tap(&tab, &row(to));
+        harness::until(
+            &tab,
+            &shown(to),
+            what,
+            Duration::from_secs(20),
+            "location.search + ' | ' + document.getElementById('app').className",
+        );
+    }
+    harness::until(
+        &tab,
+        &format!("(function () {{ var u = {TOP_UNIT}; return u !== 'null' && JSON.parse(u).key === {key}; }})()", key = left["key"]),
+        "the first session back on the unit at its top when it was left",
+        Duration::from_secs(10),
+        &format!("JSON.stringify({{ now: JSON.parse({TOP_UNIT}), left: {left}, glide: [Math.round(window.__glideT0 || 0), Math.round(window.__glideT1 || 0)], places: window.__places }})"),
+    );
+    std::thread::sleep(Duration::from_millis(300));
+    let now = top_unit(&tab);
+    let drift = (now["off"].as_i64().unwrap_or(9999) - left["off"].as_i64().unwrap_or(0)).abs();
+    assert!(
+        now["key"] == left["key"] && drift <= 40,
+        "back where it was left, within 40 px: left {left}, back {now}; the writes of a place and the glide's window: {}",
+        record(&tab)
+    );
+}
+
 /// #s644: on a touch screen a session row's hide action is not drawn (#s41: opacity 0, since WebKit
 /// spends a tap on a hover that shows content), and since #s644 it takes no tap either. A finger at
 /// the row's end, where the unseen action sits between the name and its age, opens the session the
