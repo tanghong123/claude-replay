@@ -2941,6 +2941,10 @@ fn the_session_list_in_a_host_switches_its_controls_off() {
             "({ dimmed: document.querySelectorAll('#tree .tree-row.session.is-hidden').length, errors: window.__host.errors })",
         )
     };
+    // Each choice of the reader's is written on a host page that mounts no list (#s665): the host
+    // hands the list the app's `persist`, so a page with the list mounted writes its own reading of
+    // the choices back whenever it saves one, and could write over this before the next page read it.
+    harness::open_list_host_page_with(&tab, &monitor, "mount=0");
     harness::eval(
         &tab,
         "localStorage.setItem('am-prod-session-arrange', 'claude-app'); 'ok'",
@@ -2951,6 +2955,7 @@ fn the_session_list_in_a_host_switches_its_controls_off() {
     let arranged_shown = arranged("");
     let arranged_off = arranged("{ show: { hiding: false } }");
     // Then the reader's own choice: Blocked alone, one list by activity.
+    harness::open_list_host_page_with(&tab, &monitor, "mount=0");
     harness::eval(
         &tab,
         "localStorage.setItem('am-prod-session-filter', '[\"blocked\"]'); localStorage.setItem('am-prod-session-flat', '1'); localStorage.removeItem('am-prod-session-arrange'); 'ok'",
@@ -2981,6 +2986,7 @@ fn the_session_list_in_a_host_switches_its_controls_off() {
     open_sheet();
     let shown = seen(from);
     // The reader then chose to arrange it like the Claude app, which the next two lists must not read.
+    harness::open_list_host_page_with(&tab, &monitor, "mount=0");
     harness::eval(
         &tab,
         "localStorage.setItem('am-prod-session-arrange', 'claude-app'); 'ok'",
@@ -8681,11 +8687,12 @@ fn an_ipad_keeps_the_outline_footer_above_the_home_indicator() {
             ("the outline open as a column", "1"),
             ("the outline folded to its rail", "0"),
         ] {
-            harness::eval(
-                &tab,
-                &format!("localStorage.setItem('am-demo-navigator', '{stored}'); 'ok'"),
-            );
+            // Written from a page that runs none of the app (#s665): the view of the page open now
+            // writes its own reading of the key back whenever the app saves a choice.
+            let navigator = [("am-demo-navigator", stored)];
+            harness::seed_storage(&tab, harness::origin_of(&monitor.url("")), &navigator);
             monitor.open(&tab, &format!("?ui=app&session={sid}"));
+            harness::assert_storage_held(&tab, &navigator);
             let rail = stored == "0";
             harness::until(
                 &tab,
@@ -28597,11 +28604,12 @@ fn workers_world(
         Duration::from_secs(30),
         "document.getElementById('navigatorAgents').innerText.slice(0, 200)",
     );
-    harness::eval(
-        &tab,
-        "localStorage.setItem('am-prod-live-only', '[]'); 'ok'",
-    );
+    // Written from a page that runs none of the app (#s665): the view of the page open now writes
+    // its own reading of the key back whenever the app saves a choice.
+    const EVERY_AGENT: [(&str, &str); 1] = [("am-prod-live-only", "[]")];
+    harness::seed_storage(&tab, harness::origin_of(&m.url("")), &EVERY_AGENT);
     m.open(&tab, &format!("?ui=app&session={coord}"));
+    harness::assert_storage_held(&tab, &EVERY_AGENT);
     harness::until(
         &tab,
         &format!("!!document.querySelector('[data-session=\"{coord}\"]') && document.querySelectorAll('#navigatorAgents [data-worker-session]').length === 2"),
@@ -29382,12 +29390,14 @@ fn a_phone_lists_the_sessions_by_activity_in_its_drawer_and_its_column() {
         ),
     ] {
         let (m, _b, tab) = drawer_world(port, case, w, h, false, 2, insets);
-        harness::eval(
-            &tab,
-            "(function(){ localStorage.setItem('am-prod-session-flat', '1'); return 'ok'; })()",
-        );
-        tab.reload(false, None).unwrap();
+        // Written from a page that runs none of the app, then the page opened again (#s665): the page
+        // drawer_world ends on writes its own reading of the key back whenever it saves a choice.
+        const FLAT: [(&str, &str); 1] = [("am-prod-session-flat", "1")];
+        let at = tab.get_url();
+        harness::seed_storage(&tab, harness::origin_of(&at), &FLAT);
+        tab.navigate_to(&at).unwrap();
         tab.wait_until_navigated().unwrap();
+        harness::assert_storage_held(&tab, &FLAT);
         harness::until(
             &tab,
             "document.querySelectorAll('#app>.sidebar .tree-row.session.flat').length >= 30",
