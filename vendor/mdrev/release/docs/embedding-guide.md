@@ -9,7 +9,7 @@ You will serve some static files, add one script to a page, implement six small 
 ## 1. What is in the box
 
 ```text
-mdrev-embed-1.1.88/
+mdrev-embed-1.1.89/
   README.md
   bundle/              the guest — what the reader's browser runs
     mdrev.js             the entry: an ES module exporting mountMdrev   (~510 KB)
@@ -180,14 +180,14 @@ $(brew --prefix mdrev)/bin/mdrev-v2
 
 `brew pin mdrev` holds a version while you qualify the next one; `brew info tanghong123/tap/mdrev` says which is current.
 
-**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.88`, with two tarballs: `mdrev-1.1.88-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.88.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
+**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.89`, with two tarballs: `mdrev-1.1.89-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.89.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
 
 ```bash
-curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.88/mdrev-embed-1.1.88.tar.gz
-tar xzf mdrev-embed-1.1.88.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.88
+curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.89/mdrev-embed-1.1.89.tar.gz
+tar xzf mdrev-embed-1.1.89.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.89
 ```
 
-Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.88/mdrev-cli` — with node on the path. The releases page lists the current version.
+Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.89/mdrev-cli` — with node on the path. The releases page lists the current version.
 
 **From source** — `bash scripts/build-release.sh` in a checkout of the repository emits both tarballs into `dist-release/public/`.
 
@@ -196,8 +196,8 @@ Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.88/mdrev-cli` — 
 Run the sample host against a git checkout that has Markdown in it:
 
 ```bash
-tar xzf mdrev-embed-1.1.88.tar.gz
-cd mdrev-embed-1.1.88
+tar xzf mdrev-embed-1.1.89.tar.gz
+cd mdrev-embed-1.1.89
 ./mdrev-v2 ~/src/your-docs/README.md --last 3   # or --root ~/src/your-docs for the whole checkout
 # mdrev-v2: README.md @ /Users/you/src/your-docs
 #   http://127.0.0.1:4600/?path=README.md&from=…&code=…
@@ -655,9 +655,9 @@ Diagrams render with mermaid at `securityLevel: 'strict'`, formulas with KaTeX a
 
 On top of that it does the capability half in about forty lines, and that part is not a stand-in — it is the pattern:
 
-- The page mints for the document it serves, **and only for a document git tracks**: an untracked key sitting in the directory is not something the host ever offers, so there is no first link in the chain for it.
-- `POST /resolve` mints for what a held document points at, and for nothing else.
-- `--allow <dir>` puts a floor under the whole chain: repeatable, the root by default, and no sequence of references can end up outside it however a document spells the path.
+- The page mints for the document it serves: a document in the repository it serves, tracked or not, which is the collection the reader opened. A file that is not a document — an image, a PDF, an untracked key sitting in the directory — is never offered by the page or the rail (a `--code-files` host lists source files too, by its own choice).
+- `POST /resolve` mints only for what a held document really links to. The host renders the document itself, with the engine the viewer uses, and checks each target against its links: the working text, an editing session's latest text, and the revisions the viewer says it draws (`from.revs`). So an untracked key the document does not link to is refused, however the page names it, and so is a reference that climbs out of the repository.
+- The root is a whole repository: `--root <dir>` serves the checkout `<dir>` is in, as opening any file in it does. `--allow <dir>` puts a floor under the whole chain: repeatable, relative to `--root` as given, and no sequence of references can end up outside it however a document spells the path.
 
 The three together are the answer to "what can a reader of one document reach": that document, what it points at, and nothing outside the boundary. Swap the boundary check for your own permissions and you have the same thing for real users.
 
