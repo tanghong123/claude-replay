@@ -787,14 +787,28 @@ var mobileShell;
 // the help says before the button, as `/pair` says again before it asks. `help` is for a reader
 // elsewhere, whom `/pair` would show a code on a screen they cannot see (#s630): a browser there
 // pairs the way a phone does, from a code the monitor's machine prints.
+// The line under the switch leads with what to do: pair first. Hovering the disabled switch adds how
+// (`tip`, and `tipHere` for a reader at the monitor's machine, whose help pairs from the page): a
+// reader who never noticed the line still meets the advice where they point. A click there opens the
+// help, so the tooltip says what the help holds, never that the click pairs: the help's button does
+// that, after a code. A touch screen has no hover, so there the line is the advice and a tap on it,
+// the switch or ⓘ opens the help, which says the same how at length.
+// The collapsed rail's ✎ says it in its title (`rail`, `railHere`, else `tip`), which offers no
+// click: on the rail the help would open inside the list the rail hides, so nothing would show.
 const WRITE_NEED = {
   monitor: {
-    line: "Needs a paired monitor: <code>agent-monitor --pair</code>",
+    line: "Pair first to turn it on: <code>agent-monitor --pair</code>",
+    tip: "Pair first to turn on write mode: run agent-monitor --pair in a terminal on the monitor's machine.",
+    tipHere: "Pair first to turn on write mode. Click for how to pair this browser (it pairs the monitor too), or run agent-monitor --pair in a terminal here.",
     help: "<b>Write mode needs a paired monitor</b><p>Run this in a terminal on the monitor's machine:</p><code>agent-monitor --pair</code>",
     here: "<b>Write mode needs a paired monitor</b><p>Pairing this browser pairs the monitor too: from then on it requires pairing for every browser and tool that reaches it.</p><p class='write-pair'></p><p>Or run this in a terminal on this machine:</p><code>agent-monitor --pair</code>",
   },
   browser: {
-    line: "This browser is not paired with the monitor",
+    line: "Pair this browser first to turn it on",
+    tip: "Pair this browser first to turn on write mode. Click for the command to run on the monitor's machine.",
+    tipHere: "Pair this browser first to turn on write mode. Click for how to pair it from this page, or run agent-monitor --pair in a terminal here.",
+    rail: "Pair this browser first to turn on write mode: Write mode's help in the sidebar gives the command to run on the monitor's machine.",
+    railHere: "Pair this browser first to turn on write mode: run agent-monitor --pair in a terminal here.",
     // A monitor a LaunchAgent starts prints no address to its log (#s204): `--pair` in a terminal
     // hands off to the running monitor and prints the address that carries the token.
     // #s630: a reader elsewhere reads the page without the token only through a relay the gate takes
@@ -805,12 +819,14 @@ const WRITE_NEED = {
   },
   host: {
     line: "This page only reads sessions",
+    tip: "The server that serves this page offers reading only.",
     help: "<b>This page does not write</b><p>The server that serves it offers reading only.</p>",
   },
   // #s595: over several machines, writing follows the machine the open session runs on, so with no
   // session open there is none to follow.
   session: {
     line: "Open a session to write to it",
+    tip: "Write mode follows the machine the open session runs on.",
     help: "<b>Open a session to write to it</b><p>Write mode follows the machine the open session runs on.</p>",
   },
 };
@@ -818,7 +834,22 @@ const writeReason = document.createElement("div");
 writeReason.id = "writeReason";
 writeReason.className = "write-reason";
 page.byId("writeBtn").after(writeReason);
+writeReason.onclick = () => showPairHelp();
+// The hover advice: the reference's tooltip (`.nav-tooltip`, the attention filter's), shown only
+// while the switch is disabled and never on a touch screen (production.css).
+const writeTip = document.createElement("span");
+writeTip.id = "writeTip";
+writeTip.className = "nav-tooltip";
+writeTip.setAttribute("role", "tooltip");
+page.byId("writeBtn").append(writeTip);
 const writeReasonText = need => { const el = document.createElement("div"); el.innerHTML = need.line; return el.textContent; };
+/** Whether the help for `need` is the one for a reader at the monitor's machine, who pairs from the
+ *  page (`here`); the open session's machine's over several. */
+const pairsHere = need => !!need?.here && !!handleOf(viewMachine)?.local;
+/** The hover advice for `need`: what to do first and how. */
+const writeTipText = need => (pairsHere(need) ? need.tipHere : need.tip) || writeReasonText(need);
+/** The rail ✎'s advice for `need`: the same, offering no click. */
+const writeRailText = need => (pairsHere(need) ? need.railHere : need.rail) || need.tip || writeReasonText(need);
 /** What writing still needs for the session open now, as `WRITE_NEED` names it, or "" where this
  *  reader's writes reach its server (#s577). Over several machines (#s595) that is the open session's
  *  machine's, and with no session open, a session. A handle that does not say its writes reach the
@@ -840,17 +871,20 @@ function paintWrite() {
   page.byId("writeBtn").classList.toggle("disabled", !!need);
   page.byId("sidebarMiniWrite").classList.toggle("on", writeOn());
   page.byId("sidebarMiniWrite").classList.toggle("disabled", !!need);
-  page.byId("sidebarMiniWrite").title = need ? `Write mode: ${writeReasonText(need)}` : "Write mode";
+  page.byId("sidebarMiniWrite").title = need ? `Write mode: ${writeRailText(need)}` : "Write mode";
   page.byId("writeInfo").hidden = !need;
   writeReason.hidden = !need;
   writeReason.innerHTML = need ? need.line : "";
+  writeTip.textContent = need ? writeTipText(need) : "";
+  if (need) page.byId("writeSwitch").setAttribute("aria-describedby", "writeTip");
+  else page.byId("writeSwitch").removeAttribute("aria-describedby");
 }
 function showPairHelp() {
   const help = page.byId("writeHelp");
   const need = writeNeedWords();
   // The server whose writes the help is about: the open session's machine's over several.
   const handle = handleOf(viewMachine);
-  const here = need?.here && handle.local;
+  const here = pairsHere(need);
   help.innerHTML = need ? (here ? need.here : need.help)
     : "<b>Monitor is paired</b><p>With write mode on, a writable session shows a compose box. A live terminal still needs its own grant.</p>";
   if (need === WRITE_NEED.browser && !here) {
