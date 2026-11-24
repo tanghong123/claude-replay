@@ -3172,9 +3172,17 @@ pub fn reap_own_browsers() {
 /// whatever port it serves on; should it hold a case's port, the spawn moves off it (#s495). A
 /// monitor a killed run left on a port it was MOVED to is not reaped here: it holds a port the
 /// kernel handed out, which no case asks for.
+///
+/// And only a monitor whose test process is GONE ([`stranded_monitors`], #s690): one whose parent
+/// is still running belongs to a live run, usually the local suite's other leg of the same part,
+/// whose case asked for the same port at the same moment. It used to be killed too: the other
+/// leg's page lost its monitor as it opened and timed out "waiting for the phone to open on a
+/// session; seen: null" (`a_session_list_refresh_that_changes_nothing_keeps_its_rows` and
+/// `a_phone_pairs_by_a_one_time_code` both ask for 2820). Left running, it holds the port, and the
+/// spawn moves off it as off any other holder (#s495).
 fn reap_stranded_monitor(port: u16) {
     let Ok(out) = std::process::Command::new("ps")
-        .args(["-Awwo", "pid=,command="])
+        .args(["-Awwo", "pid=,ppid=,command="])
         .output()
     else {
         return;
@@ -3184,24 +3192,41 @@ fn reap_stranded_monitor(port: u16) {
         .unwrap()
         .join("target/release/agent-monitor");
     let marker = workspace.to_string_lossy().into_owned();
-    let mut reaped = 0;
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let Some((pid, command)) = line.trim().split_once(' ') else {
-            continue;
-        };
-        if !command.contains(&marker) || !names_port(command, port) {
-            continue;
-        }
+    let stranded = stranded_monitors(&String::from_utf8_lossy(&out.stdout), &marker, port);
+    for pid in &stranded {
         let _ = std::process::Command::new("kill")
-            .args(["-9", pid])
+            .args(["-9", &pid.to_string()])
             .stderr(std::process::Stdio::null())
             .status();
-        reaped += 1;
     }
-    if reaped > 0 {
+    if !stranded.is_empty() {
         eprintln!("harness: reaped a monitor stranded on port {port} by an earlier run");
         std::thread::sleep(Duration::from_millis(200)); // let the port come free
     }
+}
+
+/// The pids, in a `ps -Awwo pid=,ppid=,command=` listing, of the monitors built at `marker` and
+/// started with `--port <port>` whose test process is gone: re-parented to launchd or init (a
+/// parent of 1, or 0), or whose parent the listing no longer holds. A monitor whose parent is any
+/// other live process (another run's test binary) is not stranded (#s690).
+pub fn stranded_monitors(ps: &str, marker: &str, port: u16) -> Vec<u32> {
+    let rows: Vec<(u32, u32, &str)> = ps
+        .lines()
+        .filter_map(|line| {
+            let (pid, rest) = line.trim_start().split_once(char::is_whitespace)?;
+            let (ppid, command) = rest.trim_start().split_once(char::is_whitespace)?;
+            Some((pid.parse().ok()?, ppid.parse().ok()?, command.trim_start()))
+        })
+        .collect();
+    let listed: std::collections::HashSet<u32> = rows.iter().map(|&(pid, _, _)| pid).collect();
+    rows.iter()
+        .filter(|&&(_, ppid, command)| {
+            command.contains(marker)
+                && names_port(command, port)
+                && (ppid <= 1 || !listed.contains(&ppid))
+        })
+        .map(|&(pid, _, _)| pid)
+        .collect()
 }
 
 /// Whether a command line, as `ps` joins it, passes `--port` and then exactly `port`.

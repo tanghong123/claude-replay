@@ -335,6 +335,30 @@ fn the_stranded_monitor_reaper_matches_the_whole_port() {
     assert!(!on("--no-open"));
 }
 
+/// #s690: the reaper takes only a monitor whose test process is gone. A monitor another run
+/// started (the local suite's other leg, whose case asked for the same port) has a live parent and
+/// is left alone; killing it lost that leg's page its monitor as it opened.
+#[test]
+fn the_stranded_monitor_reaper_leaves_a_live_runs_monitor_alone() {
+    let bin = "/w/target/release/agent-monitor";
+    let ps = format!(
+        "  501     1 {bin} --port 2820 --no-open\n\
+           640   600 /w/target/debug/deps/browser_follow-0a1b --ignored --skip a_phone\n\
+           777   640 {bin} --port 2820 --pair --no-open\n\
+           888   999 {bin} --port 2820\n\
+           901   640 {bin} --port 2821\n\
+           902     1 {bin} --port 28201\n\
+           903     1 /opt/homebrew/bin/agent-monitor --port 2820\n"
+    );
+    assert_eq!(
+        harness::stranded_monitors(&ps, bin, 2820),
+        vec![501, 888],
+        "re-parented to launchd (501) or a parent gone from the listing (888); never the live \
+         run's (777), another port's (901, 902) or one built elsewhere (903)"
+    );
+    assert!(harness::stranded_monitors("", bin, 2820).is_empty());
+}
+
 /// #s525: a read of `~/Downloads` that never answers (a macOS privacy prompt nobody was there to
 /// answer held one in the kernel for two hours) is given up after its wait, and the guard checks
 /// nothing rather than holding the case.
