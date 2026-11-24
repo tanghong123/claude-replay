@@ -6,7 +6,7 @@
 
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::engine::builder::{SessionAccumulator, StreamRead};
 use crate::engine::reader::{ElisionCounts, LineSource, TornTail};
@@ -64,8 +64,14 @@ impl SnapshotStamp {
     }
 }
 
+// A filesystem can return the same timestamp for writes within one clock tick.
+const SNAPSHOT_SETTLE_WINDOW: Duration = Duration::from_millis(100);
+
 struct SnapshotPrefix {
     stamp: SnapshotStamp,
+    /// Verify content at least once after the stamp's first observation has aged
+    /// past a filesystem clock tick. Once verified, metadata is the idle fast path.
+    verify_until: Option<Instant>,
     records: usize,
     digest: u64,
 }
@@ -307,11 +313,12 @@ impl<S: BlockStore> FollowParser<S> {
             });
         };
         let stamp = SnapshotStamp::read(&path)?;
-        // Metadata avoids an idle full-file scan. The platform cannot signal a same-size
-        // in-place edit if it preserves both timestamps at their available resolution.
-        if self.snapshot.as_ref().is_some_and(|old| old.stamp == stamp) {
+        let now = Instant::now();
+        let same_stamp = self.snapshot.as_ref().filter(|old| old.stamp == stamp);
+        if same_stamp.is_some_and(|old| old.verify_until.is_none()) {
             return Ok(Tick::idle());
         }
+        let previous_deadline = same_stamp.and_then(|old| old.verify_until);
 
         let pending = self.snapshot.as_ref().map_or(0, |old| old.records);
         let source = crate::source::open(&path)?;
@@ -389,8 +396,17 @@ impl<S: BlockStore> FollowParser<S> {
         });
         self.banked = counts;
         if SnapshotStamp::read(&path).ok() == Some(stamp) {
+            // An equal stamp can hide a same-tick write, including a same-size rewrite
+            // immediately after an append. Watch its digest until one check after the
+            // settle window has matched. Coarser clocks can still hide indistinguishable
+            // edits after this window.
+            let verify_until = match previous_deadline {
+                Some(deadline) if !reset && !advanced => (now < deadline).then_some(deadline),
+                _ => Some(now + SNAPSHOT_SETTLE_WINDOW),
+            };
             self.snapshot = Some(SnapshotPrefix {
                 stamp,
+                verify_until,
                 records,
                 digest,
             });
