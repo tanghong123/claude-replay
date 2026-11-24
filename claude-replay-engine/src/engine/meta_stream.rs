@@ -426,11 +426,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// element folds to the person's `UserInbox` the first time its id is met, where a v89 stream holds
 /// that session's `PeerText`.
 ///
+/// v91: #s683 — a Claude reply whose `requestSessionId` names another session than its own
+/// `sessionId` (a copy a moved or forked session opens with) adds no tokens and times no answer,
+/// where a v90 stream's persisted deltas priced it in both sessions.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 90;
+pub const FOLD_VERSION: u16 = 91;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

@@ -1890,6 +1890,28 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // need to read differently; (3) the sibling `handedOff`, not yet met and left out of
             // this census so it reports as its own row, to be judged then.
             "madeBy",
+            // #s683 (client 2.1.331): a session id on a reply COPIED into this session, naming the
+            // session whose API request produced it. The client writes it on a record whose
+            // `sessionId` differs from the session being written, and on every record it copies
+            // into a fork or a branch; its value is the copied record's own key, else the session
+            // it was forked from, else its `sessionId`. Only assistant records get it. Measured
+            // 2026-11-24 on denali: 567 records, all in ONE session, the new side of a move
+            // (#s294) whose OLD session went on after writing its `continued-in` (so the index
+            // reads the pair as a fork). The new transcript opens with a copy of the
+            // old one: 330 calls whose message ids and usage are the old file's own, each line
+            // keyed to the old session, its `sessionId` rewritten to the new one. The new
+            // session's own 30 calls carry no key. No other reply id on denali is in two
+            // transcripts. READ, for cost (`copied_reply` in the metrics fold): a reply whose key
+            // names another session than its `sessionId` is priced there and timed there, never
+            // here (the monitor had priced the copies in both sessions and summed them per
+            // project). The record is still drawn. `forkedFrom`, written beside it on a fork or
+            // branch, has not been met and is left out of this census, to be judged as its own
+            // row. REVISIT: (1) a value naming a session the transcript does not derive from (no
+            // `derived-from` or `continued-in` ties them); (2) the key on a reply that is not a
+            // copy (its message id absent from the session it names); (3) the key on another
+            // record type; (4) a copy whose `sessionId` is not rewritten (equal to the key), which
+            // the fold would count here again.
+            "requestSessionId",
         ],
     ),
     (

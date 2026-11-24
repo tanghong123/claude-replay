@@ -174,7 +174,8 @@ impl MetricsAcc {
         // The model THIS message ran on — not `self.model`, which is only the last seen.
         let recorded = v.pointer("/message/model").and_then(|x| x.as_str());
         let m = self.named_model(recorded.unwrap_or(&self.model));
-        if let Some(u) = v.pointer("/message/usage") {
+        // A reply another session's request produced (#s683) is priced in that session alone.
+        if let Some(u) = v.pointer("/message/usage").filter(|_| !copied_reply(v)) {
             // Three distinct buckets so the footer can tell them apart: new input,
             // cache writes (new content, cached on first sight), and cache reads
             // (the whole context re-read every turn — the dominant number, kept
@@ -393,6 +394,8 @@ impl MetricsAcc {
         );
         let id = v.pointer("/message/id").and_then(Value::as_str);
         let line = match (v.get("type").and_then(Value::as_str), id) {
+            // A copied reply (#s683) is the answer of the session whose request produced it.
+            (Some("assistant"), Some(_)) if copied_reply(v) => AnswerLine::Other,
             (Some("assistant"), Some(id)) if model != "<synthetic>" => AnswerLine::Part {
                 id: id.to_string(),
                 model,
@@ -672,6 +675,25 @@ fn usage_tokens(usage: &Value) -> TokenCounts {
             .min(cache_creation),
         ..Default::default()
     }
+}
+
+/// Whether a record is a reply ANOTHER session's API request produced, copied into this one
+/// (#s683). Claude Code 2.1.331 opens a session moved (#s294) or forked from another with that
+/// session's records, each `sessionId` rewritten to the new session, and tags every copied
+/// assistant record with `requestSessionId`: the session whose request produced the reply, the
+/// one it was billed to. So a record whose key names another session than its own `sessionId`
+/// is a copy, priced and timed in the session it names, never here; the record is still drawn.
+/// Measured on denali, 2026-11-24: one move copied 330 calls (567 lines), each with the same
+/// usage in both files, and every sum over sessions counted them twice. A key naming the
+/// record's own session counts as before, and so does a record with no key, which is how a
+/// session's own replies are written, and how older clients wrote any copy (those it cannot
+/// tell apart). So does a record with the key and no `sessionId` to compare it with (none met):
+/// as a line naming no call, it keeps the add-everything behaviour, never pricing a reply at
+/// nothing on a guess.
+fn copied_reply(v: &Value) -> bool {
+    let own = v.get("sessionId").and_then(Value::as_str);
+    let from = v.get("requestSessionId").and_then(Value::as_str);
+    matches!((from, own), (Some(from), Some(own)) if from != own)
 }
 
 /// Last value wins; an empty or non-string value changes nothing. (The Codex family keeps its
@@ -2107,6 +2129,166 @@ mod long_prompt_tests {
 }
 
 #[cfg(test)]
+mod copied_reply_tests {
+    use super::*;
+    use claude_replay_engine::seam::estimate_cost;
+
+    /// A reply line in session `in_session` that `requested_in`'s API request produced (#s683,
+    /// Claude Code 2.1.331): a session moved or forked from another opens with that session's
+    /// replies copied in, each `sessionId` rewritten to the new session, and tags each copy with
+    /// `requestSessionId` naming the session it was billed to. `None` writes no key, as the new
+    /// session's own replies have. With `advised`, the call also consulted the advisor.
+    /// Synthetic — never built from a real transcript.
+    fn reply_in(
+        in_session: &str,
+        requested_in: Option<&str>,
+        id: &str,
+        out: u64,
+        advised: bool,
+    ) -> Value {
+        let mut usage = serde_json::json!({"input_tokens": 2, "output_tokens": out,
+            "cache_creation_input_tokens": 945, "cache_read_input_tokens": 1_000});
+        if advised {
+            usage["iterations"] = serde_json::json!([
+                {"type": "message", "input_tokens": 2, "output_tokens": out},
+                {"type": "advisor_message", "model": "claude-fable-5-1",
+                    "input_tokens": 1_000, "output_tokens": 100}]);
+        }
+        let mut line = serde_json::json!({"type": "assistant", "sessionId": in_session,
+            "requestId": format!("req_{id}"), "timestamp": "2026-11-24T10:00:00Z",
+            "message": {"role": "assistant", "id": id, "model": "claude-opus-4-8",
+                "usage": usage}});
+        if let Some(from) = requested_in {
+            line["requestSessionId"] = serde_json::json!(from);
+        }
+        line
+    }
+
+    /// The moved session's transcript in miniature: two copied calls (one over two lines, one
+    /// that consulted the advisor), then the session's own call, then a reply whose key names
+    /// its own session.
+    fn moved_session() -> Vec<Value> {
+        vec![
+            reply_in("new", Some("old"), "msg_A", 5, false),
+            reply_in("new", Some("old"), "msg_A", 40, false),
+            reply_in("new", Some("old"), "msg_B", 7, true),
+            reply_in("new", None, "msg_C", 11, false),
+            reply_in("new", Some("new"), "msg_D", 13, false),
+        ]
+    }
+
+    /// #s683: a reply copied from the session whose request produced it is priced there and only
+    /// there. Measured on denali (2026-11-24): a 2.1.331 move copied 330 calls, 567 lines, each
+    /// with the same usage in both files, and the monitor priced each in both. The session's own
+    /// calls count as before, and so does a reply whose key names this very session.
+    #[test]
+    fn a_reply_copied_from_another_session_is_priced_only_there() {
+        let mut acc = MetricsAcc::default();
+        for line in moved_session() {
+            acc.push(&line);
+        }
+        let m = acc.finish();
+        let opus = m.per_model["claude-opus-4-8"];
+        assert_eq!(
+            (
+                opus.input,
+                opus.cache_creation,
+                opus.cache_read,
+                opus.output
+            ),
+            (4, 1_890, 2_000, 24),
+            "msg_C and msg_D only"
+        );
+        assert!(
+            !m.per_model.contains_key("claude-fable-5-1"),
+            "a copied call's advisor is the other session's too"
+        );
+        let want = estimate_cost("claude-opus-4-8", 4, 1_890, 2_000, 24).unwrap();
+        assert!(
+            (m.cost_usd.unwrap() - want).abs() < 1e-9,
+            "{:?}",
+            m.cost_usd
+        );
+    }
+
+    /// #s683: a copied line hands a consumer no token delta, so no usage id either, and the
+    /// session's first own call after the copies is a call of its own.
+    #[test]
+    fn a_copied_reply_names_no_usage_unit() {
+        let mut acc = MetricsAcc::default();
+        let lines = moved_session();
+        acc.push(&lines[0]);
+        assert_eq!(acc.usage_id(), None);
+        assert_eq!(acc.request_pricing(), None);
+        acc.push(&lines[3]);
+        assert_eq!(acc.usage_id().as_deref(), Some("msg_C/req_msg_C"));
+    }
+
+    /// #s683: a record with the key and no `sessionId` cannot be told a copy, so it counts, as a
+    /// line naming no call does.
+    #[test]
+    fn a_key_with_no_session_to_compare_counts() {
+        let mut line = reply_in("new", Some("old"), "msg_E", 9, false);
+        line.as_object_mut().unwrap().remove("sessionId");
+        let mut acc = MetricsAcc::default();
+        acc.push(&line);
+        assert_eq!(acc.finish().per_model["claude-opus-4-8"].output, 9);
+    }
+
+    /// #s683: a copied line between two lines of one of the session's own calls leaves that call
+    /// credited once, with its growth: a copy must not reset the repeat guard, or the call's next
+    /// line is credited whole again. Held at every cursor position too.
+    #[test]
+    fn a_copy_inside_an_own_call_leaves_the_call_credited_once() {
+        let lines = [
+            reply_in("new", None, "msg_C", 5, false),
+            reply_in("new", Some("old"), "msg_B", 7, false),
+            reply_in("new", None, "msg_C", 40, false),
+        ];
+        for cut in 0..=lines.len() {
+            let mut before = MetricsAcc::default();
+            for line in &lines[..cut] {
+                before.push(line);
+            }
+            let mut after = MetricsAcc::default();
+            after.restore(&before.state());
+            for line in &lines[cut..] {
+                after.push(line);
+            }
+            let opus = after.finish().per_model["claude-opus-4-8"];
+            assert_eq!(
+                (opus.input, opus.cache_read, opus.output),
+                (2, 1_000, 40),
+                "parked after line {cut}"
+            );
+        }
+    }
+
+    /// #s683: a cursor parked at any line of the moved session resumes to the same totals.
+    #[test]
+    fn a_moved_session_resumes_to_the_same_totals_at_every_line() {
+        let lines = moved_session();
+        let mut whole = MetricsAcc::default();
+        for line in &lines {
+            whole.push(line);
+        }
+        let want = whole.finish().per_model;
+        for cut in 0..=lines.len() {
+            let mut before = MetricsAcc::default();
+            for line in &lines[..cut] {
+                before.push(line);
+            }
+            let mut after = MetricsAcc::default();
+            after.restore(&before.state());
+            for line in &lines[cut..] {
+                after.push(line);
+            }
+            assert_eq!(after.finish().per_model, want, "parked after line {cut}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod answer_tests {
     use super::*;
 
@@ -2143,6 +2325,36 @@ mod answer_tests {
 
     fn secs(ts: &str) -> Option<f64> {
         epoch_secs(ts)
+    }
+
+    /// #s683: a reply copied from the session whose request produced it is that session's
+    /// answer, timed there; here it is no answer, as a Codex fork's copied items are not. The
+    /// copies keep their own timestamps, so timing them here hands each answer out twice.
+    #[test]
+    fn a_reply_copied_from_another_session_is_no_answer() {
+        let copied = |id: &str, ts: &str| {
+            let mut line = part(id, 30, ts);
+            line["sessionId"] = serde_json::json!("new");
+            line["requestSessionId"] = serde_json::json!("old");
+            line
+        };
+        let mut own = part("msg_01C", 30, "2026-11-24T10:00:11Z");
+        own["sessionId"] = serde_json::json!("new");
+        let got = answers(
+            &mut MetricsAcc::default(),
+            &[
+                user("2026-11-24T10:00:00Z"),
+                copied("msg_01A", "2026-11-24T10:00:01Z"),
+                user("2026-11-24T10:00:02Z"),
+                copied("msg_01B", "2026-11-24T10:00:03Z"),
+                user("2026-11-24T10:00:10Z"),
+                own,
+            ],
+        );
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].id, "msg_01C");
+        assert_eq!(got[0].sent, secs("2026-11-24T10:00:10Z"));
+        assert_eq!(got[0].first, secs("2026-11-24T10:00:11Z"));
     }
 
     /// #s341: an answer written as several lines, a tool result between two of them, is ONE
