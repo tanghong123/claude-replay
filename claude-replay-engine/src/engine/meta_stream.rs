@@ -439,11 +439,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// carries, so its remove takes it; a v92 stream left it at the queue's front, where the next
 /// content-less pop took it in place of a typed prompt, whose `⧗ queued` marker then stayed.
 ///
+/// v94: #s687 — a Claude client tally that began before the session's last copied reply is
+/// the tally of the session a move or fork came from, carried over, and is not this session's
+/// reported cost; a v93 cursor knows neither the copies' last time nor each epoch's end.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 93;
+pub const FOLD_VERSION: u16 = 94;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

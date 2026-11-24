@@ -75,6 +75,12 @@ pub(crate) struct MetricsAcc {
     reported: std::collections::BTreeMap<i64, f64>,
     /// `startTime + totalDuration` of the latest tally seen: when the client stopped counting.
     reported_through: Option<i64>,
+    /// The same end per epoch (#s687), so the window can be worked out over the epochs counted.
+    reported_end: std::collections::BTreeMap<i64, i64>,
+    /// The latest timestamp, in epoch seconds, of a reply this session copied from another
+    /// (#s683's `copied_reply`). An epoch that began before it is the other session's tally,
+    /// carried over (#s687).
+    last_copy_secs: Option<i64>,
     /// The client flagged a model it could not price itself.
     reported_unknown_model: bool,
     /// Each answer's timing (#s341): Claude Code writes an answer as one line per content block,
@@ -162,6 +168,10 @@ impl MetricsAcc {
                 let end = start + v.get("totalDuration").and_then(Value::as_i64).unwrap_or(0);
                 if self.reported_through.is_none_or(|t| end > t) {
                     self.reported_through = Some(end);
+                }
+                let last = self.reported_end.entry(start).or_insert(end);
+                if end > *last {
+                    *last = end;
                 }
                 if v.get("hasUnknownModelCost")
                     .and_then(Value::as_bool)
@@ -353,6 +363,9 @@ impl MetricsAcc {
         if let Some(ts) = v.get("timestamp").and_then(|x| x.as_str()) {
             if let Some(secs) = parse_ts(ts) {
                 self.span.observe(secs);
+                if copied_reply(v) && self.last_copy_secs.is_none_or(|c| secs > c) {
+                    self.last_copy_secs = Some(secs);
+                }
             }
         }
         self.time_answer(v);
@@ -502,6 +515,9 @@ impl MetricsAcc {
             "reported": self.reported.iter().map(|(k, v)| (k.to_string(), *v))
                 .collect::<std::collections::BTreeMap<String, f64>>(),
             "reported_through": self.reported_through,
+            "reported_end": self.reported_end.iter().map(|(k, v)| (k.to_string(), *v))
+                .collect::<std::collections::BTreeMap<String, i64>>(),
+            "last_copy_secs": self.last_copy_secs,
             "reported_unknown_model": self.reported_unknown_model,
             "answers": self.answers,
         })
@@ -563,6 +579,13 @@ impl MetricsAcc {
                 .collect();
         }
         self.reported_through = state.get("reported_through").and_then(Value::as_i64);
+        if let Some(map) = state.get("reported_end").and_then(Value::as_object) {
+            self.reported_end = map
+                .iter()
+                .filter_map(|(k, v)| Some((k.parse::<i64>().ok()?, v.as_i64()?)))
+                .collect();
+        }
+        self.last_copy_secs = state.get("last_copy_secs").and_then(Value::as_i64);
         self.reported_unknown_model = state
             .get("reported_unknown_model")
             .and_then(Value::as_bool)
@@ -634,18 +657,46 @@ impl MetricsAcc {
         // each end keeps a tally written moments before the last record from reading as
         // partial, which would be a distinction without a difference to a reader.
         const SLACK_MS: i64 = 60_000;
-        let from_ms = self.reported.keys().next().copied();
-        let complete = match (self.span.endpoints(), from_ms, self.reported_through) {
+        // An epoch that began before the last reply this session copied from another (#s687) is
+        // that session's tally, carried over: Claude Code 2.1.331 restores the cost state of the
+        // session a move or a fork came from, its `startTime` included, and counts on from it.
+        // So its figure is the other session's spend at the move plus this one's, and the part
+        // that is this session's is in the other's transcript alone, which a fold of this one
+        // cannot read. It is left out rather than shown as this session's. Measured on denali,
+        // 2026-11-24: the moved session c063a2f0's only epoch began 6.6 hours before its first
+        // own reply and read $26.02, $24.00 of it the parent's at the move; across 26 recent
+        // transcripts nothing else had an epoch older than a copied reply. A session with no
+        // copies keeps every epoch (a resume restores its own epoch and counts on in it).
+        // REVISIT: subtract the parent's tally at the move where both files are read, to show
+        // this session's part.
+        let carried = |start: i64| self.last_copy_secs.is_some_and(|c| start < c * 1000);
+        let kept: Vec<(i64, f64)> = self
+            .reported
+            .iter()
+            .filter(|(start, _)| !carried(**start))
+            .map(|(start, usd)| (*start, *usd))
+            .collect();
+        let from_ms = kept.first().map(|(start, _)| *start);
+        // The end of the epochs counted; a cursor parked before #s687 holds no ends, and then the
+        // latest end seen stands, as it did.
+        let through_ms = if self.reported_end.is_empty() {
+            self.reported_through.filter(|_| !kept.is_empty())
+        } else {
+            kept.iter()
+                .filter_map(|(start, _)| self.reported_end.get(start).copied())
+                .max()
+        };
+        let complete = match (self.span.endpoints(), from_ms, through_ms) {
             (Some((start, end)), Some(from), Some(through)) => {
                 from <= start * 1000 + SLACK_MS && through + SLACK_MS >= end * 1000
             }
             _ => false,
         };
-        m.reported_cost = (!self.reported.is_empty()).then(|| ReportedCost {
-            usd: self.reported.values().sum(),
-            epochs: self.reported.len() as u32,
+        m.reported_cost = (!kept.is_empty()).then(|| ReportedCost {
+            usd: kept.iter().map(|(_, usd)| usd).sum(),
+            epochs: kept.len() as u32,
             from_ms,
-            through_ms: self.reported_through,
+            through_ms,
             complete,
             unknown_model: self.reported_unknown_model,
         });
@@ -2175,6 +2226,73 @@ mod copied_reply_tests {
             reply_in("new", None, "msg_C", 11, false),
             reply_in("new", Some("new"), "msg_D", 13, false),
         ]
+    }
+
+    /// #s687: a moved or forked session's client tally that began before its last copied reply is
+    /// the other session's, carried over, and is not reported as this one's; an epoch that began
+    /// after it is this session's own and still counts, and a session with no copies keeps every
+    /// epoch. The copies are dated 2026-11-24T10:00:00Z (`reply_in`).
+    #[test]
+    fn a_tally_carried_over_from_the_session_a_move_came_from_is_not_this_one_s() {
+        const COPY_MS: i64 = 1_795_514_400_000; // 2026-11-24T10:00:00Z
+        let cost_state = |start: i64, usd: f64, duration_ms: i64| {
+            serde_json::json!({"type": "cost-state", "sessionId": "new", "startTime": start,
+                "totalCostUSD": usd, "totalDuration": duration_ms, "hasUnknownModelCost": false})
+            .to_string()
+        };
+        let carried = cost_state(COPY_MS - 41_775_000, 26.02, 22_308_559);
+        let own = cost_state(COPY_MS + 300_000, 3.5, 600_000);
+        let fold = |lines: &[Value], tallies: &[&str]| {
+            let mut acc = MetricsAcc::default();
+            for line in lines {
+                acc.push(line);
+            }
+            for t in tallies {
+                acc.push(&serde_json::from_str::<Value>(t).unwrap());
+            }
+            acc
+        };
+
+        // The moved session's only tally is the carried one: no tally is reported.
+        let moved = moved_session();
+        assert!(fold(&moved, &[&carried]).finish().reported_cost.is_none());
+
+        // A later process of its own, counting afresh, is reported alone, over its own window.
+        let r = fold(&moved, &[&carried, &own])
+            .finish()
+            .reported_cost
+            .expect("the session's own tally");
+        assert_eq!((r.epochs, r.usd), (1, 3.5));
+        assert_eq!(r.from_ms, Some(COPY_MS + 300_000));
+        assert_eq!(r.through_ms, Some(COPY_MS + 900_000));
+
+        // The same across a parked cursor.
+        let mut resumed = MetricsAcc::default();
+        resumed.restore(&fold(&moved, &[&carried, &own]).state());
+        let r = resumed
+            .finish()
+            .reported_cost
+            .expect("the session's own tally");
+        assert_eq!(
+            (r.epochs, r.usd, r.through_ms),
+            (1, 3.5, Some(COPY_MS + 900_000))
+        );
+
+        // With no copies, the same early epoch is the session's own and counts.
+        let unmoved: Vec<Value> = moved
+            .iter()
+            .cloned()
+            .map(|mut l| {
+                l.as_object_mut().unwrap().remove("requestSessionId");
+                l
+            })
+            .collect();
+        let r = fold(&unmoved, &[&carried, &own])
+            .finish()
+            .reported_cost
+            .expect("both tallies");
+        assert_eq!(r.epochs, 2);
+        assert!((r.usd - 29.52).abs() < 1e-9, "{}", r.usd);
     }
 
     /// #s683: a reply copied from the session whose request produced it is priced there and only
