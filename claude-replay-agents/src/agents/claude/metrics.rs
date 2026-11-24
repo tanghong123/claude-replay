@@ -667,6 +667,9 @@ impl MetricsAcc {
         // own reply and read $26.02, $24.00 of it the parent's at the move; across 26 recent
         // transcripts nothing else had an epoch older than a copied reply. A session with no
         // copies keeps every epoch (a resume restores its own epoch and counts on in it).
+        // One miss is known and is the old behaviour: a fork taken at an earlier message copies the
+        // replies up to it only, so a parent epoch that began after that point is kept, with the
+        // parent's later spend in it. The unknown-model flag is still the whole session's.
         // REVISIT: subtract the parent's tally at the move where both files are read, to show
         // this session's part.
         let carried = |start: i64| self.last_copy_secs.is_some_and(|c| start < c * 1000);
@@ -2240,7 +2243,8 @@ mod copied_reply_tests {
                 "totalCostUSD": usd, "totalDuration": duration_ms, "hasUnknownModelCost": false})
             .to_string()
         };
-        let carried = cost_state(COPY_MS - 41_775_000, 26.02, 22_308_559);
+        // The carried tally ends last, so the window must end with the epoch kept, not with it.
+        let carried = cost_state(COPY_MS - 41_775_000, 26.02, 43_000_000);
         let own = cost_state(COPY_MS + 300_000, 3.5, 600_000);
         let fold = |lines: &[Value], tallies: &[&str]| {
             let mut acc = MetricsAcc::default();
@@ -2266,9 +2270,10 @@ mod copied_reply_tests {
         assert_eq!(r.from_ms, Some(COPY_MS + 300_000));
         assert_eq!(r.through_ms, Some(COPY_MS + 900_000));
 
-        // The same across a parked cursor.
+        // The same across a cursor parked between the carried tally and its own.
         let mut resumed = MetricsAcc::default();
-        resumed.restore(&fold(&moved, &[&carried, &own]).state());
+        resumed.restore(&fold(&moved, &[&carried]).state());
+        resumed.push(&serde_json::from_str::<Value>(&own).unwrap());
         let r = resumed
             .finish()
             .reported_cost
