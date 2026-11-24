@@ -609,6 +609,8 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .sidebar .write-reason{cursor:pointer}
 .write-control>.nav-tooltip{left:38px;right:10px;width:auto;max-width:none;white-space:normal}
 .write-control.disabled:hover>.nav-tooltip,.write-control.disabled:has(:focus-visible)>.nav-tooltip{opacity:1;visibility:visible;transform:none;transition-delay:.35s}
+.write-control.disabled:has(>.write-info:hover)>.nav-tooltip{opacity:0;visibility:hidden;transition-delay:0s}
+.nav:has(>.write-help:not([hidden]))>.write-control>.nav-tooltip{display:none}
 @media(pointer:coarse){
 .write-control>.nav-tooltip{display:none}
 }

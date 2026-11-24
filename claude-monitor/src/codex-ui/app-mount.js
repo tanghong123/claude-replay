@@ -788,22 +788,27 @@ var mobileShell;
 // elsewhere, whom `/pair` would show a code on a screen they cannot see (#s630): a browser there
 // pairs the way a phone does, from a code the monitor's machine prints.
 // The line under the switch leads with what to do: pair first. Hovering the disabled switch adds how
-// (`tip`, and `tipHere` for a reader at the monitor's machine, whom a click takes to pairing from the
-// page): a reader who never noticed the line still meets the advice where they point. A touch screen
-// has no hover, so there the line is the advice and a tap on it, the switch or ⓘ opens the help,
-// which says the same how at length.
+// (`tip`, and `tipHere` for a reader at the monitor's machine, whose help pairs from the page): a
+// reader who never noticed the line still meets the advice where they point. A click there opens the
+// help, so the tooltip says what the help holds, never that the click pairs: the help's button does
+// that, after a code. A touch screen has no hover, so there the line is the advice and a tap on it,
+// the switch or ⓘ opens the help, which says the same how at length.
+// The collapsed rail's ✎ says it in its title (`rail`, `railHere`, else `tip`), which offers no
+// click: on the rail the help would open inside the list the rail hides, so nothing would show.
 const WRITE_NEED = {
   monitor: {
     line: "Pair first to turn it on: <code>agent-monitor --pair</code>",
     tip: "Pair first to turn on write mode: run agent-monitor --pair in a terminal on the monitor's machine.",
-    tipHere: "Pair first to turn on write mode. Click to pair this browser (it pairs the monitor too), or run agent-monitor --pair in a terminal here.",
+    tipHere: "Pair first to turn on write mode. Click for how to pair this browser (it pairs the monitor too), or run agent-monitor --pair in a terminal here.",
     help: "<b>Write mode needs a paired monitor</b><p>Run this in a terminal on the monitor's machine:</p><code>agent-monitor --pair</code>",
     here: "<b>Write mode needs a paired monitor</b><p>Pairing this browser pairs the monitor too: from then on it requires pairing for every browser and tool that reaches it.</p><p class='write-pair'></p><p>Or run this in a terminal on this machine:</p><code>agent-monitor --pair</code>",
   },
   browser: {
     line: "Pair this browser first to turn it on",
     tip: "Pair this browser first to turn on write mode. Click for the command to run on the monitor's machine.",
-    tipHere: "Pair this browser first to turn on write mode. Click to pair it, or run agent-monitor --pair in a terminal here.",
+    tipHere: "Pair this browser first to turn on write mode. Click for how to pair it from this page, or run agent-monitor --pair in a terminal here.",
+    rail: "Pair this browser first to turn on write mode: Write mode's help in the sidebar gives the command to run on the monitor's machine.",
+    railHere: "Pair this browser first to turn on write mode: run agent-monitor --pair in a terminal here.",
     // A monitor a LaunchAgent starts prints no address to its log (#s204): `--pair` in a terminal
     // hands off to the running monitor and prints the address that carries the token.
     // #s630: a reader elsewhere reads the page without the token only through a relay the gate takes
@@ -843,6 +848,8 @@ const writeReasonText = need => { const el = document.createElement("div"); el.i
 const pairsHere = need => !!need?.here && !!handleOf(viewMachine)?.local;
 /** The hover advice for `need`: what to do first and how. */
 const writeTipText = need => (pairsHere(need) ? need.tipHere : need.tip) || writeReasonText(need);
+/** The rail ✎'s advice for `need`: the same, offering no click. */
+const writeRailText = need => (pairsHere(need) ? need.railHere : need.rail) || need.tip || writeReasonText(need);
 /** What writing still needs for the session open now, as `WRITE_NEED` names it, or "" where this
  *  reader's writes reach its server (#s577). Over several machines (#s595) that is the open session's
  *  machine's, and with no session open, a session. A handle that does not say its writes reach the
@@ -864,7 +871,7 @@ function paintWrite() {
   page.byId("writeBtn").classList.toggle("disabled", !!need);
   page.byId("sidebarMiniWrite").classList.toggle("on", writeOn());
   page.byId("sidebarMiniWrite").classList.toggle("disabled", !!need);
-  page.byId("sidebarMiniWrite").title = need ? `Write mode: ${writeTipText(need)}` : "Write mode";
+  page.byId("sidebarMiniWrite").title = need ? `Write mode: ${writeRailText(need)}` : "Write mode";
   page.byId("writeInfo").hidden = !need;
   writeReason.hidden = !need;
   writeReason.innerHTML = need ? need.line : "";
