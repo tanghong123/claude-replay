@@ -1416,10 +1416,63 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // a queued prompt, the command after a compaction share the running prompt's id, and
             // a task notification or system prompt starts a new one. Not a turn key; unread.
             "promptId",
+            // #s681 (client 2.1.330): a uuid on a record that opens a turn, beside `turnOrigin` and
+            // `turnPosition`. On hong-devserver, 2026-11-24, 1,637 records carried it, and 6 sampled
+            // turn openers (queued typed prompts, a peer message, a task notification, a scheduled
+            // firing) equalled their own `promptId`.
+            // On denali, the same day, it was on 998 user records (human, peer, task_notification,
+            // scheduled, system and sdk openers; none carries a `toolUseResult`). 939 equal their
+            // own `promptId`. The other 59 are all in the copied prefix of ONE moved session (#s683,
+            // 2.1.331): there the client rewrote `promptId` to one new id and kept `turnPromptId`
+            // as the prompt id of the session copied from (59 of 59 are that session's).
+            // Unread: #362 refused `promptId` as a turn key, and this repeats it on the turn's
+            // opener. REVISIT: (1) a value differing from the record's own `promptId` outside a
+            // copied prefix (the client counting a record into another prompt's turn, which bears
+            // on #362); (2) the key on a record with no `turnOrigin`.
+            "turnPromptId",
             "sourceToolAssistantUUID",
             "toolUseResult",
             "origin",
             "promptSource",
+            // #s681 (client 2.1.331): who wrote a row the person did not type. Four values, and never
+            // on a typed prompt (`turnOrigin: "human"`). On hong-devserver, 2026-11-24, 1,087
+            // records in 76 files. On denali, the same day, about 1,080 records, by what each is:
+            // - "recorded": a prompt queued to the model: task notifications (514 in main sessions,
+            //   390 in sub-agents), a sub-agent's opening prompt (90), scheduled firings (8),
+            //   system reminders (4);
+            // - "local": a local slash command's name (15) and output (15), a compact summary (13),
+            //   a one-shot's opening prompt (6);
+            // - "harness": a row the client makes up for the transcript: the local command caveat
+            //   (15), the resume-time task notification of a background command that did not
+            //   finish (5), an interrupt marker (1), and the client's "[Cross-session delivery
+            //   notice]" (2);
+            // - "hook": the Stop hook feedback below (hong-devserver only).
+            // Unread: each row is drawn from what it already carries (`origin.kind`,
+            // `promptSource`, `turnOrigin`, `isMeta`, its text), as `queueSkipSlashCommands`
+            // (#s165) and `wakeupSource` (#s243) are. It also rides inside a `queued_command`
+            // attachment's payload (993 on denali), which this census does not walk.
+            // REVISIT: (1) a value other than the four;
+            // (2) the key on a typed prompt or on another record type; (3) a "harness" row the page
+            // draws as the person's or the session's own words.
+            // (3) FIRED on denali: the delivery notice is drawn as "⧗ queued:", the marker for a
+            // prompt the person typed. Queued for the owner as #s689, a RENDER question, not
+            // decided here.
+            "rowSource",
+            // #s681 (client 2.1.331): on the Stop hook feedback the client hands the model (a user
+            // record, `isMeta`, `rowSource: "hook"`, a string content opening "Stop hook feedback:",
+            // no `promptSource` or `turnOrigin`), a boolean `true` and the one constant sentence the
+            // client puts before the hook's text for the model, "The text below is the output of a
+            // hook, not a message from the user." (it is not in the record's content). Measured
+            // 2026-11-24 on hong-devserver: on all 38 such records and nowhere else, each key with
+            // no other value. Older clients write the same records without the keys (693 in one
+            // session). None on denali. Unread: an `isMeta` record with no `turnOrigin` and no
+            // `promptSource` already folds to a system note. REVISIT: (1) the keys on a record that
+            // is not Stop hook feedback, or not `isMeta`; (2) `hookText` false, or another lead;
+            // (3) whether such a note should be labelled a hook's, as `hook_success` is
+            // (`hook_note`): a RENDER question for the owner, with these keys as the structural
+            // signal, never decided here.
+            "hookText",
+            "hookTextLead",
             "permissionMode",
             "turnOrigin",
             "serverClassifierContext",
@@ -1475,6 +1528,24 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // which will report as its own row; (4) a uuid naming a record that is not just before
             // the note.
             "retractedMessageUuids",
+            // #s685 (client 2.1.331): a boolean `true` on the client's OWN notes to the model, each
+            // `isMeta` and `turnCompanion`. The 2.1.331 client sets it on four kinds of note:
+            // - the withdrawn-reply note above (with `retractedMessageUuids`, #s500);
+            // - the safety-classifier continuation note (with `refusedMessageId`, #s368, #s378);
+            // - the nudge after a reply that held only thinking;
+            // - the note after a PermissionDenied hook says the model may retry.
+            // Reading a transcript back, the client uses it for the last kind only: there it shows
+            // the model the text of a sibling key, `ownNoteText`, in place of the placeholder.
+            // Measured 2026-11-24 on denali: ONE record, a withdrawn-reply note in a sub-agent
+            // (2.1.331); the #s500 note on hong-devserver (2.1.325) had none.
+            // Unread: the notes are read by their text and their own keys (`Block::Withdrawn`,
+            // `Block::SafetyStop`), and this changes nothing a reader needs. `ownNoteText` is left
+            // out of this census, so it reports as its own row. REVISIT: (1) the key on a record
+            // that is not `isMeta`, or on another record type; (2) `ownNoteText`: whether the note
+            // should draw that text rather than the placeholder is a RENDER question for the
+            // owner, queued with counts and client version, never decided here; (3) the key on a
+            // note the adapter does not recognise (a new kind of client note).
+            "ownNote",
             // #s374 (clients 2.1.308 to 2.1.318): three parallel lists on a task notification the
             // client hands a SUB-AGENT (`isMeta`, `origin.kind: "task-notification"`, its text a
             // `<task-notification>` element): per notice joined into the record, its length, whether
