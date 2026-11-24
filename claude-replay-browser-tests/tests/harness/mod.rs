@@ -811,7 +811,7 @@ pub fn ask_discussed_answer(id: &str, ts: &str) -> String {
         "The user wants to clarify these questions.\n    This means they may have additional \
          information, context or questions for you.\n    Take their response into account and then \
          reformulate the questions if appropriate.\n    Start by asking them what they would like to \
-         clarify.\n    Questions asked:\n- \"Cut it now, or hold on main?\"\n  Answer: Hold\n- \
+         clarify.\n\n    Questions asked:\n- \"Cut it now, or hold on main?\"\n  Answer: Hold\n- \
          \"Which crates go in?\"\n  (No answer provided)\n  User notes: only the engine for now",
     )
 }

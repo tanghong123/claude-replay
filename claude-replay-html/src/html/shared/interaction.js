@@ -32,10 +32,12 @@ const unansweredNote = ({ why, seconds } = {}) =>
         ? "The question failed before it was answered."
         : "The call came back without an answer.";
 /** #s684: a refusal that is not a no — the reader chose to discuss the questions instead. Whatever
- *  they had answered by then is on the questions, so the card is not titled "No answer". */
-const DISCUSS_TITLE = "Discussing instead";
-const DISCUSS_NOTE = "Chose to discuss in the agent client instead of answering; the agent was asked to find out what to clarify.";
-/** #s684: what the reader wrote when they declined, captioned so it never reads as the client's. */
+ *  they had answered by then is on the questions, so the card is not titled "No answer". Past
+ *  tense and a settled mark, as the other titles: the call has come back. */
+const DISCUSS_TITLE = "Chose to discuss";
+const DISCUSS_NOTE = "Discussed in the agent client instead of answered; the agent was told to ask what they want to clarify.";
+/** #s684: the words the client's refusal says the reader said, captioned so they never read as the
+ *  client's. */
 const SAID_CAPTION = "Their words";
 /** #280: what the reader wrote themselves, captioned so it never reads as one of the options. */
 const TYPED_CAPTION = "Typed answer";
@@ -62,7 +64,7 @@ function interactionCard(interaction, summary) {
   const asked = (interaction && interaction.asked) || [];
   return {
     state: unanswered ? "unanswered" : resolved ? "resolved" : "waiting",
-    icon: discuss ? "…" : unanswered ? "–" : resolved ? "✓" : "?",
+    icon: discuss ? "↩" : unanswered ? "–" : resolved ? "✓" : "?",
     title: discuss ? DISCUSS_TITLE : unanswered ? UNANSWERED_TITLE : resolved ? RESOLVED_TITLE : WAITING_TITLE,
     note,
     // The question itself when the record carries one; the note stands in when it does not,

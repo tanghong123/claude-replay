@@ -15411,7 +15411,7 @@ fn both_shells_say_why_a_question_went_unanswered() {
             [
                 "No answer",
                 "No answer",
-                "Discussing instead",
+                "Chose to discuss",
                 "No answer"
             ]
             .map(|t| serde_json::json!(t)),
@@ -15441,8 +15441,8 @@ fn both_shells_say_why_a_question_went_unanswered() {
             vec![
                 "The agent client stopped waiting after 60s; the agent went on without an answer.",
                 "Declined in the agent client; the agent was told not to proceed.",
-                "Chose to discuss in the agent client instead of answering; the agent was asked to \
-                 find out what to clarify.",
+                "Discussed in the agent client instead of answered; the agent was told to ask what \
+                 they want to clarify.",
                 "Declined in the agent client; the agent was told not to proceed.",
             ],
             "{surface:?}: each says why, in the order they were asked: {cards:?}"

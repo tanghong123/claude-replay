@@ -3311,8 +3311,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   ];
   const discussed = { kind: "request_user_input", resolved: true, answers: [], asked, unanswered: { why: "discuss" } };
   const card = interactionCard(discussed, "Cut it now? +1");
-  assert.deepEqual([card.state, card.icon, card.title], ["unanswered", "…", "Discussing instead"], "settled, and not titled as a question with no answer");
-  assert.equal(card.text, "Chose to discuss in the agent client instead of answering; the agent was asked to find out what to clarify.");
+  assert.deepEqual([card.state, card.icon, card.title], ["unanswered", "↩", "Chose to discuss"], "settled, and not titled as a question with no answer");
+  assert.equal(card.text, "Discussed in the agent client instead of answered; the agent was told to ask what they want to clarify.");
   assert.doesNotMatch(card.text, /Declined/, "a question the reader chose to discuss is not declined");
   const html = interactionHtml(discussed, "", classes);
   assert.match(html, /<span class="a"><span>✓ Yes<\/span><\/span>/, "what they answered before choosing to discuss is ticked");

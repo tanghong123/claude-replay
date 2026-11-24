@@ -131,8 +131,9 @@ pub struct Asked {
     /// and once it is answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unanswered: Option<Unanswered>,
-    /// What the reader wrote when they declined (#s684): text the client carried after its refusal
-    /// that is not its own, with `unanswered` [`Unanswered::Declined`]. `None` for a bare decline.
+    /// What the reader said when they declined (#s684): the words the client's refusal attributes
+    /// to them ("…the user said:"), without the note to the model it may add after them, with
+    /// `unanswered` [`Unanswered::Declined`]. `None` for a bare decline.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub said: Option<String>,
 }
