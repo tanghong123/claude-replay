@@ -6852,9 +6852,11 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                             out.push(Block::UserText(String::new()));
                         }
                         // #s607 mirror: the prompt's pasted images.
-                        for blk in images.into_iter().filter(|_| !notice) {
-                            if let Some(att) = image_attachment(blk) {
-                                out.push(Block::Attachment(att));
+                        if !notice {
+                            for blk in images {
+                                if let Some(att) = image_attachment(blk) {
+                                    out.push(Block::Attachment(att));
+                                }
                             }
                         }
                     }
@@ -9689,11 +9691,15 @@ mod tests {
         );
 
         // A notice picked up mid-turn whose prompt is several parts, an image among them: the
-        // paths agree that none of it is drawn.
+        // paths agree that none of it is drawn, and that its pickup took its item by the parts'
+        // joined text (else the pop after it takes the notice's item, and the prompt queued
+        // behind keeps its marker).
         let parts = r#"{"type":"user","timestamp":"2026-11-24T05:39:00.000Z","promptSource":"typed","message":{"role":"user","content":"brief de-steward"}}
 {"type":"assistant","timestamp":"2026-11-24T05:39:59.000Z","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_p1","name":"Bash","input":{"command":"sleep 5"}}]}}
-{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-24T05:40:00.000Z","content":"[Cross-session delivery notice] Your message to another session expired."}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-24T05:40:00.000Z","content":"[Cross-session delivery notice] Your message to another session expired.\nTell your user."}
 {"type":"attachment","timestamp":"2026-11-24T05:40:01.000Z","attachment":{"type":"queued_command","commandMode":"prompt","isMeta":true,"prompt":[{"type":"text","text":"[Cross-session delivery notice] Your message to another session expired."},{"type":"text","text":"Tell your user."},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}]}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-24T05:40:02.000Z","content":"and the clone"}
+{"type":"queue-operation","operation":"dequeue","timestamp":"2026-11-24T05:40:02.500Z"}
 {"type":"user","timestamp":"2026-11-24T05:40:05.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_p1","content":"done"}]}}
 "#;
         let blocks = both_paths(parts);
