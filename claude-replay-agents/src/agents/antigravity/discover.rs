@@ -153,11 +153,11 @@ pub fn session_card(path: &Path) -> SessionCard {
 }
 
 pub fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
-    candidates_scoped_in(&config_home(), cwd)
+    candidates_scoped_in(&config_home(), cwd, home_dir().as_deref())
 }
 
-fn candidates_scoped_in(root: &Path, cwd: &Path) -> Vec<Candidate> {
-    let ancestors = ancestors_below(cwd, home_dir().as_deref());
+fn candidates_scoped_in(root: &Path, cwd: &Path, home: Option<&Path>) -> Vec<Candidate> {
+    let ancestors = ancestors_below(cwd, home);
     if ancestors.is_empty() {
         return Vec::new();
     }
@@ -269,11 +269,11 @@ mod tests {
         assert_eq!(trajectory_id(&full), Some(a));
         assert_eq!(trajectory_id(&plain), Some(b));
         assert_eq!(project_dir(&full), Some(workspace.clone()));
-        let list = candidates_scoped_in(&root, &workspace);
+        let list = candidates_scoped_in(&root, &workspace, Some(&root));
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].path, full);
         assert!(list[0].cwd_affinity);
-        assert!(candidates_scoped_in(&root, &root.join("unrelated")).is_empty());
+        assert!(candidates_scoped_in(&root, &root.join("unrelated"), Some(&root)).is_empty());
         assert_eq!(resolve_id_in(&brain, "aaaa"), Some(full.clone()));
         assert_eq!(resolve_id_in(&brain, b), Some(plain));
         assert_eq!(resolve_id_in(&brain, "absent"), None);
