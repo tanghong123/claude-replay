@@ -5744,9 +5744,10 @@ fn after_refusal<'a>(txt: &'a str, tur: &'a Value) -> Option<&'a str> {
 const CLIENT_NOTE: &str =
     "\n\nNote: The user's next message may contain a correction or preference.";
 
-/// `text` up to the client's note to the model ([`CLIENT_NOTE`]), where it carries one.
+/// `text` up to the client's note to the model ([`CLIENT_NOTE`]), where it carries one. The note is
+/// the text's tail, so its LAST opening is cut: words that quote the note's first line stay whole.
 fn without_client_note(text: &str) -> &str {
-    text.find(CLIENT_NOTE).map_or(text, |at| &text[..at])
+    text.rfind(CLIENT_NOTE).map_or(text, |at| &text[..at])
 }
 
 /// #s684: how the client's question dialog opens the text it sends when the reader chooses to
@@ -10874,8 +10875,8 @@ mod tests {
             "a list that does not name the questions puts nothing on them"
         );
         for (k, why) in [
-            (3, "from `userFeedback`"),
-            (4, "from the text, its note cut"),
+            (3, "the note cut, `userFeedback` beside it (unread)"),
+            (4, "the note cut, no `userFeedback`"),
         ] {
             assert_eq!(seen[k].unanswered, Some(Unanswered::Discussed), "{why}");
             assert_eq!(
