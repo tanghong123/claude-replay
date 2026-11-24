@@ -2283,6 +2283,16 @@ mod copied_reply_tests {
             (1, 3.5, Some(COPY_MS + 900_000))
         );
 
+        // And restored whole: each epoch's end crosses the cursor, or the window would end with the
+        // carried tally.
+        let mut whole = MetricsAcc::default();
+        whole.restore(&fold(&moved, &[&carried, &own]).state());
+        let r = whole
+            .finish()
+            .reported_cost
+            .expect("the session's own tally");
+        assert_eq!(r.through_ms, Some(COPY_MS + 900_000));
+
         // With no copies, the same early epoch is the session's own and counts.
         let unmoved: Vec<Value> = moved
             .iter()
