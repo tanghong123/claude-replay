@@ -34471,6 +34471,9 @@ function plainTextOf(html7) {
 var CJK = "\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}\\p{Script=Hangul}";
 var TOKEN = new RegExp(`[${CJK}]|\\s+|(?:(?![${CJK}])[\\p{L}\\p{N}_])+|[^]`, "gu");
 
+// packages/engine/dist/links.js
+var WebUrl = globalThis.URL;
+
 // packages/engine/dist/mentions.js
 var MENTION = /(?<![\w.%+@-])@([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})/g;
 function speakingLines(body3) {

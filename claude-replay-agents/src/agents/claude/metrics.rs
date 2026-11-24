@@ -75,6 +75,12 @@ pub(crate) struct MetricsAcc {
     reported: std::collections::BTreeMap<i64, f64>,
     /// `startTime + totalDuration` of the latest tally seen: when the client stopped counting.
     reported_through: Option<i64>,
+    /// The same end per epoch (#s687), so the window can be worked out over the epochs counted.
+    reported_end: std::collections::BTreeMap<i64, i64>,
+    /// The latest timestamp, in epoch seconds, of a reply this session copied from another
+    /// (#s683's `copied_reply`). An epoch that began before it is the other session's tally,
+    /// carried over (#s687).
+    last_copy_secs: Option<i64>,
     /// The client flagged a model it could not price itself.
     reported_unknown_model: bool,
     /// Each answer's timing (#s341): Claude Code writes an answer as one line per content block,
@@ -163,6 +169,10 @@ impl MetricsAcc {
                 if self.reported_through.is_none_or(|t| end > t) {
                     self.reported_through = Some(end);
                 }
+                let last = self.reported_end.entry(start).or_insert(end);
+                if end > *last {
+                    *last = end;
+                }
                 if v.get("hasUnknownModelCost")
                     .and_then(Value::as_bool)
                     .unwrap_or(false)
@@ -174,7 +184,8 @@ impl MetricsAcc {
         // The model THIS message ran on — not `self.model`, which is only the last seen.
         let recorded = v.pointer("/message/model").and_then(|x| x.as_str());
         let m = self.named_model(recorded.unwrap_or(&self.model));
-        if let Some(u) = v.pointer("/message/usage") {
+        // A reply another session's request produced (#s683) is priced in that session alone.
+        if let Some(u) = v.pointer("/message/usage").filter(|_| !copied_reply(v)) {
             // Three distinct buckets so the footer can tell them apart: new input,
             // cache writes (new content, cached on first sight), and cache reads
             // (the whole context re-read every turn — the dominant number, kept
@@ -352,6 +363,9 @@ impl MetricsAcc {
         if let Some(ts) = v.get("timestamp").and_then(|x| x.as_str()) {
             if let Some(secs) = parse_ts(ts) {
                 self.span.observe(secs);
+                if copied_reply(v) && self.last_copy_secs.is_none_or(|c| secs > c) {
+                    self.last_copy_secs = Some(secs);
+                }
             }
         }
         self.time_answer(v);
@@ -393,6 +407,8 @@ impl MetricsAcc {
         );
         let id = v.pointer("/message/id").and_then(Value::as_str);
         let line = match (v.get("type").and_then(Value::as_str), id) {
+            // A copied reply (#s683) is the answer of the session whose request produced it.
+            (Some("assistant"), Some(_)) if copied_reply(v) => AnswerLine::Other,
             (Some("assistant"), Some(id)) if model != "<synthetic>" => AnswerLine::Part {
                 id: id.to_string(),
                 model,
@@ -499,6 +515,9 @@ impl MetricsAcc {
             "reported": self.reported.iter().map(|(k, v)| (k.to_string(), *v))
                 .collect::<std::collections::BTreeMap<String, f64>>(),
             "reported_through": self.reported_through,
+            "reported_end": self.reported_end.iter().map(|(k, v)| (k.to_string(), *v))
+                .collect::<std::collections::BTreeMap<String, i64>>(),
+            "last_copy_secs": self.last_copy_secs,
             "reported_unknown_model": self.reported_unknown_model,
             "answers": self.answers,
         })
@@ -560,6 +579,13 @@ impl MetricsAcc {
                 .collect();
         }
         self.reported_through = state.get("reported_through").and_then(Value::as_i64);
+        if let Some(map) = state.get("reported_end").and_then(Value::as_object) {
+            self.reported_end = map
+                .iter()
+                .filter_map(|(k, v)| Some((k.parse::<i64>().ok()?, v.as_i64()?)))
+                .collect();
+        }
+        self.last_copy_secs = state.get("last_copy_secs").and_then(Value::as_i64);
         self.reported_unknown_model = state
             .get("reported_unknown_model")
             .and_then(Value::as_bool)
@@ -631,18 +657,49 @@ impl MetricsAcc {
         // each end keeps a tally written moments before the last record from reading as
         // partial, which would be a distinction without a difference to a reader.
         const SLACK_MS: i64 = 60_000;
-        let from_ms = self.reported.keys().next().copied();
-        let complete = match (self.span.endpoints(), from_ms, self.reported_through) {
+        // An epoch that began before the last reply this session copied from another (#s687) is
+        // that session's tally, carried over: Claude Code 2.1.331 restores the cost state of the
+        // session a move or a fork came from, its `startTime` included, and counts on from it.
+        // So its figure is the other session's spend at the move plus this one's, and the part
+        // that is this session's is in the other's transcript alone, which a fold of this one
+        // cannot read. It is left out rather than shown as this session's. Measured on denali,
+        // 2026-11-24: the moved session c063a2f0's only epoch began 6.6 hours before its first
+        // own reply and read $26.02, $24.00 of it the parent's at the move; across 26 recent
+        // transcripts nothing else had an epoch older than a copied reply. A session with no
+        // copies keeps every epoch (a resume restores its own epoch and counts on in it).
+        // One miss is known and is the old behaviour: a fork taken at an earlier message copies the
+        // replies up to it only, so a parent epoch that began after that point is kept, with the
+        // parent's later spend in it. The unknown-model flag is still the whole session's.
+        // REVISIT: subtract the parent's tally at the move where both files are read, to show
+        // this session's part.
+        let carried = |start: i64| self.last_copy_secs.is_some_and(|c| start < c * 1000);
+        let kept: Vec<(i64, f64)> = self
+            .reported
+            .iter()
+            .filter(|(start, _)| !carried(**start))
+            .map(|(start, usd)| (*start, *usd))
+            .collect();
+        let from_ms = kept.first().map(|(start, _)| *start);
+        // The end of the epochs counted; a cursor parked before #s687 holds no ends, and then the
+        // latest end seen stands, as it did.
+        let through_ms = if self.reported_end.is_empty() {
+            self.reported_through.filter(|_| !kept.is_empty())
+        } else {
+            kept.iter()
+                .filter_map(|(start, _)| self.reported_end.get(start).copied())
+                .max()
+        };
+        let complete = match (self.span.endpoints(), from_ms, through_ms) {
             (Some((start, end)), Some(from), Some(through)) => {
                 from <= start * 1000 + SLACK_MS && through + SLACK_MS >= end * 1000
             }
             _ => false,
         };
-        m.reported_cost = (!self.reported.is_empty()).then(|| ReportedCost {
-            usd: self.reported.values().sum(),
-            epochs: self.reported.len() as u32,
+        m.reported_cost = (!kept.is_empty()).then(|| ReportedCost {
+            usd: kept.iter().map(|(_, usd)| usd).sum(),
+            epochs: kept.len() as u32,
             from_ms,
-            through_ms: self.reported_through,
+            through_ms,
             complete,
             unknown_model: self.reported_unknown_model,
         });
@@ -672,6 +729,25 @@ fn usage_tokens(usage: &Value) -> TokenCounts {
             .min(cache_creation),
         ..Default::default()
     }
+}
+
+/// Whether a record is a reply ANOTHER session's API request produced, copied into this one
+/// (#s683). Claude Code 2.1.331 opens a session moved (#s294) or forked from another with that
+/// session's records, each `sessionId` rewritten to the new session, and tags every copied
+/// assistant record with `requestSessionId`: the session whose request produced the reply, the
+/// one it was billed to. So a record whose key names another session than its own `sessionId`
+/// is a copy, priced and timed in the session it names, never here; the record is still drawn.
+/// Measured on denali, 2026-11-24: one move copied 330 calls (567 lines), each with the same
+/// usage in both files, and every sum over sessions counted them twice. A key naming the
+/// record's own session counts as before, and so does a record with no key, which is how a
+/// session's own replies are written, and how older clients wrote any copy (those it cannot
+/// tell apart). So does a record with the key and no `sessionId` to compare it with (none met):
+/// as a line naming no call, it keeps the add-everything behaviour, never pricing a reply at
+/// nothing on a guess.
+fn copied_reply(v: &Value) -> bool {
+    let own = v.get("sessionId").and_then(Value::as_str);
+    let from = v.get("requestSessionId").and_then(Value::as_str);
+    matches!((from, own), (Some(from), Some(own)) if from != own)
 }
 
 /// Last value wins; an empty or non-string value changes nothing. (The Codex family keeps its
@@ -2107,6 +2183,245 @@ mod long_prompt_tests {
 }
 
 #[cfg(test)]
+mod copied_reply_tests {
+    use super::*;
+    use claude_replay_engine::seam::estimate_cost;
+
+    /// A reply line in session `in_session` that `requested_in`'s API request produced (#s683,
+    /// Claude Code 2.1.331): a session moved or forked from another opens with that session's
+    /// replies copied in, each `sessionId` rewritten to the new session, and tags each copy with
+    /// `requestSessionId` naming the session it was billed to. `None` writes no key, as the new
+    /// session's own replies have. With `advised`, the call also consulted the advisor.
+    /// Synthetic — never built from a real transcript.
+    fn reply_in(
+        in_session: &str,
+        requested_in: Option<&str>,
+        id: &str,
+        out: u64,
+        advised: bool,
+    ) -> Value {
+        let mut usage = serde_json::json!({"input_tokens": 2, "output_tokens": out,
+            "cache_creation_input_tokens": 945, "cache_read_input_tokens": 1_000});
+        if advised {
+            usage["iterations"] = serde_json::json!([
+                {"type": "message", "input_tokens": 2, "output_tokens": out},
+                {"type": "advisor_message", "model": "claude-fable-5-1",
+                    "input_tokens": 1_000, "output_tokens": 100}]);
+        }
+        let mut line = serde_json::json!({"type": "assistant", "sessionId": in_session,
+            "requestId": format!("req_{id}"), "timestamp": "2026-11-24T10:00:00Z",
+            "message": {"role": "assistant", "id": id, "model": "claude-opus-4-8",
+                "usage": usage}});
+        if let Some(from) = requested_in {
+            line["requestSessionId"] = serde_json::json!(from);
+        }
+        line
+    }
+
+    /// The moved session's transcript in miniature: two copied calls (one over two lines, one
+    /// that consulted the advisor), then the session's own call, then a reply whose key names
+    /// its own session.
+    fn moved_session() -> Vec<Value> {
+        vec![
+            reply_in("new", Some("old"), "msg_A", 5, false),
+            reply_in("new", Some("old"), "msg_A", 40, false),
+            reply_in("new", Some("old"), "msg_B", 7, true),
+            reply_in("new", None, "msg_C", 11, false),
+            reply_in("new", Some("new"), "msg_D", 13, false),
+        ]
+    }
+
+    /// #s687: a moved or forked session's client tally that began before its last copied reply is
+    /// the other session's, carried over, and is not reported as this one's; an epoch that began
+    /// after it is this session's own and still counts, and a session with no copies keeps every
+    /// epoch. The copies are dated 2026-11-24T10:00:00Z (`reply_in`).
+    #[test]
+    fn a_tally_carried_over_from_the_session_a_move_came_from_is_not_this_one_s() {
+        const COPY_MS: i64 = 1_795_514_400_000; // 2026-11-24T10:00:00Z
+        let cost_state = |start: i64, usd: f64, duration_ms: i64| {
+            serde_json::json!({"type": "cost-state", "sessionId": "new", "startTime": start,
+                "totalCostUSD": usd, "totalDuration": duration_ms, "hasUnknownModelCost": false})
+            .to_string()
+        };
+        // The carried tally ends last, so the window must end with the epoch kept, not with it.
+        let carried = cost_state(COPY_MS - 41_775_000, 26.02, 43_000_000);
+        let own = cost_state(COPY_MS + 300_000, 3.5, 600_000);
+        let fold = |lines: &[Value], tallies: &[&str]| {
+            let mut acc = MetricsAcc::default();
+            for line in lines {
+                acc.push(line);
+            }
+            for t in tallies {
+                acc.push(&serde_json::from_str::<Value>(t).unwrap());
+            }
+            acc
+        };
+
+        // The moved session's only tally is the carried one: no tally is reported.
+        let moved = moved_session();
+        assert!(fold(&moved, &[&carried]).finish().reported_cost.is_none());
+
+        // A later process of its own, counting afresh, is reported alone, over its own window.
+        let r = fold(&moved, &[&carried, &own])
+            .finish()
+            .reported_cost
+            .expect("the session's own tally");
+        assert_eq!((r.epochs, r.usd), (1, 3.5));
+        assert_eq!(r.from_ms, Some(COPY_MS + 300_000));
+        assert_eq!(r.through_ms, Some(COPY_MS + 900_000));
+
+        // The same across a cursor parked between the carried tally and its own.
+        let mut resumed = MetricsAcc::default();
+        resumed.restore(&fold(&moved, &[&carried]).state());
+        resumed.push(&serde_json::from_str::<Value>(&own).unwrap());
+        let r = resumed
+            .finish()
+            .reported_cost
+            .expect("the session's own tally");
+        assert_eq!(
+            (r.epochs, r.usd, r.through_ms),
+            (1, 3.5, Some(COPY_MS + 900_000))
+        );
+
+        // And restored whole: each epoch's end crosses the cursor, or the window would end with the
+        // carried tally.
+        let mut whole = MetricsAcc::default();
+        whole.restore(&fold(&moved, &[&carried, &own]).state());
+        let r = whole
+            .finish()
+            .reported_cost
+            .expect("the session's own tally");
+        assert_eq!(r.through_ms, Some(COPY_MS + 900_000));
+
+        // With no copies, the same early epoch is the session's own and counts.
+        let unmoved: Vec<Value> = moved
+            .iter()
+            .cloned()
+            .map(|mut l| {
+                l.as_object_mut().unwrap().remove("requestSessionId");
+                l
+            })
+            .collect();
+        let r = fold(&unmoved, &[&carried, &own])
+            .finish()
+            .reported_cost
+            .expect("both tallies");
+        assert_eq!(r.epochs, 2);
+        assert!((r.usd - 29.52).abs() < 1e-9, "{}", r.usd);
+    }
+
+    /// #s683: a reply copied from the session whose request produced it is priced there and only
+    /// there. Measured on denali (2026-11-24): a 2.1.331 move copied 330 calls, 567 lines, each
+    /// with the same usage in both files, and the monitor priced each in both. The session's own
+    /// calls count as before, and so does a reply whose key names this very session.
+    #[test]
+    fn a_reply_copied_from_another_session_is_priced_only_there() {
+        let mut acc = MetricsAcc::default();
+        for line in moved_session() {
+            acc.push(&line);
+        }
+        let m = acc.finish();
+        let opus = m.per_model["claude-opus-4-8"];
+        assert_eq!(
+            (
+                opus.input,
+                opus.cache_creation,
+                opus.cache_read,
+                opus.output
+            ),
+            (4, 1_890, 2_000, 24),
+            "msg_C and msg_D only"
+        );
+        assert!(
+            !m.per_model.contains_key("claude-fable-5-1"),
+            "a copied call's advisor is the other session's too"
+        );
+        let want = estimate_cost("claude-opus-4-8", 4, 1_890, 2_000, 24).unwrap();
+        assert!(
+            (m.cost_usd.unwrap() - want).abs() < 1e-9,
+            "{:?}",
+            m.cost_usd
+        );
+    }
+
+    /// #s683: a copied line hands a consumer no token delta, so no usage id either, and the
+    /// session's first own call after the copies is a call of its own.
+    #[test]
+    fn a_copied_reply_names_no_usage_unit() {
+        let mut acc = MetricsAcc::default();
+        let lines = moved_session();
+        acc.push(&lines[0]);
+        assert_eq!(acc.usage_id(), None);
+        assert_eq!(acc.request_pricing(), None);
+        acc.push(&lines[3]);
+        assert_eq!(acc.usage_id().as_deref(), Some("msg_C/req_msg_C"));
+    }
+
+    /// #s683: a record with the key and no `sessionId` cannot be told a copy, so it counts, as a
+    /// line naming no call does.
+    #[test]
+    fn a_key_with_no_session_to_compare_counts() {
+        let mut line = reply_in("new", Some("old"), "msg_E", 9, false);
+        line.as_object_mut().unwrap().remove("sessionId");
+        let mut acc = MetricsAcc::default();
+        acc.push(&line);
+        assert_eq!(acc.finish().per_model["claude-opus-4-8"].output, 9);
+    }
+
+    /// #s683: a copied line between two lines of one of the session's own calls leaves that call
+    /// credited once, with its growth: a copy must not reset the repeat guard, or the call's next
+    /// line is credited whole again. Held at every cursor position too.
+    #[test]
+    fn a_copy_inside_an_own_call_leaves_the_call_credited_once() {
+        let lines = [
+            reply_in("new", None, "msg_C", 5, false),
+            reply_in("new", Some("old"), "msg_B", 7, false),
+            reply_in("new", None, "msg_C", 40, false),
+        ];
+        for cut in 0..=lines.len() {
+            let mut before = MetricsAcc::default();
+            for line in &lines[..cut] {
+                before.push(line);
+            }
+            let mut after = MetricsAcc::default();
+            after.restore(&before.state());
+            for line in &lines[cut..] {
+                after.push(line);
+            }
+            let opus = after.finish().per_model["claude-opus-4-8"];
+            assert_eq!(
+                (opus.input, opus.cache_read, opus.output),
+                (2, 1_000, 40),
+                "parked after line {cut}"
+            );
+        }
+    }
+
+    /// #s683: a cursor parked at any line of the moved session resumes to the same totals.
+    #[test]
+    fn a_moved_session_resumes_to_the_same_totals_at_every_line() {
+        let lines = moved_session();
+        let mut whole = MetricsAcc::default();
+        for line in &lines {
+            whole.push(line);
+        }
+        let want = whole.finish().per_model;
+        for cut in 0..=lines.len() {
+            let mut before = MetricsAcc::default();
+            for line in &lines[..cut] {
+                before.push(line);
+            }
+            let mut after = MetricsAcc::default();
+            after.restore(&before.state());
+            for line in &lines[cut..] {
+                after.push(line);
+            }
+            assert_eq!(after.finish().per_model, want, "parked after line {cut}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod answer_tests {
     use super::*;
 
@@ -2143,6 +2458,36 @@ mod answer_tests {
 
     fn secs(ts: &str) -> Option<f64> {
         epoch_secs(ts)
+    }
+
+    /// #s683: a reply copied from the session whose request produced it is that session's
+    /// answer, timed there; here it is no answer, as a Codex fork's copied items are not. The
+    /// copies keep their own timestamps, so timing them here hands each answer out twice.
+    #[test]
+    fn a_reply_copied_from_another_session_is_no_answer() {
+        let copied = |id: &str, ts: &str| {
+            let mut line = part(id, 30, ts);
+            line["sessionId"] = serde_json::json!("new");
+            line["requestSessionId"] = serde_json::json!("old");
+            line
+        };
+        let mut own = part("msg_01C", 30, "2026-11-24T10:00:11Z");
+        own["sessionId"] = serde_json::json!("new");
+        let got = answers(
+            &mut MetricsAcc::default(),
+            &[
+                user("2026-11-24T10:00:00Z"),
+                copied("msg_01A", "2026-11-24T10:00:01Z"),
+                user("2026-11-24T10:00:02Z"),
+                copied("msg_01B", "2026-11-24T10:00:03Z"),
+                user("2026-11-24T10:00:10Z"),
+                own,
+            ],
+        );
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(got[0].id, "msg_01C");
+        assert_eq!(got[0].sent, secs("2026-11-24T10:00:10Z"));
+        assert_eq!(got[0].first, secs("2026-11-24T10:00:11Z"));
     }
 
     /// #s341: an answer written as several lines, a tool result between two of them, is ONE

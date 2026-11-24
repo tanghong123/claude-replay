@@ -266,11 +266,17 @@ A path with no capability, or the wrong one, is **403** — including a path tha
 ### `POST {prefix}/resolve` — required only with capabilities
 
 ```json
-{"from": {"path": "docs/a.md", "cap": "…"}, "targets": ["pic.png", "../shared/b.md"]}
+{"from": {"path": "docs/a.md", "cap": "…", "revs": ["4f2a9c1", "b81e07d"]}, "targets": ["docs/pic.png", "shared/b.md"]}
 → {"caps": ["…", null]}
 ```
 
 The viewer has parsed a document it holds and found what that document points at; the host says which of those this reader may have, in order, `null` for each refusal. `targets` are already root-relative, resolved against the referring document. A refused reference is drawn as refused and never requested; a capability that comes back is also what opens that path as a document, so following a link needs no second conversation. Refuse the whole call with 403 if `from` is not held.
+
+**No target leaves the collection.** A reference that climbs above the collection's top (`../x.md` from a document at the top) is drawn as refused by the viewer itself and never sent: it used to be folded at the top and asked for as `x.md`, which opened the wrong file. So a host never receives a target with a `..` segment or a leading `/`, and may refuse one outright.
+
+**`from.revs` is optional.** It names the commits the viewer is drawing the document at: a redline's two sides, or the one revision on screen, at most two. A host that checks targets against the document's text reads those texts too, so a link or picture in the older side of a redline (struck) is answered; a host that does not may ignore it. mdrev-v2 answers a call naming more than two with 400, and ignores a value that names no commit at which it can read the document.
+
+**What mdrev-v2 answers.** It does not take the viewer's word for what the document points at: it renders the document itself, with the same engine and the same rules the viewer uses, and answers only targets the document links to (`a[href]`, `img[src]`, raw HTML included) in its working text, the latest text an editing session holds, or a revision `from.revs` names. Any other target is `null`, a document included: a document reached from the rail, the document list, recents or the changed files carries its own capability. Every refusal looks alike, whether or not the path exists. The team service mints for any path on the branch, which its reader may read whole.
 
 A host may cap how many `targets` one call names, at no fewer than 500, the most the viewer names in one call; mdrev-v2 and the team service take 500, and answer a call past that with 400, whole. The viewer names each path once and asks in calls of at most 500, one after another. A call that fails ends the asking: its references and every later call's are drawn as refused, and the calls before it keep their answers.
 
@@ -689,7 +695,7 @@ Subscriptions (draft 8): `GET review/subscribers` runs `review subscribers --pat
 
 ### `{prefix}/edit/*`, `data-mdrev-dev-editing` and `data-not-shown-why` — not part of the contract
 
-`mdrev-v2` answers editing routes (`edit/stream`, `edit/push`, `edit/save`, `edit/conflict`, `edit/picture`) for its own page, and marks the mount element of the person's own pages with `data-mdrev-dev-editing="1"`, which tells the page bundle it may offer the Read | Edit switch (docs/local-editing.md). Both are internal for now (#s536 item 5): their JSON may change in any release, and an embedding host should neither answer these routes nor set the attribute. A host that does neither gets a page that reads, as before. `data-not-shown-why="refused"`, beside the `notShown` mount option, tells mdrev's own page that a document was refused outright rather than closed; it is internal too (#s772 item 5), and without it the reader is told the document's collection was closed.
+`mdrev-v2` answers editing routes (`edit/stream`, `edit/push`, `edit/save`, `edit/conflict`, `edit/picture`, `edit/here`) for its own page, and marks the mount element of the person's own pages with `data-mdrev-dev-editing="1"`, which tells the page bundle it may offer the Read | Edit switch (docs/local-editing.md). Both are internal for now (#s536 item 5): their JSON may change in any release, and an embedding host should neither answer these routes nor set the attribute. A host that does neither gets a page that reads, as before. `data-not-shown-why="refused"`, beside the `notShown` mount option, tells mdrev's own page that a document was refused outright rather than closed; it is internal too (#s772 item 5), and without it the reader is told the document's collection was closed.
 
 ### `{prefix}/pages/agent/*` and `ReviewClient.agent` — agent pairing (docs/agent-pairing.md)
 

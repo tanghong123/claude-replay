@@ -426,15 +426,32 @@ pub const COMPACT_AFTER: usize = 256;
 /// element folds to the person's `UserInbox` the first time its id is met, where a v89 stream holds
 /// that session's `PeerText`.
 ///
-/// v91: Antigravity now groups activity spans, matches result rows to the call's step
-/// position, shows the tool summary as the fallback target, and includes requested
+/// v91: #s683 — a Claude reply whose `requestSessionId` names another session than its own
+/// `sessionId` (a copy a moved or forked session opens with) adds no tokens and times no answer,
+/// where a v90 stream's persisted deltas priced it in both sessions.
+///
+/// v92: #s691 — Claude Code's "[Cross-session delivery notice]" to the model draws no `⧗ queued`
+/// marker and no result line, and its pickup takes its queue item by its text; a v91 stream holds
+/// the marker and the line, beside the client's own warning about the same outcome, and drew one
+/// picked up mid-turn as the person's prompt, a turn of its own.
+///
+/// v93: #s692 — a bridged peer message's queue key drops the `hop-chain` its enqueue alone
+/// carries, so its remove takes it; a v92 stream left it at the queue's front, where the next
+/// content-less pop took it in place of a typed prompt, whose `⧗ queued` marker then stayed.
+///
+/// v94: #s687 — a Claude client tally that began before the session's last copied reply is
+/// the tally of the session a move or fork came from, carried over, and is not this session's
+/// reported cost; a v93 cursor knows neither the copies' last time nor each epoch's end.
+///
+/// v95: !31477063 — Antigravity now groups activity spans, matches result rows to the call's
+/// step position, shows the tool summary as the fallback target, and includes requested
 /// Write and Edit diffs.
 ///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 91;
+pub const FOLD_VERSION: u16 = 95;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
