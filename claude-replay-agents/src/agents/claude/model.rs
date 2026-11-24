@@ -1391,6 +1391,12 @@ const RECORD_KEYS_COMMON: &[&str] = &[
     "parentUuid",
     "sessionId",
     "sessionKind",
+    // #s688: READ, for cost (`copied_reply` in the metrics fold), where a reply carries no
+    // `requestSessionId`: the session the reply was made in, which a fork by clients 2.1.287 to
+    // 2.1.310 copied with the parent's value while rewriting `sessionId`. Never read on a
+    // sub-agent's line, which carries none (measured 2026-11-24 on hong-devserver). REVISIT: a
+    // value differing from `sessionId` on a reply that is not a copy (its message id absent from
+    // the session it names), which the fold would price at nothing here.
     "session_id",
     "slug",
     "timestamp",

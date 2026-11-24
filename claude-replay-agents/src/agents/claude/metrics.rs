@@ -744,9 +744,28 @@ fn usage_tokens(usage: &Value) -> TokenCounts {
 /// tell apart). So does a record with the key and no `sessionId` to compare it with (none met):
 /// as a line naming no call, it keeps the add-everything behaviour, never pricing a reply at
 /// nothing on a guess.
+///
+/// Older clients copied without the key, and their copies are told apart all the same (#s688):
+/// the clients met (2.1.218 to 2.1.331) also write `session_id` on most of a session's replies,
+/// the session the reply was made in, and a copy keeps the parent's there while its `sessionId`
+/// is rewritten. Measured on hong-devserver,
+/// 2026-11-24, over every Claude transcript (1,353,275 replies): `session_id` differed from
+/// `sessionId` on exactly the 7,521 copy lines of 12 forks (clients 2.1.287 to 2.1.310, 3,588
+/// calls, about $456 counted in both sessions of a pair) and on no other reply; a sub-agent's
+/// lines carry none. So with no `requestSessionId` the fold reads `session_id`; the key wins
+/// where both are written. A sub-agent's line never reads `session_id`: its `sessionId` names the
+/// root session, so a `session_id` naming the sub-agent itself would read as a copy.
 fn copied_reply(v: &Value) -> bool {
     let own = v.get("sessionId").and_then(Value::as_str);
-    let from = v.get("requestSessionId").and_then(Value::as_str);
+    let sidechain = v.get("isSidechain").and_then(Value::as_bool) == Some(true);
+    let from = v
+        .get("requestSessionId")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            (!sidechain)
+                .then(|| v.get("session_id").and_then(Value::as_str))
+                .flatten()
+        });
     matches!((from, own), (Some(from), Some(own)) if from != own)
 }
 
@@ -2216,6 +2235,62 @@ mod copied_reply_tests {
             line["requestSessionId"] = serde_json::json!(from);
         }
         line
+    }
+
+    /// A reply line as the clients before `requestSessionId` wrote it (#s688, 2.1.287 to
+    /// 2.1.310): no key, and `session_id` naming the session the reply was made in, which a
+    /// copy keeps while its `sessionId` is rewritten. Synthetic.
+    fn older_reply_in(in_session: &str, made_in: &str, id: &str, out: u64) -> Value {
+        let mut line = reply_in(in_session, None, id, out, false);
+        line["session_id"] = serde_json::json!(made_in);
+        line
+    }
+
+    /// #s688: a fork by an older client, in miniature: two copied calls carrying the parent's
+    /// `session_id` and no key, then the session's own call, which names this session there.
+    /// Priced as the key would have it: the copies only in the parent.
+    #[test]
+    fn a_reply_an_older_client_copied_is_priced_only_where_it_was_made() {
+        let mut acc = MetricsAcc::default();
+        for line in [
+            older_reply_in("new", "old", "msg_A", 5),
+            older_reply_in("new", "old", "msg_A", 40),
+            older_reply_in("new", "old", "msg_B", 7),
+            older_reply_in("new", "new", "msg_C", 11),
+        ] {
+            acc.push(&line);
+        }
+        let m = acc.finish();
+        let opus = m.per_model["claude-opus-4-8"];
+        assert_eq!(
+            (
+                opus.input,
+                opus.cache_creation,
+                opus.cache_read,
+                opus.output
+            ),
+            (2, 945, 1_000, 11),
+            "msg_C only"
+        );
+    }
+
+    /// #s688: the key wins where both are written, and a sub-agent's line never reads
+    /// `session_id` (its `sessionId` names the root session, so a `session_id` naming the
+    /// sub-agent would read as a copy). Each of these is the session's own reply.
+    #[test]
+    fn session_id_decides_only_without_the_key_and_outside_a_sub_agent() {
+        let mut keyed = older_reply_in("new", "old", "msg_A", 5);
+        keyed["requestSessionId"] = serde_json::json!("new");
+        let mut sub_agent = older_reply_in("root", "agent-1", "msg_B", 7);
+        sub_agent["isSidechain"] = serde_json::json!(true);
+        let same = older_reply_in("new", "new", "msg_C", 11);
+        for line in [&keyed, &sub_agent, &same] {
+            assert!(!copied_reply(line), "{line}");
+        }
+        let mut copied = older_reply_in("new", "new", "msg_D", 13);
+        copied["requestSessionId"] = serde_json::json!("old");
+        assert!(copied_reply(&copied), "the key names the parent: a copy");
+        assert!(copied_reply(&older_reply_in("new", "old", "msg_E", 17)));
     }
 
     /// The moved session's transcript in miniature: two copied calls (one over two lines, one
