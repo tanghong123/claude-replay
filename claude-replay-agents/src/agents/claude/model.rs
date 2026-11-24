@@ -7929,11 +7929,15 @@ fn notice_pickup(text: &str) -> Message {
 /// at the queue's front, and the next content-less pop took it in place of the prompt it was for,
 /// whose `⧗ queued` marker stayed (five times in one session). The attribute is dropped from the
 /// opening tag of a text that starts with the wrapper, and nothing else is touched.
+///
+/// REVISIT if a client puts `hop-chain` in a pickup's text too: pickups match by their raw text,
+/// so they would then miss the keyed enqueue (the removes would still match).
 fn queue_key(c: &str) -> std::borrow::Cow<'_, str> {
     const TAG: &str = "<cross-session-message";
     const HOP: &str = " hop-chain=\"";
     let lead = c.len() - c.trim_start().len();
-    if !c[lead..].starts_with(TAG) {
+    let after = c[lead..].strip_prefix(TAG);
+    if !after.is_some_and(|r| r.starts_with([' ', '>'])) {
         return std::borrow::Cow::Borrowed(c);
     }
     let Some(close) = c[lead..].find('>').map(|i| lead + i) else {
@@ -9636,19 +9640,18 @@ mod tests {
         assert_eq!(blocks.iter().filter(|b| b.opens_turn()).count(), 1);
     }
 
-    /// #s691: the notice's pickup takes its own queue item by its text. 2.1.331's queue can
-    /// drift: a bridged peer message is enqueued with a `hop-chain` attribute its `remove`
-    /// leaves out, so the remove misses and that item stays at the front, where the next pop
-    /// takes it in the notice's place. Without the pickup's own pop, the notice's item then sat
-    /// at the front and the following prompt's pop took it, leaving that prompt marked as
-    /// waiting after it had gone to the agent (this tail is the live moment before its record).
+    /// #s691: the notice's pickup takes its own queue item by its text. The queue can drift: an
+    /// item whose remove the transcript does not hold (here a peer message; #s692 was one such
+    /// cause, #s694 is another) stays at the front, where the next pop takes it in the notice's
+    /// place. Without the pickup's own pop, the notice's item then sat at the front and the
+    /// following prompt's pop took it, leaving that prompt marked as waiting after it had gone to
+    /// the agent (this tail is the live moment before its record).
     #[test]
     fn a_delivery_notice_pickup_keeps_the_queue_in_step_after_a_drift() {
         let jsonl = format!(
             "{}{}{}",
             r#"{"type":"user","timestamp":"2026-11-24T05:30:00.000Z","promptSource":"typed","message":{"role":"user","content":"brief de-steward"}}
-{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-24T05:30:01.000Z","content":"<cross-session-message from=\"bridge:session_x\" hop-chain=\"h1\" from-name=\"aries\" from-mode=\"bypass\">\nnoted\n</cross-session-message>"}
-{"type":"queue-operation","operation":"remove","timestamp":"2026-11-24T05:30:02.000Z","reason":"absorbed_mid_turn","content":"<cross-session-message from=\"bridge:session_x\" from-name=\"aries\" from-mode=\"bypass\">\nnoted\n</cross-session-message>"}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-24T05:30:01.000Z","content":"<cross-session-message from=\"bridge:session_x\" from-name=\"aries\" from-mode=\"bypass\">\nnoted\n</cross-session-message>"}
 {"type":"assistant","timestamp":"2026-11-24T05:39:59.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Sent."}]}}
 "#,
             delivery_notice_records(
@@ -9782,6 +9785,19 @@ mod tests {
             "the peer message is still drawn: {blocks:#?}"
         );
 
+        // With no pickup drawn, the remove alone takes the item, on both paths.
+        let pickup = format!(
+            r#"{{"type":"attachment","timestamp":"2026-11-24T05:40:01.000Z","attachment":{{"type":"queued_command","commandMode":"prompt","isMeta":true,"origin":{{"kind":"peer","from":"bridge:session_01","msg_id":"m2","name":"petrel-HD","fromMode":"bypass","body":"one more thing"}},"prompt":"{taken}"}}}}
+"#
+        );
+        let blocks = both_paths(&jsonl.replace(&pickup, ""));
+        assert!(
+            !blocks
+                .iter()
+                .any(|b| matches!(b, Block::QueueEvent { .. } | Block::PeerText { .. })),
+            "the remove took the peer item, so the pop took the typed prompt: {blocks:#?}"
+        );
+
         // The key: the attribute alone goes, from the wrapper's opening tag alone.
         assert_eq!(
             queue_key("<cross-session-message from=\"b\" hop-chain=\"x,y\" from-name=\"n\">\nhi hop-chain=\"z\"\n</cross-session-message>"),
@@ -9792,6 +9808,7 @@ mod tests {
             "<cross-session-message from=\"b\">\nbody\n</cross-session-message>",
             "<other hop-chain=\"x\">",
             "<cross-session-message from=\"b\" hop-chain=\"unclosed>",
+            "<cross-session-messages from=\"b\" hop-chain=\"x\">",
         ] {
             assert_eq!(queue_key(kept), kept);
         }
