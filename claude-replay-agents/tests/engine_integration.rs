@@ -209,6 +209,53 @@ fn antigravity_missing_results_and_missing_models_stay_unassigned() {
     std::fs::remove_file(path).unwrap();
 }
 
+#[test]
+fn antigravity_file_tools_preserve_requested_changes() {
+    let body = concat!(
+        r#"{"step_index":0,"type":"USER_INPUT","source":"USER_EXPLICIT","status":"DONE","created_at":"2026-10-07T10:00:00Z","content":"Update notes"}"#,
+        "\n",
+        r#"{"step_index":1,"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","created_at":"2026-10-07T10:00:01Z","tool_calls":[{"name":"write_file","args":{"Path":"new.md","Content":"  created\n"}},{"name":"edit_file","args":{"Path":"old.md","Target":"old\n","Replacement":"new\n"}},{"name":"edit_file","args":{"Path":"remove.md","Target":"deleted\n","Replacement":""}}]}"#,
+        "\n",
+        r#"{"step_index":2,"type":"GENERIC","source":"MODEL","status":"DONE","created_at":"2026-10-07T10:00:02Z","content":"Written"}"#,
+        "\n",
+        r#"{"step_index":3,"type":"GENERIC","source":"MODEL","status":"DONE","created_at":"2026-10-07T10:00:03Z","content":"Updated"}"#,
+        "\n",
+        r#"{"step_index":4,"type":"GENERIC","source":"MODEL","status":"DONE","created_at":"2026-10-07T10:00:04Z","content":"Deleted"}"#,
+        "\n",
+    );
+    let path = tmp1(body);
+    let session = parse_session_as(Agent::ANTIGRAVITY, &path).unwrap();
+    let blocks = session.blocks();
+    let changes: Vec<_> = antigravity_tools(&blocks)
+        .filter_map(|block| match block {
+            Block::ToolUse {
+                name,
+                target,
+                diffs,
+                ..
+            } => Some((name.as_str(), target.as_str(), diffs.as_slice())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        changes,
+        [
+            (
+                "Write",
+                "new.md",
+                &[(String::new(), "  created\n".into())][..]
+            ),
+            ("Edit", "old.md", &[("old\n".into(), "new\n".into())][..]),
+            (
+                "Edit",
+                "remove.md",
+                &[("deleted\n".into(), String::new())][..]
+            ),
+        ]
+    );
+    std::fs::remove_file(path).unwrap();
+}
+
 /// The maintained [`SessionMeta`] (committed folded on drain + the open turn folded on top)
 /// must equal a batch `SessionMeta::build` over the whole current block stream — at **every**
 /// step of an incremental fold, including mid-open-turn, across a sub-agent spawn, and across a

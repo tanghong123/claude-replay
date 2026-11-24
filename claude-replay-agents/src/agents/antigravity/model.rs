@@ -36,12 +36,15 @@ const STEP_KEYS: &[&str] = &[
 ];
 
 fn note_shape(value: &Value) {
+    // The line preprocessor has no transcript path. AGY steps carry neither a
+    // trajectory ID nor a client version, so the report has no clickable example.
     let note = |at, name: &str| note_unknown("antigravity", at, name, None, None);
     if !is_step(value) {
         note(UnknownAt::RecordType, "invalid step envelope");
         return;
     }
     let kind = value["type"].as_str().unwrap_or_default();
+    let kind = &kind[..kind.char_indices().nth(120).map_or(kind.len(), |(i, _)| i)];
     match kind {
         "GENERIC" if value["source"] != "MODEL" => {
             note(UnknownAt::RecordType, "GENERIC with unexpected source");
@@ -210,6 +213,15 @@ impl LinePreprocessor for ResultLinker {
                             },
                         ]);
                     }
+                    if !ordinals.is_empty() && unknown_watching_keys() {
+                        note_unknown(
+                            "antigravity",
+                            UnknownAt::RecordType,
+                            "GENERIC outside expected tool result positions",
+                            None,
+                            None,
+                        );
+                    }
                 }
                 if let Some(text) = text {
                     return PreprocessedLine::Messages(vec![
@@ -250,10 +262,21 @@ fn build_tool(_id: &str, raw_name: &str, input: &Value, cwd: &str) -> Block {
             .take(240)
             .collect()
     });
+    // Like the Claude adapter, show the change carried by the invocation.
+    // Preserve empty strings (deletion and empty file creation) and whitespace.
+    let text = |key| input[key].as_str();
+    let diff = match raw_name {
+        "write_file" => text("Content").map(|content| ("", content)),
+        "edit_file" => text("Target").zip(text("Replacement")),
+        _ => None,
+    };
     Block::ToolUse {
         name: name.into(),
         target,
-        diffs: Vec::new(),
+        diffs: diff
+            .into_iter()
+            .map(|(old, new)| (old.into(), new.into()))
+            .collect(),
         output: None,
         patch: None,
         read_lines: None,

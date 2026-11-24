@@ -535,9 +535,10 @@ fn antigravity_reports_projection_drift_from_its_isolated_store() {
     std::fs::write(
         path.join("transcript.jsonl"),
         concat!(
-            r#"{"step_index":0,"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","created_at":"2026-10-07T10:00:00Z","truncated_fields":["thinking"],"input_tokens":7,"model":42}"#, "\n",
+            r#"{"step_index":0,"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","created_at":"2026-10-07T10:00:00Z","truncated_fields":["thinking"],"input_tokens":7,"model":42,"tool_calls":[{"name":"read_file","args":{"Path":"notes.md"}}]}"#, "\n",
             r#"{"step_index":1,"type":"GENERIC","source":"SYSTEM","status":"DONE","created_at":"2026-10-07T10:00:01Z"}"#, "\n",
             r#"{"step_index":2,"type":"GENERIC","source":"MODEL","created_at":"2026-10-07T10:00:02Z"}"#, "\n",
+            r#"{"step_index":3,"type":"GENERIC","source":"MODEL","status":"DONE","created_at":"2026-10-07T10:00:03Z","content":"Unpaired result text"}"#, "\n",
         ),
     ).unwrap();
     let (out, err, ok) = run(&root, &root, &["--unknown", "--agent", "agy", "--json"]);
@@ -548,6 +549,7 @@ fn antigravity_reports_projection_drift_from_its_isolated_store() {
         "PLANNER_RESPONSE.truncated_fields",
         "PLANNER_RESPONSE.model (unexpected type)",
         "GENERIC with unexpected source",
+        "GENERIC outside expected tool result positions",
         "invalid step envelope",
     ] {
         assert!(
@@ -556,8 +558,48 @@ fn antigravity_reports_projection_drift_from_its_isolated_store() {
             "{name}: {out}"
         );
     }
+    let mismatch = rows
+        .iter()
+        .find(|row| row["name"] == "GENERIC outside expected tool result positions")
+        .unwrap();
+    assert_eq!(mismatch["count"], 1);
     assert!(
-        !rows.iter().any(|row| row["where"] == "model.unpriced"),
+        rows.iter().any(|row| {
+            row["agent"] == "antigravity"
+                && row["where"] == "model.unpriced"
+                && row["name"] == "(no model)"
+                && row["example"] == SID
+        }),
+        "{out}"
+    );
+
+    let session = claude_replay_core::parse_session_as(
+        claude_replay_core::Agent::ANTIGRAVITY,
+        &path.join("transcript.jsonl"),
+    )
+    .unwrap();
+    assert!(session.blocks().iter().any(|block| matches!(
+        block, claude_replay_core::Block::ToolResult(text) if text == "Unpaired result text"
+    )));
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn codex_still_reports_unpriced_usage_with_an_empty_model_name() {
+    let root = scratch("codex-empty-model");
+    let day = root.join("codex/sessions/2026/10/07");
+    std::fs::create_dir_all(&day).unwrap();
+    std::fs::write(day.join("rollout-missing-model.jsonl"), concat!(
+        r#"{"timestamp":"2026-10-07T10:00:00Z","type":"session_meta","payload":{"id":"local-model-test","cwd":"/work/models","originator":"codex_cli_rs"}}"#, "\n",
+        r#"{"timestamp":"2026-10-07T10:00:01Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":7,"output_tokens":3}}}}"#, "\n",
+    )).unwrap();
+    let (out, err, ok) = run(&root, &root, &["--unknown", "--agent", "codex", "--json"]);
+    assert!(ok, "{err}");
+    let rows = rows(&out);
+    assert!(
+        rows.iter().any(|row| {
+            row["agent"] == "codex" && row["where"] == "model.unpriced" && row["name"] == ""
+        }),
         "{out}"
     );
     std::fs::remove_dir_all(root).unwrap();

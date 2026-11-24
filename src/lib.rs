@@ -433,8 +433,7 @@ fn print_unknown_shapes(args: &Args) -> anyhow::Result<()> {
             )
             .is_some();
             // A model the agent says no catalog can price (a routing key, #s671) is no news.
-            if model.is_empty()
-                || tokens == 0
+            if tokens == 0
                 || priced
                 || claude_replay_core::adapter(session.agent).deliberately_unpriced(model)
             {
@@ -442,8 +441,14 @@ fn print_unknown_shapes(args: &Args) -> anyhow::Result<()> {
             }
             let sid = discover::session_id(path);
             let key = sid.clone().unwrap_or_else(|| path.display().to_string());
+            let name =
+                if session.agent == claude_replay_core::Agent::ANTIGRAVITY && model.is_empty() {
+                    "(no model)".to_owned()
+                } else {
+                    model.clone()
+                };
             unpriced
-                .entry((session.agent.label(), model.clone()))
+                .entry((session.agent.label(), name))
                 .or_insert_with(|| (Default::default(), sid))
                 .0
                 .insert(key);

@@ -28,7 +28,9 @@ const SESSION_MINUTES: u64 = 5 * 60;
 /// The weekly window's length, in minutes: seven days.
 const WEEK_MINUTES: u64 = 7 * 24 * 60;
 
-/// The folder `agy` keeps its settings in: `~/.gemini/antigravity-cli`.
+/// The Antigravity store root, defaulting to `~/.gemini/antigravity-cli`.
+/// `ANTIGRAVITY_CLI_HOME` redirects both conversation discovery and the status-line
+/// hook's `settings.json` path.
 pub(super) fn config_home() -> PathBuf {
     if let Some(root) = std::env::var_os("ANTIGRAVITY_CLI_HOME").filter(|s| !s.is_empty()) {
         return PathBuf::from(root);
@@ -230,9 +232,7 @@ mod tests {
     #[test]
     fn the_hook_keeps_agys_own_status_line() {
         let hook = status_line_hook();
-        assert!(hook
-            .settings
-            .ends_with(".gemini/antigravity-cli/settings.json"));
+        assert_eq!(hook.settings, config_home().join("settings.json"));
         assert_eq!(hook.pointer, "/statusLine");
         assert_eq!(
             (hook.entry)("am statusline --agent antigravity"),
