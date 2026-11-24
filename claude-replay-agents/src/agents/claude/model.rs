@@ -5154,15 +5154,20 @@ pub(crate) fn decode_line_known(
                 }
                 // #s691: a delivery notice picked up mid-turn is the model's copy too, never the
                 // person's prompt.
-                let notice = a.and_then(|a| {
-                    delivery_notice(
-                        a.get("isMeta").and_then(Value::as_bool) == Some(true),
-                        a.get("origin"),
-                        a.get("prompt"),
-                    )
-                });
-                if let Some(t) = notice {
-                    msgs.push(notice_pickup(t));
+                let notice = a
+                    .and_then(|a| {
+                        delivery_notice(
+                            a.get("isMeta").and_then(Value::as_bool) == Some(true),
+                            a.get("origin"),
+                            a.get("prompt"),
+                        )
+                    })
+                    .is_some();
+                if notice {
+                    // Taken by the prompt's whole text, as the fold takes a typed one's.
+                    if let Some((p, _)) = a.and_then(|a| a.get("prompt")).map(queued_prompt) {
+                        msgs.push(notice_pickup(&p));
+                    }
                 } else if let Some((p, images)) = a.and_then(|a| a.get("prompt")).map(queued_prompt)
                 {
                     let p: &str = &p;
@@ -6787,6 +6792,17 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                 if is_prompt {
                     if let Some((p, images)) = a.and_then(|a| a.get("prompt")).map(queued_prompt) {
                         let p: &str = &p;
+                        // #s691 mirror: a delivery notice picked up mid-turn draws nothing, its
+                        // images included; its item is still taken below.
+                        let notice = a
+                            .and_then(|a| {
+                                delivery_notice(
+                                    a.get("isMeta").and_then(Value::as_bool) == Some(true),
+                                    a.get("origin"),
+                                    a.get("prompt"),
+                                )
+                            })
+                            .is_some();
                         if !p.trim().is_empty() {
                             let raw = p;
                             // #52 op-less delivery, attachment form (see above). The pickup
@@ -6803,10 +6819,6 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                             let meta = a.and_then(|a| a.get("isMeta")).and_then(Value::as_bool)
                                 == Some(true);
                             let origin = a.and_then(|a| a.get("origin"));
-                            // #s691 mirror: a delivery notice picked up mid-turn draws nothing.
-                            let notice = a
-                                .and_then(|a| delivery_notice(meta, origin, a.get("prompt")))
-                                .is_some();
                             match peer_of(origin, Some(&p), meta) {
                                 _ if notice => {}
                                 // #s655 mirror: the person's own, signed, picked up mid-turn.
@@ -6840,7 +6852,7 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                             out.push(Block::UserText(String::new()));
                         }
                         // #s607 mirror: the prompt's pasted images.
-                        for blk in images {
+                        for blk in images.into_iter().filter(|_| !notice) {
                             if let Some(att) = image_attachment(blk) {
                                 out.push(Block::Attachment(att));
                             }
@@ -7861,7 +7873,8 @@ const DELIVERY_NOTICE: &str = "[Cross-session delivery notice]";
 
 /// The model's copy of a delivery notice (#s691), by the client's own test (2.1.331): `isMeta`,
 /// no `origin`, its text (a string, or its first part's `text`) opening with
-/// [`DELIVERY_NOTICE`]. Returns that text.
+/// [`DELIVERY_NOTICE`] at its very first character (the client's test does not trim, so neither
+/// does this one). Returns that text.
 ///
 /// The client writes the PERSON's line about the same outcome in the same step, a `system`
 /// `informational` warning ("Cross-session message held by the receiving session (recipient:
@@ -7891,8 +7904,9 @@ fn delivery_notice<'a>(
 }
 
 /// A delivery notice's pickup (#s691): it takes its queue item by its text, as a delivered prompt
-/// does (#52), and draws nothing. Where a pop already took it, the text matches nothing and
-/// nothing moves.
+/// does (#52), and draws nothing. Where a pop already took it, the text usually matches nothing
+/// and nothing moves; two identical notices queued back to back would let it take the second
+/// early, the hazard #52 has for typed prompts, made unlikely by the `msg_id` each notice names.
 fn notice_pickup(text: &str) -> Message {
     Message::QueueOp {
         op: QueueOpKind::Remove,
@@ -9634,6 +9648,62 @@ mod tests {
             "{blocks:#?}"
         );
         assert!(matches!(&blocks[0], Block::UserText(t) if t.starts_with("[Cross-session")));
+
+        // The typed side, queued: no marker while it waits (only the opening can decide there),
+        // and the person's turn when it arrives, mid-turn with a human origin or as its own record.
+        let typed = "[Cross-session delivery notice] is this held?";
+        let waiting = format!(
+            r#"{{"type":"user","timestamp":"2026-11-24T05:39:00.000Z","promptSource":"typed","message":{{"role":"user","content":"brief de-steward"}}}}
+{{"type":"assistant","timestamp":"2026-11-24T05:39:59.000Z","message":{{"role":"assistant","stop_reason":"tool_use","content":[{{"type":"tool_use","id":"toolu_t1","name":"Bash","input":{{"command":"sleep 5"}}}}]}}}}
+{{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-24T05:40:00.000Z","content":"{typed}"}}
+"#
+        );
+        let blocks = both_paths(&waiting);
+        assert!(
+            !blocks.iter().any(|b| matches!(b, Block::QueueEvent { .. })),
+            "{blocks:#?}"
+        );
+        let mid_turn = format!(
+            r#"{waiting}{{"type":"attachment","timestamp":"2026-11-24T05:40:01.000Z","attachment":{{"type":"queued_command","commandMode":"prompt","origin":{{"kind":"human"}},"prompt":"{typed}"}}}}
+{{"type":"queue-operation","operation":"remove","timestamp":"2026-11-24T05:40:01.100Z","reason":"absorbed_mid_turn","content":"{typed}"}}
+{{"type":"user","timestamp":"2026-11-24T05:40:05.000Z","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_t1","content":"done"}}]}}}}
+"#
+        );
+        let blocks = both_paths(&mid_turn);
+        assert_eq!(
+            notice_lines(&blocks),
+            vec![typed.to_string()],
+            "{blocks:#?}"
+        );
+        assert_eq!(blocks.iter().filter(|b| b.opens_turn()).count(), 2);
+        let delivered = format!(
+            r#"{waiting}{{"type":"queue-operation","operation":"dequeue","timestamp":"2026-11-24T05:40:06.000Z"}}
+{{"type":"user","timestamp":"2026-11-24T05:40:06.100Z","promptSource":"queued","turnOrigin":"human","message":{{"role":"user","content":"{typed}"}}}}
+"#
+        );
+        let blocks = both_paths(&delivered);
+        assert_eq!(
+            notice_lines(&blocks),
+            vec![typed.to_string()],
+            "{blocks:#?}"
+        );
+
+        // A notice picked up mid-turn whose prompt is several parts, an image among them: the
+        // paths agree that none of it is drawn.
+        let parts = r#"{"type":"user","timestamp":"2026-11-24T05:39:00.000Z","promptSource":"typed","message":{"role":"user","content":"brief de-steward"}}
+{"type":"assistant","timestamp":"2026-11-24T05:39:59.000Z","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_p1","name":"Bash","input":{"command":"sleep 5"}}]}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-24T05:40:00.000Z","content":"[Cross-session delivery notice] Your message to another session expired."}
+{"type":"attachment","timestamp":"2026-11-24T05:40:01.000Z","attachment":{"type":"queued_command","commandMode":"prompt","isMeta":true,"prompt":[{"type":"text","text":"[Cross-session delivery notice] Your message to another session expired."},{"type":"text","text":"Tell your user."},{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}]}}
+{"type":"user","timestamp":"2026-11-24T05:40:05.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_p1","content":"done"}]}}
+"#;
+        let blocks = both_paths(parts);
+        assert!(notice_lines(&blocks).is_empty(), "{blocks:#?}");
+        assert!(
+            !blocks
+                .iter()
+                .any(|b| matches!(b, Block::Attachment(_) | Block::QueueEvent { .. })),
+            "{blocks:#?}"
+        );
     }
 
     /// #s79: the rewrite is exact — the close may repeat the id or not, text either side keeps its
