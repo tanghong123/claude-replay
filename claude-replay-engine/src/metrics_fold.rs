@@ -104,7 +104,9 @@ pub struct MetricsFold {
     /// The one bounded line source (#193): `Stop` — the durable cursor must never pass a
     /// torn line — and aggressive elision, provably metric-neutral.
     src: LineSource<BufReader<crate::source::Source>>,
-    snapshot: Option<(std::vec::IntoIter<String>, u64)>,
+    snapshot: bool,
+    at_end: bool,
+    timestamp_field: &'static str,
     /// Gauges already banked into `acc.extra` — the next [`Self::next_event`] banks the delta.
     banked: crate::engine::reader::ElisionCounts,
     pre: Box<dyn LinePreprocessor>,
@@ -130,12 +132,8 @@ impl MetricsFold {
         let len = file.len()?;
         let mut reader = BufReader::new(file);
 
-        let snapshot = adapter
-            .snapshot_reader()
-            .map(|read| read(&mut reader))
-            .transpose()?
-            .map(|records| (records.into_iter(), len));
-        let (offset, start) = match cursor.filter(|_| snapshot.is_none()) {
+        let snapshot = adapter.rewrites_transcript();
+        let (offset, start) = match cursor.filter(|_| !snapshot) {
             None => (0, FoldStart::Cold(CursorReject::NoCursor)),
             // Version before CRC: it is free (no IO), and the verdicts are different
             // facts — a stale-version cursor says nothing about the file, so it must
@@ -155,6 +153,8 @@ impl MetricsFold {
             path: path.to_path_buf(),
             src: LineSource::new(reader, offset, TornTail::Stop, Elision::Aggressive),
             snapshot,
+            at_end: false,
+            timestamp_field: adapter.timestamp_field(),
             banked: Default::default(),
             pre,
             acc,
@@ -196,40 +196,31 @@ impl MetricsFold {
     pub fn next_event(&mut self) -> std::io::Result<Option<MetricsEvent>> {
         self.bank_elision();
         loop {
-            let owned;
-            let body = if let Some((records, _)) = &mut self.snapshot {
-                let Some(record) = records.next() else {
-                    return Ok(None);
-                };
-                owned = record;
-                &owned
-            } else {
-                let Some((_, body)) = self.src.next()? else {
-                    // Torn tail or EOF: bank whatever the tail's reads counted, then reposition
-                    // the reader on the cursor (discovering a torn line consumed its bytes), so
-                    // the next poll re-reads it whole — the same seek this loop did inline.
-                    self.bank_elision();
-                    self.src.rewind_to_cursor()?;
-                    return Ok(None);
-                };
-                if matches!(self.pre.process(body), PreprocessedLine::Ignore) {
-                    continue;
-                }
-                body
+            let Some((_, body)) = self.src.next()? else {
+                self.at_end = true;
+                self.bank_elision();
+                self.src.rewind_to_cursor()?;
+                return Ok(None);
             };
-            if let Some(event) = Self::event(self.acc.as_mut(), body) {
+            if matches!(self.pre.process(body), PreprocessedLine::Ignore) {
+                continue;
+            }
+            if let Some(event) = Self::event(self.acc.as_mut(), body, self.timestamp_field) {
                 return Ok(Some(event));
             }
         }
     }
 
-    fn event(acc: &mut dyn MetricsAccumulator, body: &str) -> Option<MetricsEvent> {
+    fn event(
+        acc: &mut dyn MetricsAccumulator,
+        body: &str,
+        timestamp_field: &str,
+    ) -> Option<MetricsEvent> {
         let (tokens_before, extra_before, _) = acc.totals();
         let (ts, id) = match serde_json::from_str::<Value>(body) {
             Ok(v) => {
-                let ts = v["timestamp"]
+                let ts = v[timestamp_field]
                     .as_str()
-                    .or_else(|| v["created_at"].as_str())
                     .and_then(crate::metrics::parse_ts)
                     .map(|secs| secs as EpochSeconds);
                 acc.push(&v);
@@ -267,9 +258,8 @@ impl MetricsFold {
     /// polls this between events to decide when to stop; the cursor it then takes is valid at
     /// that point, so the next run continues from exactly there.
     pub fn offset(&self) -> u64 {
-        if let Some((records, len)) = &self.snapshot {
-            // Snapshots are one unit of work and are charged once fully folded.
-            return if records.len() == 0 { *len } else { 0 };
+        if self.snapshot && !self.at_end {
+            return 0;
         }
         self.src.offset()
     }

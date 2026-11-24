@@ -31,6 +31,7 @@ fn run(root: &Path, cwd: &Path, args: &[&str]) -> (String, String, bool) {
         .env("QODERWORK_PROJECTS_DIR", root.join("qoderwork"))
         .env("QODERWORK_DB", root.join("qoderwork.db"))
         .env("QWENWORK_PROJECTS_DIR", root.join("qwenwork"))
+        .env("ANTIGRAVITY_CLI_HOME", root.join("antigravity"))
         .env("QWENWORK_DB", root.join("qwenwork.db"))
         .env("CLAUDE_REPLAY_CACHE", root.join("cache"))
         .output()
@@ -521,4 +522,43 @@ fn a_codex_store_file_no_reader_can_open_is_reported() {
         table.contains("store.unread") && table.contains(".jsonl.br"),
         "{table}"
     );
+}
+
+#[test]
+fn antigravity_reports_projection_drift_from_its_isolated_store() {
+    let root = scratch("antigravity");
+    let path = root
+        .join("antigravity/brain")
+        .join(SID)
+        .join(".system_generated/logs");
+    std::fs::create_dir_all(&path).unwrap();
+    std::fs::write(
+        path.join("transcript.jsonl"),
+        concat!(
+            r#"{"step_index":0,"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","created_at":"2026-10-07T10:00:00Z","truncated_fields":["thinking"],"input_tokens":7,"model":42}"#, "\n",
+            r#"{"step_index":1,"type":"GENERIC","source":"SYSTEM","status":"DONE","created_at":"2026-10-07T10:00:01Z"}"#, "\n",
+            r#"{"step_index":2,"type":"GENERIC","source":"MODEL","created_at":"2026-10-07T10:00:02Z"}"#, "\n",
+        ),
+    ).unwrap();
+    let (out, err, ok) = run(&root, &root, &["--unknown", "--agent", "agy", "--json"]);
+    assert!(ok, "{err}");
+    assert!(err.contains("scanning 1 transcript(s)"), "{err}");
+    let rows = rows(&out);
+    for name in [
+        "PLANNER_RESPONSE.truncated_fields",
+        "PLANNER_RESPONSE.model (unexpected type)",
+        "GENERIC with unexpected source",
+        "invalid step envelope",
+    ] {
+        assert!(
+            rows.iter()
+                .any(|row| row["name"] == name && row["agent"] == "antigravity"),
+            "{name}: {out}"
+        );
+    }
+    assert!(
+        !rows.iter().any(|row| row["where"] == "model.unpriced"),
+        "{out}"
+    );
+    std::fs::remove_dir_all(root).unwrap();
 }

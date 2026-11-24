@@ -46,6 +46,7 @@ fn monitor(base: &Path, log: &Path, port: u16, pair: bool) -> Command {
         .env("QODERWORK_PROJECTS_DIR", stores.join("qoderwork"))
         .env("QODERWORK_DB", stores.join("qoderwork.db"))
         .env("QWENWORK_PROJECTS_DIR", stores.join("qwenwork"))
+        .env("ANTIGRAVITY_CLI_HOME", stores.join("antigravity"))
         .env("QWENWORK_DB", stores.join("qwenwork.db"))
         .env_remove("CODEX_NATIVE_SERVER_URL")
         .stdin(Stdio::null())

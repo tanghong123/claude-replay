@@ -131,6 +131,10 @@ impl<R: BufRead> LineSource<R> {
         &self.reader
     }
 
+    pub(crate) fn into_inner(self) -> R {
+        self.reader
+    }
+
     /// Reposition the underlying reader to [`offset`](Self::offset). Needed only by the
     /// live tails (the metrics fold, the follower), which keep their reader open across
     /// polls: discovering a torn tail consumes its bytes, so before the next poll the

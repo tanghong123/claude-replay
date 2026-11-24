@@ -568,12 +568,6 @@ impl<S: BlockStore> SessionAccumulator<S> {
     /// parse entry points feed the builder through this; the live follower uses
     /// [`advance_at`](Self::advance_at) directly with the reader's per-line offsets.
     pub fn advance_reader(&mut self, reader: &mut dyn io::BufRead) -> io::Result<()> {
-        if let Some(snapshot) = self.adapter.snapshot_reader() {
-            for record in snapshot(reader)? {
-                self.advance_at(0, &record);
-            }
-            return Ok(());
-        }
         // #193: the one bounded source, under the adapter's α-lite policy — only values the
         // fold defers (attachment bodies) are elided, so `fold(elide(line)) ≡ fold(line)`.
         // `Yield` because a batch parse folds a torn final line, as it always has.

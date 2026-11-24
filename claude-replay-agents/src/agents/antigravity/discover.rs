@@ -2,8 +2,7 @@
 
 use super::{limits::config_home, model};
 use claude_replay_engine::seam::{
-    ancestors_below, bounded_lines, home_dir, source, Agent, Candidate, Elision, SessionCard,
-    SNIPPET_CHARS,
+    ancestors_below, bounded_lines, home_dir, Agent, Candidate, Elision, SessionCard, SNIPPET_CHARS,
 };
 use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
@@ -11,12 +10,38 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use url::Url;
 
+/// Conversation logs named `transcript.jsonl` live under a UUID-named trajectory directory.
+/// Use that directory to distinguish sessions whose filenames are identical.
+pub(crate) fn trajectory_id(path: &Path) -> Option<&str> {
+    if !matches!(
+        path.file_name()?.to_str()?,
+        "transcript.jsonl" | "transcript_full.jsonl"
+    ) {
+        return None;
+    }
+    let logs = path.parent()?;
+    let generated = logs.parent()?;
+    if logs.file_name()? != "logs" || generated.file_name()? != ".system_generated" {
+        return None;
+    }
+    let id = generated.parent()?.file_name()?.to_str()?;
+    (id.len() == 36
+        && id.bytes().enumerate().all(|(i, b)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                b == b'-'
+            } else {
+                b.is_ascii_hexdigit()
+            }
+        }))
+    .then_some(id)
+}
+
 pub fn brain_dir() -> PathBuf {
     config_home().join("brain")
 }
 
 pub fn store_contains(path: &Path) -> bool {
-    path.starts_with(brain_dir()) && source::trajectory_id(path).is_some()
+    path.starts_with(brain_dir()) && trajectory_id(path).is_some()
 }
 
 pub fn store_transcripts_in(root: &Path) -> Vec<PathBuf> {
@@ -30,7 +55,7 @@ pub fn store_transcripts_in(root: &Path) -> Vec<PathBuf> {
             ["transcript_full.jsonl", "transcript.jsonl"]
                 .into_iter()
                 .map(|name| logs.join(name))
-                .find(|path| source::trajectory_id(path).is_some() && path.is_file())
+                .find(|path| trajectory_id(path).is_some() && path.is_file())
         })
         .collect()
 }
@@ -41,9 +66,7 @@ struct CatalogEntry {
     workspaces: Vec<PathBuf>,
 }
 
-fn catalog(path: &Path) -> Option<CatalogEntry> {
-    let id = source::trajectory_id(path)?;
-    let root = path.ancestors().nth(5)?;
+fn open_catalog(root: &Path) -> Option<Connection> {
     let db = Connection::open_with_flags(
         root.join("conversation_summaries.db"),
         OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
@@ -51,6 +74,10 @@ fn catalog(path: &Path) -> Option<CatalogEntry> {
     .ok()?;
     // The live CLI owns the database. Retry on a later discovery cycle if it is busy.
     db.busy_timeout(std::time::Duration::ZERO).ok()?;
+    Some(db)
+}
+
+fn catalog(db: &Connection, id: &str) -> Option<CatalogEntry> {
     let (title, uris): (String, String) = db
         .query_row(
             "SELECT title, workspace_uris FROM conversation_summaries WHERE conversation_id = ?1",
@@ -68,33 +95,47 @@ fn catalog(path: &Path) -> Option<CatalogEntry> {
     })
 }
 
-fn workspaces(path: &Path, entry: CatalogEntry) -> Vec<PathBuf> {
+fn catalog_entry(path: &Path) -> Option<CatalogEntry> {
+    catalog(
+        &open_catalog(path.ancestors().nth(5)?)?,
+        trajectory_id(path)?,
+    )
+}
+
+fn workspace_cache(root: &Path) -> std::collections::BTreeMap<PathBuf, String> {
+    fs::read(root.join("cache/last_conversations.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or_default()
+}
+
+fn workspaces(
+    id: &str,
+    entry: CatalogEntry,
+    cached: &std::collections::BTreeMap<PathBuf, String>,
+) -> Vec<PathBuf> {
     if !entry.workspaces.is_empty() {
         return entry.workspaces;
     }
-    let Some(id) = source::trajectory_id(path) else {
-        return Vec::new();
-    };
-    let Some(root) = path.ancestors().nth(5) else {
-        return Vec::new();
-    };
-    fs::read(root.join("cache/last_conversations.json"))
-        .ok()
-        .and_then(|bytes| {
-            serde_json::from_slice::<std::collections::BTreeMap<PathBuf, String>>(&bytes).ok()
-        })
-        .into_iter()
-        .flatten()
-        .filter_map(|(workspace, value)| {
-            (value == id && workspace.is_absolute()).then_some(workspace)
-        })
+    cached
+        .iter()
+        .filter(|(workspace, value)| *value == id && workspace.is_absolute())
+        .map(|(workspace, _)| workspace.clone())
         .collect()
 }
 
 pub fn project_dir(path: &Path) -> Option<PathBuf> {
-    workspaces(path, catalog(path).unwrap_or_default())
-        .into_iter()
-        .next()
+    let entry = catalog_entry(path).unwrap_or_default();
+    if !entry.workspaces.is_empty() {
+        return entry.workspaces.into_iter().next();
+    }
+    workspaces(
+        trajectory_id(path)?,
+        entry,
+        &workspace_cache(path.ancestors().nth(5)?),
+    )
+    .into_iter()
+    .next()
 }
 
 fn prompts(path: &Path) -> impl Iterator<Item = String> {
@@ -105,21 +146,32 @@ fn prompts(path: &Path) -> impl Iterator<Item = String> {
 
 pub fn session_card(path: &Path) -> SessionCard {
     SessionCard {
-        title: catalog(path).and_then(|entry| entry.title),
+        title: catalog_entry(path).and_then(|entry| entry.title),
         last_prompt: prompts(path).last(),
         name: None,
     }
 }
 
 pub fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
+    candidates_scoped_in(&config_home(), cwd)
+}
+
+fn candidates_scoped_in(root: &Path, cwd: &Path) -> Vec<Candidate> {
     let ancestors = ancestors_below(cwd, home_dir().as_deref());
     if ancestors.is_empty() {
         return Vec::new();
     }
-    let candidates: Vec<_> = store_transcripts_in(&brain_dir())
+    let db = open_catalog(root);
+    let cached = workspace_cache(root);
+    let candidates: Vec<_> = store_transcripts_in(&root.join("brain"))
         .into_iter()
         .filter_map(|path| {
-            let workspaces = workspaces(&path, catalog(&path).unwrap_or_default());
+            let id = trajectory_id(&path)?;
+            let entry = db
+                .as_ref()
+                .and_then(|db| catalog(db, id))
+                .unwrap_or_default();
+            let workspaces = workspaces(id, entry, &cached);
             let ancestor = ancestors
                 .iter()
                 .position(|parent| workspaces.iter().any(|w| w == parent))?;
@@ -162,14 +214,16 @@ pub fn candidates_scoped(cwd: &Path) -> Vec<Candidate> {
 }
 
 pub fn resolve_id(id: &str) -> Option<PathBuf> {
+    resolve_id_in(&brain_dir(), id)
+}
+
+fn resolve_id_in(brain: &Path, id: &str) -> Option<PathBuf> {
     if id.is_empty() {
         return None;
     }
-    let mut matches = store_transcripts_in(&brain_dir())
+    let mut matches = store_transcripts_in(brain)
         .into_iter()
-        .filter(|path| {
-            source::trajectory_id(path).is_some_and(|candidate| candidate.starts_with(id))
-        });
+        .filter(|path| trajectory_id(path).is_some_and(|candidate| candidate.starts_with(id)));
     let first = matches.next()?;
     matches.next().is_none().then_some(first)
 }
@@ -212,9 +266,17 @@ mod tests {
         let mut found = store_transcripts_in(&brain);
         found.sort();
         assert_eq!(found, [full.clone(), plain.clone()]);
-        assert_eq!(source::stem(&full), Some(a));
-        assert_eq!(source::stem(&plain), Some(b));
-        assert_eq!(project_dir(&full), Some(workspace));
+        assert_eq!(trajectory_id(&full), Some(a));
+        assert_eq!(trajectory_id(&plain), Some(b));
+        assert_eq!(project_dir(&full), Some(workspace.clone()));
+        let list = candidates_scoped_in(&root, &workspace);
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].path, full);
+        assert!(list[0].cwd_affinity);
+        assert!(candidates_scoped_in(&root, &root.join("unrelated")).is_empty());
+        assert_eq!(resolve_id_in(&brain, "aaaa"), Some(full.clone()));
+        assert_eq!(resolve_id_in(&brain, b), Some(plain));
+        assert_eq!(resolve_id_in(&brain, "absent"), None);
         let card = session_card(&full);
         assert_eq!(card.title.as_deref(), Some("Session title"));
         assert_eq!(card.last_prompt.as_deref(), Some("first prompt"));

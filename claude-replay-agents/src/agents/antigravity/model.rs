@@ -1,14 +1,12 @@
 //! Decode the plaintext trajectory log produced by Antigravity CLI.
 
 use claude_replay_engine::seam::{
-    epoch_secs, Block, Elision, LinePreprocessor, LineSource, Message, NoteKind, PreprocessedLine,
-    Shaping, ToolExecution, ToolStatus, TornTail,
+    epoch_secs, note_unknown, unknown_watching_keys, Block, Elision, LinePreprocessor, Message,
+    NoteKind, PreprocessedLine, Shaping, ToolExecution, ToolStatus, UnknownAt,
 };
 use serde_json::Value;
-use std::collections::VecDeque;
-use std::io::{self, BufRead};
 
-pub(super) const ELISION: Elision = Elision::Keys(&[&["media", "data"]]);
+pub(crate) const ELISION: Elision = Elision::Keys(&[&["media", "data"]]);
 
 pub(crate) fn is_step(value: &Value) -> bool {
     value["step_index"].is_u64()
@@ -18,13 +16,65 @@ pub(crate) fn is_step(value: &Value) -> bool {
         && value["status"].is_string()
 }
 
-pub(crate) fn read_snapshot(reader: &mut dyn BufRead) -> io::Result<Vec<String>> {
-    let mut lines = LineSource::new(reader, 0, TornTail::Yield, ELISION);
-    let mut records = Vec::new();
-    while let Some((_, line)) = lines.next()? {
-        records.push(line.to_owned());
+// The JSONL projection has carried these keys. Optional fields can be absent.
+const STEP_KEYS: &[&str] = &[
+    "step_index",
+    "created_at",
+    "source",
+    "type",
+    "status",
+    "content",
+    "error",
+    "thinking",
+    "tool_calls",
+    "model",
+    "input_tokens",
+    "output_tokens",
+    "cache_read_tokens",
+    "cache_write_tokens",
+    "media",
+];
+
+fn note_shape(value: &Value) {
+    let note = |at, name: &str| note_unknown("antigravity", at, name, None, None);
+    if !is_step(value) {
+        note(UnknownAt::RecordType, "invalid step envelope");
+        return;
     }
-    Ok(records)
+    let kind = value["type"].as_str().unwrap_or_default();
+    match kind {
+        "GENERIC" if value["source"] != "MODEL" => {
+            note(UnknownAt::RecordType, "GENERIC with unexpected source");
+        }
+        "USER_INPUT" | "PLANNER_RESPONSE" | "GENERIC" | "ERROR_MESSAGE" | "SYSTEM_MESSAGE" => {}
+        other => note(UnknownAt::RecordType, other),
+    }
+    if !unknown_watching_keys() {
+        return;
+    }
+    if let Some(fields) = value.as_object() {
+        for key in fields
+            .keys()
+            .filter(|key| !STEP_KEYS.contains(&key.as_str()))
+        {
+            note(UnknownAt::RecordKey, &format!("{kind}.{key}"));
+        }
+    }
+    for (key, is_expected) in [
+        ("model", Value::is_string as fn(&Value) -> bool),
+        ("tool_calls", Value::is_array),
+        ("input_tokens", |v: &Value| v.is_u64()),
+        ("output_tokens", |v: &Value| v.is_u64()),
+        ("cache_read_tokens", |v: &Value| v.is_u64()),
+        ("cache_write_tokens", |v: &Value| v.is_u64()),
+    ] {
+        if value.get(key).is_some_and(|field| !is_expected(field)) {
+            note(
+                UnknownAt::RecordKey,
+                &format!("{kind}.{key} (unexpected type)"),
+            );
+        }
+    }
 }
 
 pub(super) fn field<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -112,11 +162,12 @@ pub(crate) fn decode_line(line: &str, out: &mut Vec<Message>) {
     }
 }
 
-/// The CLI emits the outcomes of a planner batch as subsequent GENERIC steps in call order.
-/// There are no call IDs in the log. A new planner response or user prompt ends the batch.
+/// In the CLI's JSONL projection, each result occupies the step immediately after its
+/// planner step plus the call ordinal. Native call IDs are absent. Use the step position
+/// so an omitted log row cannot shift every subsequent result to the previous call.
 #[derive(Default)]
 pub(crate) struct ResultLinker {
-    pending: VecDeque<String>,
+    batch: Option<(u64, Vec<usize>)>,
 }
 
 impl LinePreprocessor for ResultLinker {
@@ -124,29 +175,41 @@ impl LinePreprocessor for ResultLinker {
         let Ok(value) = serde_json::from_str::<Value>(line) else {
             return PreprocessedLine::Include;
         };
-        let Some(step) = value["step_index"].as_u64() else {
+        if unknown_watching_keys() {
+            note_shape(&value);
+        }
+        if !is_step(&value) {
             return PreprocessedLine::Include;
-        };
+        }
+        let step = value["step_index"].as_u64().unwrap_or_default();
         match value["type"].as_str() {
             Some("PLANNER_RESPONSE") => {
-                self.pending = calls(&value)
-                    .map(|(ordinal, _)| tool_id(step, ordinal))
-                    .collect();
+                let ordinals: Vec<_> = calls(&value).map(|(ordinal, _)| ordinal).collect();
+                self.batch = (!ordinals.is_empty()).then_some((step, ordinals));
             }
-            Some("USER_INPUT" | "ERROR_MESSAGE") => self.pending.clear(),
+            Some("USER_INPUT" | "ERROR_MESSAGE") => self.batch = None,
             Some("GENERIC") if value["source"] == "MODEL" => {
                 let ts = timestamp(&value);
                 let text = field(&value, "content").or_else(|| field(&value, "error"));
-                if let Some(id) = self.pending.pop_front() {
-                    return PreprocessedLine::Messages(vec![
-                        Message::LineStart(ts),
-                        Message::ToolResult {
-                            tool_use_id: id,
-                            text: text.unwrap_or_default().into(),
-                            tur: value["status"].clone(),
-                            is_error: None,
-                        },
-                    ]);
+                if let Some((planner_step, ordinals)) = &mut self.batch {
+                    let ordinal = step
+                        .checked_sub(*planner_step)
+                        .and_then(|distance| distance.checked_sub(1))
+                        .and_then(|index| usize::try_from(index).ok());
+                    if let Some((ordinal, position)) =
+                        ordinal.and_then(|i| ordinals.binary_search(&i).ok().map(|p| (i, p)))
+                    {
+                        ordinals.drain(..=position);
+                        return PreprocessedLine::Messages(vec![
+                            Message::LineStart(ts),
+                            Message::ToolResult {
+                                tool_use_id: tool_id(*planner_step, ordinal),
+                                text: text.unwrap_or_default().into(),
+                                tur: value["status"].clone(),
+                                is_error: None,
+                            },
+                        ]);
+                    }
                 }
                 if let Some(text) = text {
                     return PreprocessedLine::Messages(vec![
@@ -175,16 +238,21 @@ fn build_tool(_id: &str, raw_name: &str, input: &Value, cwd: &str) -> Block {
         "find_by_name" => ("Glob", "Pattern"),
         _ => (raw_name, "toolSummary"),
     };
-    let target = field(input, key).or_else(|| field(input, "toolSummary"));
+    let target = if key == "toolSummary" {
+        None
+    } else {
+        field(input, key).map(str::to_owned)
+    };
+    let target = target.unwrap_or_else(|| {
+        field(input, "toolSummary")
+            .unwrap_or_default()
+            .chars()
+            .take(240)
+            .collect()
+    });
     Block::ToolUse {
         name: name.into(),
-        target: target.map(str::to_owned).unwrap_or_else(|| {
-            if input.is_null() {
-                String::new()
-            } else {
-                input.to_string()
-            }
-        }),
+        target,
         diffs: Vec::new(),
         output: None,
         patch: None,
@@ -226,5 +294,5 @@ pub(crate) const SHAPING: Shaping = Shaping {
     build_tool,
     join_result,
     keep_orphan: |_| true,
-    finish_turns: |blocks| blocks,
+    finish_turns: claude_replay_engine::seam::coalesce_spans,
 };

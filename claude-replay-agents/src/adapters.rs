@@ -671,8 +671,17 @@ impl TranscriptAdapter for AntigravityAdapter {
     fn shaping(&self) -> &'static Shaping {
         &agents::antigravity::model::SHAPING
     }
-    fn snapshot_reader(&self) -> Option<claude_replay_engine::adapter::SnapshotReader> {
-        Some(agents::antigravity::model::read_snapshot)
+    fn rewrites_transcript(&self) -> bool {
+        true
+    }
+    fn session_id_from_path<'p>(&self, path: &'p std::path::Path) -> Option<&'p str> {
+        agents::antigravity::discover::trajectory_id(path)
+    }
+    fn timestamp_field(&self) -> &'static str {
+        "created_at"
+    }
+    fn elision(&self) -> claude_replay_engine::seam::Elision {
+        agents::antigravity::model::ELISION
     }
     fn line_preprocessor(&self) -> Box<dyn claude_replay_engine::seam::LinePreprocessor> {
         Box::new(agents::antigravity::model::ResultLinker::default())

@@ -400,7 +400,7 @@ fn print_unknown_shapes(args: &Args) -> anyhow::Result<()> {
         // file must not stop the sweep that would have found the thing we are looking for. A
         // compressed one that does not decode is a file the store holds and no reader can open,
         // though (#s385): that is reported.
-        let session = match claude_replay_core::parse_session(path) {
+        let session = match claude_replay_core::parse_session_as(*agent, path) {
             Ok(session) => session,
             Err(e) => {
                 let undecodable = matches!(
@@ -433,7 +433,8 @@ fn print_unknown_shapes(args: &Args) -> anyhow::Result<()> {
             )
             .is_some();
             // A model the agent says no catalog can price (a routing key, #s671) is no news.
-            if tokens == 0
+            if model.is_empty()
+                || tokens == 0
                 || priced
                 || claude_replay_core::adapter(session.agent).deliberately_unpriced(model)
             {

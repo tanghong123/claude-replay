@@ -37,7 +37,9 @@ impl MetricsAcc {
         if counts == TokenCounts::default() {
             return;
         }
-        let model = field(value, "model").unwrap_or("unknown");
+        // Some projections omit the model but retain usage. Keep the tokens in the
+        // unassigned bucket, without attributing them to a previous response's model.
+        let model = field(value, "model").unwrap_or_default();
         *self.totals.entry(model.into()).or_default() += counts;
         self.step = value["step_index"].as_u64();
     }

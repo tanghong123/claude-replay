@@ -22,6 +22,7 @@ fn monitor_fixture_overrides_inherited_configuration_and_store_paths() {
             "CLAUDE_MONITOR_CACHE",
             "CODEX_HOME",
             "CODEX_SESSIONS_DIR",
+            "ANTIGRAVITY_CLI_HOME",
             "QODERWORK_DB",
             "QODER_TASKS_ROOT",
         ] {
@@ -51,6 +52,7 @@ fn monitor_fixture_overrides_inherited_configuration_and_store_paths() {
             "CLAUDE_MONITOR_CACHE",
             "CODEX_HOME",
             "CODEX_SESSIONS_DIR",
+            "ANTIGRAVITY_CLI_HOME",
             "QODERWORK_DB",
             "QODER_TASKS_ROOT",
         ] {

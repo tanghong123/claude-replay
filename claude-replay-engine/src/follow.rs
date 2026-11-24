@@ -4,7 +4,9 @@
 //! poll — no whole-file re-read/re-decode. On a truncation/rewrite (compaction) the tail
 //! resets and the Replayer rebuilds from scratch (a full replay of the new content).
 
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use crate::engine::builder::{SessionAccumulator, StreamRead};
 use crate::engine::reader::{ElisionCounts, LineSource, TornTail};
@@ -35,8 +37,41 @@ impl Tick {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SnapshotStamp {
+    len: u64,
+    modified: SystemTime,
+    #[cfg(unix)]
+    identity: (u64, u64, i64, i64),
+}
+
+impl SnapshotStamp {
+    fn read(path: &Path) -> std::io::Result<Self> {
+        let metadata = path.metadata()?;
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Ok(Self {
+            len: metadata.len(),
+            modified: metadata.modified()?,
+            #[cfg(unix)]
+            identity: (
+                metadata.dev(),
+                metadata.ino(),
+                metadata.ctime(),
+                metadata.ctime_nsec(),
+            ),
+        })
+    }
+}
+
+struct SnapshotPrefix {
+    stamp: SnapshotStamp,
+    records: usize,
+    digest: u64,
+}
+
 /// Follows a transcript through a shared [`SessionAccumulator`]. Append-only sources read
-/// newly appended lines and snapshot sources rebuild when their file changes. Both paths
+/// newly appended lines and snapshot sources verify their folded prefix before extending it. Both paths
 /// use the same fold as the batch parse.
 ///
 /// Generic over the accumulator's [`BlockStore`] `S` (default [`InMemoryStore`] — blocks resident
@@ -54,7 +89,7 @@ pub struct FollowParser<S: BlockStore = InMemoryStore> {
     src: Option<LineSource<BufReader<crate::source::Source>>>,
     /// Gauges already banked into the metrics accumulator; each poll banks the delta.
     banked: ElisionCounts,
-    snapshot_stamp: Option<(u64, std::time::SystemTime, Option<std::time::SystemTime>)>,
+    snapshot: Option<SnapshotPrefix>,
     /// Previous poll's committed length + open-turn blocks — the O(turn) state
     /// [`poll_delta`](Self::poll_delta) diffs against to report `changed_from`. Only touched by
     /// `poll_delta`.
@@ -98,7 +133,7 @@ impl<S: BlockStore> FollowParser<S> {
             cursor: 0,
             src: None,
             banked: ElisionCounts::default(),
-            snapshot_stamp: None,
+            snapshot: None,
             prev_committed: 0,
             prev_provisional: Vec::new(),
         }
@@ -134,7 +169,7 @@ impl<S: BlockStore> FollowParser<S> {
             cursor: resume.replay_from,
             src: None,
             banked: ElisionCounts::default(),
-            snapshot_stamp: None,
+            snapshot: None,
             prev_committed,
             prev_provisional: Vec::new(),
         }
@@ -146,8 +181,8 @@ impl<S: BlockStore> FollowParser<S> {
     /// `None` if append-only — see [`SessionAccumulator::advance_at`](crate::SessionAccumulator)).
     /// O(delta) except on a rewrite.
     fn advance_from_source(&mut self) -> std::io::Result<Tick> {
-        if let Some(snapshot) = self.adapter.snapshot_reader() {
-            return self.advance_snapshot(snapshot);
+        if self.adapter.rewrites_transcript() {
+            return self.advance_snapshot();
         }
         // Truncation / compaction: the file shrank below the cursor — the kept prefix
         // changed. Rebuild from scratch (fresh metrics accumulator too, so the gauge bank
@@ -255,50 +290,115 @@ impl<S: BlockStore> FollowParser<S> {
         })
     }
 
-    fn advance_snapshot(
-        &mut self,
-        snapshot: crate::adapter::SnapshotReader,
-    ) -> std::io::Result<Tick> {
-        let file = match std::fs::File::open(&self.path) {
-            Ok(file) => file,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                let reset = self.snapshot_stamp.take().is_some() || self.cursor > 0;
-                if reset {
-                    self.builder.reset();
-                    self.cursor = 0;
-                }
-                return Ok(Tick {
-                    advanced: reset,
-                    reset,
-                    patch_floor: None,
-                });
+    fn advance_snapshot(&mut self) -> std::io::Result<Tick> {
+        let Some(path) = crate::source::resolve(&self.path) else {
+            let reset = self.snapshot.take().is_some()
+                || self.cursor > 0
+                || self.builder.committed_len() > 0;
+            if reset {
+                self.builder.reset();
+                self.cursor = 0;
+                self.banked = ElisionCounts::default();
             }
-            Err(e) => return Err(e),
+            return Ok(Tick {
+                advanced: reset,
+                reset,
+                patch_floor: None,
+            });
         };
-        let meta = file.metadata()?;
-        let stamp = (meta.len(), meta.modified()?, meta.created().ok());
-        if self.snapshot_stamp == Some(stamp) {
+        let stamp = SnapshotStamp::read(&path)?;
+        // Metadata avoids an idle full-file scan. The platform cannot signal a same-size
+        // in-place edit if it preserves both timestamps at their available resolution.
+        if self.snapshot.as_ref().is_some_and(|old| old.stamp == stamp) {
             return Ok(Tick::idle());
         }
-        let records = match snapshot(&mut BufReader::new(file)) {
-            Ok(records) => records,
-            // A snapshot can be temporarily incomplete during a rewrite.
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(Tick::idle()),
-            Err(e) => return Err(e),
-        };
-        let reset = self.snapshot_stamp.is_some() || self.cursor > 0 || self.prev_committed > 0;
+
+        let pending = self.snapshot.as_ref().map_or(0, |old| old.records);
+        let source = crate::source::open(&path)?;
+        let len = source.len()?;
+        let mut scan = LineSource::new(
+            BufReader::new(source),
+            0,
+            TornTail::Stop,
+            self.adapter.elision(),
+        );
+        // Hash the projection we fold, including source offsets. Only one bounded line and the
+        // running digest are resident even if the client rewrites the entire transcript.
+        let mut hash = DefaultHasher::new();
+        let mut matches = pending == 0 && self.cursor == 0 && self.builder.committed_len() == 0;
+        let mut records = 0;
+        while let Some((offset, line)) = scan.next()? {
+            (offset, line).hash(&mut hash);
+            records += 1;
+            if records == pending {
+                matches = self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|old| old.digest == hash.finish());
+            }
+        }
+        let end = scan.offset();
+        if SnapshotStamp::read(&path).ok() != Some(stamp) {
+            return Ok(Tick::idle());
+        }
+        // During an in-place rewrite the last line may not be complete yet. Keep the old view
+        // until a poll can establish whether that record survived, changed, or was removed.
+        if end < len && (records < pending || !matches) {
+            return Ok(Tick::idle());
+        }
+        let reset = (!matches || end < self.cursor)
+            && (self.snapshot.is_some() || self.cursor > 0 || self.builder.committed_len() > 0);
+        let digest = hash.finish();
+        let counts = scan.elided;
+        let start = if reset { 0 } else { self.cursor };
+        let mut patch_floor = None;
+        let mut advanced = counts != self.banked;
         if reset {
             self.builder.reset();
+            self.banked = ElisionCounts::default();
         }
-        for record in records {
-            self.builder.advance_at(0, &record);
+        // Apply only the stable suffix (or the rebuilt view). On an I/O error or a concurrent
+        // rewrite, invalidate the witness so the next poll rebuilds the in-memory fold.
+        self.snapshot = None;
+        self.cursor = end;
+        if start < end {
+            let mut reader = scan.into_inner();
+            reader.seek(SeekFrom::Start(start))?;
+            let mut tail = LineSource::new(
+                BufReader::new(std::io::Read::take(reader, end - start)),
+                start,
+                TornTail::Stop,
+                self.adapter.elision(),
+            );
+            while tail.offset() < end {
+                let Some((offset, line)) = tail.next()? else {
+                    break;
+                };
+                advanced = true;
+                if let Some(i) = self.builder.advance_at(offset, line) {
+                    patch_floor = Some(patch_floor.map_or(i, |old: usize| old.min(i)));
+                }
+            }
         }
-        self.snapshot_stamp = Some(stamp);
-        self.cursor = stamp.0;
+        self.builder.bank_elision(ElisionCounts {
+            elided_lines: counts.elided_lines.saturating_sub(self.banked.elided_lines),
+            elided_bytes: counts.elided_bytes.saturating_sub(self.banked.elided_bytes),
+            skipped_lines: counts
+                .skipped_lines
+                .saturating_sub(self.banked.skipped_lines),
+        });
+        self.banked = counts;
+        if SnapshotStamp::read(&path).ok() == Some(stamp) {
+            self.snapshot = Some(SnapshotPrefix {
+                stamp,
+                records,
+                digest,
+            });
+        }
         Ok(Tick {
-            advanced: true,
+            advanced: advanced || reset,
             reset,
-            patch_floor: None,
+            patch_floor,
         })
     }
 

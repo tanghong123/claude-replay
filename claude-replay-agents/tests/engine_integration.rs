@@ -34,6 +34,13 @@ fn tmp(name: &str, body: &str) -> PathBuf {
     p
 }
 
+fn antigravity_tools(blocks: &[Block]) -> impl Iterator<Item = &Block> {
+    blocks.iter().flat_map(|block| match block {
+        Block::Thinking { tools, .. } => tools.as_slice(),
+        other => std::slice::from_ref(other),
+    })
+}
+
 #[test]
 fn antigravity_replays_tool_batches_and_picks_up_same_length_rewrites() {
     use claude_replay_core::{metrics_fold, CursorReject, FoldStart, Transcript};
@@ -55,8 +62,7 @@ fn antigravity_replays_tool_batches_and_picks_up_same_length_rewrites() {
     let blocks = batch.blocks();
     assert!(matches!(&blocks[0], Block::UserText(text) if text == "Check two things"));
     assert!(blocks.iter().any(|b| matches!(b, Block::Thinking { .. })));
-    let tools: Vec<_> = blocks
-        .iter()
+    let tools: Vec<_> = antigravity_tools(&blocks)
         .filter_map(|block| match block {
             Block::ToolUse {
                 name,
@@ -98,7 +104,12 @@ fn antigravity_replays_tool_batches_and_picks_up_same_length_rewrites() {
     assert_eq!(follower.poll_session().unwrap().unwrap().blocks(), blocks);
     assert!(follower.poll_session().unwrap().is_none());
     let mut fold = metrics_fold(Agent::ANTIGRAVITY, &path, None).unwrap();
-    assert_eq!(fold.next_event().unwrap().unwrap().id.as_deref(), Some("1"));
+    let event = fold.next_event().unwrap().unwrap();
+    assert_eq!(event.id.as_deref(), Some("1"));
+    assert_eq!(
+        event.ts,
+        claude_replay_core::metrics::parse_ts("2026-10-07T10:00:01Z").map(|ts| ts as f64)
+    );
     while fold.next_event().unwrap().is_some() {}
     assert_eq!(fold.metrics().per_model, batch.metrics.per_model);
     let cursor = fold.cursor().unwrap();
@@ -122,6 +133,79 @@ fn antigravity_replays_tool_batches_and_picks_up_same_length_rewrites() {
     assert_eq!(fold.start(), FoldStart::Cold(CursorReject::NoCursor));
     while fold.next_event().unwrap().is_some() {}
     assert_eq!(fold.metrics().input_tokens, 16);
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn antigravity_append_keeps_committed_turns_and_in_place_edits_rebuild() {
+    use claude_replay_core::Transcript;
+
+    let step = |index: u64, kind: &str, text: &str| {
+        serde_json::json!({
+            "step_index": index, "type": kind, "source": "MODEL", "status": "DONE",
+            "created_at": "2026-10-07T10:00:00Z", "content": text,
+        })
+        .to_string()
+            + "\n"
+    };
+    let body = step(0, "USER_INPUT", "one")
+        + &step(1, "PLANNER_RESPONSE", "reply")
+        + &step(2, "USER_INPUT", "two");
+    let path = tmp1(&body);
+    let transcript = Transcript::detect(&path);
+    let mut follower = transcript.follow();
+    follower.advance_stream().unwrap().unwrap();
+    let committed = follower.committed_len();
+    assert!(committed > 0);
+    let suffix = step(3, "PLANNER_RESPONSE", "more") + &step(4, "USER_INPUT", "three");
+    let mut writer = std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap();
+    writer
+        .write_all(&suffix.as_bytes()[..suffix.len() - 1])
+        .unwrap();
+    // A complete appended record can be processed while the final line is torn.
+    assert!(!follower.advance_stream().unwrap().unwrap().0);
+    writer.write_all(b"\n").unwrap();
+    assert_eq!(follower.advance_stream().unwrap(), Some((false, None)));
+    assert!(follower.committed_len() > committed);
+
+    let changed = body.replace("reply", "fresh") + &suffix;
+    std::fs::write(&path, changed).unwrap(); // Same inode and length.
+    assert!(follower.advance_stream().unwrap().unwrap().0);
+    std::fs::write(&path, "").unwrap();
+    assert!(follower.advance_stream().unwrap().unwrap().0);
+    assert_eq!(follower.committed_len(), 0);
+    std::fs::remove_file(&path).unwrap();
+}
+
+#[test]
+fn antigravity_missing_results_and_missing_models_stay_unassigned() {
+    let body = concat!(
+        r#"{"step_index":0,"type":"USER_INPUT","source":"USER_EXPLICIT","status":"DONE","created_at":"2026-10-07T10:00:00Z","content":"Check"}"#,
+        "\n",
+        r#"{"step_index":1,"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","created_at":"2026-10-07T10:00:01Z","tool_calls":[{"name":"read_file","args":{"Path":"first"}},{"name":"read_file","args":{"Path":"second"}}],"input_tokens":7}"#,
+        "\n",
+        r#"{"step_index":3,"type":"GENERIC","source":"MODEL","status":"DONE","created_at":"2026-10-07T10:00:02Z","content":"second result"}"#,
+        "\n",
+        r#"{"step_index":4,"type":"GENERIC","source":"MODEL","status":"DONE","created_at":"2026-10-07T10:00:03Z","content":"surplus"}"#,
+        "\n",
+    );
+    let path = tmp1(body);
+    let batch = parse_session_as(Agent::ANTIGRAVITY, &path).unwrap();
+    let blocks = batch.blocks();
+    assert!(antigravity_tools(&blocks)
+        .any(|b| matches!(b, Block::ToolUse { target, output: None, .. } if target == "first")));
+    assert!(antigravity_tools(&blocks).any(|b| matches!(b, Block::ToolUse { target, output: Some(text), .. } if target == "second" && text == "second result")));
+    assert!(blocks
+        .iter()
+        .any(|b| matches!(b, Block::ToolResult(text) if text == "surplus")));
+    assert_eq!(batch.metrics.input_tokens, 7);
+    assert_eq!(batch.metrics.per_model[""].input, 7);
+    assert!(batch.metrics.model.is_empty());
+    assert_eq!(batch.metrics.cost_usd, None);
+    assert!(batch.metrics.cost_partial);
     std::fs::remove_file(path).unwrap();
 }
 

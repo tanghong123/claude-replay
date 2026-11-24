@@ -2646,7 +2646,7 @@ pub(super) fn render_snapshot(
 /// The session id — the transcript file stem (the UUID Claude/Codex names it; a compressed
 /// rollout's is its plain name's, #s383).
 pub(super) fn session_id(path: &Path) -> String {
-    claude_replay_core::source::stem(path)
+    claude_replay_core::discover::transcript_stem(path)
         .unwrap_or("session")
         .to_string()
 }

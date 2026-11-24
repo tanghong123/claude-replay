@@ -437,13 +437,10 @@ fn decode_store_dir(path: &Path) -> Option<PathBuf> {
     Some(cur)
 }
 
-/// The session id of a native trajectory path, or the id recorded in the transcript head
+/// The session id recorded in the transcript head
 /// (Claude's top-level `sessionId` or Codex's `payload.id` of `session_meta`).
 /// Returns `None` when neither supplies an id.
 pub fn session_id(path: &Path) -> Option<String> {
-    if let Some(id) = crate::source::trajectory_id(path) {
-        return Some(id.to_owned());
-    }
     for line in crate::engine::bounded_lines(path, crate::engine::Elision::None).take(50) {
         let Ok(v) = serde_json::from_str::<Value>(&line) else {
             continue;

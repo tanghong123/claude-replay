@@ -78,8 +78,7 @@ jobs:
           bin: agent-monitor
           manifest-path: claude-monitor/Cargo.toml
           features: codex-native
-          # The QoderWork title reader (#119) is macOS-only.
-          # Native control additionally bundles SQLite on both platforms.
+          # Antigravity discovery and native Codex control use bundled SQLite.
           target: ${{ matrix.target }}
           archive: $bin-$target
           checksum: sha256

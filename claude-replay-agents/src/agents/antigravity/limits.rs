@@ -30,6 +30,9 @@ const WEEK_MINUTES: u64 = 7 * 24 * 60;
 
 /// The folder `agy` keeps its settings in: `~/.gemini/antigravity-cli`.
 pub(super) fn config_home() -> PathBuf {
+    if let Some(root) = std::env::var_os("ANTIGRAVITY_CLI_HOME").filter(|s| !s.is_empty()) {
+        return PathBuf::from(root);
+    }
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
     Path::new(&home).join(".gemini").join("antigravity-cli")
 }
