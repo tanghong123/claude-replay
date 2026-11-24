@@ -452,11 +452,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// no tokens and times no answer, where a v95 stream's persisted deltas priced it in both; and
 /// such a fork's client tally carried from its parent is left out (#s687).
 ///
+/// v97: #s684 — a question the reader chose to discuss reads `Discussed`, not `Declined`, with the
+/// answers and notes its clarify text lists on its questions, and a decline keeps the reader's own
+/// words in `Asked::said`; a v96 block has neither.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 96;
+pub const FOLD_VERSION: u16 = 97;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

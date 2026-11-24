@@ -723,14 +723,19 @@ fn reading(q: &crate::model::AskedQuestion) -> (Vec<bool>, String) {
 
 /// #281: why an interaction call came back without an answer, in the card's words' terms:
 /// `why` is `timeout` (with the `seconds` the client waited), `declined`, `failed`, or `none` when
-/// the result says nothing the adapter could name.
-fn unanswered_json(why: Option<crate::model::Unanswered>) -> Value {
+/// the result says nothing the adapter could name. #s684: `discuss` when the reader chose to discuss
+/// the questions instead, and a decline carries `said`, the reader's own words, when they wrote any.
+fn unanswered_json(why: Option<crate::model::Unanswered>, said: Option<&str>) -> Value {
     use crate::model::Unanswered;
     match why {
         Some(Unanswered::TimedOut { after_ms }) => {
             json!({ "why": "timeout", "seconds": (after_ms + 500) / 1000 })
         }
-        Some(Unanswered::Declined) => json!({ "why": "declined" }),
+        Some(Unanswered::Declined) => match said {
+            Some(said) => json!({ "why": "declined", "said": said }),
+            None => json!({ "why": "declined" }),
+        },
+        Some(Unanswered::Discussed) => json!({ "why": "discuss" }),
         Some(Unanswered::Failed) => json!({ "why": "failed" }),
         None => json!({ "why": "none" }),
     }
@@ -2006,6 +2011,7 @@ impl Emitter<'_> {
                             let interactive = name.eq_ignore_ascii_case("request_user_input")
                                 || name.eq_ignore_ascii_case("AskUserQuestion");
                             let why = asked.as_deref().and_then(|a| a.unanswered);
+                            let said = asked.as_deref().and_then(|a| a.said.as_deref());
                             let card = match (why, answered) {
                                 (None, Some(mut found)) => {
                                     if let Some(obj) = found.as_object_mut() {
@@ -2017,7 +2023,7 @@ impl Emitter<'_> {
                                     "kind": "request_user_input",
                                     "resolved": true,
                                     "answers": [],
-                                    "unanswered": unanswered_json(why),
+                                    "unanswered": unanswered_json(why, said),
                                 })),
                                 _ => None,
                             };
@@ -3127,6 +3133,7 @@ mod tests {
         };
         let asked = Asked {
             unanswered: None,
+            said: None,
             questions: vec![
                 q("MCP", "Which MCP servers?", true, &["okr", "dms", "none"]),
                 q(
@@ -3194,6 +3201,7 @@ mod tests {
                 notes: String::new(),
             }],
             unanswered: None,
+            said: None,
         };
         let out = asked_section(&asked, &[]);
         assert_eq!(out[0]["options"][0]["preview"], json!("┌─┐\n└─┘"));
@@ -5585,6 +5593,7 @@ mod tests {
         let typed = "Both - ask for the \"manage\" privilege, and say consent comes later.";
         let asked = Asked {
             unanswered: None,
+            said: None,
             questions: vec![
                 q(
                     "Exit code?",
@@ -5646,6 +5655,7 @@ mod tests {
         // down.
         let alone = Asked {
             unanswered: None,
+            said: None,
             questions: vec![q(
                 "Which name?",
                 &["--manage", "--own"],
@@ -5690,6 +5700,7 @@ mod tests {
                 notes: String::new(),
             }],
             unanswered: why,
+            said: None,
         };
         let card = |name: &str, output: &str, a: Option<Asked>| -> Value {
             let block = Block::ToolUse {
@@ -5740,6 +5751,34 @@ mod tests {
                 "{c}"
             );
         }
+        // #s684: a decline with the reader's own words carries them; a bare one carries none.
+        let mut said = asked(Some(Unanswered::Declined));
+        said.said = Some("Not before the gate is green.".into());
+        let c = card("AskUserQuestion", "The user doesn't want…", Some(said));
+        assert_eq!(
+            c["unanswered"],
+            json!({"why": "declined", "said": "Not before the gate is green."}),
+            "{c}"
+        );
+        // …and a question the reader chose to discuss says so, with what they had answered by
+        // then on its question, ticked, and their notes beside it.
+        let mut discussed = asked(Some(Unanswered::Discussed));
+        discussed.questions[0].answer = Some("Yes".into());
+        discussed.questions[0].notes = "after the release".into();
+        let c = card(
+            "AskUserQuestion",
+            "The user wants to clarify…",
+            Some(discussed),
+        );
+        assert_eq!(c["resolved"], true, "{c}");
+        assert_eq!(c["unanswered"], json!({"why": "discuss"}), "{c}");
+        let options = &c["asked"][0]["options"];
+        assert_eq!(
+            (options[0]["chosen"].clone(), options[1]["chosen"].clone()),
+            (json!(true), json!(false)),
+            "{c}"
+        );
+        assert_eq!(c["asked"][0]["notes"], "after the release", "{c}");
         let codex = card("request_user_input", "the client closed the prompt", None);
         assert_eq!(
             (
