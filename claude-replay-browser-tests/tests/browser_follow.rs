@@ -30488,9 +30488,9 @@ fn the_write_switch_says_why_it_is_off_for_this_reader() {
         off["disabled"] == "true"
             && off["checked"] == "false"
             && off["reason"].as_str().is_some_and(
-                |r| r.contains("Needs a paired monitor") && r.contains("agent-monitor --pair")
+                |r| r.contains("Pair first to turn it on") && r.contains("agent-monitor --pair")
             ),
-        "an unpaired monitor's switch is disabled and its line names the command: {off}"
+        "an unpaired monitor's switch is disabled and its line says to pair first, naming the command: {off}"
     );
     harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
     let asked = write_facts(&tab);
@@ -30550,8 +30550,8 @@ fn the_write_switch_says_why_it_is_off_for_this_reader() {
             unpaired_browser["disabled"] == "true"
                 && unpaired_browser["reason"]
                     .as_str()
-                    .is_some_and(|r| r.contains("This browser is not paired")),
-            "its switch is disabled and says why: {unpaired_browser}"
+                    .is_some_and(|r| r.contains("Pair this browser first")),
+            "its switch is disabled and says to pair this browser first: {unpaired_browser}"
         );
         harness::eval(
             &other,
@@ -30637,6 +30637,177 @@ fn the_write_switch_says_why_it_is_off_for_this_reader() {
             "the paired gate refuses a browser without the token"
         );
     }
+}
+
+/// What the pair-first advice reads off the page: the line under Write mode's switch, the tooltip
+/// beside it with its computed visibility and its box against the row's and the sidebar's, the
+/// switch's `aria-describedby`, the rail's ✎ title, the help, and whether this is a touch screen.
+const WRITE_TIP: &str = "(function(){ var $ = function (id) { return document.getElementById(id); }, tip = $('writeTip'), cs = tip ? getComputedStyle(tip) : null, row = $('writeBtn').getBoundingClientRect(), side = document.querySelector('#app>.sidebar').getBoundingClientRect(), box = tip ? tip.getBoundingClientRect() : null, line = $('writeReason'); return JSON.stringify({ write: document.body.dataset.write, disabled: $('writeSwitch').getAttribute('aria-disabled'), line: line.hidden ? null : line.textContent, lineShown: !line.hidden && line.getClientRects().length > 0, tip: tip ? tip.textContent : null, tipShown: !!cs && cs.visibility === 'visible' && cs.opacity === '1', belowRow: !!box && box.top >= row.bottom - 1, insideSidebar: !!box && box.left >= side.left && box.right <= side.right + 0.5, describedBy: $('writeSwitch').getAttribute('aria-describedby'), rail: $('sidebarMiniWrite').title, help: $('writeHelp').hidden ? null : $('writeHelp').textContent, pairButton: [...document.querySelectorAll('#writeHelp .write-pair button')].map(function (b) { return b.textContent; }), coarse: matchMedia('(pointer: coarse)').matches }); })()";
+
+fn write_tip(tab: &headless_chrome::Tab) -> serde_json::Value {
+    serde_json::from_str(harness::eval(tab, WRITE_TIP).as_str().unwrap_or("{}")).unwrap_or_default()
+}
+
+/// The middle of the element `id` names, in the window's coordinates.
+fn centre_of(tab: &headless_chrome::Tab, id: &str) -> (f64, f64) {
+    let at = harness::probe(
+        tab,
+        &format!("(function(){{ var r = document.getElementById({id:?}).getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; }})()"),
+    );
+    (at[0].as_f64().unwrap_or(0.0), at[1].as_f64().unwrap_or(0.0))
+}
+
+/// Where writing needs pairing, Write mode's greyed switch advises pairing first wherever the reader
+/// looks: the line under it leads with "Pair first", hovering the row shows how in a tooltip under it
+/// (at this machine, that a click pairs this browser, and the command), the rail's ✎ says the same
+/// in its title, and a click on the line opens the help with its Pair this browser button. A phone
+/// has no hover, so no tooltip stands there; the line does, and a tap on it opens the same help. A
+/// page that may write carries no advice: the tooltip stays empty and hidden over its row.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_disabled_write_switch_advises_pairing_first() {
+    let _serial = serial();
+    let base = harness::base("write-pair-first");
+    let stores = harness::Stores::new(&base);
+    stores.claude_session(
+        WRITE_SID,
+        &harness::long_session(3, harness::Shape::default()),
+    );
+    let unpaired = harness::Monitor::spawn(harness::Kind::V1, 3174, &base, Some(&stores), false);
+    let (_browser, tab) = harness::chrome_tab();
+    harness::resize(&tab, 1280.0, 900.0);
+    unpaired.pair(&tab);
+    unpaired.open(&tab, &format!("?ui=app&session={WRITE_SID}"));
+    harness::until(
+        &tab,
+        "document.body.dataset.write === 'monitor' && !!document.querySelector('.transcript .turn.user')",
+        "an unpaired monitor's page to open on the session",
+        Duration::from_secs(20),
+        WRITE_TIP,
+    );
+    let point = |x, y| headless_chrome::browser::tab::point::Point { x, y };
+    tab.move_mouse_to_point(point(900.0, 450.0))
+        .expect("the pointer moves");
+    let away = write_tip(&tab);
+    assert!(
+        away["coarse"] == false
+            && away["disabled"] == "true"
+            && away["tipShown"] == false
+            && away["describedBy"] == "writeTip"
+            && away["line"]
+                .as_str()
+                .is_some_and(|l| l.starts_with("Pair first to turn it on")
+                    && l.contains("agent-monitor --pair")),
+        "away from the greyed row the advice is the line under it: {away}"
+    );
+    let (x, y) = centre_of(&tab, "writeBtn");
+    tab.move_mouse_to_point(point(x - 40.0, y))
+        .expect("the pointer moves");
+    harness::until(
+        &tab,
+        "(function(){ var cs = getComputedStyle(document.getElementById('writeTip')); return cs.visibility === 'visible' && cs.opacity === '1'; })()",
+        "the tooltip to show over the greyed row",
+        Duration::from_secs(5),
+        WRITE_TIP,
+    );
+    let over = write_tip(&tab);
+    let tip = over["tip"].as_str().unwrap_or_default().to_string();
+    assert!(
+        tip.starts_with("Pair first to turn on write mode")
+            && tip.contains("Click to pair this browser")
+            && tip.contains("agent-monitor --pair")
+            && over["belowRow"] == true
+            && over["insideSidebar"] == true
+            && over["rail"] == format!("Write mode: {tip}").as_str(),
+        "over the greyed row a tooltip under it says to pair first and how, inside the sidebar, and the rail's ✎ says the same: {over}"
+    );
+    harness::eval(&tab, "document.getElementById('writeReason').click(); 'ok'");
+    let helped = write_tip(&tab);
+    assert!(
+        helped["help"]
+            .as_str()
+            .is_some_and(|h| h.contains("Write mode needs a paired monitor"))
+            && helped["pairButton"] == serde_json::json!(["Pair this browser"]),
+        "a click on the line opens the help, which offers pairing this browser: {helped}"
+    );
+
+    // A phone: no hover, so the line is the advice and a tap on it opens the help.
+    let (_phone_browser, phone) = harness::chrome_tab();
+    harness::phone(&phone, 390, 844);
+    unpaired.pair(&phone);
+    unpaired.open(&phone, "?ui=app");
+    // The page opens on the newest session with the drawer shut; ☰ opens it.
+    harness::until(
+        &phone,
+        "document.body.dataset.write === 'monitor' && !!document.querySelector('.transcript .turn.user') && document.getElementById('drawerHandle').getClientRects().length > 0",
+        "a phone's page to open on a session",
+        Duration::from_secs(20),
+        WRITE_TIP,
+    );
+    let (x, y) = centre_of(&phone, "drawerHandle");
+    harness::finger_tap(&phone, x, y);
+    harness::until(
+        &phone,
+        "(function(){ var l = document.getElementById('writeReason'), r = l.getBoundingClientRect(); return !l.hidden && r.width > 0 && r.top >= 0 && r.bottom <= innerHeight && r.left >= 0 && r.right <= innerWidth; })()",
+        "a phone's drawer to show the line under the greyed switch",
+        Duration::from_secs(10),
+        WRITE_TIP,
+    );
+    let (x, y) = centre_of(&phone, "writeReason");
+    harness::finger_tap(&phone, x, y);
+    harness::until(
+        &phone,
+        "!document.getElementById('writeHelp').hidden",
+        "a tap on the line to open the help",
+        Duration::from_secs(5),
+        WRITE_TIP,
+    );
+    let tapped = write_tip(&phone);
+    assert!(
+        tapped["coarse"] == true
+            && tapped["tipShown"] == false
+            && tapped["line"]
+                .as_str()
+                .is_some_and(|l| l.starts_with("Pair first to turn it on"))
+            && tapped["help"]
+                .as_str()
+                .is_some_and(|h| h.contains("Write mode needs a paired monitor")),
+        "on a phone no tooltip stands after the tap, and the line and the help carry the advice: {tapped}"
+    );
+    drop(unpaired);
+
+    // A paired page, opened with the token, may write: no advice, over its row or anywhere.
+    let paired = harness::Monitor::spawn(harness::Kind::V1, 3176, &base, Some(&stores), true);
+    paired.pair(&tab);
+    paired.open(&tab, &format!("?ui=app&session={WRITE_SID}"));
+    harness::until(
+        &tab,
+        "document.body.dataset.write === 'open' && !!document.querySelector('.transcript .turn.user')",
+        "the paired page to say writing is open",
+        Duration::from_secs(20),
+        WRITE_TIP,
+    );
+    let (x, y) = centre_of(&tab, "writeBtn");
+    tab.move_mouse_to_point(point(x - 40.0, y))
+        .expect("the pointer moves");
+    harness::until(
+        &tab,
+        "document.getElementById('writeBtn').matches(':hover')",
+        "the pointer over the row",
+        Duration::from_secs(5),
+        WRITE_TIP,
+    );
+    std::thread::sleep(Duration::from_millis(600));
+    let open = write_tip(&tab);
+    assert!(
+        open["disabled"] == "false"
+            && open["line"].is_null()
+            && open["tip"] == ""
+            && open["tipShown"] == false
+            && open["describedBy"].is_null()
+            && open["rail"] == "Write mode",
+        "a page that may write carries no advice: {open}"
+    );
 }
 
 /// #s619: on a monitor not yet paired, a reader at this machine pairs it from Write mode's help. The
@@ -30940,7 +31111,7 @@ fn a_slow_reload_for_the_pairing_cookie_happens_once() {
     assert!(
         reason["reason"]
             .as_str()
-            .is_some_and(|r| r.contains("This browser is not paired")),
+            .is_some_and(|r| r.contains("Pair this browser first")),
         "{reason}"
     );
 }
