@@ -3642,12 +3642,17 @@ fn apply_registry(procs: &mut [Proc], default_home: &Path) {
 /// The agent a process IS, by its executable — or `None` for one the monitor cannot place (a
 /// configured extra pattern), which stays a candidate for any agent's session (#s59).
 fn proc_agent(p: &Proc) -> Option<Agent> {
-    match p.exe_base.to_ascii_lowercase().as_str() {
+    builtin_agent(&p.exe_base)
+}
+
+fn builtin_agent(exe_base: &str) -> Option<Agent> {
+    match exe_base.to_ascii_lowercase().as_str() {
         "claude" => Some(Agent::CLAUDE),
         "codex" => Some(Agent::CODEX),
         "qoderwork" => Some(Agent::QODERWORK),
         "qoder" => Some(Agent::QODER),
         "qwenwork" | "qwenworkcn" => Some(Agent::QWENWORK),
+        "agy" | "antigravity" => Some(Agent::ANTIGRAVITY),
         _ => None,
     }
 }
@@ -3863,16 +3868,7 @@ fn extra_agent_patterns() -> &'static [AgentPattern] {
 }
 
 fn is_agent_exe(exe_base: &str, argv: &str) -> bool {
-    // Qwenwork's desktop app runs as `QwenWorkCN`; its own CLI as `qwenwork` (#358).
-    const BUILTINS: &[&str] = &[
-        "claude",
-        "codex",
-        "qoderwork",
-        "qoder",
-        "qwenwork",
-        "qwenworkcn",
-    ];
-    BUILTINS.iter().any(|b| exe_base.eq_ignore_ascii_case(b))
+    builtin_agent(exe_base).is_some()
         || extra_agent_patterns()
             .iter()
             .any(|p| p.matches(exe_base, argv))
@@ -9530,6 +9526,33 @@ n/Users/x/proj
         }
         idx.prove_by_growth(&mut st);
         assert!(st.rows.values().all(|row| row.proved_pid.is_none()));
+    }
+
+    #[test]
+    fn a_quiet_antigravity_process_keeps_its_session_live_and_read_only() {
+        let scratch = std::env::temp_dir().join(format!("cm-agy-link-{}", std::process::id()));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let cwd = "/w/harbor";
+        let mut procs = parse_ps("700 /opt/bin/agy\n900 codex\n");
+        apply_lsof(
+            &mut procs,
+            "p700\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+        );
+        assert!(is_agent_exe(&procs[0].exe_base, &procs[0].argv));
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        let mut agy = growth_row(cwd, false);
+        agy.agent = Agent::ANTIGRAVITY;
+        agy.tree_mtime = Some(SystemTime::now() - Duration::from_secs(3600));
+        st.rows.insert("agy-session".into(), agy);
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        let row = registry_row(&snapshot, "agy-session");
+        assert_eq!(row["pid"], 700);
+        assert_eq!(row["state"], "idle");
+        assert!(row.get("injectable").is_none());
+        let _ = std::fs::remove_dir_all(scratch);
     }
 
     /// An open transcript reserves its process as firmly as an argv identity. Removing

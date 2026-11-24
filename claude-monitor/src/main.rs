@@ -126,7 +126,8 @@ CACHE ROOT:
   install creates ~/.cache/agent-monitor. Never the viewer's own root.
 
 PROCESS RECOGNITION:
-  Built-in basenames: claude, codex, qoderwork, qoder, qwenwork, qwenworkcn.
+  Built-in basenames: claude, codex, qoderwork, qoder, qwenwork, qwenworkcn,
+                      agy, antigravity.
   Extend that set with $AGENT_MONITOR_AGENT_PATTERNS, comma-separated:
 
     basename:<name>     match the executable's own name

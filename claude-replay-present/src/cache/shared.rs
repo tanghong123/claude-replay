@@ -167,8 +167,18 @@ struct Inner<S: BlockStore> {
 impl<S: BlockStore> Inner<S> {
     /// Append whatever the fold just authored. Errors are swallowed: a stream that cannot be
     /// written costs a longer resume next time, never a wrong session.
-    fn record(&mut self) {
+    fn record(&mut self, reset: bool) {
         let Some(w) = self.meta.as_mut() else { return };
+        w.reset_pending |= reset;
+        if w.reset_pending {
+            if w.meta
+                .reset(self.follower.path(), w.versions.clone())
+                .is_err()
+            {
+                return;
+            }
+            w.reset_pending = false;
+        }
         for r in &self.follower.drain_meta() {
             let _ = w.meta.append(r);
         }
@@ -252,7 +262,7 @@ impl<S: BlockStore> SharedSession<S> {
         }
         g.n_provisional = provisional.len();
         g.prev_provisional = provisional;
-        g.record();
+        g.record(reset);
         Ok(true)
     }
 
@@ -314,7 +324,7 @@ impl<S: BlockStore> SharedSession<S> {
         };
         g.n_provisional = r.provisional.len();
         g.prev_provisional = r.provisional.clone();
-        g.record();
+        g.record(reset);
         Ok(Some(ViewDelta {
             reset,
             committed_delta,
@@ -494,7 +504,7 @@ impl<S: BlockStore> SharedSession<S> {
         let mut g = super::lock_recover(&self.inner);
         g.meta = Some(w);
         g.frozen = false;
-        g.record();
+        g.record(false);
     }
 
     /// **Freeze this session**: flush what the fold has authored, detach the writer, and stop
@@ -508,7 +518,7 @@ impl<S: BlockStore> SharedSession<S> {
     /// process no longer owns.
     pub fn quiesce(&self) {
         let mut g = super::lock_recover(&self.inner);
-        g.record();
+        g.record(false);
         g.meta = None;
         g.frozen = true;
     }

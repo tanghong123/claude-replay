@@ -10,7 +10,7 @@
 
 use crate::engine::meta_stream::{crc32, MetaRecord, StreamHeader};
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Seek, Write};
 use std::path::{Path, PathBuf};
 
 // The window CRC moved down into the engine (#14): the metrics cursor pairs it with a byte
@@ -46,6 +46,24 @@ pub struct MetaWriter {
 }
 
 impl MetaWriter {
+    /// Replace the metadata of a discarded fold, including its source anchor.
+    pub(crate) fn reset(
+        &mut self,
+        src: &Path,
+        versions: crate::engine::meta_stream::Versions,
+    ) -> std::io::Result<()> {
+        self.file.set_len(0)?;
+        self.file.rewind()?;
+        // A disappeared source also resets the fold. Its empty stream cannot resume.
+        let anchor = anchor_of(src).unwrap_or_default();
+        writeln!(
+            self.file,
+            "{}",
+            serde_json::to_string(&StreamHeader { anchor, versions })?
+        )?;
+        Ok(())
+    }
+
     /// Create the stream, writing its header. Truncates any existing file — the caller has
     /// already decided the old one is unusable (a rejected cache, or a fold reset).
     pub fn create(
