@@ -435,11 +435,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// the marker and the line, beside the client's own warning about the same outcome, and drew one
 /// picked up mid-turn as the person's prompt, a turn of its own.
 ///
+/// v93: #s692 — a bridged peer message's queue key drops the `hop-chain` its enqueue alone
+/// carries, so its remove takes it; a v92 stream left it at the queue's front, where the next
+/// content-less pop took it in place of a typed prompt, whose `⧗ queued` marker then stayed.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 92;
+pub const FOLD_VERSION: u16 = 93;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

@@ -5089,7 +5089,7 @@ pub(crate) fn decode_line_known(
             let content = v
                 .get("content")
                 .and_then(|c| c.as_str())
-                .map(|c| fence_pasted(c).into_owned());
+                .map(|c| queue_key(&fence_pasted(c)).into_owned());
             let op = match v.get("operation").and_then(|o| o.as_str()) {
                 Some("enqueue") => Some(QueueOpKind::Enqueue),
                 Some("remove") => Some(QueueOpKind::Remove),
@@ -6682,7 +6682,10 @@ pub(crate) fn parse_main<S: AsRef<str>>(
             // that finds the prompt was picked up with no agent work in between marks
             // that marker for suppression (immediate → the `❯` turn alone suffices).
             Some("queue-operation") => {
-                let content = v.get("content").and_then(|c| c.as_str()).map(fence_pasted);
+                let content = v
+                    .get("content")
+                    .and_then(|c| c.as_str())
+                    .map(|c| queue_key(&fence_pasted(c)).into_owned());
                 let content = content.as_deref();
                 match v.get("operation").and_then(|o| o.as_str()) {
                     Some("enqueue") => {
@@ -7915,6 +7918,36 @@ fn notice_pickup(text: &str) -> Message {
         content: Some(fence_pasted(text).trim().to_string()),
         prose: false,
         reason: None,
+    }
+}
+
+/// A queue record's text as the queue matches it (#s692). Claude Code marks a message from
+/// another session that came over a bridge with a `hop-chain` on its wrapper, in its ENQUEUE
+/// alone: its remove and its pickup carry the same text without it (measured on denali, Claude
+/// Code 2.1.331: 306 enqueues across 15 sessions, each with one, inside the opening tag right
+/// after `from`; no remove or pickup with one). So each such remove took nothing, the item stayed
+/// at the queue's front, and the next content-less pop took it in place of the prompt it was for,
+/// whose `⧗ queued` marker stayed (five times in one session). The attribute is dropped from the
+/// opening tag of a text that starts with the wrapper, and nothing else is touched.
+fn queue_key(c: &str) -> std::borrow::Cow<'_, str> {
+    const TAG: &str = "<cross-session-message";
+    const HOP: &str = " hop-chain=\"";
+    let lead = c.len() - c.trim_start().len();
+    if !c[lead..].starts_with(TAG) {
+        return std::borrow::Cow::Borrowed(c);
+    }
+    let Some(close) = c[lead..].find('>').map(|i| lead + i) else {
+        return std::borrow::Cow::Borrowed(c);
+    };
+    let Some(at) = c[lead..close].find(HOP).map(|i| lead + i) else {
+        return std::borrow::Cow::Borrowed(c);
+    };
+    match c[at + HOP.len()..close].find('"') {
+        Some(end) => {
+            let end = at + HOP.len() + end + 1;
+            std::borrow::Cow::Owned(format!("{}{}", &c[..at], &c[end..]))
+        }
+        None => std::borrow::Cow::Borrowed(c),
     }
 }
 
@@ -9710,6 +9743,58 @@ mod tests {
                 .any(|b| matches!(b, Block::Attachment(_) | Block::QueueEvent { .. })),
             "{blocks:#?}"
         );
+    }
+
+    /// #s692: a message from another session that came over a bridge is enqueued with a
+    /// `hop-chain` on its wrapper, and its remove and its pickup carry the text without it. The
+    /// remove takes the item anyway, so the next content-less pop takes the prompt it was for, and
+    /// that prompt's marker goes with it.
+    #[test]
+    fn a_bridged_peer_message_s_remove_takes_its_enqueue_without_the_hop_chain() {
+        let wrapper = |hop: &str| {
+            format!(
+                r#"<cross-session-message from=\"bridge:session_01\"{hop} from-name=\"petrel-HD\" from-mode=\"bypass\">\none more thing\n</cross-session-message>"#
+            )
+        };
+        let enqueued = wrapper(r#" hop-chain=\"a1b2,c3d4\""#);
+        let taken = wrapper("");
+        let jsonl = format!(
+            r#"{{"type":"user","timestamp":"2026-11-24T05:39:00.000Z","promptSource":"typed","message":{{"role":"user","content":"count the skua nests"}}}}
+{{"type":"assistant","timestamp":"2026-11-24T05:39:59.000Z","message":{{"role":"assistant","stop_reason":"tool_use","content":[{{"type":"tool_use","id":"toolu_h1","name":"Bash","input":{{"command":"sleep 5"}}}}]}}}}
+{{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-24T05:40:00.000Z","content":"{enqueued}"}}
+{{"type":"attachment","timestamp":"2026-11-24T05:40:01.000Z","attachment":{{"type":"queued_command","commandMode":"prompt","isMeta":true,"origin":{{"kind":"peer","from":"bridge:session_01","msg_id":"m2","name":"petrel-HD","fromMode":"bypass","body":"one more thing"}},"prompt":"{taken}"}}}}
+{{"type":"queue-operation","operation":"remove","timestamp":"2026-11-24T05:40:01.100Z","reason":"absorbed_mid_turn","content":"{taken}"}}
+{{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-24T05:40:02.000Z","content":"and the petrels"}}
+{{"type":"user","timestamp":"2026-11-24T05:40:05.000Z","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"toolu_h1","content":"done"}}]}}}}
+{{"type":"assistant","timestamp":"2026-11-24T05:40:06.000Z","message":{{"role":"assistant","stop_reason":"end_turn","content":[{{"type":"text","text":"counted"}}]}}}}
+{{"type":"queue-operation","operation":"dequeue","timestamp":"2026-11-24T05:40:07.000Z"}}
+"#
+        );
+        let blocks = both_paths(&jsonl);
+        assert!(
+            !blocks.iter().any(|b| matches!(b, Block::QueueEvent { .. })),
+            "the pop took the typed prompt, so its marker is gone: {blocks:#?}"
+        );
+        assert!(
+            blocks.iter().any(
+                |b| matches!(b, Block::PeerText { text, .. } if text.contains("one more thing"))
+            ),
+            "the peer message is still drawn: {blocks:#?}"
+        );
+
+        // The key: the attribute alone goes, from the wrapper's opening tag alone.
+        assert_eq!(
+            queue_key("<cross-session-message from=\"b\" hop-chain=\"x,y\" from-name=\"n\">\nhi hop-chain=\"z\"\n</cross-session-message>"),
+            "<cross-session-message from=\"b\" from-name=\"n\">\nhi hop-chain=\"z\"\n</cross-session-message>"
+        );
+        for kept in [
+            "no wrapper hop-chain=\"x\"",
+            "<cross-session-message from=\"b\">\nbody\n</cross-session-message>",
+            "<other hop-chain=\"x\">",
+            "<cross-session-message from=\"b\" hop-chain=\"unclosed>",
+        ] {
+            assert_eq!(queue_key(kept), kept);
+        }
     }
 
     /// #s79: the rewrite is exact — the close may repeat the id or not, text either side keeps its

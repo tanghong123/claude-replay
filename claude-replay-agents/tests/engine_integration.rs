@@ -2581,6 +2581,32 @@ fn tail_pulse_keeps_an_image_only_message_s_place_in_the_queue() {
     );
 }
 
+/// #s692: a message from another session that came over a bridge is enqueued with a `hop-chain`
+/// on its wrapper, and its remove carries the text without it. The busy signal keeps the client's
+/// queue as the fold does, so the remove takes it, and the pop at the turn's end takes the typed
+/// prompt it was for: nothing reads as queued. Missed, the peer item stayed at the front, the pop
+/// took it, and the delivered prompt read as still waiting.
+#[test]
+fn tail_pulse_takes_a_bridged_peer_message_by_its_remove() {
+    use claude_replay_engine::state::tail_pulse;
+    let jsonl = concat!(
+        r#"{"type":"assistant","message":{"role":"assistant","model":"m","stop_reason":null,"content":[{"type":"text","text":"working"}]},"timestamp":"2026-11-24T05:40:00Z"}"#,
+        "\n",
+        r#"{"type":"queue-operation","operation":"enqueue","content":"<cross-session-message from=\"bridge:session_01\" hop-chain=\"a1b2\" from-name=\"petrel-HD\" from-mode=\"bypass\">\none more thing\n</cross-session-message>","timestamp":"2026-11-24T05:40:01Z"}"#,
+        "\n",
+        r#"{"type":"queue-operation","operation":"remove","reason":"absorbed_mid_turn","content":"<cross-session-message from=\"bridge:session_01\" from-name=\"petrel-HD\" from-mode=\"bypass\">\none more thing\n</cross-session-message>","timestamp":"2026-11-24T05:40:02Z"}"#,
+        "\n",
+        r#"{"type":"queue-operation","operation":"enqueue","content":"and the petrels","timestamp":"2026-11-24T05:40:03Z"}"#,
+        "\n",
+        r#"{"type":"queue-operation","operation":"dequeue","timestamp":"2026-11-24T05:40:04Z"}"#,
+        "\n",
+    );
+    assert!(
+        !tail_pulse(&ClaudeAdapter, &tmp1(jsonl)).queued_prompt,
+        "the pop took the typed prompt: nothing is queued"
+    );
+}
+
 /// #242: `popAll` EMPTIES the queue, so the session is no longer holding a prompt. This arm
 /// did not exist when the variant was added and the op fell to the catch-all, which left
 /// `queued_prompt` true for the rest of the session — reporting a session as waiting on a
