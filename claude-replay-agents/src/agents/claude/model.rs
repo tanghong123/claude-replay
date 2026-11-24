@@ -1454,9 +1454,10 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // REVISIT: (1) a value other than the four;
             // (2) the key on a typed prompt or on another record type; (3) a "harness" row the page
             // draws as the person's or the session's own words.
-            // (3) FIRED on denali: the delivery notice is drawn as "⧗ queued:", the marker for a
-            // prompt the person typed. Queued for the owner as #s689, a RENDER question, not
-            // decided here.
+            // (3) FIRED on denali: the delivery notice was drawn as "⧗ queued:", the marker for a
+            // prompt the person typed. Hong chose on #s689: the client's note, drawn once. Since
+            // #s691 the copy addressed to the model draws nothing (`delivery_notice`), by the
+            // client's own test rather than by this key.
             "rowSource",
             // #s681 (client 2.1.331): on the Stop hook feedback the client hands the model (a user
             // record, `isMeta`, `rowSource: "hook"`, a string content opening "Stop hook feedback:",
@@ -4916,6 +4917,16 @@ pub(crate) fn decode_line_known(
             let Some(content) = v.pointer("/message/content") else {
                 return;
             };
+            // #s691: the model's copy of a delivery notice draws nothing; the client's warning
+            // before it is the note.
+            if let Some(t) = delivery_notice(
+                v.get("isMeta").and_then(Value::as_bool) == Some(true),
+                v.get("origin"),
+                Some(content),
+            ) {
+                msgs.push(notice_pickup(t));
+                return;
+            }
             if let Some(p) = peer_of(
                 v.get("origin"),
                 content.as_str(),
@@ -5141,7 +5152,19 @@ pub(crate) fn decode_line_known(
                 if let Some(prompt) = a.and_then(|a| a.get("prompt")) {
                     note_queued_prompt_shape(&v, prompt);
                 }
-                if let Some((p, images)) = a.and_then(|a| a.get("prompt")).map(queued_prompt) {
+                // #s691: a delivery notice picked up mid-turn is the model's copy too, never the
+                // person's prompt.
+                let notice = a.and_then(|a| {
+                    delivery_notice(
+                        a.get("isMeta").and_then(Value::as_bool) == Some(true),
+                        a.get("origin"),
+                        a.get("prompt"),
+                    )
+                });
+                if let Some(t) = notice {
+                    msgs.push(notice_pickup(t));
+                } else if let Some((p, images)) = a.and_then(|a| a.get("prompt")).map(queued_prompt)
+                {
                     let p: &str = &p;
                     let meta =
                         a.and_then(|a| a.get("isMeta")).and_then(Value::as_bool) == Some(true);
@@ -6402,6 +6425,22 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                 let Some(content) = v.pointer("/message/content") else {
                     continue;
                 };
+                // #s691 mirror: the model's copy of a delivery notice draws nothing, and its
+                // pickup takes its queue item by its text (the streaming decode's `notice_pickup`).
+                if let Some(t) = delivery_notice(
+                    v.get("isMeta").and_then(Value::as_bool) == Some(true),
+                    v.get("origin"),
+                    Some(content),
+                ) {
+                    let t = fence_pasted(t);
+                    if let Some(pos) = queue.iter().position(|q| q.content == t.trim()) {
+                        let item = queue.remove(pos);
+                        if let Some(mi) = item.marker_idx {
+                            suppress.push(mi);
+                        }
+                    }
+                    continue;
+                }
                 // #s79: another session's message opens its own turn (mirrors the streaming
                 // decode's `PeerText`).
                 if let Some(p) = peer_of(
@@ -6764,7 +6803,12 @@ pub(crate) fn parse_main<S: AsRef<str>>(
                             let meta = a.and_then(|a| a.get("isMeta")).and_then(Value::as_bool)
                                 == Some(true);
                             let origin = a.and_then(|a| a.get("origin"));
+                            // #s691 mirror: a delivery notice picked up mid-turn draws nothing.
+                            let notice = a
+                                .and_then(|a| delivery_notice(meta, origin, a.get("prompt")))
+                                .is_some();
                             match peer_of(origin, Some(&p), meta) {
+                                _ if notice => {}
                                 // #s655 mirror: the person's own, signed, picked up mid-turn.
                                 Some(peer) => match peer_inbox(&v, origin, &peer, || p.to_string())
                                 {
@@ -7804,8 +7848,58 @@ fn is_queue_prose(s: &str) -> bool {
         // #s79: another session's message, queued mid-turn — kept in the queue so its pickup
         // pops it, but it is not the person's in-flight input, which is what the marker means.
         && !t.starts_with("<cross-session-message")
+        // #s691: the client's own notice about a message this session sent, never typed.
+        && !t.starts_with(DELIVERY_NOTICE)
         && !t.starts_with("[Request interrupted")
         && t.chars().any(|c| !c.is_whitespace() && !c.is_control())
+}
+
+/// How Claude Code opens what it tells the MODEL about a message this session sent to another
+/// session (#s691, client 2.1.331): held, denied, expired, released, refused, or dropped at that
+/// session's inbox.
+const DELIVERY_NOTICE: &str = "[Cross-session delivery notice]";
+
+/// The model's copy of a delivery notice (#s691), by the client's own test (2.1.331): `isMeta`,
+/// no `origin`, its text (a string, or its first part's `text`) opening with
+/// [`DELIVERY_NOTICE`]. Returns that text.
+///
+/// The client writes the PERSON's line about the same outcome in the same step, a `system`
+/// `informational` warning ("Cross-session message held by the receiving session (recipient:
+/// @name). …"), which both parse paths already draw. In every branch of 2.1.331's code that
+/// queues a notice it appends that warning first, and on denali both notices met (one session)
+/// came with it. Hong's choice on #s689: the client's note, drawn once. So the copy addressed to
+/// the model draws nothing, where it used to be a second result line, after a `⧗ queued` marker
+/// that means the person typed it. Its pickup still takes its queue item by its text, as a
+/// prompt's does (#52), so a queue that drifted cannot leave it at the front.
+///
+/// The enqueue carries no `isMeta`, so there only the opening decides ([`is_queue_prose`]): a
+/// typed prompt opening with those words draws no marker while it waits, and is still the
+/// person's turn when it arrives. REVISIT: (1) a notice that arrives with no warning before it
+/// (the reader would then see nothing of the outcome); (2) one wrapped as a `<task-notification>`
+/// (2.1.331 queues that form when nothing waits on the reply; not yet met); (3) the sibling
+/// `[Cross-session idle notice]`, not yet met.
+fn delivery_notice<'a>(
+    meta: bool,
+    origin: Option<&Value>,
+    content: Option<&'a Value>,
+) -> Option<&'a str> {
+    let content = content?;
+    let text = content
+        .as_str()
+        .or_else(|| content.get(0)?.get("text")?.as_str())?;
+    (meta && origin.is_none() && text.starts_with(DELIVERY_NOTICE)).then_some(text)
+}
+
+/// A delivery notice's pickup (#s691): it takes its queue item by its text, as a delivered prompt
+/// does (#52), and draws nothing. Where a pop already took it, the text matches nothing and
+/// nothing moves.
+fn notice_pickup(text: &str) -> Message {
+    Message::QueueOp {
+        op: QueueOpKind::Remove,
+        content: Some(fence_pasted(text).trim().to_string()),
+        prose: false,
+        reason: None,
+    }
 }
 
 /// The α-lite elision policy (#193): the attachment-body nodes this fold DEFERS and never
@@ -9366,6 +9460,180 @@ mod tests {
             3,
             "the prompt and both peer messages open turns"
         );
+    }
+
+    /// The records Claude Code 2.1.331 writes for one outcome of a message this session sent
+    /// (#s691): the enqueue of its notice to the model, its own warning to the person, the pop,
+    /// and the notice as an `isMeta` user record (shapes as measured on denali, text shortened).
+    fn delivery_notice_records(at: &str, outcome: &str, warning: &str) -> String {
+        let notice = format!(
+            "[Cross-session delivery notice] Your message to another session was {outcome} (recipient: uds:/tmp/cc-socks/9.sock; msg_id: m9)."
+        );
+        [
+            serde_json::json!({"type": "queue-operation", "operation": "enqueue", "timestamp": format!("{at}.080Z"), "content": notice}),
+            serde_json::json!({"type": "system", "subtype": "informational", "level": "warning", "isMeta": false, "timestamp": format!("{at}.078Z"), "content": warning}),
+            serde_json::json!({"type": "queue-operation", "operation": "dequeue", "timestamp": format!("{at}.302Z")}),
+            serde_json::json!({"type": "user", "timestamp": format!("{at}.310Z"), "version": "2.1.331", "isMeta": true, "promptSource": "system", "turnOrigin": "system", "rowSource": "harness", "queuePriority": "later", "message": {"role": "user", "content": notice}}),
+        ]
+        .iter()
+        .map(|v| v.to_string() + "\n")
+        .collect()
+    }
+
+    /// Both parse paths, asserted to agree.
+    fn both_paths(jsonl: &str) -> Vec<Block> {
+        let streamed = parse(jsonl);
+        let reference = parse_main(
+            jsonl.lines().filter(|l| !l.trim().is_empty()),
+            &mut Vec::new(),
+        );
+        assert_eq!(streamed, reference, "the two parse paths agree");
+        streamed
+    }
+
+    fn notice_lines(blocks: &[Block]) -> Vec<String> {
+        blocks
+            .iter()
+            .filter_map(|b| match b {
+                Block::ToolResult(t) | Block::QueueEvent { text: t } | Block::UserText(t) => {
+                    Some(t.clone())
+                }
+                _ => None,
+            })
+            .filter(|t| t.contains("Cross-session"))
+            .collect()
+    }
+
+    /// #s691 (Hong's choice on #s689): Claude Code's notice to the model about a message this
+    /// session sent is drawn once, as the client's own warning to the person, never as a `⧗
+    /// queued` marker (which means the person typed it) and never again as a result line.
+    #[test]
+    fn a_delivery_notice_is_drawn_once_as_the_clients_note() {
+        let jsonl = format!(
+            "{}{}{}{}{}",
+            r#"{"type":"user","timestamp":"2026-11-24T05:39:00.000Z","promptSource":"typed","turnOrigin":"human","message":{"role":"user","content":"brief de-steward"}}
+{"type":"assistant","timestamp":"2026-11-24T05:39:59.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Sent."}]}}
+"#,
+            delivery_notice_records(
+                "2026-11-24T05:40:00",
+                "held by that session",
+                "Cross-session message held by the receiving session (recipient: @de-steward). Claude in that session hasn't seen it.",
+            ),
+            r#"{"type":"assistant","timestamp":"2026-11-24T05:40:05.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"It is held."}]}}
+"#,
+            delivery_notice_records(
+                "2026-11-24T05:40:16",
+                "approved and released to that session",
+                "Cross-session message released after approval (recipient: @de-steward).",
+            ),
+            r#"{"type":"assistant","timestamp":"2026-11-24T05:40:17.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Released."}]}}
+"#,
+        );
+        let blocks = both_paths(&jsonl);
+        assert_eq!(
+            notice_lines(&blocks),
+            vec![
+                "Cross-session message held by the receiving session (recipient: @de-steward). Claude in that session hasn't seen it.".to_string(),
+                "Cross-session message released after approval (recipient: @de-steward).".to_string(),
+            ],
+            "each outcome once, in the client's words to the person: {blocks:#?}"
+        );
+        assert!(
+            !blocks.iter().any(|b| matches!(b, Block::QueueEvent { .. })),
+            "no ⧗ queued marker"
+        );
+        assert_eq!(
+            blocks.iter().filter(|b| b.opens_turn()).count(),
+            1,
+            "only the person's prompt opens a turn"
+        );
+    }
+
+    /// #s691: a notice still waiting in the queue draws no marker either, while its words to
+    /// the model are not yet anywhere else.
+    #[test]
+    fn a_waiting_delivery_notice_draws_no_queued_marker() {
+        let jsonl = r#"{"type":"user","timestamp":"2026-11-24T05:39:00.000Z","promptSource":"typed","message":{"role":"user","content":"brief de-steward"}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-24T05:40:00.080Z","content":"[Cross-session delivery notice] Your message to another session was held by that session (recipient: uds:/tmp/cc-socks/9.sock; msg_id: m9)."}
+"#;
+        let blocks = both_paths(jsonl);
+        assert!(
+            !blocks.iter().any(|b| matches!(b, Block::QueueEvent { .. })),
+            "{blocks:#?}"
+        );
+    }
+
+    /// #s691: a notice picked up mid-turn (a `queued_command` attachment, as a `next`-priority
+    /// prompt arrives) is the model's copy too: never drawn as the person's prompt. Built from
+    /// the attachment shape the adapter reads for every queued prompt; this form of the notice
+    /// has not been met yet.
+    #[test]
+    fn a_delivery_notice_picked_up_mid_turn_is_not_the_persons_prompt() {
+        let jsonl = r#"{"type":"user","timestamp":"2026-11-24T05:39:00.000Z","promptSource":"typed","message":{"role":"user","content":"brief de-steward"}}
+{"type":"assistant","timestamp":"2026-11-24T05:39:59.000Z","message":{"role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","id":"toolu_n1","name":"Bash","input":{"command":"sleep 5"}}]}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-24T05:40:00.080Z","content":"[Cross-session delivery notice] Your message to another session was refused (recipient: uds:/tmp/cc-socks/9.sock; msg_id: m9)."}
+{"type":"system","subtype":"informational","level":"warning","isMeta":false,"timestamp":"2026-11-24T05:40:00.078Z","content":"Cross-session message refused (recipient: @de-steward)."}
+{"type":"attachment","timestamp":"2026-11-24T05:40:01.000Z","attachment":{"type":"queued_command","commandMode":"prompt","isMeta":true,"prompt":"[Cross-session delivery notice] Your message to another session was refused (recipient: uds:/tmp/cc-socks/9.sock; msg_id: m9)."}}
+{"type":"queue-operation","operation":"remove","timestamp":"2026-11-24T05:40:01.100Z","reason":"absorbed_mid_turn","content":"[Cross-session delivery notice] Your message to another session was refused (recipient: uds:/tmp/cc-socks/9.sock; msg_id: m9)."}
+{"type":"user","timestamp":"2026-11-24T05:40:05.000Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_n1","content":"done"}]}}
+{"type":"assistant","timestamp":"2026-11-24T05:40:06.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Refused there."}]}}
+"#;
+        let blocks = both_paths(jsonl);
+        assert_eq!(
+            notice_lines(&blocks),
+            vec!["Cross-session message refused (recipient: @de-steward).".to_string()],
+            "{blocks:#?}"
+        );
+        assert_eq!(blocks.iter().filter(|b| b.opens_turn()).count(), 1);
+    }
+
+    /// #s691: the notice's pickup takes its own queue item by its text. 2.1.331's queue can
+    /// drift: a bridged peer message is enqueued with a `hop-chain` attribute its `remove`
+    /// leaves out, so the remove misses and that item stays at the front, where the next pop
+    /// takes it in the notice's place. Without the pickup's own pop, the notice's item then sat
+    /// at the front and the following prompt's pop took it, leaving that prompt marked as
+    /// waiting after it had gone to the agent (this tail is the live moment before its record).
+    #[test]
+    fn a_delivery_notice_pickup_keeps_the_queue_in_step_after_a_drift() {
+        let jsonl = format!(
+            "{}{}{}",
+            r#"{"type":"user","timestamp":"2026-11-24T05:30:00.000Z","promptSource":"typed","message":{"role":"user","content":"brief de-steward"}}
+{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-24T05:30:01.000Z","content":"<cross-session-message from=\"bridge:session_x\" hop-chain=\"h1\" from-name=\"aries\" from-mode=\"bypass\">\nnoted\n</cross-session-message>"}
+{"type":"queue-operation","operation":"remove","timestamp":"2026-11-24T05:30:02.000Z","reason":"absorbed_mid_turn","content":"<cross-session-message from=\"bridge:session_x\" from-name=\"aries\" from-mode=\"bypass\">\nnoted\n</cross-session-message>"}
+{"type":"assistant","timestamp":"2026-11-24T05:39:59.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Sent."}]}}
+"#,
+            delivery_notice_records(
+                "2026-11-24T05:40:00",
+                "held by that session",
+                "Cross-session message held by the receiving session (recipient: @de-steward).",
+            ),
+            r#"{"type":"queue-operation","operation":"enqueue","timestamp":"2026-11-24T05:40:20.000Z","content":"and check the clone"}
+{"type":"queue-operation","operation":"dequeue","timestamp":"2026-11-24T05:40:20.500Z"}
+"#,
+        );
+        let blocks = both_paths(&jsonl);
+        assert!(
+            !blocks.iter().any(|b| matches!(b, Block::QueueEvent { .. })),
+            "the prompt's pop took the prompt, so nothing reads as waiting: {blocks:#?}"
+        );
+    }
+
+    /// #s691: only the client's own test makes a notice. A prompt the person typed with the same
+    /// opening is still their turn, and an `isMeta` notice whose content is a list of parts is
+    /// still the model's copy (the client reads its first part's text).
+    #[test]
+    fn a_delivery_notice_is_known_by_the_clients_own_test() {
+        let jsonl = r#"{"type":"user","timestamp":"2026-11-24T05:39:00.000Z","promptSource":"typed","turnOrigin":"human","message":{"role":"user","content":"[Cross-session delivery notice] what does this mean?"}}
+{"type":"assistant","timestamp":"2026-11-24T05:39:59.000Z","message":{"role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"It means it was held."}]}}
+{"type":"user","timestamp":"2026-11-24T05:40:03.310Z","isMeta":true,"promptSource":"system","turnOrigin":"system","rowSource":"harness","message":{"role":"user","content":[{"type":"text","text":"[Cross-session delivery notice] Your message to another session was denied by the recipient user (recipient: uds:/tmp/cc-socks/9.sock; msg_id: m9)."}]}}
+"#;
+        let blocks = both_paths(jsonl);
+        assert_eq!(
+            notice_lines(&blocks),
+            vec!["[Cross-session delivery notice] what does this mean?".to_string()],
+            "{blocks:#?}"
+        );
+        assert!(matches!(&blocks[0], Block::UserText(t) if t.starts_with("[Cross-session")));
     }
 
     /// #s79: the rewrite is exact — the close may repeat the id or not, text either side keeps its

@@ -430,11 +430,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// `sessionId` (a copy a moved or forked session opens with) adds no tokens and times no answer,
 /// where a v90 stream's persisted deltas priced it in both sessions.
 ///
+/// v92: #s691 — Claude Code's "[Cross-session delivery notice]" to the model draws no `⧗ queued`
+/// marker and no result line, and its pickup takes its queue item by its text; a v91 stream holds
+/// the marker and the line, beside the client's own warning about the same outcome.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 91;
+pub const FOLD_VERSION: u16 = 92;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
