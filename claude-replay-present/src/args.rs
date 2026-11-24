@@ -9,7 +9,7 @@ use claude_replay_core::Agent;
 /// the `ValueEnum` derive (and thus clap) out of the core `Agent` type.
 pub fn parse_agent(s: &str) -> std::result::Result<Agent, String> {
     Agent::from_label(s).ok_or_else(|| {
-        format!("unknown agent '{s}' (expected: claude, codex, qoder, qoderwork, qwenwork)")
+        format!("unknown agent '{s}' (expected: claude, codex, qoder, qoderwork, qwenwork, antigravity)")
     })
 }
 

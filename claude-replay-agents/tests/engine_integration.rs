@@ -34,6 +34,97 @@ fn tmp(name: &str, body: &str) -> PathBuf {
     p
 }
 
+#[test]
+fn antigravity_replays_tool_batches_and_picks_up_same_length_rewrites() {
+    use claude_replay_core::{metrics_fold, CursorReject, FoldStart, Transcript};
+    use claude_replay_engine::model::ToolStatus;
+
+    let lines = [
+        r#"{"step_index":0,"type":"USER_INPUT","source":"USER_EXPLICIT","status":"DONE","created_at":"2026-10-07T10:00:00Z","content":"<USER_REQUEST>Check two things</USER_REQUEST>\n<ADDITIONAL_METADATA>client context</ADDITIONAL_METADATA>"}"#,
+        r#"{"step_index":1,"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","created_at":"2026-10-07T10:00:01Z","thinking":"Inspect","tool_calls":[{"name":"run_command","args":{"CommandLine":"pwd"}},{"name":"read_file","args":{"Path":"README.md"}}],"model":"gemini-test","input_tokens":7,"output_tokens":3,"cache_read_tokens":20}"#,
+        r#"{"step_index":2,"type":"GENERIC","source":"MODEL","status":"DONE","created_at":"2026-10-07T10:00:02Z","content":"/workspace"}"#,
+        r#"{"step_index":3,"type":"GENERIC","source":"MODEL","status":"ERROR","created_at":"2026-10-07T10:00:03Z","error":"missing"}"#,
+        r#"{"step_index":4,"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","created_at":"2026-10-07T10:00:04Z","content":"Old reply","model":"gemini-test","input_tokens":4,"output_tokens":2}"#,
+        r#"{"step_index":5,"type":"USER_INPUT","source":"USER_EXPLICIT","status":"DONE","created_at":"2026-10-07T10:00:05Z","content":"Next"}"#,
+    ];
+    let body = lines.join("\n") + "\n";
+    let path = tmp1(&body);
+    let transcript = Transcript::detect(&path);
+    assert_eq!(transcript.agent(), Agent::ANTIGRAVITY);
+    let batch = transcript.parse().unwrap();
+    let blocks = batch.blocks();
+    assert!(matches!(&blocks[0], Block::UserText(text) if text == "Check two things"));
+    assert!(blocks.iter().any(|b| matches!(b, Block::Thinking { .. })));
+    let tools: Vec<_> = blocks
+        .iter()
+        .filter_map(|block| match block {
+            Block::ToolUse {
+                name,
+                target,
+                output,
+                execution,
+                ..
+            } => Some((
+                name.as_str(),
+                target.as_str(),
+                output.as_deref(),
+                execution.and_then(|e| e.status),
+            )),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        tools,
+        [
+            (
+                "Bash",
+                "pwd",
+                Some("/workspace"),
+                Some(ToolStatus::Completed)
+            ),
+            (
+                "Read",
+                "README.md",
+                Some("missing"),
+                Some(ToolStatus::Failed)
+            ),
+        ]
+    );
+    assert_eq!(batch.metrics.input_tokens, 11);
+    assert_eq!(batch.metrics.cache_read_tokens, 20);
+    assert_eq!(batch.metrics.output_tokens, 5);
+
+    let mut follower = transcript.follow();
+    assert_eq!(follower.poll_session().unwrap().unwrap().blocks(), blocks);
+    assert!(follower.poll_session().unwrap().is_none());
+    let mut fold = metrics_fold(Agent::ANTIGRAVITY, &path, None).unwrap();
+    assert_eq!(fold.next_event().unwrap().unwrap().id.as_deref(), Some("1"));
+    while fold.next_event().unwrap().is_some() {}
+    assert_eq!(fold.metrics().per_model, batch.metrics.per_model);
+    let cursor = fold.cursor().unwrap();
+    let replacement = path.with_extension("replacement");
+    std::fs::write(
+        &replacement,
+        body.replace("Old reply", "New reply")
+            .replace("input_tokens\":4", "input_tokens\":9"),
+    )
+    .unwrap();
+    std::fs::rename(replacement, &path).unwrap();
+    let current = follower.poll_session().unwrap().unwrap();
+    assert_eq!(current.blocks(), transcript.parse().unwrap().blocks());
+    assert!(current
+        .blocks()
+        .contains(&Block::AssistantText("New reply".into())));
+    assert!(!current
+        .blocks()
+        .contains(&Block::AssistantText("Old reply".into())));
+    let mut fold = metrics_fold(Agent::ANTIGRAVITY, &path, Some(&cursor)).unwrap();
+    assert_eq!(fold.start(), FoldStart::Cold(CursorReject::NoCursor));
+    while fold.next_event().unwrap().is_some() {}
+    assert_eq!(fold.metrics().input_tokens, 16);
+    std::fs::remove_file(path).unwrap();
+}
+
 /// The maintained [`SessionMeta`] (committed folded on drain + the open turn folded on top)
 /// must equal a batch `SessionMeta::build` over the whole current block stream — at **every**
 /// step of an incremental fold, including mid-open-turn, across a sub-agent spawn, and across a

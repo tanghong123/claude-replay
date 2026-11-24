@@ -220,6 +220,9 @@ impl CostLedger {
         }
         let cached = self.entries.get(&stem);
         if *budget == 0 {
+            if adapter(agent).snapshot_reader().is_some() {
+                return CostUpdate::Invalidate;
+            }
             // A larger file is not proof of append: an atomically replaced transcript can be
             // longer too. Validate the parked cursor's CRC window before publishing any cached
             // prefix. This reads only the bounded witness window, not fresh transcript events.

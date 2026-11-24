@@ -148,6 +148,13 @@ pub fn detect_agent_claimed(path: &Path) -> (Agent, bool) {
     (can_parse.unwrap_or(Agent::CLAUDE), false)
 }
 
+/// The project directory for a transcript with a known agent, including its store metadata.
+pub fn project_path_for(agent: Agent, path: &Path) -> Option<PathBuf> {
+    crate::adapter::adapter(agent)
+        .project_dir(path)
+        .or_else(|| project_path(path))
+}
+
 /// The **transcript file path** of sub-agent `child_id` spawned under the session at `root`,
 /// for the given `agent`. Resolves a path; it does **not** parse. `None` if the adapter has no
 /// resolvable child transcript. Routes to the agent adapter's `subagent_source` hook.
@@ -533,6 +540,8 @@ mod tests {
         let empty = base.join("empty");
         std::fs::create_dir_all(&empty).unwrap();
 
+        let home = std::env::var_os("HOME");
+        std::env::set_var("HOME", &empty);
         std::env::set_var("CLAUDE_PROJECTS_DIR", &claude);
         std::env::set_var("QODERWORK_PROJECTS_DIR", &qw);
         std::env::set_var("QWENWORK_PROJECTS_DIR", &empty);
@@ -543,6 +552,10 @@ mod tests {
         std::env::set_var("CODEX_HOME", base.join("codex"));
         let all = store_all(None);
         let claude_only = store_all(Some(Agent::CLAUDE));
+        match home {
+            Some(home) => std::env::set_var("HOME", home),
+            None => std::env::remove_var("HOME"),
+        }
         for v in [
             "CLAUDE_PROJECTS_DIR",
             "QODERWORK_PROJECTS_DIR",

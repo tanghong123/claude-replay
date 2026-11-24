@@ -23,6 +23,7 @@ fn run(root: &Path, cwd: &Path, args: &[&str]) -> (String, String, bool) {
     let out = Command::new(env!("CARGO_BIN_EXE_agent-replay"))
         .args(args)
         .current_dir(cwd)
+        .env("HOME", root)
         .env("CLAUDE_PROJECTS_DIR", root.join("claude"))
         .env("CODEX_HOME", root.join("codex"))
         .env("QODER_PROJECTS_DIR", root.join("qoder"))

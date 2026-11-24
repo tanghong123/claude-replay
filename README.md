@@ -1,7 +1,7 @@
 # agent-monitor
 
 Every coding-agent session on this machine on one web page. Sessions from Claude Code,
-Codex, Qoder, QoderWork and Qwenwork sit in one tree, so you see at a glance **who is
+Codex, Qoder, QoderWork, Qwenwork and Antigravity CLI sit in one tree, so you see at a glance **who is
 running, who is waiting for you and why it stopped**; open one to see what that agent is
 doing, and from a paired phone follow them all and reply to the one that is waiting.
 
@@ -25,6 +25,10 @@ macOS and Linux, x86_64 and arm64. `--agents claude,codex` narrows the tree, `--
 another port, and `--no-open` prints the address instead of opening a browser. The page lists
 this machine's sessions by agent, then by project. By default it shows the recently active
 and the blocked ones.
+
+Antigravity CLI (`agy`) sessions are available for read-only viewing. Use
+`agent-monitor --agents antigravity` to filter the monitor, or
+`agent-replay --agent antigravity <conversation-id>` to open one session.
 
 ## Why it exists
 

@@ -585,8 +585,8 @@ fn session_paths_json(
 ) -> serde_json::Value {
     let show = |o: Option<std::path::PathBuf>| o.map(|p| p.display().to_string());
     let agent = agent.unwrap_or_else(|| discover::detect_agent(path));
-    let repo_root = discover::repo_root(path);
-    let project_path = discover::project_path(path);
+    let project_path = discover::project_path_for(agent, path);
+    let repo_root = project_path.clone().map(discover::repo_root_from);
     let key = discover::session_key_from(agent, repo_root.as_deref(), project_path.as_deref());
     serde_json::json!({
         "path": path.display().to_string(),

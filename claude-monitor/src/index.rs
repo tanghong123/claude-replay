@@ -1359,31 +1359,36 @@ impl Index {
                 register(&path);
                 let now_mtime = latest_tree_activity(&path);
                 let now_len = std::fs::metadata(&path).map(|m| m.len()).ok();
-                let row = st.rows.entry(sid).or_insert_with(|| Row {
-                    path: path.clone(),
-                    agent: a.agent(),
-                    cwd: discover::project_path(&path).map(|p| p.display().to_string()),
-                    repo: discover::repo_root(&path).map(|p| p.display().to_string()),
-                    title: String::new(),
-                    tree_mtime: None,
-                    transcript_len: None,
-                    last_event: None,
-                    first_event: None,
-                    start_probed: false,
-                    one_shot: false,
-                    brief: None,
-                    fork_from: None,
-                    fork_probed: false,
-                    launched_by: None,
-                    spawned_by: None,
-                    spawn_probed: false,
-                    proved_pid: None,
-                    continued_in: None,
-                    grew_at: None,
-                    invalidated_growth: None,
-                    counters: None,
-                    title_mtime: None,
-                    cost: None,
+                let row = st.rows.entry(sid).or_insert_with(|| {
+                    let cwd = discover::project_path_for(a.agent(), &path);
+                    Row {
+                        path: path.clone(),
+                        agent: a.agent(),
+                        cwd: cwd.as_ref().map(|p| p.display().to_string()),
+                        repo: cwd
+                            .map(discover::repo_root_from)
+                            .map(|p| p.display().to_string()),
+                        title: String::new(),
+                        tree_mtime: None,
+                        transcript_len: None,
+                        last_event: None,
+                        first_event: None,
+                        start_probed: false,
+                        one_shot: false,
+                        brief: None,
+                        fork_from: None,
+                        fork_probed: false,
+                        launched_by: None,
+                        spawned_by: None,
+                        spawn_probed: false,
+                        proved_pid: None,
+                        continued_in: None,
+                        grew_at: None,
+                        invalidated_growth: None,
+                        counters: None,
+                        title_mtime: None,
+                        cost: None,
+                    }
                 });
                 // A Codex rollout changes form under its row (#s383): compressed once it has gone
                 // seven days untouched, decompressed again when its thread is resumed. The row
@@ -1485,10 +1490,16 @@ impl Index {
                         .to_string();
                     row.title_mtime = t_mtime;
                     if row.cwd.is_none() {
-                        row.cwd = discover::project_path(&path).map(|p| p.display().to_string());
+                        row.cwd = discover::project_path_for(row.agent, &path)
+                            .map(|p| p.display().to_string());
                     }
                     if row.repo.is_none() {
-                        row.repo = discover::repo_root(&path).map(|p| p.display().to_string());
+                        row.repo = row
+                            .cwd
+                            .as_deref()
+                            .map(PathBuf::from)
+                            .map(discover::repo_root_from)
+                            .map(|p| p.display().to_string());
                     }
                     if !row.spawn_probed {
                         if let Some(cwd) = row.cwd.as_deref() {
@@ -4343,12 +4354,13 @@ fn first_event_within(path: &Path, cap: usize) -> Option<u64> {
     if !complete {
         lines.pop();
     }
+    let clock = transcript_clock(path);
     for line in lines {
         let ty = field_after(line, "\"type\":\"").next();
         if ty.is_some_and(|t| NON_ACTIVITY_TYPES.contains(&t)) {
             continue;
         }
-        for ts in field_after(line, "\"timestamp\":\"") {
+        for ts in field_after(line, clock) {
             if let Some(secs) = metrics::parse_ts(ts).filter(|s| *s > 0) {
                 return Some(secs as u64);
             }
@@ -4411,6 +4423,7 @@ fn last_event_within(path: &Path, window: u64) -> Activity {
     // The clock as it stood at the newest compaction boundary in the window.
     let mut at_boundary: Option<Option<u64>> = None;
     let mut behind = false;
+    let clock = transcript_clock(path);
     for line in buf.lines() {
         // Field-level (no per-line JSON parse — pure cost here). Skip housekeeping rows by
         // their `"type"`; take the newest timestamp on everything else.
@@ -4433,7 +4446,7 @@ fn last_event_within(path: &Path, window: u64) -> Activity {
             }
             continue;
         }
-        for ts in field_after(line, "\"timestamp\":\"") {
+        for ts in field_after(line, clock) {
             if let Some(secs) = metrics::parse_ts(ts).filter(|s| *s > 0) {
                 last = Some(last.map_or(secs as u64, |cur: u64| cur.max(secs as u64)));
             }
@@ -4443,6 +4456,14 @@ fn last_event_within(path: &Path, window: u64) -> Activity {
         Some(secs) => Activity::At(secs),
         None if behind => Activity::Behind,
         None => Activity::Nothing,
+    }
+}
+
+fn transcript_clock(path: &Path) -> &'static str {
+    if claude_replay_core::source::trajectory_id(path).is_some() {
+        "\"created_at\":\""
+    } else {
+        "\"timestamp\":\""
     }
 }
 
@@ -5612,7 +5633,11 @@ mod tests {
         // #153: the state dir is the fixture's own, never this machine's. The hide-list
         // assertions below toggle keys, and a toggle SAVES — under the ambient resolver this
         // very test wrote `[]` over the developer's real `~/.local/state/…/ignored.json`.
-        let idx = Index::new(root.clone(), base.join("state"), Vec::new());
+        let idx = Index::new(
+            root.clone(),
+            base.join("state"),
+            vec![Agent::CLAUDE, Agent::CODEX],
+        );
         let find = |json: &str| -> Value {
             let v: Value = serde_json::from_str(json).unwrap();
             v["groups"]

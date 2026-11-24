@@ -19,6 +19,10 @@ use serde_json::Value;
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// Reads a mutable transcript as a logical snapshot of JSON records in replay order.
+/// Snapshot records do not have stable source byte offsets and must not emit deferred attachments.
+pub type SnapshotReader = fn(&mut dyn io::BufRead) -> io::Result<Vec<String>>;
+
 /// What an agent-specific transcript preprocessor decided about one raw line.
 ///
 /// Most agents pass every line through unchanged. Formats that physically embed another
@@ -350,6 +354,17 @@ pub trait TranscriptAdapter: Sync {
     /// agent never needs a carve-out in Claude's sniff to be detected correctly.
     fn sniff(&self, head: &Value) -> SniffClaim;
 
+    /// Project directory from store metadata held outside the transcript.
+    fn project_dir(&self, _path: &Path) -> Option<PathBuf> {
+        None
+    }
+
+    /// A reader for formats that can replace or delete earlier records. The follower rebuilds
+    /// their fold when the source changes instead of resuming from a byte cursor.
+    fn snapshot_reader(&self) -> Option<SnapshotReader> {
+        None
+    }
+
     // ── whole-file parse ──
     /// Load sub-agent child transcripts into their `SubAgent.blocks`. Default no-op for
     /// adapters whose source has no resolvable sub-agent tree. Backs the facade's
@@ -388,6 +403,14 @@ pub trait TranscriptAdapter: Sync {
     /// [`MetricsAccumulator`] — identical for every agent, so no adapter overrides it.
     fn parse_reader(&self, reader: &mut dyn io::BufRead) -> Metrics {
         let mut acc = self.metrics_acc();
+        if let Some(snapshot) = self.snapshot_reader() {
+            for record in snapshot(reader).unwrap_or_default() {
+                if let Ok(value) = serde_json::from_str(&record) {
+                    acc.push(&value);
+                }
+            }
+            return acc.finish();
+        }
         let mut preprocessor = self.line_preprocessor();
         // #193: the one bounded line source, aggressive elision — provably metric-neutral
         // (every metric-bearing field is a small scalar, far under the threshold). `Yield`

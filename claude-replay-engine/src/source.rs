@@ -90,11 +90,40 @@ pub fn plain_path(path: &Path) -> PathBuf {
 /// `rollout-X.jsonl.zst` alike, so a session keeps one id as its file changes form;
 /// [`Path::file_stem`] for every other name.
 pub fn stem(path: &Path) -> Option<&str> {
+    if let Some(id) = trajectory_id(path) {
+        return Some(id);
+    }
     let name = path.file_name()?.to_str()?;
     match name.strip_suffix(COMPRESSED_SUFFIX) {
         Some(stem) if !stem.is_empty() => Some(stem),
         _ => Path::new(name).file_stem()?.to_str(),
     }
+}
+
+/// Conversation logs named `transcript.jsonl` live under a UUID-named trajectory directory.
+/// Use that directory to distinguish sessions whose filenames are identical.
+pub fn trajectory_id(path: &Path) -> Option<&str> {
+    if !matches!(
+        path.file_name()?.to_str()?,
+        "transcript.jsonl" | "transcript_full.jsonl"
+    ) {
+        return None;
+    }
+    let logs = path.parent()?;
+    let generated = logs.parent()?;
+    if logs.file_name()? != "logs" || generated.file_name()? != ".system_generated" {
+        return None;
+    }
+    let id = generated.parent()?.file_name()?.to_str()?;
+    (id.len() == 36
+        && id.bytes().enumerate().all(|(i, b)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                b == b'-'
+            } else {
+                b.is_ascii_hexdigit()
+            }
+        }))
+    .then_some(id)
 }
 
 /// The other form of a transcript's name: `x.jsonl.zst` for `x.jsonl` and back, `None` for a

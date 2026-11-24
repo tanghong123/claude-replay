@@ -35,10 +35,9 @@ impl Tick {
     }
 }
 
-/// Follows a transcript file, folding only newly-appended lines each poll through a shared
-/// [`SessionAccumulator`]. Everything agent-specific — the L1 decoder, the L2 `Shaping`, the
-/// metrics accumulator — lives in the accumulator, so the follower itself is agent-agnostic and
-/// is just the byte-offset reader plus the same incremental fold the batch parse uses.
+/// Follows a transcript through a shared [`SessionAccumulator`]. Append-only sources read
+/// newly appended lines and snapshot sources rebuild when their file changes. Both paths
+/// use the same fold as the batch parse.
 ///
 /// Generic over the accumulator's [`BlockStore`] `S` (default [`InMemoryStore`] — blocks resident
 /// in RAM). The **light streaming surface** (`advance_stream` / `stream_read` / the accessors)
@@ -55,6 +54,7 @@ pub struct FollowParser<S: BlockStore = InMemoryStore> {
     src: Option<LineSource<BufReader<crate::source::Source>>>,
     /// Gauges already banked into the metrics accumulator; each poll banks the delta.
     banked: ElisionCounts,
+    snapshot_stamp: Option<(u64, std::time::SystemTime, Option<std::time::SystemTime>)>,
     /// Previous poll's committed length + open-turn blocks — the O(turn) state
     /// [`poll_delta`](Self::poll_delta) diffs against to report `changed_from`. Only touched by
     /// `poll_delta`.
@@ -98,6 +98,7 @@ impl<S: BlockStore> FollowParser<S> {
             cursor: 0,
             src: None,
             banked: ElisionCounts::default(),
+            snapshot_stamp: None,
             prev_committed: 0,
             prev_provisional: Vec::new(),
         }
@@ -133,6 +134,7 @@ impl<S: BlockStore> FollowParser<S> {
             cursor: resume.replay_from,
             src: None,
             banked: ElisionCounts::default(),
+            snapshot_stamp: None,
             prev_committed,
             prev_provisional: Vec::new(),
         }
@@ -144,6 +146,9 @@ impl<S: BlockStore> FollowParser<S> {
     /// `None` if append-only — see [`SessionAccumulator::advance_at`](crate::SessionAccumulator)).
     /// O(delta) except on a rewrite.
     fn advance_from_source(&mut self) -> std::io::Result<Tick> {
+        if let Some(snapshot) = self.adapter.snapshot_reader() {
+            return self.advance_snapshot(snapshot);
+        }
         // Truncation / compaction: the file shrank below the cursor — the kept prefix
         // changed. Rebuild from scratch (fresh metrics accumulator too, so the gauge bank
         // restarts with it) and re-fold the whole new file.
@@ -247,6 +252,53 @@ impl<S: BlockStore> FollowParser<S> {
             advanced: true,
             reset,
             patch_floor,
+        })
+    }
+
+    fn advance_snapshot(
+        &mut self,
+        snapshot: crate::adapter::SnapshotReader,
+    ) -> std::io::Result<Tick> {
+        let file = match std::fs::File::open(&self.path) {
+            Ok(file) => file,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let reset = self.snapshot_stamp.take().is_some() || self.cursor > 0;
+                if reset {
+                    self.builder.reset();
+                    self.cursor = 0;
+                }
+                return Ok(Tick {
+                    advanced: reset,
+                    reset,
+                    patch_floor: None,
+                });
+            }
+            Err(e) => return Err(e),
+        };
+        let meta = file.metadata()?;
+        let stamp = (meta.len(), meta.modified()?, meta.created().ok());
+        if self.snapshot_stamp == Some(stamp) {
+            return Ok(Tick::idle());
+        }
+        let records = match snapshot(&mut BufReader::new(file)) {
+            Ok(records) => records,
+            // A snapshot can be temporarily incomplete during a rewrite.
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(Tick::idle()),
+            Err(e) => return Err(e),
+        };
+        let reset = self.snapshot_stamp.is_some() || self.cursor > 0 || self.prev_committed > 0;
+        if reset {
+            self.builder.reset();
+        }
+        for record in records {
+            self.builder.advance_at(0, &record);
+        }
+        self.snapshot_stamp = Some(stamp);
+        self.cursor = stamp.0;
+        Ok(Tick {
+            advanced: true,
+            reset,
+            patch_floor: None,
         })
     }
 
@@ -408,7 +460,10 @@ impl FollowParser<InMemoryStore> {
             return Ok(None);
         }
         let mut s = self.builder.snapshot();
-        s.cwd = crate::discover::first_cwd(&self.path);
+        s.cwd = self
+            .adapter
+            .project_dir(&self.path)
+            .or_else(|| crate::discover::first_cwd(&self.path));
         crate::engine::session::populate_sub_agent_transcripts(
             self.adapter,
             &self.path,

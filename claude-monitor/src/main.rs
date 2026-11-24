@@ -87,7 +87,7 @@ USAGE:
                     `agent-monitor` then keeps requiring that token.
   --port N          Serve on N instead of {DEFAULT_PORT}.
   --agents LIST     Only these agents: claude, codex, qoder, qoderwork,
-                    qwenwork.
+                    qwenwork, antigravity (agy).
   --no-open         Print the URL instead of opening a browser.
   --codex-server-url URL
                     Default: ws://127.0.0.1:4500 (Bearer authentication).
@@ -145,6 +145,7 @@ fn parse_agent_name(name: &str) -> Result<Agent> {
         "qoder" => Ok(Agent::QODER),
         "qoderwork" => Ok(Agent::QODERWORK),
         "qwenwork" | "qwenworkcn" => Ok(Agent::QWENWORK),
+        "antigravity" | "agy" => Ok(Agent::ANTIGRAVITY),
         other => anyhow::bail!("unknown agent {other:?}"),
     }
 }
