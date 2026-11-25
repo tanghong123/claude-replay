@@ -25856,6 +25856,44 @@ fn a_phone_list_folds_its_nav_rows_on_the_way_down_and_brings_them_back_on_the_w
         scroll(&tab, -100_000, 1);
         back(&tab, "upright: the rows back at the list's top", nav_h);
         quiet();
+        // Folded, the filter's sheet opened over the list: the rows stay folded while it is open, at the
+        // list's top too, where coming back would push the sheet past its room (#s705); closed there,
+        // the sheet gives them back.
+        scroll(&tab, 12, 6);
+        harness::until(
+            &tab,
+            FOLDED,
+            "upright: folded before the sheet opens",
+            Duration::from_secs(5),
+            NAV_STATE,
+        );
+        quiet();
+        phone_tap(&tab, "#filterBtn");
+        harness::until(
+            &tab,
+            "!document.getElementById('sessionFilter').hidden",
+            "upright: the filter's sheet",
+            Duration::from_secs(5),
+            NAV_STATE,
+        );
+        scroll(&tab, -100_000, 1);
+        harness::pause(
+            "the list at its top under the sheet",
+            Duration::from_millis(500),
+        );
+        assert_eq!(
+            facts(&tab)["away"],
+            true,
+            "upright: the rows stay folded while the sheet is open, the list at its top: {}",
+            facts(&tab)
+        );
+        phone_tap(&tab, "#filterBtn");
+        back(
+            &tab,
+            "upright: the rows back as the sheet closes at the list's top",
+            nav_h,
+        );
+        quiet();
         // Folded near the list's end, where the list's growth brings its offset down with it: that is
         // not the reader scrolling up, and they stay folded.
         let room = facts(&tab)["room"].as_i64().unwrap_or(0);

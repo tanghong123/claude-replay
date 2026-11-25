@@ -2918,6 +2918,8 @@ fn the_native_app_s_drawer_holds_machines_and_the_theme_beside_its_brand() {
         (375, 667, None),
         (440, 956, None),
         (874, 402, Some(harness::SIDEWAYS_INSETS)),
+        // Safari's page held sideways with its tab bar (#s705: the walk on an iPhone 17 Pro).
+        (874, 292, Some(harness::SIDEWAYS_INSETS)),
     ] {
         let at = format!("{w}x{h}");
         harness::phone(&tab, w, h);
@@ -3031,6 +3033,31 @@ fn the_native_app_s_drawer_holds_machines_and_the_theme_beside_its_brand() {
                 && num(&sheet, "bottom") <= num(&sheet, "floor") + 0.5
                 && sheet["lastHit"] == true,
             "{at}: the filter's sheet hangs from its row, ends inside the window and its last row takes a tap: {sheet}"
+        );
+        // Held sideways the room below the row is short, and Write mode and Search step aside while the
+        // sheet is open (#s705); upright they stay. Closed, the sheet gives them back.
+        let away = eval(
+            &tab,
+            "document.getElementById('app').classList.contains('nav-away')",
+        );
+        assert_eq!(
+            away.as_bool(),
+            Some(h < 500),
+            "{at}: the rows step aside for the sheet only where the room below its row is short"
+        );
+        let filter_now: serde_json::Value = serde_json::from_str(
+            eval(&tab, "(function () { var b = document.getElementById('filterBtn').getBoundingClientRect(); return JSON.stringify({ x: b.left + b.width / 2, y: b.top + b.height / 2 }); })()")
+                .as_str()
+                .unwrap_or("null"),
+        )
+        .unwrap_or_default();
+        harness::finger_tap(&tab, num(&filter_now, "x"), num(&filter_now, "y"));
+        until(
+            &tab,
+            "document.getElementById('sessionFilter').hidden && !document.getElementById('app').classList.contains('nav-away')",
+            &format!("{at}: the sheet closed and the rows back"),
+            Duration::from_secs(5),
+            "document.getElementById('sessionFilter').hidden + ' ' + document.getElementById('app').className",
         );
     }
 
