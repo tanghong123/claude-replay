@@ -779,6 +779,48 @@ pub fn ask_declined_answer(id: &str, ts: &str) -> String {
     format!("{line}\n")
 }
 
+/// #s684: a refused question's result carrying `after` behind the client's refusal, as Claude Code
+/// writes it when the dialog is left with text: the error text, the same behind "Error: " as the
+/// `toolUseResult`, the text again as `userFeedback`, and `holdsPersonsWords` (2.1.331).
+fn ask_refused_with(id: &str, ts: &str, after: &str) -> String {
+    let text = format!(
+        "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it \
+         was a file edit, the new_string was NOT written to the file). To tell you how to proceed, \
+         the user said:\n{after}"
+    );
+    let line = serde_json::json!({
+        "type": "user",
+        "timestamp": ts,
+        "toolUseResult": format!("Error: {text}"),
+        "toolDenialKind": "user-rejected",
+        "holdsPersonsWords": true,
+        "userFeedback": after,
+        "message": {"role": "user", "content": [{
+            "type": "tool_result", "tool_use_id": id, "is_error": true, "content": text}]},
+    });
+    format!("{line}\n")
+}
+
+/// #s684: the reader chose to DISCUSS [`ask_question_at`]'s questions instead of answering, having
+/// picked "Hold" for the first and written a note on the second: the client's clarify text, in
+/// the shape its code writes it (2.1.331's `eDt`).
+pub fn ask_discussed_answer(id: &str, ts: &str) -> String {
+    ask_refused_with(
+        id,
+        ts,
+        "The user wants to clarify these questions.\n    This means they may have additional \
+         information, context or questions for you.\n    Take their response into account and then \
+         reformulate the questions if appropriate.\n    Start by asking them what they would like to \
+         clarify.\n\n    Questions asked:\n- \"Cut it now, or hold on main?\"\n  Answer: Hold\n- \
+         \"Which crates go in?\"\n  (No answer provided)\n  User notes: only the engine for now",
+    )
+}
+
+/// #s684: the reader declined [`ask_question_at`]'s questions with words of their own.
+pub fn ask_declined_with_words_answer(id: &str, ts: &str) -> String {
+    ask_refused_with(id, ts, "Wait for the gate to go green first.")
+}
+
 /// #282: the drawing [`ask_previewed_at`] offers with its first option (the one the reader picks).
 pub const PREVIEW_BOARD: &str = "┌─ board ──────┐\n│ [card] [card] │\n└───────────────┘";
 /// #282: …and with its second.

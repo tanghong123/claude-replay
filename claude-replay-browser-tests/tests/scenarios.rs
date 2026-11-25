@@ -15323,8 +15323,9 @@ fn both_shells_draw_every_question_alike_and_every_answer_given() {
     }
 }
 
-/// Two questions that came back WITHOUT an answer: one the client stopped waiting on, one the
-/// reader dismissed.
+/// Four questions that came back WITHOUT an answer: one the client stopped waiting on, one the
+/// reader dismissed, and (#s684) one they chose to discuss, having picked an option and written
+/// a note, and one they declined with words of their own.
 fn ask_unanswered_fixture(name: &str) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
@@ -15334,6 +15335,10 @@ fn ask_unanswered_fixture(name: &str) -> Fixture {
     t += &harness::ask_timed_out_answer("ask-t", &now_minus(138));
     t += &harness::ask_question_at("ask-d", &now_minus(130));
     t += &harness::ask_declined_answer("ask-d", &now_minus(120));
+    t += &harness::ask_question_at("ask-c", &now_minus(118));
+    t += &harness::ask_discussed_answer("ask-c", &now_minus(116));
+    t += &harness::ask_question_at("ask-w", &now_minus(114));
+    t += &harness::ask_declined_with_words_answer("ask-w", &now_minus(112));
     t += &assistant_at("Understood; I will stop and wait.", &now_minus(110));
     let path = stores.claude_session(name, &t);
     Fixture {
@@ -15349,6 +15354,10 @@ fn ask_unanswered_fixture(name: &str) -> Fixture {
 /// client stopped waiting on after 60s, and one the reader dismissed, both said "Waiting for user
 /// input — please return to the agent client" forever: 25 of the owner's 223 questions, one in
 /// nine. A call that has come back is not waiting.
+///
+/// #s684: a refusal is not always a no. A question the reader chose to discuss says so, with the
+/// option they had picked ticked and their note on its question, and one declined with words
+/// shows those words, captioned as theirs; both read "Declined" before.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn both_shells_say_why_a_question_went_unanswered() {
@@ -15371,6 +15380,8 @@ fn both_shells_say_why_a_question_went_unanswered() {
                state: c.className, title: (c.querySelector('strong') || {{}}).textContent || '', \
                text: (c.querySelector('p') || {{}}).textContent || '', \
                ticked: c.textContent.split('✓').length - 1, \
+               note: c.textContent.indexOf('only the engine for now') >= 0, \
+               words: c.textContent.indexOf('Their wordsWait for the gate to go green first.') >= 0, \
                options: ['Cut now', 'Hold', 'engine', 'tui'].filter(function (o) {{ return c.textContent.indexOf(o) >= 0; }}).length }}; }}))"
         );
         let cards: Vec<serde_json::Value> = eval(&page.tab, &js)
@@ -15379,8 +15390,8 @@ fn both_shells_say_why_a_question_went_unanswered() {
             .unwrap_or_default();
         assert_eq!(
             cards.len(),
-            2,
-            "{surface:?}: both questions drew a card: {cards:?}"
+            4,
+            "{surface:?}: every question drew a card: {cards:?}"
         );
         for c in &cards {
             let state = c["state"].as_str().unwrap_or("");
@@ -15389,21 +15400,49 @@ fn both_shells_say_why_a_question_went_unanswered() {
                     && !state.split_whitespace().any(|w| w == "waiting"),
                 "{surface:?}: a question that came back is settled, not waiting: {c}"
             );
-            assert_eq!(c["title"], "No answer", "{surface:?}: {c}");
-            assert_eq!(
-                c["ticked"], 0,
-                "{surface:?}: nothing ticked — nothing was chosen: {c}"
-            );
             assert_eq!(
                 c["options"], 4,
                 "{surface:?}: …and what was asked is still there to read: {c}"
             );
         }
+        let read = |key: &str| cards.iter().map(|c| c[key].clone()).collect::<Vec<_>>();
+        assert_eq!(
+            read("title"),
+            [
+                "No answer",
+                "No answer",
+                "Chose to discuss",
+                "No answer"
+            ]
+            .map(|t| serde_json::json!(t)),
+            "{surface:?}: a question the reader chose to discuss is not one with no answer: {cards:?}"
+        );
+        assert_eq!(
+            read("ticked"),
+            [0, 0, 1, 0].map(|n| serde_json::json!(n)),
+            "{surface:?}: only the pick made before choosing to discuss is ticked: {cards:?}"
+        );
+        assert_eq!(
+            (read("note"), read("words")),
+            (
+                [false, false, true, false]
+                    .map(|b| serde_json::json!(b))
+                    .to_vec(),
+                [false, false, false, true]
+                    .map(|b| serde_json::json!(b))
+                    .to_vec()
+            ),
+            "{surface:?}: the note is on the discussed question, and the words are the decline's \
+             own, captioned as the reader's: {cards:?}"
+        );
         let texts: Vec<&str> = cards.iter().filter_map(|c| c["text"].as_str()).collect();
         assert_eq!(
             texts,
             vec![
                 "The agent client stopped waiting after 60s; the agent went on without an answer.",
+                "Declined in the agent client; the agent was told not to proceed.",
+                "Discussed in the agent client instead of answered; the agent was told to ask what \
+                 they want to clarify.",
                 "Declined in the agent client; the agent was told not to proceed.",
             ],
             "{surface:?}: each says why, in the order they were asked: {cards:?}"
