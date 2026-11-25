@@ -3297,7 +3297,32 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const html = interactionHtml({ kind: "request_user_input", resolved: true, answers: [], asked, unanswered: { why: "declined" } }, "", classes);
   assert.match(html, /^<div class="c unanswered"><span class="i" aria-hidden="true">–<\/span><div class="p"><strong>No answer<\/strong>/, "the page styles the state by its class");
   assert.match(html, /<span class="a"><span>Yes<\/span><\/span>/, "the options are still listed, nothing ticked");
+  assert.doesNotMatch(html, /Their words/, "a bare decline carries no words of the reader's");
   console.log("#281 unanswered cases passed");
+}
+
+// #s684: a question the reader chose to discuss says so, with what they answered on its questions;
+// a decline with the reader's own words shows them, captioned as theirs.
+{
+  const classes = { card: "c", icon: "i", copy: "p", meta: "m", answers: "as", answer: "a", question: "q", reply: "r" };
+  const asked = [
+    { header: "Q", question: "Cut it now?", multi: false, options: [{ label: "Yes", description: "", chosen: true }, { label: "No", description: "", chosen: false }] },
+    { header: "Crate", question: "Which crate first?", multi: false, options: [{ label: "engine", description: "", chosen: false }], notes: "after <lunch>" },
+  ];
+  const discussed = { kind: "request_user_input", resolved: true, answers: [], asked, unanswered: { why: "discuss" } };
+  const card = interactionCard(discussed, "Cut it now? +1");
+  assert.deepEqual([card.state, card.icon, card.title], ["unanswered", "↩", "Chose to discuss"], "settled, and not titled as a question with no answer");
+  assert.equal(card.text, "Discussed in the agent client instead of answered; the agent was told to ask what they want to clarify.");
+  assert.doesNotMatch(card.text, /Declined/, "a question the reader chose to discuss is not declined");
+  const html = interactionHtml(discussed, "", classes);
+  assert.match(html, /<span class="a"><span>✓ Yes<\/span><\/span>/, "what they answered before choosing to discuss is ticked");
+  assert.match(html, /<div class="r"><small>Notes<\/small><span>after &lt;lunch&gt;<\/span><\/div>/, "…and their notes are on their question");
+  const declined = interactionHtml({ kind: "request_user_input", resolved: true, answers: [], asked: [asked[0]], unanswered: { why: "declined", said: "Hold it until <Thursday>." } }, "", classes);
+  assert.match(declined, /<strong>No answer<\/strong><p>Declined in the agent client; the agent was told not to proceed\.<\/p>/, "a decline with words is still a decline");
+  assert.match(declined, /<div class="r"><small>Their words<\/small><span>Hold it until &lt;Thursday&gt;\.<\/span><\/div><\/div><\/div>$/, "…with the reader's words after the questions, escaped and captioned as theirs");
+  const stray = interactionCard({ kind: "request_user_input", resolved: true, answers: [], asked, unanswered: { why: "timeout", said: "x" } }, "");
+  assert.equal(stray.said, "", "words ride only on a decline");
+  console.log("#s684 discuss and declined-with-words cases passed");
 }
 
 // #282: an option's preview — the asker's drawing — is on the card, on demand but for the chosen one's.

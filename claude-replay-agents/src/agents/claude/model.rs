@@ -1637,6 +1637,20 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             "imagePasteIds",
             "queueOrigin",
             "userFeedback",
+            // #s684 (client 2.1.331): a boolean on the user record carrying a refused call's result,
+            // written only when true (its `oSo`): the person answered the client's prompt with
+            // feedback (`userFeedback`, which the client's own clarify text also is), or a
+            // permission-prompt tool's message holds their words. The client reads it back to keep
+            // such results when it clears old results from the model's context. Measured
+            // 2026-11-24: on denali, 12 records, one AskUserQuestion refusal and its copies, each
+            // carrying the clarify text; on hong-devserver, none, its 6 clarify refusals written by
+            // 2.1.218 before the key existed. Unread: `userFeedback` and the text after the marker
+            // are what is read (`unanswered`, `declined_before_run`), flag or not. REVISIT: the flag
+            // true on a result where neither wording nor `userFeedback` yields text (a
+            // permission-prompt tool's denial): the words then sit where the adapter does not read
+            // them, a RENDER question for the owner, queued with counts and client version, never
+            // decided here.
+            "holdsPersonsWords",
             "queueTranscriptOnly",
             "usageLimitNote",
             // #s61 (client 2.1.295): `{decision, source, reasonType?}` on a user record carrying
@@ -5542,6 +5556,7 @@ fn asked_from_input(name: &str, input: &Value) -> Option<Asked> {
     (!questions.is_empty()).then_some(Asked {
         questions,
         unanswered: None,
+        said: None,
     })
 }
 
@@ -5653,7 +5668,31 @@ fn sent_to_from_input(name: &str, input: &Value) -> Option<String> {
 /// this tool use…", the `toolUseResult` "User rejected tool use" or that same sentence behind
 /// "Error: " — and all 20 error results are that. An error that is NOT a refusal is kept apart as
 /// `Failed`, so a call that broke is never said to have been declined by the reader.
-fn unanswered(asked: &Asked, txt: &str, tur: &Value, is_error: Option<bool>) -> Option<Unanswered> {
+///
+/// #s684: a refusal is not always a no. The question dialog's way to DISCUSS instead of answering
+/// denies the call with the client's own clarify text after its refusal sentence ([`CLARIFY`]),
+/// which reads [`Unanswered::Discussed`], with what that text lists put on the questions; it is
+/// decided before the answers are looked at, since those it lists are answers. Any other words
+/// after the refusal are the ones the client attributes to the reader there ("the user said:"),
+/// kept in `said` beside a decline; with none it is a bare decline, as before. The note to the
+/// model the client may add after them ([`CLIENT_NOTE`]) is cut off first: what is left is the
+/// record's `userFeedback`, which the fold does not see. Measured 2026-11-24 over both boxes'
+/// stores: 18 refusals carry the clarify text (Claude Code 2.1.218 and 2.1.331), each with
+/// `userFeedback` equal to it, 6 are bare, none carries other words, and none lists an answer or a
+/// note: those two branches are built from the client's code.
+fn unanswered(
+    asked: &mut Asked,
+    txt: &str,
+    tur: &Value,
+    is_error: Option<bool>,
+) -> Option<Unanswered> {
+    asked.said = None;
+    let refusal = is_error == Some(true) && refused(txt, tur);
+    let after = refusal.then(|| after_refusal(txt, tur)).flatten();
+    if let Some(list) = after.and_then(|w| w.strip_prefix(CLARIFY)) {
+        clarified(asked, list);
+        return Some(Unanswered::Discussed);
+    }
     if asked
         .questions
         .iter()
@@ -5667,11 +5706,95 @@ fn unanswered(asked: &Asked, txt: &str, tur: &Value, is_error: Option<bool>) -> 
     if is_error != Some(true) {
         return None;
     }
-    Some(if refused(txt, tur) {
+    Some(if refusal {
+        asked.said = after.map(str::to_string);
         Unanswered::Declined
     } else {
         Unanswered::Failed
     })
+}
+
+/// The client's two wordings before what follows a refusal: its question and edit refusals
+/// ("…To tell you how to proceed, the user said:") and its permission refusals ("…The user said:").
+const REFUSAL_SAID: [&str; 2] = [
+    "To tell you how to proceed, the user said:",
+    "The user said:",
+];
+
+/// The text a refused call's result carries after the client's refusal ([`REFUSAL_SAID`]),
+/// without the client's note to the model ([`CLIENT_NOTE`]), trimmed: from the result's text, else
+/// from its `toolUseResult` string, which holds the same "Error: …" (measured on every clarify
+/// refusal, and the record's `userFeedback` equal to it).
+fn after_refusal<'a>(txt: &'a str, tur: &'a Value) -> Option<&'a str> {
+    let after = |s: &'a str| {
+        REFUSAL_SAID
+            .iter()
+            .find_map(|marker| {
+                s.split_once(marker)
+                    .map(|(_, rest)| without_client_note(rest).trim())
+            })
+            .filter(|rest| !rest.is_empty())
+    };
+    after(txt).or_else(|| tur.as_str().and_then(after))
+}
+
+/// #s684: the note to the model that Claude Code adds after a refused call's text when its
+/// auto-memory and a server flag are both on (2.1.331's `qZ` adds `oet`), behind a blank line. It is
+/// the client's, never the person's; the record's `userFeedback` never carries it.
+const CLIENT_NOTE: &str =
+    "\n\nNote: The user's next message may contain a correction or preference.";
+
+/// `text` up to the client's note to the model ([`CLIENT_NOTE`]), where it carries one. The note is
+/// the text's tail, so its LAST opening is cut: words that quote the note's first line stay whole.
+fn without_client_note(text: &str) -> &str {
+    text.rfind(CLIENT_NOTE).map_or(text, |at| &text[..at])
+}
+
+/// #s684: how the client's question dialog opens the text it sends when the reader chooses to
+/// discuss instead of answering (Claude Code's `eDt`, read in 2.1.331's code; the same text in
+/// 2.1.218's records). Three sentences of its own follow, then `Questions asked:` and, for each
+/// question in the order put, `- "<question>"`, then `  Answer: <answer>` or
+/// `  (No answer provided)`, then `  User notes: <notes>` where some were given.
+const CLARIFY: &str = "The user wants to clarify these questions.";
+
+/// Put what the clarify text lists onto its questions (#s684), where the result left none. Each
+/// entry is found by its question's text, in order, decoded as `apply_answers` decodes the
+/// client's keys, and runs to the next one: an answer or a note may hold new lines. The client
+/// lists the text it DISPLAYED (2.1.331's `displayQuestion`: tabs as spaces, cut at 2,000
+/// characters), which is the question's own for every question measured; a list that does not
+/// name every question so, in order, puts nothing, and the card still says the reader chose to
+/// discuss.
+fn clarified(asked: &mut Asked, text: &str) {
+    const NOTES_ONLY: &str = "(notes only)";
+    let Some((_, list)) = text.split_once("Questions asked:") else {
+        return;
+    };
+    let list = decode_entities(list);
+    let mut heads = Vec::with_capacity(asked.questions.len());
+    let mut from = 0;
+    for q in &asked.questions {
+        let head = format!("- \"{}\"\n", q.question);
+        let Some(at) = list[from..].find(&head).map(|i| from + i) else {
+            return;
+        };
+        from = at + head.len();
+        heads.push((at, from));
+    }
+    for (k, q) in asked.questions.iter_mut().enumerate() {
+        let end = heads.get(k + 1).map_or(list.len(), |next| next.0);
+        let entry = &list[heads[k].1..end];
+        let (answer, notes) = entry.split_once("\n  User notes: ").unwrap_or((entry, ""));
+        if q.answer.is_none() {
+            q.answer = answer
+                .strip_prefix("  Answer: ")
+                .map(str::trim)
+                .filter(|a| !a.is_empty() && *a != NOTES_ONLY)
+                .map(str::to_string);
+        }
+        if q.notes.is_empty() {
+            q.notes = notes.trim().to_string();
+        }
+    }
 }
 
 /// Whether a failed result is the client's REFUSAL — the reader said no: the text "The user
@@ -5708,13 +5831,11 @@ fn declined_before_run(v: &Value, txt: &str, results: usize) -> Option<Option<St
     if !refused {
         return None;
     }
-    const SAID: [&str; 2] = [
-        "To tell you how to proceed, the user said:",
-        "The user said:",
-    ];
     let said = || {
-        SAID.iter()
-            .find_map(|marker| txt.split_once(marker).map(|(_, rest)| rest))
+        REFUSAL_SAID.iter().find_map(|marker| {
+            txt.split_once(marker)
+                .map(|(_, rest)| without_client_note(rest))
+        })
     };
     Some(
         v.get("userFeedback")
@@ -10708,6 +10829,184 @@ mod tests {
             ],
             "timed out; declined, both ways the client records it; a failure that is not a \
              refusal; answered; still waiting (no result yet); and Qwenwork's cancelled question"
+        );
+    }
+
+    /// #s684: a question the reader chose to DISCUSS reads so, not as declined, with what the
+    /// client's clarify text lists put on its questions; a decline with the reader's own words
+    /// keeps them; one whose list does not name its questions keeps the reason and puts nothing.
+    /// The clarify text is the client's (2.1.331's `eDt`); its answer and notes lines are built
+    /// from the client's code, as no record yet carries them.
+    #[test]
+    fn a_question_the_reader_chose_to_discuss_reads_so() {
+        let ask = |id: &str| {
+            serde_json::json!({"type": "assistant", "message": {"content": [{"type": "tool_use",
+                "id": id, "name": "AskUserQuestion", "input": {"questions": [
+                    {"header": "Q", "question": "Cut it now?", "multiSelect": false,
+                        "options": [{"label": "Yes"}, {"label": "No"}]},
+                    {"header": "Crate", "question": "Engine &amp; TUI first?", "multiSelect": false,
+                        "options": [{"label": "engine"}, {"label": "tui"}]}]}}]}})
+            .to_string()
+        };
+        let ask_more = |id: &str| {
+            serde_json::json!({"type": "assistant", "message": {"content": [{"type": "tool_use",
+                "id": id, "name": "AskUserQuestion", "input": {"questions": [
+                    {"header": "Crates", "question": "Which crates?", "multiSelect": true,
+                        "options": [{"label": "engine"}, {"label": "html"}, {"label": "tui"}]},
+                    {"header": "Word", "question": "Say \"now\"?", "multiSelect": false,
+                        "options": [{"label": "Yes", "preview": "now"}, {"label": "No"}]}]}}]}})
+            .to_string()
+        };
+        let refusal = "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it was a file edit, the new_string was NOT written to the file).";
+        // What 2.1.331 adds after the text when its auto-memory and a server flag are on (`oet`).
+        let note = "\n\nNote: The user's next message may contain a correction or preference. Pay \
+                    close attention \u{2014} if they explain what went wrong or how they'd prefer \
+                    you to work, consider saving that to memory for future sessions.";
+        // A refused call's result: `after` behind the refusal in the text and in `toolUseResult`,
+        // the client's note after it when `noted`, and `feedback` as the record's `userFeedback`,
+        // which the fold does not see: the text alone must give what it holds.
+        let refused_with = |id: &str, after: &str, noted: bool, feedback: Option<&str>| {
+            let text = format!(
+                "{refusal} To tell you how to proceed, the user said:\n{after}{}",
+                if noted { note } else { "" }
+            );
+            let mut r = serde_json::json!({"type": "user", "toolUseResult": format!("Error: {text}"),
+                "toolDenialKind": "user-rejected", "holdsPersonsWords": true,
+                "message": {"content": [{"type": "tool_result", "tool_use_id": id,
+                    "is_error": true, "content": text}]}});
+            if let Some(f) = feedback {
+                r["userFeedback"] = f.into();
+            }
+            r.to_string()
+        };
+        let result = |id: &str, after: &str| refused_with(id, after, false, Some(after));
+        // The client's clarify text (2.1.331's `eDt`), blank line and all.
+        let clarify = |entries: &str| {
+            format!(
+                "The user wants to clarify these questions.\n    This means they may have additional \
+                 information, context or questions for you.\n    Take their response into account \
+                 and then reformulate the questions if appropriate.\n    Start by asking them what \
+                 they would like to clarify.\n\n    Questions asked:\n{entries}"
+            )
+        };
+        let more = clarify(
+            "- \"Which crates?\"\n  Answer: engine, tui\n  User notes: html can wait\n- \"Say \
+             \"now\"?\"\n  Answer: (notes only)\n  User notes: only if green",
+        );
+        // Only the `toolUseResult` string holds the list: the text stops at the refusal.
+        let only_in_result = {
+            let text = format!(
+                "{refusal} To tell you how to proceed, the user said:\n{}",
+                clarify(
+                    "- \"Cut it now?\"\n  Answer: No\n- \"Engine &amp; TUI first?\"\n  Answer: tui"
+                )
+            );
+            serde_json::json!({"type": "user", "toolUseResult": format!("Error: {text}"),
+                "toolDenialKind": "user-rejected", "message": {"content": [{"type": "tool_result",
+                    "tool_use_id": "t8", "is_error": true, "content": refusal}]}})
+            .to_string()
+        };
+        let jsonl = [
+            ask("t1"),
+            result(
+                "t1",
+                &clarify(
+                    "- \"Cut it now?\"\n  Answer: Yes\n- \"Engine &amp; TUI first?\"\n  (No answer \
+                     provided)\n  User notes: the engine, but only\nafter lunch",
+                ),
+            ),
+            ask("t2"),
+            result("t2", "Hold it until Thursday."),
+            ask("t3"),
+            result("t3", &clarify("- \"Some other question?\"\n  Answer: Yes")),
+            ask_more("t4"),
+            refused_with("t4", &more, true, Some(&more)),
+            ask_more("t5"),
+            refused_with("t5", &more, true, None),
+            ask("t6"),
+            refused_with("t6", "Hold it until Thursday.", true, Some("Hold it until Thursday.")),
+            ask("t7"),
+            refused_with("t7", "Hold it until Thursday.", false, None),
+            ask("t8"),
+            only_in_result,
+        ]
+        .join("\n");
+        fn asks(blocks: &[Block], out: &mut Vec<Asked>) {
+            for b in blocks {
+                match b {
+                    Block::ToolUse { name, asked, .. } if name == "AskUserQuestion" => {
+                        out.extend(asked.as_deref().cloned())
+                    }
+                    Block::Thinking { tools, .. } => asks(tools, out),
+                    _ => {}
+                }
+            }
+        }
+        // The frozen reference parse builds no `asked` (it predates #255), so the fold alone.
+        let mut seen = Vec::new();
+        asks(&parse(&jsonl), &mut seen);
+        let said = |a: &Asked| {
+            a.questions
+                .iter()
+                .map(|q| (q.answer.clone(), q.notes.clone()))
+                .collect::<Vec<_>>()
+        };
+        let pair = |a: Option<&str>, n: &str| (a.map(str::to_string), n.to_string());
+        assert_eq!(seen.len(), 8, "{seen:?}");
+        assert_eq!(seen[0].unanswered, Some(Unanswered::Discussed), "{seen:?}");
+        assert_eq!(
+            seen[0].said, None,
+            "the clarify text is not the reader's words"
+        );
+        assert_eq!(
+            said(&seen[0]),
+            vec![
+                pair(Some("Yes"), ""),
+                pair(None, "the engine, but only\nafter lunch")
+            ],
+            "each listed answer and note on its own question, found by its decoded text"
+        );
+        assert_eq!(seen[1].unanswered, Some(Unanswered::Declined));
+        assert_eq!(seen[1].said.as_deref(), Some("Hold it until Thursday."));
+        assert_eq!(seen[2].unanswered, Some(Unanswered::Discussed));
+        assert_eq!(
+            said(&seen[2]),
+            vec![pair(None, ""), pair(None, "")],
+            "a list that does not name the questions puts nothing on them"
+        );
+        for (k, why) in [
+            (3, "the note cut, `userFeedback` beside it (unread)"),
+            (4, "the note cut, no `userFeedback`"),
+        ] {
+            assert_eq!(seen[k].unanswered, Some(Unanswered::Discussed), "{why}");
+            assert_eq!(
+                said(&seen[k]),
+                vec![
+                    pair(Some("engine, tui"), "html can wait"),
+                    pair(None, "only if green")
+                ],
+                "{why}: a multi-select's answer whole, an answer and its notes on one entry, \
+                 '(notes only)' no answer, a question holding quotes, and never the client's \
+                 note to the model on the last"
+            );
+        }
+        for (k, why) in [
+            (5, "the client's note after them"),
+            (6, "no `userFeedback`"),
+        ] {
+            assert_eq!(seen[k].unanswered, Some(Unanswered::Declined), "{why}");
+            assert_eq!(
+                seen[k].said.as_deref(),
+                Some("Hold it until Thursday."),
+                "{why}: the words the client says the reader said, from the text, never its \
+                 note to the model"
+            );
+        }
+        assert_eq!(seen[7].unanswered, Some(Unanswered::Discussed));
+        assert_eq!(
+            said(&seen[7]),
+            vec![pair(Some("No"), ""), pair(Some("tui"), "")],
+            "read from the `toolUseResult` string where the text stops at the refusal"
         );
     }
 
