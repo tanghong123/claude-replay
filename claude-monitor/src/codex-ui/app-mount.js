@@ -508,12 +508,14 @@ const wideScreen = matchMedia(WIDE_PHONE_QUERY);
 // top. They fold (`nav-away`), so the list takes their room at once and nothing lies over its rows; the
 // list's offset is never written, which an iOS glide would not keep. A fold waits for the scroll to
 // go on (`AWAY_AFTER`) and only where the list has more to show than the rows' room, or folding them
-// would leave nothing to scroll and bring them straight back; and the scroll the fold itself causes is
-// not read as the reader's (`NAV_QUIET_MS`). The rows come back as the drawer opens, and anywhere the
-// list is not a drawer or a column.
+// would leave nothing to scroll and bring them straight back. The scroll the fold itself causes (near
+// the list's end its offset comes down as the list grows) is not read as the reader's: a scroll that
+// comes with a new height of the list's box, or inside the fold's glide (`NAV_QUIET_MS`), moves
+// nothing; nor is iOS's bounce past either end, read as the end itself. The rows come back as the
+// drawer opens, and anywhere the list is not a drawer or a column.
 const NAV_AWAY_AFTER = 24, NAV_BACK_AFTER = 8, NAV_QUIET_MS = 260, NAV_GLIDE_MS = 320;
 const sideNav = page.$("#app>.sidebar>.nav");
-const navTops = new WeakMap();
+const navSeen = new WeakMap();
 let navRun = 0, navQuietUntil = 0, navGlide = 0;
 /** Folds the nav's rows away, or brings them back. A fold starts from the rows' height (`--nav-h`), so
  *  its glide has somewhere to come from; `nav-sliding` holds that height until a return has glided
@@ -534,14 +536,15 @@ const sessionListBox = page.byId("sessionList");
 sessionListBox.addEventListener("scroll", event => {
   const scroller = event.target;
   if (!(scroller instanceof Element) || scroller.parentElement !== sessionListBox) return;
-  const top = scroller.scrollTop, before = navTops.get(scroller);
-  navTops.set(scroller, top);
+  const room = scroller.scrollHeight - scroller.clientHeight, height = scroller.clientHeight;
+  const top = Math.min(Math.max(scroller.scrollTop, 0), Math.max(room, 0)), seen = navSeen.get(scroller);
+  navSeen.set(scroller, { top, height });
   if (!app.classList.contains("app-drawer")) return;
-  if (top <= 0) return navAway(false);
-  if (before === undefined || performance.now() < navQuietUntil) return;
-  const step = top - before;
+  if (scroller.scrollTop <= 0) return navAway(false);
+  if (!seen || seen.height !== height || performance.now() < navQuietUntil) return;
+  const step = top - seen.top;
   navRun = step * navRun > 0 ? navRun + step : step;
-  if (navRun >= NAV_AWAY_AFTER && scroller.scrollHeight - scroller.clientHeight > sideNav.offsetHeight + NAV_AWAY_AFTER) navAway(true);
+  if (navRun >= NAV_AWAY_AFTER && room > sideNav.offsetHeight + NAV_AWAY_AFTER) navAway(true);
   else if (navRun <= -NAV_BACK_AFTER) navAway(false);
 }, { capture: true, passive: true });
 

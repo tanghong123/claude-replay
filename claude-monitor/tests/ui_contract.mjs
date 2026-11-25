@@ -1880,9 +1880,13 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // #s701: the nav's rows fold as the list scrolls down and come back on the way up, only in the drawer
   // and a wide phone's column, never writing the list's offset.
   assert.match(appSource, /^  if \(!app\.classList\.contains\("app-drawer"\)\) navAway\(false\);$/m, "#s701: the rows come back outside the drawer and the column");
-  assert.match(appSource, /^  if \(navRun >= NAV_AWAY_AFTER && scroller\.scrollHeight - scroller\.clientHeight > sideNav\.offsetHeight \+ NAV_AWAY_AFTER\) navAway\(true\);$/m, "#s701: a fold waits for the scroll to go on, where the list has more to show than the rows' room");
+  assert.match(appSource, /^  if \(navRun >= NAV_AWAY_AFTER && room > sideNav\.offsetHeight \+ NAV_AWAY_AFTER\) navAway\(true\);$/m, "#s701: a fold waits for the scroll to go on, where the list has more to show than the rows' room");
+  assert.match(appSource, /^  if \(!seen \|\| seen\.height !== height \|\| performance\.now\(\) < navQuietUntil\) return;$/m, "#s701: a scroll that comes with a new height of the list's box, or inside the fold's glide, is not the reader's");
+  assert.match(appSource, /^  const top = Math\.min\(Math\.max\(scroller\.scrollTop, 0\), Math\.max\(room, 0\)\), seen = navSeen\.get\(scroller\);$/m, "#s701: iOS's bounce past either end reads as the end");
   assert.match(appSource, /^    if \(open\) navAway\(false\);$/m, "#s701: the rows come back as the drawer opens");
-  assert.doesNotMatch(appSource.slice(appSource.indexOf("// #s701 (Hong"), appSource.indexOf("// #313 —")), /scrollTop\s*=[^=]|scrollTo\(|scrollBy\(/, "#s701: the fold never writes the list's offset");
+  const navBlock = appSource.slice(appSource.indexOf("// #s701 (Hong"), appSource.indexOf("}, { capture: true, passive: true });", appSource.indexOf("// #s701 (Hong")));
+  assert.ok(navBlock.includes("function navAway(away)"), "#s701: the quick return's block is found");
+  assert.doesNotMatch(navBlock, /scrollTop\s*=[^=]|scrollTo\(|scrollBy\(/, "#s701: the fold never writes the list's offset");
   assert.doesNotMatch(appShell, /id="attentionBtn"|id="sidebarMiniAttention"/, "the demo's Needs attention button and the rail's bell are gone (cut from the served shell)");
   assert.doesNotMatch(shellSource, /hiddenBtn|"Show Hidden"/, "…and the Show Hidden control with them");
   assert.match(listSource, /visibleTree\(agents, \{ showHidden: includeHidden\(\), buckets: filtered \? indexState\.buckets : null, bucketsOf \}\)/, "the tree is filtered by the shared cover — every bucket chosen is no filter");
