@@ -1484,9 +1484,11 @@ choice), the message alone as Markdown. In the app shell each sender has a hue o
 Hong: tell agent turns from the person's and one agent from another, in the Turns pane): `peerHue`
 (`view-model.js`, FNV-1a over the name, so stable everywhere) colours the card's rule and name and
 the sender's chip on its Turns pane row, the label going on after the name (`peerLabelRest`).
-`origin.body` is read, never the prose, less the notice Claude Code (2.1.322+) appends when the sender has handled others' Artifact content (a blank line, `<artifact-content-authored-by-others/>` and its fixed sentence: the client's word to the model, #s699); the tag is read
-only for a meta record with no `origin` (none measured), so a person QUOTING the tag keeps their
-prompt. The mid-turn one used to render as the person's own prompt. A peer enqueue draws no `⧗
+`origin.body` is read, never the prose; the tag is read only for a meta record with no `origin`
+(none measured), so a person QUOTING the tag keeps their prompt. Either way the card leaves out the
+notice Claude Code (2.1.322+) appends when the sender has handled others' Artifact content (a blank
+line, `<artifact-content-authored-by-others/>` and its fixed sentence, matched by its opening words:
+the client's word to the model, #s699). The mid-turn one used to render as the person's own prompt. A peer enqueue draws no `⧗
 queued` marker (that marker means the person typed it) but stays in the queue, popped at pickup by
 its raw text. Text the person PASTED is `<pasted_content id="X">…</pasted_content id="X">`; the
 adapter rewrites it as a fence labelled `pasted` (one backtick longer than any run inside), applied
