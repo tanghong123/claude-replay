@@ -6998,8 +6998,8 @@ const LAYERS_AMISS: &str = "(function(target){ var v = document.getElementById('
 
 /// Opens each of the phone reader's layers in turn (Info, Aa, the Turns sheet, the session's menu,
 /// the search's filter, the right pane, the reply box) and returns, for each that is amiss, what
-/// [`LAYERS_AMISS`] found. A step named in `not_offered` is one this layout does not offer (the Turns
-/// sheet beside a wide phone's column, whose switcher holds the panes): its opener must not show.
+/// [`LAYERS_AMISS`] found. A step named in `not_offered` is one this layout does not offer (the reply
+/// box in the host case's view): its opener must not show.
 /// Write mode is switched on for the reply box and off again.
 fn phone_layers_amiss(
     tab: &headless_chrome::Tab,
@@ -7370,16 +7370,18 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
     let wide = harness::probe(&tab, VIEW_LAYOUT);
     let wide_dock = harness::probe(
         &tab,
-        "(function(){ var v = document.getElementById('sessionView').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(); return { viewLeft: Math.round(v.left), dockLeft: Math.round(d.left) }; })()",
+        "(function(){ var v = document.getElementById('sessionView').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(); return { viewLeft: Math.round(v.left), dockLeft: Math.round(d.left), dockRight: Math.round(d.right), width: innerWidth }; })()",
     );
-    let wide_layers = phone_layers_amiss(&tab, &["the Turns sheet"]);
+    // #s703: beside the column the panes open from the dock as upright, so the Turns sheet is offered
+    // there and held to the layers' rules like the rest.
+    let wide_layers = phone_layers_amiss(&tab, &[]);
     let wide_handle = handle_over_the_pane(&tab);
     let wide_full = pane_full_screen(&tab);
     // The same phone in Safari, whose tab bar leaves 330px of it.
     harness::phone(&tab, 932, 330);
     harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
     open(&tab, 932.0, "a wide phone held sideways in Safari");
-    let short_layers = phone_layers_amiss(&tab, &["the Turns sheet"]);
+    let short_layers = phone_layers_amiss(&tab, &[]);
     let review = review_sheet_amiss(&tab);
     harness::safe_area(&tab, (0, 0, 0, 0));
     harness::phone(&tab, 834, 1194);
@@ -7545,10 +7547,13 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
         "a review sheet opened at ⤢ covers the whole screen, its close control inside the island's \
          inset: {wide_full}"
     );
+    // #s703: beside the column the pill sits at the session's right, 12px inside the right-hand inset
+    // (62px sideways), and starts inside the view.
     assert!(
-        wide_dock["dockLeft"].as_i64() == wide_dock["viewLeft"].as_i64().map(|x| x + 12),
-        "beside the column the dock keeps 12px inside the view, the island's inset being the column's: \
-         {wide_dock}"
+        wide_dock["dockRight"].as_i64() == wide_dock["width"].as_i64().map(|w| w - 12 - 62)
+            && wide_dock["dockLeft"].as_i64() >= wide_dock["viewLeft"].as_i64().map(|x| x + 12),
+        "beside the column the dock's pill keeps 12px inside the right-hand inset and starts inside the \
+         view: {wide_dock}"
     );
     assert_eq!(
         rows["minHeight"], "44px",
@@ -21888,7 +21893,7 @@ fn a_wide_phone_s_task_card_dim_spends_its_tap_on_closing_the_card() {
         "document.querySelectorAll('#phonePaneMenu .work-task-head').length",
     );
     let open_card = || {
-        let row = page_point(&tab, "a task row in the sheet", "(function(){ var r = [...document.querySelectorAll('#phonePaneMenu .work-task-head')].map(function (h) { return h.getBoundingClientRect(); }).find(function (b) { var e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!e && !!e.closest('#phonePaneMenu .work-task-head'); }); return r ? JSON.stringify([r.left + r.width / 2, r.top + r.height / 2]) : 'none'; })()");
+        let row = page_point(&tab, "a task row in the sheet", "(function(){ var seen = [], name = function (e) { return e ? (e.id ? '#' + e.id : e.tagName.toLowerCase() + '.' + [].slice.call(e.classList).join('.')) : 'nothing'; }; var r = [...document.querySelectorAll('#phonePaneMenu .work-task-head')].map(function (h) { return h.getBoundingClientRect(); }).find(function (b) { var e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); seen.push(Math.round(b.left) + ',' + Math.round(b.top) + ' ' + Math.round(b.width) + 'x' + Math.round(b.height) + ' under ' + name(e)); return !!e && !!e.closest('#phonePaneMenu .work-task-head'); }); return r ? JSON.stringify([r.left + r.width / 2, r.top + r.height / 2]) : 'none: ' + seen.join('; ') + ' | sheet hidden ' + document.getElementById('phonePaneMenu').hidden + ', card hidden ' + document.getElementById('taskPopover').hidden + ', app ' + document.getElementById('app').className; })()");
         harness::finger_tap(&tab, row[0], row[1]);
         harness::until(
             &tab,
