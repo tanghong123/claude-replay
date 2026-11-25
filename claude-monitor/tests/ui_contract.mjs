@@ -3178,8 +3178,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(vm, /from "\.\/shared\/tool-head\.js"/);
   const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
   assert.match(comp, /\$\{view\.state \? statePillHtml\(view\.pill, view\.word\) : escapeText\(status === "completed" \? "" : status\)\}/, "the pill shows the module's label (its word apart, #s628)");
-  // #129: the head's click cycle. From folded: the output, then the whole command, then the
-  // command folds back, then the output. A target that already fits keeps the plain toggle.
+  // #129, #s698: the head's click cycle. From folded: the output, then the whole command, then
+  // back to the one line. A target that already fits keeps the plain toggle.
   let step = 0;
   const walk = [];
   for (let i = 0; i < 5; i++) {
@@ -3187,7 +3187,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     walk.push(`${at.open ? "open" : "closed"}/${at.full ? "full" : "clipped"}`);
     step = nextHeadStep(step, true);
   }
-  assert.deepEqual(walk, ["closed/clipped", "open/clipped", "open/full", "open/clipped", "closed/clipped"], "four clicks, and the reader passes through output-only both ways");
+  assert.deepEqual(walk, ["closed/clipped", "open/clipped", "open/full", "closed/clipped", "open/clipped"], "three clicks round: the output, the command, then folded at once (#s698)");
   let short = 0;
   const plain = [];
   for (let i = 0; i < 3; i++) { plain.push(headStepState(short).open); short = nextHeadStep(short, false); }

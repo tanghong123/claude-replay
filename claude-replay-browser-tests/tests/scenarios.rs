@@ -6763,7 +6763,8 @@ fn app_shell_a_fold_keeps_its_head_state_across_a_rematerialization() {
 
 /// The head's click cycle (#129, the owner's report and their spec): a long command is one
 /// clipped line, and clicking used to reveal only the output. Now, from folded: the output,
-/// then the whole command, then the command folds back, then the output.
+/// then the whole command, then back to the one line (#s698, Hong: the step that folded the
+/// command back with the output still open is gone), and round again.
 fn scenario_a_long_command_unfolds_on_the_second_click(
     tab: &headless_chrome::Tab,
     surface: Surface,
@@ -6832,10 +6833,10 @@ fn scenario_a_long_command_unfolds_on_the_second_click(
             (false, false),
             (true, false),
             (true, true),
-            (true, false),
             (false, false),
+            (true, false),
         ],
-        "the output, then the whole command, then the command folds, then the output"
+        "the output, then the whole command, then folded at once, then the output again"
     );
 }
 

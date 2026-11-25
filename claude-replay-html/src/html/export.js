@@ -2582,13 +2582,13 @@
     return t.scrollWidth - t.clientWidth > 1;
   }
 
-  // The head's click cycle (#129, shared/tool-head.js): folded → output → output and the whole
-  // command → output → folded. A head whose target already fits keeps the plain toggle.
+  // The head's click cycle (#129, #s698, shared/tool-head.js): folded → output → output and the
+  // whole command → folded. A head whose target already fits keeps the plain toggle.
   function cycleFold(f) {
     if (!f) return;
     var clipped = targetClipped(f);
-    // The step is REMEMBERED, not derived: "output, command clipped" is both the way in and the
-    // way out of the cycle, and only the step tells them apart.
+    // The step is REMEMBERED where the click left it, and derived from what the head shows only
+    // where no click did (a remembered fold, a search that showed the command).
     var at = f.dataset.step === undefined ? shared.headStepOf(f.dataset.open === "1", f.dataset.full === "1") : Number(f.dataset.step);
     var step = shared.nextHeadStep(at, clipped);
     f.dataset.step = String(step);

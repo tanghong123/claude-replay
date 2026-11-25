@@ -708,15 +708,15 @@ export function bindComponentEvents(root, state, actions) {
       actions.rerender(); return;
     }
     if (renderer && event.target.closest(".renderer-head") && !renderer.classList.contains("noninteractive")) {
-      // The head's click cycle (#129, shared/tool-head.js): folded → the output → the output
-      // and the whole command → the output → folded. A target that already fits keeps the
-      // plain toggle, so a short call still costs one click to open and one to close.
+      // The head's click cycle (#129, #s698, shared/tool-head.js): folded → the output → the
+      // output and the whole command → folded. A target that already fits keeps the plain
+      // toggle, so a short call still costs one click to open and one to close.
       const id = renderer.dataset.recordId;
       const target = renderer.querySelector(":scope > .renderer-head > .renderer-target");
       const full = !!state.fullTargets?.has(id);
       const clipped = full || (!!target && target.scrollWidth - target.clientWidth > 1);
-      // The step is REMEMBERED, not derived: "output, command clipped" is both the way in and
-      // the way out of the cycle, and only the step tells them apart.
+      // The step is REMEMBERED where the click left it, and derived from what the head shows
+      // only where no click did (a remembered fold, a search that showed the command).
       const at = state.headSteps?.has(id) ? state.headSteps.get(id) : headStepOf(!renderer.classList.contains("closed"), full);
       const step = nextHeadStep(at, clipped);
       state.headSteps?.set(id, step);
