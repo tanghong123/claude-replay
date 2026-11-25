@@ -1522,7 +1522,7 @@ ways (an attribute given twice), a sub-agent's record (`isSidechain`) and a queu
 (#s655, Hong's choice on aries#s322: "Count it as mine when its signature checks"; aries-tell sends
 them since aries#s320, so typing no longer interrupts Aries): the record's own `origin.body`, never
 its prose or the tag's text, with whitespace at its ends stripped and the client's artifact notice
-(#s699) taken off its end (#s717, Hong's choice on #s707: "Accept it with the notice taken off
+(#s699), whole and word for word, taken off its end (#s717, Hong's choice on #s707: "Accept it with the notice taken off
 first"), must be one whole v1 element (the
 tag at its first character, the closing tag at its last, no paste around it) whose sig verifies, on
 a record no sub-agent wrote, as a `user` record or a mid-turn pickup; who sent it does not matter.

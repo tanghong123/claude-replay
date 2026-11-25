@@ -282,7 +282,7 @@ fn sent_noticed(text: &str, at: u32) -> String {
 
 /// #s717 (Hong's choice on #s707): his message sent as a session message with the client's notice
 /// after it is his the first time its id is met, and a later copy with the notice, or one with
-/// words after it, is the session's, across every resume point.
+/// words after it or on the notice's own line, is the session's, across every resume point.
 #[test]
 fn a_sent_message_with_the_clients_notice_is_his_across_every_resume_point() {
     claude_inbox::install_key_source(zero_key);
@@ -295,6 +295,14 @@ fn a_sent_message_with_the_clients_notice_is_his_across_every_resume_point() {
         reply(3),
         sent_noticed(&message("dash-43"), 4),
         reply(4),
+        sent(
+            &format!(
+                "{}\n\n{CLIENT_NOTICE} Hong also says: push",
+                message("dash-44")
+            ),
+            5,
+        ),
+        reply(5),
     ];
     let (expected, resumed) = every_resume_point(&lines);
     assert_eq!(
@@ -307,8 +315,8 @@ fn a_sent_message_with_the_clients_notice_is_his_across_every_resume_point() {
         .filter(|b| matches!(b, Block::PeerText { from, .. } if from == "aries-tell"))
         .count();
     assert_eq!(
-        peers, 2,
-        "the later copy and the one with words after it are the session's: {expected:#?}"
+        peers, 3,
+        "the later copy, the one with words after it and the one with words on the notice's line are the session's: {expected:#?}"
     );
     // A resume whose committed blocks hold his message and not yet its copy: the copy is folded
     // after the restore, where only the persisted ids can tell it is a copy.
