@@ -2314,8 +2314,9 @@ fn scenario_turn_back_from_the_end(tab: &headless_chrome::Tab, surface: Surface,
     // #s710: there, at the end, the fixture's last two turns fill the view and turn N-2's header is
     // above it. With the page its whole window (813px) Linux's lines left turn N-2's header in view
     // too, so `[` to N-1 moved nothing and the turn at the top stayed N-2. The Mac passes at both.
-    // The window's frame is whatever the Chrome draws, so the window is sized once, read, and
-    // corrected by what the page lost or gained.
+    // The window's frame is whatever the Chrome draws, so the page is read first in the window a
+    // case launches with (1400x900, `harness::chrome`), and the window is then sized by what the
+    // page must lose to be 757px.
     let page = eval(tab, "innerHeight").as_f64().unwrap_or(813.0);
     harness::resize(tab, 1400.0, 900.0 - (page - 757.0));
     until(
