@@ -29239,19 +29239,68 @@ fn a_phone_offers_the_jump_to_the_latest_after_a_fold_opened_at_the_end() {
     // The last command's activity, opened by a finger where it sits on the screen.
     let (x, y) = phone_point(&tab, "(function(){ var heads = [].slice.call(document.querySelectorAll('#sessionView .transcript .renderer-head')).filter(function (e) { var r = e.getBoundingClientRect(); return r.height > 0 && r.top > 60 && r.bottom < innerHeight - 120 && /Ran 1 shell command/.test(e.textContent); }); var r = heads[heads.length - 1].getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
     harness::finger_tap(&tab, x, y);
-    std::thread::sleep(Duration::from_millis(900));
-    println!("JUMP after the fold opened: {}", harness::eval(&tab, jump));
+    harness::until(
+        &tab,
+        offered,
+        "the fold opened at the end puts the end below the reader: the jump is offered at once",
+        Duration::from_secs(10),
+        jump,
+    );
     harness::touch_glide(&tab, -1500);
     harness::until(
         &tab,
         offered,
-        "a glide up after the fold opened at the end offers the jump to the latest",
+        "a glide up after the fold opened at the end still offers the jump to the latest",
+        Duration::from_secs(10),
+        jump,
+    );
+    // Whatever painted the jump last, the reader's own scroll asks again what is below: drawn hidden
+    // here (as a paint made before the page grew draws it), a short glide brings it back.
+    harness::eval(&tab, "(function(){ document.getElementById('jumpToBottom').classList.remove('show'); return 1; })()");
+    harness::touch_glide(&tab, -300);
+    harness::until(
+        &tab,
+        offered,
+        "a jump drawn hidden with the end below comes back on the reader's next scroll",
         Duration::from_secs(10),
         jump,
     );
     let (jx, jy) = phone_point(&tab, "(function(){ var r = document.getElementById('jumpToBottom').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
     harness::finger_tap(&tab, jx, jy);
     harness::until(&tab, at_end, "the jump takes the reader to the end", Duration::from_secs(10), jump);
+}
+
+/// #s700, the same stale paint through the one reshape the engine hears of itself: a diagram's
+/// source toggle releases the pin before the source grows the page. Opened at the end, the jump was
+/// drawn hidden with the source below; it is offered once the click has grown the page.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_offers_the_jump_to_the_latest_after_a_diagram_s_source_opened_at_the_end() {
+    let _serial = serial();
+    let diagram = "flowchart LR\\n  A[Sample input] --> B[Mock output]\\n".to_string()
+        + &"%% Invented comment that makes the source tall without changing the diagram.\\n".repeat(60);
+    let mut extra = String::new();
+    extra += &harness::user_at("question 10: draw the flow", &harness::now_minus(50));
+    extra += &harness::assistant_at(&format!("answer 10: the flow\\n\\n```mermaid\\n{diagram}```"), &harness::now_minus(40));
+    let (_m, _b, tab, _path) = phone_world_at(3221, "phone-jump-after-diagram-source", 390, 844, &extra);
+    let jump = "JSON.stringify((function(){ var j = document.getElementById('jumpToBottom'), t = document.querySelector('#sessionView .transcript'); return { show: j.classList.contains('show'), opacity: getComputedStyle(j).opacity, below: Math.round(t.scrollHeight - t.scrollTop - t.clientHeight), source: !!document.querySelector('[data-mermaid] pre:not([hidden])') }; })())";
+    let offered = "(function(){ var j = document.getElementById('jumpToBottom'), t = document.querySelector('#sessionView .transcript'); if (t.scrollHeight - t.scrollTop - t.clientHeight <= 40 || !j.classList.contains('show') || getComputedStyle(j).opacity !== '1') return false; var r = j.getBoundingClientRect(), e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!e && (e === j || j.contains(e)); })()";
+    harness::until(
+        &tab,
+        "(function(){ var t = document.querySelector('#sessionView .transcript'), b = document.querySelector('[data-mermaid] .mermaid-source'); if (!b) return false; var r = b.getBoundingClientRect(); return t.scrollHeight - t.scrollTop - t.clientHeight <= 4 && r.height > 0 && r.top > 60 && r.bottom < innerHeight - 120 && !!document.querySelector('[data-mermaid] svg'); })()",
+        "the session opens at its end with the diagram drawn and its source control on the screen",
+        Duration::from_secs(20),
+        jump,
+    );
+    let (x, y) = phone_point(&tab, "(function(){ var r = document.querySelector('[data-mermaid] .mermaid-source').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    harness::finger_tap(&tab, x, y);
+    harness::until(
+        &tab,
+        offered,
+        "the diagram's source opened at the end puts the end below the reader: the jump is offered at once",
+        Duration::from_secs(10),
+        jump,
+    );
 }
 
 fn jump_after_search(port: u16, case: &str, deep: bool) {

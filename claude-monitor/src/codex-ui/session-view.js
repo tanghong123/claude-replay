@@ -618,6 +618,8 @@ const viewport = new Viewport(transcript, byId("transcriptInner"), recordState, 
     // #s700: the jump follows what is below as the reader moves, not only a flip of the pin.
     if (byId("jumpToBottom").classList.contains("show") !== jumpWanted()) paintJump();
   },
+  // A reshape the engine heard of itself (a diagram's source toggle) has grown the page by now (#s700).
+  afterReshape: paintJump,
   followChanged: paintJump
 });
 // Delegate from the stable scroll host: the virtual window may replace all of its children
