@@ -87,9 +87,9 @@ mod tests {
     use serde_json::json;
 
     /// #s713: Antigravity's id for a thinking level (`gemini-3.8-flash-medium`) takes Gemini 3.8
-    /// Flash's published rate, each tier priced on its own count: input and cache reads as
-    /// separate counts (the CLI's own workflow runtime sums its total as input + output + cache
-    /// reads), output at the output rate, which on Google's page includes thinking.
+    /// Flash's published rate, each tier priced on its own count. Two readings of the CLI's counts
+    /// are assumed, not yet confirmed on a transcript (#s715): input leaves the cache reads out,
+    /// and output holds the thinking, which Google's page bills as output.
     #[test]
     fn a_gemini_thinking_level_is_priced_at_its_models_rate() {
         let mut acc = MetricsAcc::default();

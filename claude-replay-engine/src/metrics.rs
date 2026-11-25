@@ -2025,10 +2025,10 @@ mod price_tests {
             .contains("duplicate pricing evidence"));
     }
 
-    /// Pins all four billing tiers where vendor/model families differ. Both vendors' tables were
-    /// queried 2026-09-09 and re-read since (OpenAI's on 2026-09-25, #279, when its flagship
-    /// table began publishing cache-WRITE rates above input); `pricing.json` records the exact
-    /// query timestamps and source URLs.
+    /// Pins all four billing tiers where vendor/model families differ. Anthropic's and OpenAI's
+    /// tables were queried 2026-09-09 and re-read since (OpenAI's on 2026-09-25, #279, when its
+    /// flagship table began publishing cache-WRITE rates above input), Google's on 2026-11-25
+    /// (#s713); `pricing.json` records the exact query timestamps and source URLs.
     #[test]
     fn prices_match_the_published_tables() {
         for (model, want) in [
