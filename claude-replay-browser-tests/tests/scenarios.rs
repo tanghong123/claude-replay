@@ -10984,9 +10984,9 @@ fn scenario_a_fold_opened_at_the_tail_does_not_snap_back(
     // GROWS. A fold head was tried first and is the wrong instrument twice over: its click is a
     // cycle (four steps then, three since #s698), so on a head the page had already opened it
     // CLOSES (measured: the classic page shrank 76px and the case reported itself vacuous), and
-    // it routes through the shells'
-    // re-render path while a cap expander reveals in place and reaches the engine only through
-    // the resize observer — which is exactly the path that was left uncovered.
+    // it routes through the shells' re-render path while a cap expander reveals in place and
+    // reaches the engine only through the resize observer — which is exactly the path that was
+    // left uncovered.
     let head_selector = match surface {
         Surface::Classic => ".morebtn",
         Surface::AppShell => "[data-cap-more]",
