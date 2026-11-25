@@ -952,6 +952,23 @@ mod tests {
         let plain = write("dddddddd-0000-4000-8000-000000000653", &[user("d")]);
         assert_eq!(fork_origin(&plain), None);
         assert_eq!(launched_by(&plain), None);
+        // #s718: started from inside a Claude session whose id did not reach it (2.1.331+).
+        let e = "eeeeeeee-0000-4000-8000-000000000653";
+        let unnamed = write(
+            e,
+            &[
+                format!(
+                    r#"{{"type":"derived-from","v":1,"sessionId":"{e}","sessions":[{{"type":"unknown","id":null,"via":"subprocess","started":"{e}"}}]}}"#
+                ),
+                user(e),
+            ],
+        );
+        assert_eq!(
+            launched_by(&unnamed),
+            None,
+            "an unknown entry names no starter"
+        );
+        assert_eq!(fork_origin(&unnamed), None);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
