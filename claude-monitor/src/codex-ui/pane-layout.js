@@ -24,6 +24,9 @@ export const LAYOUT_CLASSES = Object.freeze([
 
 const SHAPE = /^pl-(max|min)-(w|h)-(\d+)$/;
 
+/** The side a phone held sideways keeps its island on (#s702, `islandSide`). */
+export const ISLAND_CLASSES = Object.freeze(["pl-island-left", "pl-island-right"]);
+
 /** Whether a class holds for a band width `width` (`B`), the view's `height` and the screen's pointer:
  *  the rule the page applies, kept pure so the contract can check it against the media queries it
  *  replaced. */
@@ -39,6 +42,51 @@ export function holds(name, { width, height, coarse, fine }) {
 /** The width the bands read for a view: its own in the phone family (`phoneView`, below), 300px more
  *  elsewhere. */
 export const bandWidth = view => (phoneView(view) ? view.width : view.width + 300);
+
+/** #s702: the side a phone held sideways keeps its island (or notch) on, "left" or "right", else "".
+ *  iOS gives both sides the island's inset when the phone is sideways (62px each on an iPhone 17 Pro
+ *  Max, measured in Safari on iOS 26.4), so the inset cannot tell the side; the screen's orientation
+ *  angle can: 90 with the island on the left (the device's top turned that way), 270 on the right
+ *  (measured the same day, turning through upright before each side). It answers only where it is
+ *  sure: a touch screen held sideways (the phone query's short screen, wider than tall), the angle
+ *  exactly 90 or 270 as `screen.orientation` reports it, and both side insets the same and not 0, as
+ *  iOS gives them. Anything else keeps every inset as the screen gives it: a screen whose insets
+ *  already differ by side, and a browser with no `screen.orientation` (the older `window.orientation`
+ *  was never measured, so it is not read). The app (`#app`) and the view (`#sessionView`) both ask it
+ *  here, so they cannot disagree; it reads the screen, never the view's box, since the insets are the
+ *  screen's. */
+export function islandSide() {
+  if (typeof matchMedia !== "function" || !matchMedia("(pointer:coarse) and (max-height:500px)").matches || !(innerWidth > innerHeight)) return "";
+  const angle = typeof screen !== "undefined" && typeof screen.orientation?.angle === "number" ? screen.orientation.angle : null;
+  const side = angle === 90 ? "left" : angle === 270 ? "right" : "";
+  if (!side) return "";
+  const [left, right] = sideInsets();
+  return left > 0 && Math.abs(left - right) < 0.5 ? side : "";
+}
+
+/** Calls `listener` whenever the screen may have turned without a size changing (#s702): from one side
+ *  to the other a phone keeps its size, so no resize says it. Both of the screen's turn events (a
+ *  browser may send either) and `pageshow`, since a page restored from the back-forward cache, or one
+ *  hidden while the phone turned, heard none. Each listener ends with `signal`. */
+export function onScreenTurn(listener, { signal } = {}) {
+  if (typeof screen !== "undefined" && screen.orientation?.addEventListener) screen.orientation.addEventListener("change", listener, { signal });
+  addEventListener("orientationchange", listener, { signal });
+  addEventListener("pageshow", listener, { signal });
+}
+
+/** The screen's left and right safe-area insets in px. Script cannot read `env()` itself, so a hidden
+ *  probe takes them as its padding for one read and goes again, leaving nothing in the page. */
+function sideInsets() {
+  const layer = viewRoot.layer();
+  if (!layer) return [0, 0];
+  const probe = layer.ownerDocument.createElement("div");
+  probe.setAttribute("aria-hidden", "true");
+  probe.style.cssText = "position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;pointer-events:none;padding:0 env(safe-area-inset-right,0px) 0 env(safe-area-inset-left,0px)";
+  layer.append(probe);
+  const style = getComputedStyle(probe), insets = [parseFloat(style.paddingLeft) || 0, parseFloat(style.paddingRight) || 0];
+  probe.remove();
+  return insets;
+}
 
 /** Whether that view is a wide phone held sideways (`WIDE_PHONE_QUERY` as the view reads it): a short
  *  touch view 900px wide or more. */
@@ -93,8 +141,12 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange, 
   // pointer. A decision reads nothing more before it writes: a read there would lay the view out in
   // its old arrangement with a state the reader's toggle has just changed, and start that state's
   // transitions, which the decision then cancels (`toggled`).
-  const measure = () => ({ box: element.getBoundingClientRect(), viewport: viewRoot.viewportWidth(), viewportHeight: viewRoot.styleRoot()?.clientHeight ?? innerHeight, height: innerHeight, coarse: coarse.matches, fine: fine.matches });
-  const decideAt = ({ box, viewport, viewportHeight, height, coarse: isCoarse, fine: isFine }) => {
+  // The island's side (#s702), read again only where the screen may have changed (a resize, a turn,
+  // the pointer), never per decision: a host that scrolls the view decides on every frame of a move,
+  // and the read takes a probe and a style pass.
+  let island = islandSide();
+  const measure = () => ({ box: element.getBoundingClientRect(), viewport: viewRoot.viewportWidth(), viewportHeight: viewRoot.styleRoot()?.clientHeight ?? innerHeight, height: innerHeight, coarse: coarse.matches, fine: fine.matches, side: island });
+  const decideAt = ({ box, viewport, viewportHeight, height, coarse: isCoarse, fine: isFine, side }) => {
     if (signal?.aborted) return;
     // A box with no size is not laid out: the host hid the view (its `hidden` attribute, #s464, or what
     // holds it). Nothing about it is the view's to decide, so the last decision stands until the box
@@ -105,6 +157,9 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange, 
     const arrangement = arrangeView({ ...asked, width: box.width, height: box.height, coarse: isCoarse });
     const on = classesFor(view);
     for (const name of arrangeClasses(view, arrangement)) on.add(name);
+    // #s702: the side a phone held sideways keeps its island on, which takes the screen's whole inset
+    // there while the other side keeps what its corners need (production.css, `--safe-cap-*`).
+    if (side) on.add(`pl-island-${side}`);
     const right = Math.max(0, viewport - box.right);
     const tall = box.height >= height - 2;
     // Its gaps to the window's top and bottom (#s431 stage 4), read from its box, so a host's pane
@@ -158,7 +213,7 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange, 
     family.touch = !!isCoarse;
     const hold = performance.now() >= glideUntil;
     if (hold) element.classList.add("pl-holding");
-    for (const name of [...LAYOUT_CLASSES, ...ARRANGE_CLASSES, "pl-phone"]) element.classList.toggle(name, on.has(name));
+    for (const name of [...LAYOUT_CLASSES, ...ARRANGE_CLASSES, "pl-phone", ...ISLAND_CLASSES]) element.classList.toggle(name, on.has(name));
     element.style.setProperty("--pl-b", `${bandWidth(view)}px`);
     element.style.setProperty("--pl-w", `${box.width}px`);
     element.style.setProperty("--pl-h", `${box.height}px`);
@@ -229,8 +284,10 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange, 
   decide();
   const observer = new ResizeObserver(decide);
   observer.observe(element);
-  for (const query of [coarse, fine]) query.addEventListener("change", decide, { signal });
-  addEventListener("resize", decide, { signal });
+  const reread = () => { island = islandSide(); decide(); };
+  for (const query of [coarse, fine]) query.addEventListener("change", reread, { signal });
+  addEventListener("resize", reread, { signal });
+  onScreenTurn(reread, { signal });
   signal?.addEventListener("abort", () => { observer.disconnect(); moves?.disconnect(); moves = null; }, { once: true });
   const query = name => {
     if (!(name in family)) throw new Error(`pane-layout: no family named ${name}`);

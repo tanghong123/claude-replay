@@ -456,11 +456,18 @@ pub const COMPACT_AFTER: usize = 256;
 /// answers and notes its clarify text lists on its questions, and a decline keeps the reader's own
 /// words in `Asked::said`; a v96 block has neither.
 ///
+/// v98: #s699 — a message from another session no longer carries the notice Claude Code appends
+/// when its sender has handled Artifact content others wrote: a v97 stream's `PeerText` ends with it.
+///
+/// v99: #s717 — a signed message from the person sent as another session's message whose body ends
+/// in that notice is his `UserInbox`, where a v98 stream holds it as the session's `PeerText`; and
+/// a `PeerText` whose notice has words after it keeps them, where v98 left them out.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 97;
+pub const FOLD_VERSION: u16 = 99;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

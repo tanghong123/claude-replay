@@ -342,9 +342,11 @@ function turnTime(unit) {
   const when = typeof ts === "number" && ts > 0 ? `<span class="turn-time" title="When this turn was sent">${escapeText(fmtTime(ts))}</span>` : "";
   // #257: how long the turn took, when the transcript recorded it — 19% of turns have no
   // duration, and those show nothing rather than a zero. Same class as the time, so the chip
-  // needs no rule in the GENERATED stylesheet.
+  // needs no rule in the GENERATED stylesheet. #s706: it says what it is, "worked 45s" as Claude
+  // Code's own "Worked for 45s", since a bare "45s" under a message meant nothing on a phone, where
+  // no title shows.
   const secs = unit.view?.source?.dur;
-  const took = typeof secs === "number" && secs > 0 ? `<span class="turn-time" title="How long this turn took">${escapeText(fmtDur(secs))}</span>` : "";
+  const took = typeof secs === "number" && secs > 0 ? `<span class="turn-time" title="How long the agent worked on this turn">worked ${escapeText(fmtDur(secs))}</span>` : "";
   return when + took;
 }
 
@@ -708,15 +710,15 @@ export function bindComponentEvents(root, state, actions) {
       actions.rerender(); return;
     }
     if (renderer && event.target.closest(".renderer-head") && !renderer.classList.contains("noninteractive")) {
-      // The head's click cycle (#129, shared/tool-head.js): folded → the output → the output
-      // and the whole command → the output → folded. A target that already fits keeps the
-      // plain toggle, so a short call still costs one click to open and one to close.
+      // The head's click cycle (#129, #s698, shared/tool-head.js): folded → the output → the
+      // output and the whole command → folded. A target that already fits keeps the plain
+      // toggle, so a short call still costs one click to open and one to close.
       const id = renderer.dataset.recordId;
       const target = renderer.querySelector(":scope > .renderer-head > .renderer-target");
       const full = !!state.fullTargets?.has(id);
       const clipped = full || (!!target && target.scrollWidth - target.clientWidth > 1);
-      // The step is REMEMBERED, not derived: "output, command clipped" is both the way in and
-      // the way out of the cycle, and only the step tells them apart.
+      // The step is REMEMBERED where the click left it, and derived from what the head shows
+      // only where no click did (a remembered fold, a search that showed the command).
       const at = state.headSteps?.has(id) ? state.headSteps.get(id) : headStepOf(!renderer.classList.contains("closed"), full);
       const step = nextHeadStep(at, clipped);
       state.headSteps?.set(id, step);

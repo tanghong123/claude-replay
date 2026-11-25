@@ -4620,7 +4620,24 @@ pub fn codex_tool_session(id: &str, turns: u32) -> String {
 /// ratio 3, with touch — what `tailscale serve` hands a phone after #11. Chrome's own emulation,
 /// so media queries, `pointer: coarse` and the visual viewport all answer as they would there.
 pub fn phone(tab: &headless_chrome::Tab, width: u32, height: u32) {
+    phone_turned(tab, width, height, None);
+}
+
+/// [`phone`] with the screen's orientation angle given (#s702): 90 is a phone held sideways with its
+/// island on the left, as iOS reports it, 270 with the island on the right, 0 upright. With none,
+/// headless Chrome reports the angle its own screen has, 0 (measured on Chrome 151), so a case that
+/// does not turn the phone keeps every inset whole.
+pub fn phone_turned(tab: &headless_chrome::Tab, width: u32, height: u32, angle: Option<u32>) {
     use headless_chrome::protocol::cdp::Emulation;
+    let screen_orientation = angle.map(|angle| Emulation::ScreenOrientation {
+        Type: match angle {
+            90 => Emulation::ScreenOrientationType::LandscapePrimary,
+            270 => Emulation::ScreenOrientationType::LandscapeSecondary,
+            180 => Emulation::ScreenOrientationType::PortraitSecondary,
+            _ => Emulation::ScreenOrientationType::PortraitPrimary,
+        },
+        angle,
+    });
     tab.call_method(Emulation::SetDeviceMetricsOverride {
         width,
         height,
@@ -4632,7 +4649,7 @@ pub fn phone(tab: &headless_chrome::Tab, width: u32, height: u32) {
         position_x: None,
         position_y: None,
         dont_set_visible_size: None,
-        screen_orientation: None,
+        screen_orientation,
         viewport: None,
         display_feature: None,
         device_posture: None,

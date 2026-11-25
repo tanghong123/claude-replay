@@ -612,11 +612,12 @@ mod tests {
             ".session-filter-options",
             ".drawer-handle",
             ".drawer-scrim",
-            ".column-switch",
-            ".column-pane",
+            // #s705: the drawer's row over the list, and Machines in its one-row head.
+            ".side-list-head",
+            "#machinesHead",
         ];
         // The app's states, kept on `#app`: the app placing or styling the view from outside —
-        // its rail, the drawer, a wide phone's column and its pane, and the artifact pane's state
+        // its rail, the drawer, a wide phone's column, and the artifact pane's state
         // copied onto `#app` for its grid. Stage 6 lays the view out by its own pane's size
         // instead. The list's arrangement is on the list's own element since #s430 stage 1.
         const APP_STATES: &[&str] = &[
@@ -624,38 +625,29 @@ mod tests {
             ".sidebar-tight",
             ".mobile-detail",
             ".phone-column-off",
-            ".column-pane-on",
             ".preview-off",
             ".preview-full",
             // #s431 stage 3: a decision of the owner's order, which lays the list out at once.
             ".app-holding",
+            // #s705: the drawer's head as one row, its list's controls over the list.
+            ".drawer-one-row",
+            // #s701: the nav's rows folded away as the list scrolls down, and their glide.
+            ".nav-away",
+            ".nav-sliding",
+            // #s702: the side a phone held sideways keeps its island on (the view reads its own).
+            ".island-left",
+            ".island-right",
         ];
         // What `:is(#sessionView,#app)` may reach: elements the app's chrome shares with the view
-        // (the glyph button, the session filter's and section menu's popover rows) and the lists
-        // a wide phone's column borrows from the outline into the app's sidebar
-        // (`PHONE_PANES`, `#columnPane.phone-pane-body`). In the app both hooks match; in a host,
-        // `#sessionView` alone.
+        // (the glyph button, the session filter's and section menu's popover rows). In the app both
+        // hooks match; in a host, `#sessionView` alone. The outline's lists, which a wide phone's
+        // column borrowed into the app's sidebar until #s703, are the view's alone since #s704.
         const SHARED: &[&str] = &[
             ".iconbtn",
             ".navigator-options",
             ".scope-option",
             ".scope-menu-action",
             ".navbtn",
-            ".phone-pane-body",
-            ".activity-empty",
-            ".activity-empty-show",
-            ".outline-agent",
-            ".outline-turn-row",
-            ".outline-number",
-            ".outline-label",
-            ".outline-epoch",
-            ".outline-peer",
-            ".outline-peer-from",
-            ".outline-peer-glyph",
-            ".outline-quote-marker",
-            ".outline-quoted",
-            ".outline-reply-count",
-            ".outline-turn-pending",
         ];
         const SHARED_HOOK: &str = ":is(#sessionView,#app)";
         // What a rule of the app placing its view may read below `#app>`: the view, its own
@@ -745,8 +737,8 @@ mod tests {
             let Some(whose) = whose else {
                 panic!(
                     "production.css:{line}: `{selector}` hangs on the page around the session \
-                     view. A rule of the view's hangs on `#sessionView`; one for what a wide \
-                     phone's column borrows or the app's chrome shares hangs on `{SHARED_HOOK}` \
+                     view. A rule of the view's hangs on `#sessionView`; one for what the \
+                     app's chrome shares hangs on `{SHARED_HOOK}` \
                      and names it in SHARED; the app's own names its chrome or its state \
                      (design/session-view-component.md, stage 5a)"
                 );
@@ -757,7 +749,9 @@ mod tests {
         assert!(
             selectors.len() > 1000
                 && count("the view's") >= 250
-                && count("shared") >= 20
+                // #s704 made the outline's lists the view's alone: the glyph button, the
+                // popover rows and `button` remain.
+                && count("shared") >= 6
                 && count("the app's chrome") >= 15
                 && count("the list's") >= 10
                 // #s431 stage 2 moved the pane's sideways rules from the app's copy of its state

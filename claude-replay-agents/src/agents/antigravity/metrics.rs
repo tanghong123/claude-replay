@@ -80,3 +80,31 @@ impl MetricsAcc {
         metrics
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::MetricsAcc;
+    use serde_json::json;
+
+    /// #s713: Antigravity's id for a thinking level (`gemini-3.8-flash-medium`) takes Gemini 3.8
+    /// Flash's published rate, each tier priced on its own count. Two readings of the CLI's counts
+    /// are assumed, not yet confirmed on a transcript (#s715): input leaves the cache reads out,
+    /// and output holds the thinking, which Google's page bills as output.
+    #[test]
+    fn a_gemini_thinking_level_is_priced_at_its_models_rate() {
+        let mut acc = MetricsAcc::default();
+        acc.push(&json!({
+            "type": "PLANNER_RESPONSE", "created_at": "2026-11-25T00:00:00Z", "step_index": 1,
+            "model": "gemini-3.8-flash-medium",
+            "input_tokens": 9689, "cache_read_tokens": 400, "output_tokens": 120,
+        }));
+        let metrics = acc.finish();
+        assert!(!metrics.cost_partial, "every token is priced");
+        let cost = metrics.cost_usd.expect("gemini-3.8-flash-medium is priced");
+        let expected = (9689.0 * 0.75 + 400.0 * 0.075 + 120.0 * 3.75) / 1e6;
+        assert!(
+            (cost - expected).abs() < 1e-12,
+            "cost {cost}, expected {expected}"
+        );
+    }
+}
