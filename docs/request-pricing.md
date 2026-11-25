@@ -32,6 +32,10 @@ bounds: a missing tier might be Flex or Fast. Prices use exact integer arithmeti
 until projection. Rules live in `pricing.json`, so changes invalidate priced caches
 through `PRICING_FINGERPRINT`. This is current API-equivalent token pricing, not
 historical invoice reconstruction or Codex subscription-credit consumption.
+A request in a discounted background completion window (2 or 8 hours, on
+GPT-6.2 Astra and Sol, GPT-6.1 Terra and GPT-6 Luna) is priced at Standard: no
+transcript records a background request or its window, so the discount, 30% or
+40%, is not applied, and such a request reads high with no estimate flag.
 
 Consumers should retain `PricedTokens` classes inside each time/model bucket,
 merge identical classes, and separately retain tokens without evidence. Never
