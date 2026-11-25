@@ -1651,6 +1651,21 @@ const RECORD_KEYS_BY_TYPE: &[(&str, &[&str])] = &[
             // them, a RENDER question for the owner, queued with counts and client version, never
             // decided here.
             "holdsPersonsWords",
+            // #s712 (client 2.1.332): epoch milliseconds on a user record that carries what reached
+            // the session from outside the person's typing: a task notification, another session's
+            // message, a scheduled firing. Measured 2026-11-25 on denali, every transcript holding
+            // it: 298 distinct user records, all from 2.1.332 (259 task notifications, 37 peer
+            // messages, 2 scheduled), none typed, no tool result and no attachment; 4 ms to 12.7 s
+            // before the record's timestamp, never after it. The client reads it to decide which
+            // reply a message answers (`Aee`): the reply above it only if the message was sent
+            // after that reply was written (`jmt` takes a batch's earliest). Nothing here pairs a
+            // message with the reply above it by position, and every time a reader sees is the
+            // record's timestamp (when the model got it), which this moves by seconds at most.
+            // Unread.
+            // REVISIT: the key on a typed prompt or a tool result, or a gap of minutes, where a
+            // turn's shown time would mislead: a RENDER question for the owner, queued with counts
+            // and client version, never decided here.
+            "sentAtMs",
             "queueTranscriptOnly",
             "usageLimitNote",
             // #s61 (client 2.1.295): `{decision, source, reasonType?}` on a user record carrying
