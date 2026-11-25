@@ -452,11 +452,14 @@ pub const COMPACT_AFTER: usize = 256;
 /// no tokens and times no answer, where a v95 stream's persisted deltas priced it in both; and
 /// such a fork's client tally carried from its parent is left out (#s687).
 ///
+/// v97: #s699 — a message from another session no longer carries the notice Claude Code appends
+/// when its sender has handled Artifact content others wrote: a v96 stream's `PeerText` ends with it.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 96;
+pub const FOLD_VERSION: u16 = 97;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
