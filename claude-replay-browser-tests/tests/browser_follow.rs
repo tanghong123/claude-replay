@@ -25706,15 +25706,20 @@ fn drawer_world(
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_list_folds_its_nav_rows_on_the_way_down_and_brings_them_back_on_the_way_up() {
     let _serial = serial();
-    // The list scrolled by `step` `n` times, each step its own scroll event (or 150 ms without one);
-    // answers where the list ends up.
-    let scroll = |tab: &headless_chrome::Tab, step: i32, n: u32| -> i64 {
-        harness::eval(tab, &format!("(async function(){{ var s = document.getElementById('tree'); for (var i = 0; i < {n}; i++) {{ var seen = new Promise(function (r) {{ var t = setTimeout(r, 150); s.addEventListener('scroll', function () {{ clearTimeout(t); r(); }}, {{ once: true }}); }}); s.scrollTop += {step}; await seen; }} return Math.round(s.scrollTop); }})()"))
+    // The list's offset written by `write` `n` times, each time followed by two frames, so each write is
+    // a scroll event of its own; answers where the list ends up. The first scroll after the list's box
+    // changed height (the rows folding or coming back) is not the reader's, so a step after one is
+    // taken by its second event.
+    let move_list = |tab: &headless_chrome::Tab, write: &str, n: u32| -> i64 {
+        harness::eval(tab, &format!("(async function(){{ var s = document.getElementById('tree'); for (var i = 0; i < {n}; i++) {{ {write}; await new Promise(function (r) {{ requestAnimationFrame(function () {{ requestAnimationFrame(r); }}); }}); }} return Math.round(s.scrollTop); }})()"))
             .as_i64()
             .unwrap_or(-1)
     };
+    let scroll = |tab: &headless_chrome::Tab, step: i32, n: u32| -> i64 {
+        move_list(tab, &format!("s.scrollTop += {step}"), n)
+    };
     let facts = |tab: &headless_chrome::Tab| -> serde_json::Value {
-        harness::probe(tab, &format!("(function(){{ var ok = {PHONE_HITTABLE}, app = document.getElementById('app'), nav = document.querySelector('#app>.sidebar>.nav'), s = document.getElementById('tree'); return {{ away: app.classList.contains('nav-away'), navH: Math.round(nav.getBoundingClientRect().height), write: ok(document.getElementById('writeBtn')), search: ok(document.getElementById('searchBtn')), treeTop: Math.round(s.getBoundingClientRect().top), top: Math.round(s.scrollTop) }}; }})()"))
+        harness::probe(tab, &format!("(function(){{ var ok = {PHONE_HITTABLE}, app = document.getElementById('app'), nav = document.querySelector('#app>.sidebar>.nav'), s = document.getElementById('tree'); return {{ away: app.classList.contains('nav-away'), navH: Math.round(nav.getBoundingClientRect().height), write: ok(document.getElementById('writeBtn')), search: ok(document.getElementById('searchBtn')), treeTop: Math.round(s.getBoundingClientRect().top), top: Math.round(s.scrollTop), room: Math.round(s.scrollHeight - s.clientHeight) }}; }})()"))
     };
     const FOLDED: &str = "document.getElementById('app').classList.contains('nav-away') && document.querySelector('#app>.sidebar>.nav').getBoundingClientRect().height < 1";
     const NAV_STATE: &str = "document.getElementById('app').className + ' nav ' + Math.round(document.querySelector('#app>.sidebar>.nav').getBoundingClientRect().height) + ' top ' + Math.round(document.getElementById('tree').scrollTop)";
@@ -25763,8 +25768,14 @@ fn a_phone_list_folds_its_nav_rows_on_the_way_down_and_brings_them_back_on_the_w
             (folded["top"].as_i64().unwrap_or(-1) - went).abs() <= 1,
             "{at}: the fold leaves the list's offset where the reader took it ({went}): {folded}"
         );
-        quiet();
-        let up = scroll(tab, -6, 2);
+        // …and they stay away while the list rests (its glide, the index read again).
+        harness::pause("the list to rest folded", Duration::from_millis(1500));
+        let rested = facts(tab);
+        assert!(
+            rested["away"] == true && rested["top"] == folded["top"],
+            "{at}: resting, the rows stay folded and the list where it was: {folded} → {rested}"
+        );
+        let up = scroll(tab, -6, 3);
         back(
             tab,
             &format!("{at}: the rows back on the first scroll up"),
@@ -25795,24 +25806,25 @@ fn a_phone_list_folds_its_nav_rows_on_the_way_down_and_brings_them_back_on_the_w
             DRAWER_STATE,
         );
         let nav_h = down_and_up(&tab, "upright");
-        // A short scroll is not a reason to fold.
+        // A short scroll is not a reason to fold; 24px down on end is.
+        scroll(&tab, -2, 1);
         scroll(&tab, 12, 1);
         harness::pause("a short scroll to settle", Duration::from_millis(400));
         assert_eq!(
             facts(&tab)["away"],
             false,
-            "upright: one short scroll leaves the rows: {}",
+            "upright: 12px down leaves the rows: {}",
             facts(&tab)
         );
-        // Folded, the drawer shut and opened again shows them.
-        scroll(&tab, 12, 6);
+        scroll(&tab, 12, 1);
         harness::until(
             &tab,
             FOLDED,
-            "upright: folded again",
+            "upright: 24px down on end folds them",
             Duration::from_secs(5),
             NAV_STATE,
         );
+        // Folded, the drawer shut and opened again shows them.
         phone_tap(&tab, "#drawerHandle");
         harness::until(
             &tab,
@@ -25843,6 +25855,34 @@ fn a_phone_list_folds_its_nav_rows_on_the_way_down_and_brings_them_back_on_the_w
         quiet();
         scroll(&tab, -100_000, 1);
         back(&tab, "upright: the rows back at the list's top", nav_h);
+        quiet();
+        // Folded near the list's end, where the list's growth brings its offset down with it: that is
+        // not the reader scrolling up, and they stay folded.
+        let room = facts(&tab)["room"].as_i64().unwrap_or(0);
+        move_list(
+            &tab,
+            "s.scrollTop = s.scrollHeight - s.clientHeight - 90",
+            1,
+        );
+        scroll(&tab, 12, 5);
+        harness::until(
+            &tab,
+            FOLDED,
+            "upright: folded near the list's end",
+            Duration::from_secs(5),
+            NAV_STATE,
+        );
+        harness::pause(
+            "the list to rest folded at its end",
+            Duration::from_millis(1200),
+        );
+        let end = facts(&tab);
+        assert!(
+            end["away"] == true
+                && (end["top"].as_i64().unwrap_or(-1) - end["room"].as_i64().unwrap_or(-9)).abs() <= 1
+                && end["room"].as_i64().unwrap_or(room) <= room - nav_h + 2,
+            "upright: folded at the end, the list's offset came down with its growth ({room} → its end) and the rows stayed away: {end}"
+        );
     }
 
     // Held sideways on a wide phone: the column.
