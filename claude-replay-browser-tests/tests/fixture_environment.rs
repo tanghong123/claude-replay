@@ -549,17 +549,17 @@ fn a_urls_origin_drops_its_path_query_and_fragment() {
     }
 }
 
-/// #s710: what `--enable-automation` does to a case's page, measured on the Chrome the suite runs.
-/// A case's Chrome goes without the flag ([`harness::IGNORED_DEFAULTS`]); Chrome for Testing 159
-/// and branded Google Chrome 158 draw its "controlled by automated test software" bar in a headless
-/// window, 56px of a 1400x900 window's page (measured on a Mac), and 151 draws none. The case
-/// launches three browsers, a case's own, one given the flag back and one with `--test-type`, which
-/// keeps every startup bar away (measured on 158), and fails, naming the three heights and the
-/// Chrome, wherever the flag takes any of the page: the number CI's Linux Chrome gives is what
-/// decides how the cases that only fit a shorter page are fixed.
+/// #s710: a case's page has its whole window, on whatever Chrome the suite runs. Chrome draws an
+/// "is being controlled by automated test software" bar in a headless window for
+/// `--enable-automation`, and the bar takes 56px of a 1400x900 window's page: measured on branded
+/// Google Chrome 158 and Chrome for Testing 159 on a Mac, and on CI's Google Chrome 157 on Linux
+/// (813px without the flag, 757px with it), while Chrome for Testing 151 draws none. So the Mac's
+/// cases had run at 813px and CI's at 757px, and Chrome 159 on the Mac moved them to 757px. A
+/// case's Chrome now goes without the flag ([`harness::IGNORED_DEFAULTS`]), and this case holds it:
+/// its page is as tall as that of a Chrome given `--test-type`, which keeps every startup bar away.
 #[test]
 #[ignore = "needs a local Chrome"]
-fn what_the_automation_flag_takes_of_a_case_s_page() {
+fn a_case_s_page_has_its_whole_window() {
     let _serial = harness::serial();
     let height = |extra: &[&str]| -> (i64, String) {
         let (browser, tab) = harness::chrome_with_tab(extra);
@@ -579,11 +579,10 @@ fn what_the_automation_flag_takes_of_a_case_s_page() {
         (last, version)
     };
     let (case, version) = height(&[]);
-    let (flagged, _) = height(&["--enable-automation"]);
-    let (test_type, _) = height(&["--test-type"]);
+    let (bare, _) = height(&["--test-type"]);
     assert_eq!(
-        case, flagged,
-        "{version}, a 1400x900 window: a case's page {case}px tall, {flagged}px with \
-         --enable-automation, {test_type}px with --test-type"
+        case, bare,
+        "{version}, a 1400x900 window: a case's page is {case}px tall, and {bare}px with no \
+         startup bar (--test-type): something the harness passes draws a bar over the page"
     );
 }

@@ -2310,6 +2310,18 @@ fn turn_header_top(tab: &headless_chrome::Tab, surface: Surface, turn: i64) -> O
 /// the end N-1's header was on screen below that line, so its first `[` landed N-2 (it now counts
 /// from the turn its bar names, #s503).
 fn scenario_turn_back_from_the_end(tab: &headless_chrome::Tab, surface: Surface, fx: &Fixture) {
+    // A 757px page, as CI's Linux Chrome drew a case's window beneath its automation bar until
+    // #s710: there, at the end, the fixture's last two turns fill the view and turn N-2's header is
+    // above it. With the page its whole window (813px) Linux's lines left turn N-2's header in view
+    // too, so `[` to N-1 moved nothing and the turn at the top stayed N-2. The Mac passes at both.
+    harness::resize(tab, 1400.0, 844.0);
+    until(
+        tab,
+        "innerHeight < 800",
+        "the window to take its shorter height",
+        Duration::from_secs(5),
+        "innerHeight",
+    );
     jump_to_end(tab, surface);
     await_tail(tab, surface, "the jump to the end");
     settle();
@@ -7445,7 +7457,9 @@ fn app_shell_tool_heads_carry_state_exit_and_duration() {
 fn fixture_blocked(name: &str) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
-    let mut t = long_session(8, Shape::default());
+    // Twelve turns, as most fixtures: the opener waits for three windows of transcript, which eight
+    // fall short of on CI's Linux Chrome since a case's page has its whole window (#s710).
+    let mut t = long_session(12, Shape::default());
     t += &harness::user_at("Deploy it, then check the logs.", &harness::at("59:01"));
     t += &tool_open_at("b-hook", &harness::at("59:02"));
     t += &format!(
@@ -7464,7 +7478,7 @@ fn fixture_blocked(name: &str) -> Fixture {
     Fixture {
         base,
         path,
-        turns: 9,
+        turns: 13,
     }
 }
 
@@ -9153,7 +9167,7 @@ fn scenario_a_changed_on_disk_notice_says_what_happened(
 #[ignore = "needs a local Chrome"]
 fn classic_page_a_changed_on_disk_notice_says_what_happened() {
     let _serial = serial();
-    let fx = fixture_changed_on_disk("scenario-changed-classic", 8);
+    let fx = fixture_changed_on_disk("scenario-changed-classic", 12);
     let page = open(Surface::Classic, &fx, 0);
     scenario_a_changed_on_disk_notice_says_what_happened(&page.tab, Surface::Classic, &fx);
 }
@@ -9162,7 +9176,7 @@ fn classic_page_a_changed_on_disk_notice_says_what_happened() {
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_changed_on_disk_notice_says_what_happened() {
     let _serial = serial();
-    let fx = fixture_changed_on_disk("scenario-changed-app", 8);
+    let fx = fixture_changed_on_disk("scenario-changed-app", 12);
     let page = open(Surface::AppShell, &fx, 2925);
     scenario_a_changed_on_disk_notice_says_what_happened(&page.tab, Surface::AppShell, &fx);
 }
@@ -12727,12 +12741,14 @@ fn delivered_file_fixture(name: &str) -> Fixture {
         "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"f1\",\"content\":\"1 file delivered to user.\\n  {abs} → file_uuid: 11111111-2222-4333-8444-555555555555\"}}]}},\"timestamp\":\"{}\"}}\n",
         harness::at("00:02")
     );
-    jsonl += &long_session(8, Shape::default());
+    // Twelve turns, as most fixtures: the opener waits for three windows of transcript, which eight
+    // fall short of on CI's Linux Chrome since a case's page has its whole window (#s710).
+    jsonl += &long_session(12, Shape::default());
     let path = stores.claude_session(SID, &jsonl);
     Fixture {
         base,
         path,
-        turns: 9,
+        turns: 13,
     }
 }
 
@@ -15005,13 +15021,15 @@ fn both_shells_say_how_long_a_turn_took_and_stay_silent_when_unrecorded() {
 fn turn_time_layout_fixture(name: &str) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
-    let mut t = long_session(4, Shape::default());
-    t += &user_at("question 5: and the notes?", &now_minus(600));
+    // Twelve turns, as most fixtures: the opener waits for three windows of transcript, which four
+    // fall short of on CI's Linux Chrome since a case's page has its whole window (#s710).
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("question 13: and the notes?", &now_minus(600));
     t += &harness::edited_file_at("/w/notes/plan.md", &now_minus(599));
     t += &assistant_at("Read them.", &now_minus(590));
     t += &harness::command_at("review", "the plan", "", &now_minus(500));
     t += &assistant_at("Reviewed.", &now_minus(490));
-    t += &user_at("question 7: how long did that take?", &now_minus(300));
+    t += &user_at("question 15: how long did that take?", &now_minus(300));
     t += &harness::named_tool_at("d1", "Bash", "cargo build", &now_minus(298));
     t += &harness::tool_result_text("d1", "Finished", &now_minus(296));
     t += &assistant_at("Built it.", &now_minus(200));
@@ -15020,7 +15038,7 @@ fn turn_time_layout_fixture(name: &str) -> Fixture {
     Fixture {
         base,
         path,
-        turns: 7,
+        turns: 15,
     }
 }
 
@@ -15837,10 +15855,35 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
         );
         settle();
     };
-    // Ordinary windows and one no reader would choose. 1366x768 is SHORTER than 1280x800, so the
-    // sweep is by height as much as by width; 1100x520 is the corner where the breathing room has
-    // to go for the shut chain to fit at all. (It was 950x520 until the owner's order, #s431 stage
-    // 3: with a mouse the outline is a column only from a 1012px window, and at 950 it is its glyphs.)
+    // The corner is a window where the breathing room has to go for the shut chain to fit at all:
+    // 1100px wide (it was 950 until the owner's order, #s431 stage 3: with a mouse the outline is a
+    // column only from a 1012px window, and at 950 it is its glyphs), and on a Mac 520 tall. On CI's
+    // Linux Chrome the chain is shorter and, since a case's page has its whole window (#s710), the
+    // column at 1100x520 still holds the chain and its padding. So the case finds the corner's
+    // height from the page's own numbers: 520, less what the column holds beyond the chain and its
+    // padding, and less half the bottom padding more, which leaves the chain itself room to fit.
+    harness::resize(&page.tab, 1100.0, 520.0);
+    harness::until_preview_parked(&page.tab);
+    settle();
+    let room = harness::probe(
+        &page.tab,
+        "(function(){var n=document.getElementById('sessionNavigator'), s=getComputedStyle(n); \
+          return {tight:n.classList.contains('heads-tight'), top:parseFloat(s.paddingTop)||0, \
+          tail:parseFloat(s.paddingBottom)||0, column:n.clientHeight};})()",
+    );
+    let chain = read(&page.tab)["chain"].as_f64().unwrap_or(0.0);
+    let corner_h = if room["tight"] == serde_json::json!(true) {
+        520.0
+    } else {
+        let (top, tail, column) = (
+            room["top"].as_f64().unwrap_or(0.0),
+            room["tail"].as_f64().unwrap_or(0.0),
+            room["column"].as_f64().unwrap_or(0.0),
+        );
+        520.0 - (column - (top + chain + tail) + tail / 2.0).ceil()
+    };
+    // Ordinary windows and the corner, which no reader would choose. 1366x768 is SHORTER than
+    // 1280x800, so the sweep is by height as much as by width.
     for (w, h, corner) in [
         (1680.0, 1050.0, false),
         (1440.0, 900.0, false),
@@ -15848,7 +15891,7 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
         (1280.0, 800.0, false),
         (1152.0, 720.0, false),
         (1024.0, 640.0, false),
-        (1100.0, 520.0, true),
+        (1100.0, corner_h, true),
     ] {
         harness::resize(&page.tab, w, h);
         harness::until_preview_parked(&page.tab);
@@ -15944,11 +15987,11 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
         Duration::from_secs(5),
         COLUMN,
     );
-    harness::resize(&page.tab, 1100.0, 520.0);
+    harness::resize(&page.tab, 1100.0, corner_h);
     until(
         &page.tab,
         &format!("{column} === {short} && {tight}"),
-        "the breathing room gone again at 1100x520, the width unchanged",
+        "the breathing room gone again at the corner, the width unchanged",
         Duration::from_secs(5),
         COLUMN,
     );

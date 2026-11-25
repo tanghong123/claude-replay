@@ -10261,6 +10261,30 @@ fn the_app_shell_a_push_with_nothing_below_to_reveal_moves_nothing() {
     })()"#;
     let outside = "(function(dy){ document.querySelector('.session-navigator').dispatchEvent(new WheelEvent('wheel', { deltaY: dy, bubbles: true, cancelable: true })); return 'ok'; })";
 
+    // The owner's situation is a window where every card is wholly visible and the column still
+    // overflows by its own bottom padding alone. 1400x820 gave it on the Mac and beneath CI's
+    // automation bar; with the page its whole window (#s710) CI's Linux Chrome left the column 16px
+    // of overflow. So the window takes the height where the overflow is about half the padding,
+    // read off the page: a shorter window adds to it pixel for pixel.
+    let mut height = 820.0;
+    for _ in 0..4 {
+        let overflow = harness::probe(&tab, state)["overflow"]
+            .as_f64()
+            .unwrap_or(0.0);
+        if (30.0..=70.0).contains(&overflow) {
+            break;
+        }
+        height += overflow - 45.0;
+        tab.set_bounds(headless_chrome::types::Bounds::Normal {
+            left: Some(0),
+            top: Some(0),
+            width: Some(1400.0),
+            height: Some(height),
+        })
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        harness::until_drawers_settle(&tab);
+    }
     let rest = harness::probe(&tab, state);
     assert_eq!(
         rest["lastWhollyVisible"], true,
