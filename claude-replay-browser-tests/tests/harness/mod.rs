@@ -2599,11 +2599,17 @@ fn process_runs(pid: u32) -> bool {
 
 /// End `pids` (#s614): SIGTERM each, wait until none runs or [`GENTLE_END`] has passed, then
 /// SIGKILL what is left. SIGTERM first because a Chrome SIGKILLed leaves its singleton folder in
-/// the system temp folder, and one SIGTERMed removes it. Before the SIGKILL each survivor's command
-/// line is read again and must still name a profile carrying the harness's mark (another
-/// worktree's included, as [`reap_stranded_browsers`] takes them), so a pid the system handed out
-/// again during the wait is never killed. Answers how many it ended.
+/// the system temp folder, and one SIGTERMed removes it, except Chrome for Testing 159, which
+/// keeps it (#s710): so each pid's folder is read before the signal, from its own harness profile,
+/// and removed once that process has gone ([`remove_singleton_folder`]). Before the SIGKILL each
+/// survivor's command line is read again and must still name a profile carrying the harness's mark
+/// (another worktree's included, as [`reap_stranded_browsers`] takes them), so a pid the system
+/// handed out again during the wait is never killed. Answers how many it ended.
 fn end_processes(pids: &[u32]) -> usize {
+    let folders: Vec<(u32, PathBuf)> = pids
+        .iter()
+        .filter_map(|&pid| harness_singleton_of(pid).map(|dir| (pid, dir)))
+        .collect();
     let signal = |sig: &str, pid: u32| {
         std::process::Command::new("kill")
             .args([sig, &pid.to_string()])
@@ -2636,7 +2642,29 @@ fn end_processes(pids: &[u32]) -> usize {
             signal("-KILL", pid);
         }
     }
+    for (pid, dir) in &folders {
+        if dir.exists() && !process_runs(*pid) {
+            remove_singleton_folder(dir);
+        }
+    }
     sent.len()
+}
+
+/// The singleton folder of a running process whose command line names a harness profile (one
+/// carrying [`BROWSER_PROFILE_MARK`]), read through that profile's `SingletonSocket` link. A helper
+/// shares its browser's profile and so its folder; any other process has none here.
+fn harness_singleton_of(pid: u32) -> Option<PathBuf> {
+    let out = std::process::Command::new("ps")
+        .args(["-wwo", "command=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    let command = String::from_utf8_lossy(&out.stdout).into_owned();
+    let profile = command.split(' ').find_map(|arg| {
+        arg.strip_prefix("--user-data-dir=")
+            .filter(|dir| dir.contains(BROWSER_PROFILE_MARK))
+    })?;
+    let target = std::fs::read_link(Path::new(profile).join("SingletonSocket")).ok()?;
+    target.parent().map(Path::to_path_buf)
 }
 
 pub fn chrome() -> Chrome {
