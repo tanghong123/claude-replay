@@ -229,10 +229,11 @@
   }
 
   // #257: how long the turn took, beside when it was sent. Same chip class as the time, so it
-  // needs no stylesheet of its own; the title says which of the two it is.
+  // needs no stylesheet of its own. #s706: its words say what it is ("worked 45s"), not only its
+  // title, which a phone never shows.
   function turnDur(secs) {
-    var s = el("span", "ts", fmtDur(secs));
-    s.title = "How long this turn took";
+    var s = el("span", "ts", "worked " + fmtDur(secs));
+    s.title = "How long the agent worked on this turn";
     return s;
   }
 

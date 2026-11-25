@@ -342,9 +342,11 @@ function turnTime(unit) {
   const when = typeof ts === "number" && ts > 0 ? `<span class="turn-time" title="When this turn was sent">${escapeText(fmtTime(ts))}</span>` : "";
   // #257: how long the turn took, when the transcript recorded it — 19% of turns have no
   // duration, and those show nothing rather than a zero. Same class as the time, so the chip
-  // needs no rule in the GENERATED stylesheet.
+  // needs no rule in the GENERATED stylesheet. #s706: it says what it is, "worked 45s" as Claude
+  // Code's own "Worked for 45s", since a bare "45s" under a message meant nothing on a phone, where
+  // no title shows.
   const secs = unit.view?.source?.dur;
-  const took = typeof secs === "number" && secs > 0 ? `<span class="turn-time" title="How long this turn took">${escapeText(fmtDur(secs))}</span>` : "";
+  const took = typeof secs === "number" && secs > 0 ? `<span class="turn-time" title="How long the agent worked on this turn">worked ${escapeText(fmtDur(secs))}</span>` : "";
   return when + took;
 }
 
