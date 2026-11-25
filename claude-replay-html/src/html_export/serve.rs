@@ -8971,7 +8971,9 @@ mod tests {
     /// Tests in this process start listeners on port 0 that live as long as it does, and one can
     /// be given the number the loop freed: on CI every connect then went through for 30 s, which
     /// the test read as the loop still running. A wake that goes through once the loop has ended
-    /// reached such a listener, so the refusal is read again on a port freed the same way.
+    /// reached something else holding the number (such a listener, a copy of the socket held
+    /// elsewhere, or a connect that joins itself), so the refusal is read again on a port bound
+    /// and dropped for it.
     #[test]
     fn a_refused_wake_means_the_loop_already_stopped() {
         use std::sync::atomic::Ordering;
@@ -9019,7 +9021,7 @@ mod tests {
                 assert_eq!(pauses, 0, "and nothing is retried");
                 break;
             }
-            // Another listener holds the number now: free one the same way and read that.
+            // Something else holds the number now: bind a port, drop it, and read that one.
             freed += 1;
             assert!(freed < 20, "a freed port refuses a connect");
             port = std::net::TcpListener::bind(("127.0.0.1", 0))
