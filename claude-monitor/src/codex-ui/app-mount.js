@@ -500,6 +500,51 @@ const coarseScreen = matchMedia("(pointer:coarse)");
 const shortScreen = matchMedia("(max-height:500px)");
 // A wide phone held sideways, whose list is a column under `app-drawer` (#s37) with a head of its own.
 const wideScreen = matchMedia(WIDE_PHONE_QUERY);
+
+// #s701 (Hong, of a phone's list held sideways: "too much space taken by write, search, machines, I'd like
+// to implement fast return for those (also apply to portrait mode)"; then "Yes, quick return"): in the
+// drawer and a wide phone's column (`app-drawer`) the nav's rows, Write mode, Search and Machines where it
+// is a row, give way as the session list scrolls down and come back on the first scroll up, and at its
+// top. They fold (`nav-away`), so the list takes their room at once and nothing lies over its rows; the
+// list's offset is never written, which an iOS glide would not keep. A fold waits for the scroll to
+// go on (`AWAY_AFTER`) and only where the list has more to show than the rows' room, or folding them
+// would leave nothing to scroll and bring them straight back; and the scroll the fold itself causes is
+// not read as the reader's (`NAV_QUIET_MS`). The rows come back as the drawer opens, and anywhere the
+// list is not a drawer or a column.
+const NAV_AWAY_AFTER = 24, NAV_BACK_AFTER = 8, NAV_QUIET_MS = 260, NAV_GLIDE_MS = 320;
+const sideNav = page.$("#app>.sidebar>.nav");
+const navTops = new WeakMap();
+let navRun = 0, navQuietUntil = 0, navGlide = 0;
+/** Folds the nav's rows away, or brings them back. A fold starts from the rows' height (`--nav-h`), so
+ *  its glide has somewhere to come from; `nav-sliding` holds that height until a return has glided
+ *  (on a clock, since a reader who asks for less motion gets no transition to end). */
+function navAway(away) {
+  if (app.classList.contains("nav-away") === away) return;
+  navRun = 0;
+  navQuietUntil = performance.now() + NAV_QUIET_MS;
+  if (away) sideNav.style.setProperty("--nav-h", `${sideNav.offsetHeight}px`);
+  app.classList.add("nav-sliding");
+  sideNav.getBoundingClientRect();
+  app.classList.toggle("nav-away", away);
+  clearTimeout(navGlide);
+  if (!away) navGlide = setTimeout(() => app.classList.contains("nav-away") || app.classList.remove("nav-sliding"), NAV_GLIDE_MS);
+}
+// The list's own scroller, its element's child: a scroll does not bubble, but its capture passes here.
+const sessionListBox = page.byId("sessionList");
+sessionListBox.addEventListener("scroll", event => {
+  const scroller = event.target;
+  if (!(scroller instanceof Element) || scroller.parentElement !== sessionListBox) return;
+  const top = scroller.scrollTop, before = navTops.get(scroller);
+  navTops.set(scroller, top);
+  if (!app.classList.contains("app-drawer")) return;
+  if (top <= 0) return navAway(false);
+  if (before === undefined || performance.now() < navQuietUntil) return;
+  const step = top - before;
+  navRun = step * navRun > 0 ? navRun + step : step;
+  if (navRun >= NAV_AWAY_AFTER && scroller.scrollHeight - scroller.clientHeight > sideNav.offsetHeight + NAV_AWAY_AFTER) navAway(true);
+  else if (navRun <= -NAV_BACK_AFTER) navAway(false);
+}, { capture: true, passive: true });
+
 let listArranged = null, listGlideUntil = 0;
 /** What the order reads for the list: the window, the screen, the reader's width and collapse, and what
  *  the view has said of itself (its pane, and whether the reader wants its outline). */
@@ -545,6 +590,8 @@ function arrangeList({ remeasure = true } = {}) {
 function placeDrawerHead() {
   const oneRow = app.classList.contains("app-drawer") && !wideScreen.matches;
   app.classList.toggle("drawer-one-row", oneRow);
+  // The nav's rows give way only in the drawer and a wide phone's column (#s701).
+  if (!app.classList.contains("app-drawer")) navAway(false);
   if (oneRow) {
     for (const node of [listControls, listSheet]) if (node && node.parentNode !== sideListHead) sideListHead.append(node);
     return;
@@ -730,6 +777,7 @@ var mobileShell;
     app.classList.toggle("mobile-detail", !open);
     labelHandle();
     if (open) viewHandle?.closePane();
+    if (open) navAway(false);
   };
   handle.onclick = () => (WIDE.matches ? setColumn(columnOff) : setDrawer(app.classList.contains("mobile-detail")));
   scrim.addEventListener("click", () => setDrawer(false));

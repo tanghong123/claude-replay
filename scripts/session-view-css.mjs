@@ -321,10 +321,10 @@ export const LIST_OUTSIDE = Object.freeze([
 ]);
 
 /** The app's states, kept on `#app` (stage 5a's groups): its rail, the drawer and its one-row head
- *  (#s705), and a wide phone's column. A rule that reads one is the app placing or styling the
+ *  (#s705), the nav's rows folded as the list scrolls (#s701), and a wide phone's column. A rule that reads one is the app placing or styling the
  *  view from outside, and stays the app's (stage 6 lays the view out by its own pane's size). */
 export const APP_STATES = Object.freeze([
-  ".mobile-detail", ".phone-column-off", ".sidebar-off", ".sidebar-tight", ".app-drawer", ".app-holding", ".drawer-one-row",
+  ".mobile-detail", ".phone-column-off", ".sidebar-off", ".sidebar-tight", ".app-drawer", ".app-holding", ".drawer-one-row", ".nav-away", ".nav-sliding",
 ]);
 
 /** Names the app's chrome and the view both draw: the glyph button, generic states and labels, and

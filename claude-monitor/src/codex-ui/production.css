@@ -785,6 +785,12 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 /* #s705: the drawer's row over the list (`#sideListHead`) and the Machines glyph in its head show only
    while the drawer's head is one row (`drawer-one-row`, the phone rules below). */
 .side-list-head,#machinesHead{display:none}
+/* #s701: in the drawer and a wide phone's column the nav's rows fold away as the list scrolls down and
+   come back on the way up (`nav-away`, app-mount.js). The fold glides from the rows' height
+   (`--nav-h`, held by `nav-sliding` until a return ends) to nothing, padding and all. */
+#app.nav-sliding>.sidebar>.nav{max-height:var(--nav-h);overflow:hidden;transition:max-height .22s ease,padding .22s ease,opacity .22s ease,visibility .22s}
+#app.nav-away>.sidebar>.nav{max-height:0;padding-top:0;padding-bottom:0;opacity:0;visibility:hidden}
+@media(prefers-reduced-motion:reduce){#app.nav-sliding>.sidebar>.nav{transition:none}}
 /* #96: the session list's own resize handle, on the sidebar's right edge. `--sidebar-user`
    reaches the grid only off a phone, where the sidebar is a drawer and a drag makes no sense; the
    rail has no width to drag either. "Off a phone" is wider than 760px AND not a phone held

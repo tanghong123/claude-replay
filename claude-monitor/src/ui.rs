@@ -631,6 +631,9 @@ mod tests {
             ".app-holding",
             // #s705: the drawer's head as one row, its list's controls over the list.
             ".drawer-one-row",
+            // #s701: the nav's rows folded away as the list scrolls down, and their glide.
+            ".nav-away",
+            ".nav-sliding",
         ];
         // What `:is(#sessionView,#app)` may reach: elements the app's chrome shares with the view
         // (the glyph button, the session filter's and section menu's popover rows) and the lists

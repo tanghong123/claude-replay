@@ -117,6 +117,15 @@ and the theme, the version giving way before the name, and `placeDrawerHead` mov
 controls and its filter's sheet into a row of their own right above the list (`#sideListHead`), the
 sheet capped to the room below that row; anywhere else they go back into the head
 (`the_native_app_s_drawer_holds_machines_and_the_theme_beside_its_brand`).
+**The nav's rows quick-return** (#s701, Hong: "too much space taken by write, search, machines, I'd
+like to implement fast return for those (also apply to portrait mode)", "Yes, quick return"): in the
+drawer and a wide phone's column (`app-drawer`) Write mode, Search and a column's Machines row fold
+away (`nav-away`) once the list has scrolled down 24px on end, where it has more to show than their
+room, and come back on 8px of scroll up, at the list's top, as the drawer opens and anywhere the list
+is no drawer. They fold rather than float, so nothing lies over a row and the list's offset is never
+written (an iOS glide would not keep it); the scroll the fold itself causes is not read as the
+reader's (`NAV_QUIET_MS`)
+(`a_phone_list_folds_its_nav_rows_on_the_way_down_and_brings_them_back_on_the_way_up`).
 **On a phone (the view's phone reader since #s431 stage 3: a view under 490px of its own width, or a
 touch screen's view of 760px or less or 500px tall or less; #310 then #313, #s32 a phone held
 sideways) the app shell is a reader and a native-feeling app**, the owner's rules: upright the transcript keeps a 24px margin either side (#s55; the Reading menu's Wide

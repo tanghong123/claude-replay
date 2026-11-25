@@ -427,6 +427,11 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .side-head>.brand{flex:0 0 100%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .side-head>.head-actions{flex:0 1 100%;flex-wrap:wrap;justify-content:flex-end}
 .side-list-head,#machinesHead{display:none}
+#app.nav-sliding>.sidebar>.nav{max-height:var(--nav-h);overflow:hidden;transition:max-height .22s ease,padding .22s ease,opacity .22s ease,visibility .22s}
+#app.nav-away>.sidebar>.nav{max-height:0;padding-top:0;padding-bottom:0;opacity:0;visibility:hidden}
+@media(prefers-reduced-motion:reduce){
+#app.nav-sliding>.sidebar>.nav{transition:none}
+}
 .app:where(:not(.app-drawer)){--sidebar:var(--sidebar-user,300px)}
 :where(#app:not(.app-drawer)) .sidebar{position:relative}
 .sidebar-resizer{position:absolute;top:0;right:0;bottom:0;width:6px;z-index:24;cursor:col-resize;touch-action:none;background:transparent;transition:background-color .12s}
