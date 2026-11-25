@@ -852,14 +852,15 @@ function toggleFilterSheet(open) {
 function fitFilterSheet() {
   filterSheet.style.maxHeight = "";
   if (filterSheet.hidden || railFlyoutFor === "filter") return;
-  // In the list's own head (a host's) it ends at the list's foot, or higher at the foot of a box of
-  // the host's that clips the list (a scrolling pane the list is taller than, one contained or
-  // clipped by a path), so a pane that clips the list never cuts its last rows off; placed by the
-  // app, at the window's. The page's own root and body are left out: a body's overflow is the
-  // window's, which the window's height already says.
-  let foot = innerHeight;
+  // It ends at the list's foot: placed by the app over the list, that is above a phone's home
+  // indicator, where the sidebar's padding keeps the list (#s705: hung from the row over the list
+  // held sideways, the sheet ran into it). In the list's own head (a host's) it ends higher at the
+  // foot of a box of the host's that clips the list (a scrolling pane the list is taller than, one
+  // contained or clipped by a path), so a pane that clips the list never cuts its last rows off. The
+  // page's own root and body are left out: a body's overflow is the window's, which the window's
+  // height already says.
+  let foot = Math.min(innerHeight, sessionList.getBoundingClientRect().bottom);
   if (sessionList.contains(filterSheet)) {
-    foot = Math.min(foot, sessionList.getBoundingClientRect().bottom);
     for (let at = sessionList.parentElement; at && at.localName !== "body" && at.localName !== "html"; at = at.parentElement) {
       const style = getComputedStyle(at);
       if (style.overflowY !== "visible" || /paint|strict|content/.test(style.contain) || style.clipPath !== "none") foot = Math.min(foot, at.getBoundingClientRect().bottom);
