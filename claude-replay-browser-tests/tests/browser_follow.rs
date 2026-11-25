@@ -25701,7 +25701,7 @@ fn drawer_world(
 /// away as the list scrolls down, the list taking their room at once, and come back on the first
 /// scroll up wherever the list is, at its top, and as the drawer opens again. The fold never writes
 /// the list's offset. A short scroll does not fold them, and a list that is neither a drawer nor a
-/// column (a desktop's) never does, and brings them back.
+/// column (a desktop's) never does, and brings them back; nor does a column shown again keep them away.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_list_folds_its_nav_rows_on_the_way_down_and_brings_them_back_on_the_way_up() {
@@ -25902,7 +25902,34 @@ fn a_phone_list_folds_its_nav_rows_on_the_way_down_and_brings_them_back_on_the_w
         Duration::from_secs(5),
         NAV_STATE,
     );
-    down_and_up(&tab, "sideways");
+    let side_h = down_and_up(&tab, "sideways");
+    // Folded, the column hidden and shown again: its list is back at its top, and so are the rows.
+    scroll(&tab, 12, 6);
+    harness::until(
+        &tab,
+        FOLDED,
+        "sideways: folded before the column is hidden",
+        Duration::from_secs(5),
+        NAV_STATE,
+    );
+    phone_tap(&tab, "#drawerHandle");
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('phone-column-off')",
+        "the handle to hide the column",
+        Duration::from_secs(5),
+        NAV_STATE,
+    );
+    phone_tap(&tab, "#drawerHandle");
+    harness::until(
+        &tab,
+        "!document.getElementById('app').classList.contains('phone-column-off')",
+        "the handle to show the column again",
+        Duration::from_secs(5),
+        NAV_STATE,
+    );
+    back(&tab, "sideways: the rows back with the column", side_h);
+    quiet();
     // Folded, then a desktop's window: the rows come back, and its list never folds them.
     scroll(&tab, 12, 6);
     harness::until(
