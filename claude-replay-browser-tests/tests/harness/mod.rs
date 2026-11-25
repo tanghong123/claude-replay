@@ -2314,9 +2314,13 @@ pub fn browser_path() -> Option<std::path::PathBuf> {
 /// crate's SIGKILL is left for a Chrome that does not. Chrome removes the folder before it exits, so
 /// the exit is the whole wait. On Linux Chrome keeps the folder even then (measured on CI's Ubuntu
 /// runner: `com.google.Chrome.XXXXXX`), but it makes it in `TMPDIR`, the workspace's scratch, whose
-/// age rule (`scripts/sweep-scratch.sh`) clears it after a day. Each end
-/// is a [`profile`] row saying whether the folder went (`CR_PROFILE`, which is how a run is checked
-/// for them), and one left outside `TMPDIR` is also a stderr line naming it.
+/// age rule (`scripts/sweep-scratch.sh`) clears it after a day. Chrome for Testing 159 on a Mac
+/// keeps it too (#s710, measured on denali: SIGTERMed it exits with status 0 in 0.1 s and leaves the
+/// folder; 151 removes it, and both remove it on `Browser.close`), so once the process has gone the
+/// guard removes the folder it read at the launch itself, and only while it holds nothing but
+/// Chrome's own `Singleton*` entries ([`remove_singleton_folder`]). Each end is a [`profile`] row
+/// saying whether the folder went, and who took it (`CR_PROFILE`, which is how a run is checked for
+/// them), and one left outside `TMPDIR` is also a stderr line naming it.
 pub struct Chrome {
     browser: Option<headless_chrome::Browser>,
     /// The folder the profile's `SingletonSocket` link named once the browser was up.
@@ -2356,6 +2360,8 @@ pub struct Ended {
     pub took: Duration,
     /// The singleton folder, when it is still there after the end.
     pub folder_left: Option<PathBuf>,
+    /// Chrome left its singleton folder behind and the guard removed it (#s710).
+    pub folder_removed: bool,
 }
 
 impl Chrome {
@@ -2381,6 +2387,7 @@ impl Chrome {
                 exited: false,
                 took: Duration::ZERO,
                 folder_left: None,
+                folder_removed: false,
             };
         };
         let mut exited = false;
@@ -2405,10 +2412,18 @@ impl Chrome {
             // A pid the system hands out again must not find this profile (`profile_of`).
             profiles().lock().unwrap().remove(&pid);
         }
+        // Only once the process has gone: a running Chrome keeps its singleton there.
+        let folder_removed = match (self.singleton.as_ref(), pid) {
+            (Some(dir), Some(pid)) if dir.exists() && !process_runs(pid) => {
+                remove_singleton_folder(dir)
+            }
+            _ => false,
+        };
         // Said through [`profile`] as well as stderr: libtest keeps a passing case's stderr to
         // itself, and a run is checked by these rows (`CR_PROFILE`).
         let outcome = match self.singleton.as_ref() {
             None => "chrome end, no singleton folder",
+            Some(_) if folder_removed => "chrome end, singleton folder left and removed",
             // Linux's Chrome keeps it whatever, in the workspace's scratch the sweep clears.
             Some(dir) if dir.exists() && dir.starts_with(std::env::temp_dir()) => {
                 "chrome end, singleton folder kept in TMPDIR"
@@ -2428,6 +2443,7 @@ impl Chrome {
             exited,
             took,
             folder_left: self.singleton.clone().filter(|dir| dir.exists()),
+            folder_removed,
         }
     }
 }
@@ -2543,6 +2559,26 @@ fn singleton_folder(profile: &Path) -> Option<PathBuf> {
         }
         std::thread::sleep(Duration::from_millis(25));
     }
+}
+
+/// Remove a singleton folder an exited Chrome left behind (#s710): its `Singleton*` entries by
+/// name, then the folder, which `remove_dir` takes only once it is empty, so a folder holding
+/// anything else stays as it is. Whether the folder went.
+fn remove_singleton_folder(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let names: Vec<std::ffi::OsString> = entries.flatten().map(|entry| entry.file_name()).collect();
+    if names
+        .iter()
+        .any(|name| !name.to_string_lossy().starts_with("Singleton"))
+    {
+        return false;
+    }
+    for name in &names {
+        let _ = std::fs::remove_file(dir.join(name));
+    }
+    std::fs::remove_dir(dir).is_ok()
 }
 
 /// Whether `pid` still runs: there and not a zombie. A browser this process launched stays its

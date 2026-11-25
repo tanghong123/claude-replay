@@ -168,7 +168,8 @@ fn a_mute_chrome_launch_is_given_up_and_killed() {
 /// as a case's drop does: the process exits within [`harness::GENTLE_END`], unkilled, and on a Mac
 /// the folder is gone. On Linux Chrome keeps the folder even when it exits on its own (measured on
 /// CI's Ubuntu runner), in `TMPDIR`, the workspace's scratch whose age rule clears it, which the case
-/// checks.
+/// checks. Chrome for Testing 159 keeps it on a Mac as well, and the guard removes it once the
+/// process has gone (#s710); either way no folder is left there.
 #[test]
 #[ignore]
 fn a_dropped_browser_takes_its_singleton_folder_with_it() {
