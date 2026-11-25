@@ -2479,7 +2479,7 @@ function landedInView(view) {
  *  nothing the reader can do brings it in: there is no scrollbar and nobody writes its
  *  scrollLeft. The owner: "show 4 hits, but one of them I cannot see."
  *
- *  Full is the state the head's own third click step gives the target (#129), so a hit reveals
+ *  Full is the state the head's own cycle gives the target after the output (#129), so a hit reveals
  *  it the way the reader would rather than inventing a fourth state. `headSteps` is left alone
  *  deliberately: the click handler derives its starting step from the CURRENT open/full pair
  *  when the map has no entry, so it stays coherent by itself.
