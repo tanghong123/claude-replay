@@ -21728,6 +21728,7 @@ fn app_shell_a_phone_gives_a_progress_line_the_rows_width() {
         while ((n = tw.nextNode())) { var g = document.createRange(); g.selectNodeContents(n); [...g.getClientRects()].forEach(function (b) { if (b.width > 0) rects.push(b); }); } \
         var first = rects[0], tops = {}; rects.forEach(function (b) { tops[Math.round(b.top)] = 1; }); \
         return JSON.stringify({ phone: v.classList.contains('pl-phone'), w: innerWidth, row: Math.round(r.width), \
+          held: v.classList.contains('pl-max-h-500') ? 'sideways' : v.classList.contains('pl-max-w-760') ? 'upright' : 'desktop', \
           labelShown: l.width > 2 && l.height > 2, besideLabel: q.left >= l.right, \
           fromDot: Math.round(q.left - d.right), textAtCopy: !!first && Math.abs(first.left - q.left) <= 2, \
           toEdge: q.right >= r.right - 8, items: li.length, \
@@ -21758,9 +21759,13 @@ fn app_shell_a_phone_gives_a_progress_line_the_rows_width() {
     let desk =
         poll(&|v| v["phone"] == false && v["besideLabel"] == true && v["labelShown"] == true);
     harness::phone(tab, 390, 844);
-    let up = poll(&|v| v["phone"] == true && v["w"] == 390 && whole(v));
+    // Each read waits for the view's own layout of that hold, not only the window's size: the view
+    // lays itself out again a moment after the resize, and a read in between saw the upright layout
+    // at the sideways width (no 500px column yet), where the heading was already out of sight.
+    let up = poll(&|v| v["phone"] == true && v["w"] == 390 && v["held"] == "upright" && whole(v));
     harness::phone(tab, 874, 402);
-    let side = poll(&|v| v["phone"] == true && v["w"] == 874 && whole(v));
+    let side =
+        poll(&|v| v["phone"] == true && v["w"] == 874 && v["held"] == "sideways" && whole(v));
     println!(
         "PROGRESS lines: desktop {} (row {}), upright {} (row {}), sideways {} (row {})",
         desk["lines"], desk["row"], up["lines"], up["row"], side["lines"], side["row"]
@@ -21771,7 +21776,7 @@ fn app_shell_a_phone_gives_a_progress_line_the_rows_width() {
     );
     for (held, v) in [("upright", &up), ("sideways", &side)] {
         assert!(
-            v["phone"] == true && whole(v),
+            v["phone"] == true && v["held"] == *held && whole(v),
             "a phone held {held}: the Progress row shows no heading, and its text, a Markdown list included, takes the row from just after its dot to its edge (desktop {desk}, upright {up}, sideways {side})"
         );
     }
