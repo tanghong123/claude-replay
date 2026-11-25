@@ -2960,6 +2960,12 @@ fn the_native_app_s_drawer_holds_machines_and_the_theme_beside_its_brand() {
             &f["themeBtn"],
             &f["side"],
         );
+        // The row is the ☰ handle's: the handle is fixed at the drawer's top left, and the two-line
+        // head's 10px top put the row's middle 8px below it (the brand line had been level with it).
+        assert!(
+            (mid(theme) - mid(&f["drawerHandle"])).abs() <= 2.0,
+            "{at}: the row is level with the ☰ handle: {f}"
+        );
         assert!(
             (mid(machines) - mid(theme)).abs() <= 1.0
                 && (mid(brand) - mid(theme)).abs() <= 4.0
@@ -3108,7 +3114,7 @@ fn the_native_app_s_drawer_holds_machines_and_the_theme_beside_its_brand() {
 fn drawer_head_facts(tab: &headless_chrome::Tab) -> serde_json::Value {
     let raw = eval(
         tab,
-        "(function () { var box = function (e) { if (!e || !e.getClientRects().length) return null; var b = e.getBoundingClientRect(); return { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height }; }; var hit = function (e) { if (!e || !e.getClientRects().length) return false; var b = e.getBoundingClientRect(), h = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!h && e.contains(h); }; var side = document.querySelector('#app>.sidebar'), head = side.querySelector('.side-head'), brand = head.querySelector('.brand'), name = document.createRange(); name.selectNodeContents(brand.firstChild); var nb = name.getBoundingClientRect(), filter = document.getElementById('filterBtn'); var out = { app: document.getElementById('app').className, side: box(side), head: box(head), brand: box(brand), name: { l: nb.left, r: nb.right, w: nb.width }, filterHome: !filter ? null : filter.closest('#sideListHead') ? 'list' : filter.closest('.side-head') ? 'head' : 'elsewhere', hits: {} }; ['machinesHead', 'themeBtn', 'filterBtn', 'machinesBtn', 'searchBtn', 'sideListHead', 'sessionList'].forEach(function (id) { var e = document.getElementById(id); out[id] = box(e); out.hits[id] = hit(e); }); return JSON.stringify(out); })()",
+        "(function () { var box = function (e) { if (!e || !e.getClientRects().length) return null; var b = e.getBoundingClientRect(); return { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height }; }; var hit = function (e) { if (!e || !e.getClientRects().length) return false; var b = e.getBoundingClientRect(), h = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!h && e.contains(h); }; var side = document.querySelector('#app>.sidebar'), head = side.querySelector('.side-head'), brand = head.querySelector('.brand'), name = document.createRange(); name.selectNodeContents(brand.firstChild); var nb = name.getBoundingClientRect(), filter = document.getElementById('filterBtn'); var out = { app: document.getElementById('app').className, side: box(side), head: box(head), brand: box(brand), name: { l: nb.left, r: nb.right, w: nb.width }, filterHome: !filter ? null : filter.closest('#sideListHead') ? 'list' : filter.closest('.side-head') ? 'head' : 'elsewhere', hits: {} }; ['machinesHead', 'themeBtn', 'filterBtn', 'machinesBtn', 'searchBtn', 'sideListHead', 'sessionList', 'drawerHandle'].forEach(function (id) { var e = document.getElementById(id); out[id] = box(e); out.hits[id] = hit(e); }); return JSON.stringify(out); })()",
     );
     serde_json::from_str(raw.as_str().unwrap_or("null")).unwrap_or_default()
 }
