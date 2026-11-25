@@ -167,8 +167,10 @@ fn a_mute_chrome_launch_is_given_up_and_killed() {
 /// `Browser.close`, and every launch left one (75,886 on hong-devserver). The case ends its browser
 /// as a case's drop does: the process exits within [`harness::GENTLE_END`], unkilled, and on a Mac
 /// the folder is gone. On Linux Chrome keeps the folder even when it exits on its own (measured on
-/// CI's Ubuntu runner), in `TMPDIR`, the workspace's scratch whose age rule clears it, which the case
-/// checks.
+/// CI's Ubuntu runner), in `TMPDIR`, the workspace's scratch; Chrome for Testing 159 keeps it on a
+/// Mac as well. Wherever it is kept, the guard removes it once the process has gone (#s710), and a
+/// folder left in `TMPDIR` (one holding more than `Singleton*` entries) is the sweep's age rule's,
+/// which the case allows.
 #[test]
 #[ignore]
 fn a_dropped_browser_takes_its_singleton_folder_with_it() {
@@ -202,6 +204,70 @@ fn a_dropped_browser_takes_its_singleton_folder_with_it() {
             std::env::temp_dir().display()
         ),
     }
+}
+
+/// #s710: a browser the harness reaps (one still running as its case ends) takes its singleton
+/// folder with it. A Chrome SIGTERMed used to remove the folder itself; Chrome for Testing 159
+/// keeps it, so the reaper reads the folder from the browser's own profile before the signal and
+/// removes it once the process has gone. The browser is a real Chrome, launched here under a
+/// profile named for this runner, as a case's is.
+#[test]
+#[ignore]
+fn a_reaped_browser_takes_its_singleton_folder_with_it() {
+    let _serial = harness::serial();
+    let exe = harness::browser_path()
+        .or_else(|| headless_chrome::browser::default_executable().ok())
+        .expect("a Chrome to launch");
+    let profile = harness::browser_profiles_root()
+        .join(format!("cr-browser-chrome-{}-reaped", std::process::id()));
+    std::fs::create_dir_all(&profile).unwrap();
+    let user_data_dir = format!("--user-data-dir={}", profile.display());
+    let mut chrome = Command::new(&exe)
+        .args(harness::chrome_args(&[
+            "--headless",
+            "--no-first-run",
+            "--remote-debugging-port=0",
+            &user_data_dir,
+            "about:blank",
+        ]))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let link = profile.join("SingletonSocket");
+    let folder = (0..200).find_map(|_| {
+        let target = std::fs::read_link(&link).ok();
+        if target.is_none() {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        target.and_then(|t| t.parent().map(std::path::Path::to_path_buf))
+    });
+    let Some(folder) = folder else {
+        let _ = chrome.kill();
+        let _ = chrome.wait();
+        panic!(
+            "the browser linked no SingletonSocket in 10 s: {}",
+            link.display()
+        );
+    };
+    assert!(
+        folder.exists(),
+        "the folder is there while the browser runs"
+    );
+    harness::reap_own_browsers();
+    let exited = chrome.try_wait().unwrap().is_some();
+    let _ = chrome.kill();
+    let _ = chrome.wait();
+    assert!(exited, "the reaper ended the browser");
+    let _ = std::fs::remove_dir_all(&profile);
+    // On Linux a folder Chrome keeps is in the workspace's scratch, which the sweep clears; the
+    // reaper takes it there too, so only the Mac's rule is strict.
+    let kept_in_scratch = !cfg!(target_os = "macos") && folder.starts_with(std::env::temp_dir());
+    assert!(
+        !folder.exists() || kept_in_scratch,
+        "the reaped browser's singleton folder is gone: {} is still there",
+        folder.display()
+    );
 }
 
 /// #s293: a case that ends takes every process left of the browsers its runner launched with it —
@@ -481,4 +547,35 @@ fn a_urls_origin_drops_its_path_query_and_fragment() {
     ] {
         assert_eq!(harness::origin_of(url), origin, "the origin of {url}");
     }
+}
+
+/// #s710: a case's Chrome runs without `--enable-automation`, so its page has its whole window.
+/// For that flag Chrome draws an "is being controlled by automated test software" bar in a headless
+/// window, which takes 56px of a 1400x900 window's page: measured on branded Google Chrome 158 and
+/// Chrome for Testing 159 on a Mac, and on CI's Google Chrome 157 on Linux (813px without the flag,
+/// 757px with it), while Chrome for Testing 151 draws none. So the Mac's cases had run at 813px and
+/// CI's at 757px, and Chrome 159 on the Mac moved them to 757px. The harness drops the flag
+/// ([`harness::IGNORED_DEFAULTS`]), and this case reads the case browser's own command line: the
+/// flag is not there, whatever Chrome runs, where a page's height could not tell on a Chrome that
+/// draws no bar. It also checks it read the right process: the keychain flags every launch carries.
+#[test]
+#[ignore = "needs a local Chrome"]
+fn a_case_s_chrome_runs_without_the_automation_flag() {
+    let _serial = harness::serial();
+    let (browser, _tab) = harness::chrome_with_tab(&[]);
+    let pid = browser.get_process_id().expect("the case browser's pid");
+    let out = Command::new("ps")
+        .args(["-ww", "-o", "command=", "-p", &pid.to_string()])
+        .output()
+        .expect("ps");
+    let argv = String::from_utf8_lossy(&out.stdout).to_string();
+    let flags: Vec<&str> = argv.split_whitespace().collect();
+    assert!(
+        flags.contains(&"--use-mock-keychain") && flags.contains(&"--password-store=basic"),
+        "ps read the case browser (pid {pid}), which carries the keychain flags: {argv}"
+    );
+    assert!(
+        !flags.contains(&"--enable-automation"),
+        "a case's Chrome runs without --enable-automation, whose bar takes 56px of the page: {argv}"
+    );
 }

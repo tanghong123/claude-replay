@@ -2310,6 +2310,22 @@ fn turn_header_top(tab: &headless_chrome::Tab, surface: Surface, turn: i64) -> O
 /// the end N-1's header was on screen below that line, so its first `[` landed N-2 (it now counts
 /// from the turn its bar names, #s503).
 fn scenario_turn_back_from_the_end(tab: &headless_chrome::Tab, surface: Surface, fx: &Fixture) {
+    // A 757px page, as CI's Linux Chrome drew a case's window beneath its automation bar until
+    // #s710: there, at the end, the fixture's last two turns fill the view and turn N-2's header is
+    // above it. With the page its whole window (813px) Linux's lines left turn N-2's header in view
+    // too, so `[` to N-1 moved nothing and the turn at the top stayed N-2. The Mac passes at both.
+    // The window's frame is whatever the Chrome draws, so the page is read first in the window a
+    // case launches with (1400x900, `harness::chrome`), and the window is then sized by what the
+    // page must lose to be 757px.
+    let page = eval(tab, "innerHeight").as_f64().unwrap_or(813.0);
+    harness::resize(tab, 1400.0, 900.0 - (page - 757.0));
+    until(
+        tab,
+        "innerHeight === 757",
+        "the window to give its page 757px",
+        Duration::from_secs(5),
+        "[outerHeight, innerHeight]",
+    );
     jump_to_end(tab, surface);
     await_tail(tab, surface, "the jump to the end");
     settle();
@@ -6226,8 +6242,8 @@ fn scenario_a_clicked_control_at_the_tail_does_not_strand_the_reader(
     let clicked = eval(
         tab,
         match surface {
-            Surface::Classic => "(function(){ var f = [...document.querySelectorAll('#stream .fold[data-open=\"0\"]')].filter(function (x) { var hh = x.querySelector(':scope > .fold-h'); if (!hh) return false; var r = hh.getBoundingClientRect(); return r.height > 0 && r.top >= 96 && r.bottom <= innerHeight; }).pop(); if (!f) return 'none'; var h = f.querySelector(':scope > .fold-h'); if (!h) return 'none'; h.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse', buttons: 1 })); h.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerType: 'mouse' })); h.click(); return 'fold ' + f.id; })()",
-            Surface::AppShell => "(function(){ var b = [...document.querySelectorAll('.virtual-window [data-process-more]')].map(function (x) { var m = /Show (\\d+) more/.exec(x.textContent || ''); return { el: x, n: m ? Number(m[1]) : 0 }; }).sort(function (p, q) { return q.n - p.n; })[0]; if (!b || !b.el) return 'none'; var l = b.el.textContent.trim().slice(0, 18); b.el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse', buttons: 1 })); b.el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerType: 'mouse' })); b.el.click(); return l; })()",
+            Surface::Classic => "(function(){ var f = [...document.querySelectorAll('#stream .fold[data-open=\"0\"]')].filter(function (x) { var hh = x.querySelector(':scope > .fold-h'); if (!hh) return false; var r = hh.getBoundingClientRect(); return r.height > 0 && r.top >= 96 && r.bottom <= innerHeight; }).pop(); if (!f) return 'none'; var h = f.querySelector(':scope > .fold-h'); if (!h) return 'none'; var hr = h.getBoundingClientRect(); h.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse', buttons: 1 })); h.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerType: 'mouse' })); h.click(); return JSON.stringify({ label: 'fold ' + f.id, top: Math.round(hr.top), bottom: Math.round(hr.bottom) }); })()",
+            Surface::AppShell => "(function(){ var b = [...document.querySelectorAll('.virtual-window [data-process-more]')].map(function (x) { var m = /Show (\\d+) more/.exec(x.textContent || ''); return { el: x, n: m ? Number(m[1]) : 0 }; }).sort(function (p, q) { return q.n - p.n; })[0]; if (!b || !b.el) return 'none'; var l = b.el.textContent.trim().slice(0, 18); var br = b.el.getBoundingClientRect(); b.el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse', buttons: 1 })); b.el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerType: 'mouse' })); b.el.click(); return JSON.stringify({ label: l, top: Math.round(br.top), bottom: Math.round(br.bottom) }); })()",
         },
     );
     assert_ne!(
@@ -6235,6 +6251,9 @@ fn scenario_a_clicked_control_at_the_tail_does_not_strand_the_reader(
         "none",
         "{surface:?}: the fixture offers a control to click at the tail"
     );
+    // Where the control was, in the viewport, as the click script read it before pressing.
+    let control: serde_json::Value = serde_json::from_str(clicked.as_str().unwrap()).unwrap();
+    let clicked = serde_json::json!(control["label"]);
     // Give the settle its whole window and then some: the drop happens when the intent timer
     // fires, `userIntentMs` after the click, and the owner's walk took several seconds.
     std::thread::sleep(Duration::from_millis(1500));
@@ -6273,6 +6292,17 @@ fn scenario_a_clicked_control_at_the_tail_does_not_strand_the_reader(
         .zip(after["handles"].as_array().unwrap())
     {
         if b["text"].as_str().unwrap_or("").is_empty() {
+            continue;
+        }
+        // A probe that sampled the clicked control itself, where the click changed what it says,
+        // says nothing about the reader: "Show 37 more" becomes the rows it reveals. Which probe
+        // lands on it depends on the window's height (#s710: at 57px shorter the 70% probe did). A
+        // control that stays what it was (the classic page's fold header) is still checked.
+        let top = b["top"].as_i64().unwrap_or(i64::MIN);
+        if control["top"].as_i64().is_some_and(|t| top >= t)
+            && control["bottom"].as_i64().is_some_and(|e| top < e)
+            && b["text"] != a["text"]
+        {
             continue;
         }
         assert_eq!(
@@ -7432,7 +7462,9 @@ fn app_shell_tool_heads_carry_state_exit_and_duration() {
 fn fixture_blocked(name: &str) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
-    let mut t = long_session(8, Shape::default());
+    // Twelve turns, as most fixtures: the opener waits for three windows of transcript, which eight
+    // fall short of on CI's Linux Chrome since a case's page has its whole window (#s710).
+    let mut t = long_session(12, Shape::default());
     t += &harness::user_at("Deploy it, then check the logs.", &harness::at("59:01"));
     t += &tool_open_at("b-hook", &harness::at("59:02"));
     t += &format!(
@@ -7451,7 +7483,7 @@ fn fixture_blocked(name: &str) -> Fixture {
     Fixture {
         base,
         path,
-        turns: 9,
+        turns: 13,
     }
 }
 
@@ -9067,7 +9099,11 @@ fn fixture_changed_on_disk(name: &str, turns: u32) -> Fixture {
     jsonl += &harness::edited_file_at("/w/notes/crux-on-linux.md", "2026-09-08T04:00:01.000Z");
     jsonl += &assistant_at("Ignored.", "2026-09-08T04:00:05.000Z");
     let path = stores.claude_session(SID, &jsonl);
-    Fixture { base, path, turns }
+    Fixture {
+        base,
+        path,
+        turns: turns + 1,
+    }
 }
 
 /// #s296 (#171 before it): a record must say WHY a file is named there. #171 read `att_kind:
@@ -9140,7 +9176,7 @@ fn scenario_a_changed_on_disk_notice_says_what_happened(
 #[ignore = "needs a local Chrome"]
 fn classic_page_a_changed_on_disk_notice_says_what_happened() {
     let _serial = serial();
-    let fx = fixture_changed_on_disk("scenario-changed-classic", 8);
+    let fx = fixture_changed_on_disk("scenario-changed-classic", 12);
     let page = open(Surface::Classic, &fx, 0);
     scenario_a_changed_on_disk_notice_says_what_happened(&page.tab, Surface::Classic, &fx);
 }
@@ -9149,7 +9185,7 @@ fn classic_page_a_changed_on_disk_notice_says_what_happened() {
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_changed_on_disk_notice_says_what_happened() {
     let _serial = serial();
-    let fx = fixture_changed_on_disk("scenario-changed-app", 8);
+    let fx = fixture_changed_on_disk("scenario-changed-app", 12);
     let page = open(Surface::AppShell, &fx, 2925);
     scenario_a_changed_on_disk_notice_says_what_happened(&page.tab, Surface::AppShell, &fx);
 }
@@ -12715,12 +12751,14 @@ fn delivered_file_fixture(name: &str) -> Fixture {
         "{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"f1\",\"content\":\"1 file delivered to user.\\n  {abs} → file_uuid: 11111111-2222-4333-8444-555555555555\"}}]}},\"timestamp\":\"{}\"}}\n",
         harness::at("00:02")
     );
-    jsonl += &long_session(8, Shape::default());
+    // Twelve turns, as most fixtures: the opener waits for three windows of transcript, which eight
+    // fall short of on CI's Linux Chrome since a case's page has its whole window (#s710).
+    jsonl += &long_session(12, Shape::default());
     let path = stores.claude_session(SID, &jsonl);
     Fixture {
         base,
         path,
-        turns: 9,
+        turns: 13,
     }
 }
 
@@ -14993,13 +15031,15 @@ fn both_shells_say_how_long_a_turn_took_and_stay_silent_when_unrecorded() {
 fn turn_time_layout_fixture(name: &str) -> Fixture {
     let base = base(name);
     let stores = Stores::new(&base);
-    let mut t = long_session(4, Shape::default());
-    t += &user_at("question 5: and the notes?", &now_minus(600));
+    // Twelve turns, as most fixtures: the opener waits for three windows of transcript, which four
+    // fall short of on CI's Linux Chrome since a case's page has its whole window (#s710).
+    let mut t = long_session(12, Shape::default());
+    t += &user_at("question 13: and the notes?", &now_minus(600));
     t += &harness::edited_file_at("/w/notes/plan.md", &now_minus(599));
     t += &assistant_at("Read them.", &now_minus(590));
     t += &harness::command_at("review", "the plan", "", &now_minus(500));
     t += &assistant_at("Reviewed.", &now_minus(490));
-    t += &user_at("question 7: how long did that take?", &now_minus(300));
+    t += &user_at("question 15: how long did that take?", &now_minus(300));
     t += &harness::named_tool_at("d1", "Bash", "cargo build", &now_minus(298));
     t += &harness::tool_result_text("d1", "Finished", &now_minus(296));
     t += &assistant_at("Built it.", &now_minus(200));
@@ -15022,7 +15062,7 @@ fn turn_time_layout_fixture(name: &str) -> Fixture {
     Fixture {
         base,
         path,
-        turns: 8,
+        turns: 16,
     }
 }
 
@@ -15878,10 +15918,35 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
         );
         settle();
     };
-    // Ordinary windows and one no reader would choose. 1366x768 is SHORTER than 1280x800, so the
-    // sweep is by height as much as by width; 1100x520 is the corner where the breathing room has
-    // to go for the shut chain to fit at all. (It was 950x520 until the owner's order, #s431 stage
-    // 3: with a mouse the outline is a column only from a 1012px window, and at 950 it is its glyphs.)
+    // The corner is a window where the breathing room has to go for the shut chain to fit at all:
+    // 1100px wide (it was 950 until the owner's order, #s431 stage 3: with a mouse the outline is a
+    // column only from a 1012px window, and at 950 it is its glyphs), and on a Mac 520 tall. On CI's
+    // Linux Chrome the chain is shorter and, since a case's page has its whole window (#s710), the
+    // column at 1100x520 still holds the chain and its padding. So the case finds the corner's
+    // height from the page's own numbers: 520, less what the column holds beyond the chain and its
+    // padding, and less half the bottom padding more, which leaves the chain itself room to fit.
+    harness::resize(&page.tab, 1100.0, 520.0);
+    harness::until_preview_parked(&page.tab);
+    settle();
+    let room = harness::probe(
+        &page.tab,
+        "(function(){var n=document.getElementById('sessionNavigator'), s=getComputedStyle(n); \
+          return {tight:n.classList.contains('heads-tight'), top:parseFloat(s.paddingTop)||0, \
+          tail:parseFloat(s.paddingBottom)||0, column:n.clientHeight};})()",
+    );
+    let chain = read(&page.tab)["chain"].as_f64().unwrap_or(0.0);
+    let corner_h = if room["tight"] == serde_json::json!(true) {
+        520.0
+    } else {
+        let (top, tail, column) = (
+            room["top"].as_f64().unwrap_or(0.0),
+            room["tail"].as_f64().unwrap_or(0.0),
+            room["column"].as_f64().unwrap_or(0.0),
+        );
+        520.0 - (column - (top + chain + tail) + tail / 2.0).ceil()
+    };
+    // Ordinary windows and the corner, which no reader would choose. 1366x768 is SHORTER than
+    // 1280x800, so the sweep is by height as much as by width.
     for (w, h, corner) in [
         (1680.0, 1050.0, false),
         (1440.0, 900.0, false),
@@ -15889,7 +15954,7 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
         (1280.0, 800.0, false),
         (1152.0, 720.0, false),
         (1024.0, 640.0, false),
-        (1100.0, 520.0, true),
+        (1100.0, corner_h, true),
     ] {
         harness::resize(&page.tab, w, h);
         harness::until_preview_parked(&page.tab);
@@ -15985,11 +16050,11 @@ fn app_shell_the_outline_column_holds_only_the_offset_the_chain_sold() {
         Duration::from_secs(5),
         COLUMN,
     );
-    harness::resize(&page.tab, 1100.0, 520.0);
+    harness::resize(&page.tab, 1100.0, corner_h);
     until(
         &page.tab,
         &format!("{column} === {short} && {tight}"),
-        "the breathing room gone again at 1100x520, the width unchanged",
+        "the breathing room gone again at the corner, the width unchanged",
         Duration::from_secs(5),
         COLUMN,
     );

@@ -169,6 +169,7 @@ fn live_viewport_follows_pinned_and_holds_unpinned() {
                 .headless(true)
                 // Never let tab-backgrounding heuristics starve timers or rendering — the
                 // page's poll loop and the renderer's scroll events are the test subject.
+                .ignore_default_args(harness::ignored_defaults())
                 .args(harness::chrome_args(&[
                     "--disable-background-timer-throttling",
                     "--disable-backgrounding-occluded-windows",
@@ -445,6 +446,7 @@ fn jump_to_bottom_lands_after_a_viewport_resize() {
                 .path(harness::browser_path())
                 .headless(true)
                 .window_size(Some((1400, 900)))
+                .ignore_default_args(harness::ignored_defaults())
                 .args(harness::chrome_args(&[
                     "--disable-background-timer-throttling",
                     "--disable-backgrounding-occluded-windows",
@@ -1047,6 +1049,7 @@ fn a_turn_landing_holds_through_late_reflow() {
             headless_chrome::LaunchOptions::default_builder()
                 .path(harness::browser_path())
                 .headless(true)
+                .ignore_default_args(harness::ignored_defaults())
                 .args(harness::chrome_args(&[
                     "--disable-background-timer-throttling",
                     "--disable-backgrounding-occluded-windows",
@@ -1155,6 +1158,7 @@ fn stepping_search_hits_keeps_the_viewport_when_the_match_is_visible() {
                 // the top chrome, where scrolling to it is the CORRECT behaviour and the test
                 // would be measuring the wrong thing.
                 .window_size(Some((1200, 900)))
+                .ignore_default_args(harness::ignored_defaults())
                 .args(harness::chrome_args(&[
                     "--disable-background-timer-throttling",
                     "--disable-backgrounding-occluded-windows",
@@ -1317,6 +1321,7 @@ fn a_workflow_fleet_renders_under_its_launching_block() {
             headless_chrome::LaunchOptions::default_builder()
                 .path(harness::browser_path())
                 .headless(true)
+                .ignore_default_args(harness::ignored_defaults())
                 .args(harness::chrome_args(&[]))
                 .build()
                 .unwrap(),
@@ -9598,6 +9603,7 @@ fn the_artifact_roster_groups_republishes_by_url() {
             headless_chrome::LaunchOptions::default_builder()
                 .path(harness::browser_path())
                 .headless(true)
+                .ignore_default_args(harness::ignored_defaults())
                 .args(harness::chrome_args(&[]))
                 .build()
                 .unwrap(),
@@ -9779,6 +9785,7 @@ fn the_classic_page_keys_resolve_through_the_shared_table() {
                 .path(harness::browser_path())
                 .headless(true)
                 .window_size(Some((1200, 800)))
+                .ignore_default_args(harness::ignored_defaults())
                 .args(harness::chrome_args(&[]))
                 .build()
                 .unwrap(),
@@ -10261,6 +10268,31 @@ fn the_app_shell_a_push_with_nothing_below_to_reveal_moves_nothing() {
     })()"#;
     let outside = "(function(dy){ document.querySelector('.session-navigator').dispatchEvent(new WheelEvent('wheel', { deltaY: dy, bubbles: true, cancelable: true })); return 'ok'; })";
 
+    // The owner's situation is a window where every card is wholly visible and the column still
+    // overflows by its own bottom padding alone. 1400x820 gave it on the Mac and beneath CI's
+    // automation bar; with the page its whole window (#s710) CI's Linux Chrome left the column 16px
+    // of overflow. So the window takes the height where the overflow is about half the padding,
+    // read off the page: a shorter window adds to it (by about half of each pixel, measured, since
+    // the open Turns list is capped at 48vh), so each step closes some of the distance.
+    let mut height = 820.0;
+    for _ in 0..4 {
+        let overflow = harness::probe(&tab, state)["overflow"]
+            .as_f64()
+            .unwrap_or(0.0);
+        if (30.0..=70.0).contains(&overflow) {
+            break;
+        }
+        height += overflow - 45.0;
+        tab.set_bounds(headless_chrome::types::Bounds::Normal {
+            left: Some(0),
+            top: Some(0),
+            width: Some(1400.0),
+            height: Some(height),
+        })
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        harness::until_drawers_settle(&tab);
+    }
     let rest = harness::probe(&tab, state);
     assert_eq!(
         rest["lastWhollyVisible"], true,
@@ -10300,18 +10332,47 @@ fn the_app_shell_a_push_with_nothing_below_to_reveal_moves_nothing() {
 
     // The owner's second clause, which holds whatever the first one decides: "regardless whether
     // the last drawer stops or not, there should always be a gap between these two panes". Shorten
-    // the window so the last card IS cut off and the column has somewhere real to go, then push
-    // through the whole range — the drawers close from the top, and only once they are heads does
-    // the remainder scroll. The gap is measured at every step, not only at the end, because an
-    // overlap mid-gesture is exactly what the owner photographed.
-    tab.set_bounds(headless_chrome::types::Bounds::Normal {
-        left: Some(0),
-        top: Some(0),
-        width: Some(1400.0),
-        height: Some(470.0),
-    })
-    .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(700));
+    // the window so the last card IS cut off, then push through the whole range: the drawers close
+    // from the top until the last card shows. The gap is measured at every step, not only at the
+    // end, because an overlap mid-gesture is exactly what the owner photographed. (At this height
+    // the column drops its breathing room, `heads-tight`, so it has no offset to give: the tall
+    // leg above is what holds a push that scrolls.)
+    //
+    // The short window leaves the column just taller than the SHUT chain, read off the page, so
+    // the walk has to shut every pane above the last to show it, whatever the platform's lines. A
+    // fixed 1400x470 did on the Mac and beneath CI's automation bar; with the page its whole window
+    // (#s710) CI's Linux Chrome showed the last card with Turns still 64px open, and the push
+    // rightly stopped there.
+    let shut_bottom = |s: &serde_json::Value| -> f64 {
+        let boxes = s["boxes"].as_array().cloned().unwrap_or_default();
+        let bodies: f64 = boxes
+            .iter()
+            .map(|b| b["body"].as_f64().unwrap_or(0.0))
+            .sum();
+        boxes
+            .last()
+            .and_then(|b| b["bottom"].as_f64())
+            .unwrap_or(0.0)
+            - bodies
+    };
+    let column = "document.querySelector('.session-navigator').getBoundingClientRect().height";
+    let mut short_h = 470.0;
+    for _ in 0..3 {
+        tab.set_bounds(headless_chrome::types::Bounds::Normal {
+            left: Some(0),
+            top: Some(0),
+            width: Some(1400.0),
+            height: Some(short_h),
+        })
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        let view = harness::eval(&tab, column).as_f64().unwrap_or(0.0);
+        let want = shut_bottom(&harness::probe(&tab, state)) + 10.0;
+        if (view - want).abs() <= 3.0 {
+            break;
+        }
+        short_h -= view - want;
+    }
     let short = harness::probe(&tab, state);
     assert_eq!(
         short["lastWhollyVisible"], false,

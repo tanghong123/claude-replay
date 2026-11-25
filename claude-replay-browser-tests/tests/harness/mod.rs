@@ -2314,9 +2314,14 @@ pub fn browser_path() -> Option<std::path::PathBuf> {
 /// crate's SIGKILL is left for a Chrome that does not. Chrome removes the folder before it exits, so
 /// the exit is the whole wait. On Linux Chrome keeps the folder even then (measured on CI's Ubuntu
 /// runner: `com.google.Chrome.XXXXXX`), but it makes it in `TMPDIR`, the workspace's scratch, whose
-/// age rule (`scripts/sweep-scratch.sh`) clears it after a day. Each end
-/// is a [`profile`] row saying whether the folder went (`CR_PROFILE`, which is how a run is checked
-/// for them), and one left outside `TMPDIR` is also a stderr line naming it.
+/// age rule (`scripts/sweep-scratch.sh`) clears it after a day. Chrome for Testing 159 on a Mac
+/// keeps it too (#s710, measured on denali: SIGTERMed it exits at once and leaves the folder; 151
+/// removes it, and both remove it on `Browser.close`), so once the process has gone the guard
+/// removes the folder it read at the launch itself, wherever Chrome left it (on Linux too), and only
+/// while it holds nothing but Chrome's own `Singleton*` entries ([`remove_singleton_folder`]); the
+/// sweep's age rule is left for a folder the guard never saw. Each end is a [`profile`] row
+/// saying whether the folder went, and who took it (`CR_PROFILE`, which is how a run is checked for
+/// them), and one left outside `TMPDIR` is also a stderr line naming it.
 pub struct Chrome {
     browser: Option<headless_chrome::Browser>,
     /// The folder the profile's `SingletonSocket` link named once the browser was up.
@@ -2356,6 +2361,8 @@ pub struct Ended {
     pub took: Duration,
     /// The singleton folder, when it is still there after the end.
     pub folder_left: Option<PathBuf>,
+    /// Chrome left its singleton folder behind and the guard removed it (#s710).
+    pub folder_removed: bool,
 }
 
 impl Chrome {
@@ -2381,6 +2388,7 @@ impl Chrome {
                 exited: false,
                 took: Duration::ZERO,
                 folder_left: None,
+                folder_removed: false,
             };
         };
         let mut exited = false;
@@ -2405,10 +2413,18 @@ impl Chrome {
             // A pid the system hands out again must not find this profile (`profile_of`).
             profiles().lock().unwrap().remove(&pid);
         }
+        // Only once the process has gone: a running Chrome keeps its singleton there.
+        let folder_removed = match (self.singleton.as_ref(), pid) {
+            (Some(dir), Some(pid)) if dir.exists() && !process_runs(pid) => {
+                remove_singleton_folder(dir)
+            }
+            _ => false,
+        };
         // Said through [`profile`] as well as stderr: libtest keeps a passing case's stderr to
         // itself, and a run is checked by these rows (`CR_PROFILE`).
         let outcome = match self.singleton.as_ref() {
             None => "chrome end, no singleton folder",
+            Some(_) if folder_removed => "chrome end, singleton folder left and removed",
             // Linux's Chrome keeps it whatever, in the workspace's scratch the sweep clears.
             Some(dir) if dir.exists() && dir.starts_with(std::env::temp_dir()) => {
                 "chrome end, singleton folder kept in TMPDIR"
@@ -2428,6 +2444,7 @@ impl Chrome {
             exited,
             took,
             folder_left: self.singleton.clone().filter(|dir| dir.exists()),
+            folder_removed,
         }
     }
 }
@@ -2545,6 +2562,26 @@ fn singleton_folder(profile: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Remove a singleton folder an exited Chrome left behind (#s710): its `Singleton*` entries by
+/// name, then the folder, which `remove_dir` takes only once it is empty, so a folder holding
+/// anything else stays as it is. Whether the folder went.
+fn remove_singleton_folder(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let names: Vec<std::ffi::OsString> = entries.flatten().map(|entry| entry.file_name()).collect();
+    if names
+        .iter()
+        .any(|name| !name.to_string_lossy().starts_with("Singleton"))
+    {
+        return false;
+    }
+    for name in &names {
+        let _ = std::fs::remove_file(dir.join(name));
+    }
+    std::fs::remove_dir(dir).is_ok()
+}
+
 /// Whether `pid` still runs: there and not a zombie. A browser this process launched stays its
 /// child until headless_chrome waits for it, so a Chrome that has exited still answers `kill -0`.
 /// A `ps` that cannot start (a box too loaded to fork) says nothing, so it reads as running: the
@@ -2563,11 +2600,17 @@ fn process_runs(pid: u32) -> bool {
 
 /// End `pids` (#s614): SIGTERM each, wait until none runs or [`GENTLE_END`] has passed, then
 /// SIGKILL what is left. SIGTERM first because a Chrome SIGKILLed leaves its singleton folder in
-/// the system temp folder, and one SIGTERMed removes it. Before the SIGKILL each survivor's command
-/// line is read again and must still name a profile carrying the harness's mark (another
-/// worktree's included, as [`reap_stranded_browsers`] takes them), so a pid the system handed out
-/// again during the wait is never killed. Answers how many it ended.
+/// the system temp folder, and one SIGTERMed removes it, except Chrome for Testing 159, which
+/// keeps it (#s710): so each pid's folder is read before the signal, from its own harness profile,
+/// and removed once that process has gone ([`remove_singleton_folder`]). Before the SIGKILL each
+/// survivor's command line is read again and must still name a profile carrying the harness's mark
+/// (another worktree's included, as [`reap_stranded_browsers`] takes them), so a pid the system
+/// handed out again during the wait is never killed. Answers how many it ended.
 fn end_processes(pids: &[u32]) -> usize {
+    let folders: Vec<(u32, PathBuf)> = pids
+        .iter()
+        .filter_map(|&pid| harness_singleton_of(pid).map(|dir| (pid, dir)))
+        .collect();
     let signal = |sig: &str, pid: u32| {
         std::process::Command::new("kill")
             .args([sig, &pid.to_string()])
@@ -2600,7 +2643,29 @@ fn end_processes(pids: &[u32]) -> usize {
             signal("-KILL", pid);
         }
     }
+    for (pid, dir) in &folders {
+        if dir.exists() && !process_runs(*pid) {
+            remove_singleton_folder(dir);
+        }
+    }
     sent.len()
+}
+
+/// The singleton folder of a running process whose command line names a harness profile (one
+/// carrying [`BROWSER_PROFILE_MARK`]), read through that profile's `SingletonSocket` link. A helper
+/// shares its browser's profile and so its folder; any other process has none here.
+fn harness_singleton_of(pid: u32) -> Option<PathBuf> {
+    let out = std::process::Command::new("ps")
+        .args(["-wwo", "command=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    let command = String::from_utf8_lossy(&out.stdout).into_owned();
+    let profile = command.split(' ').find_map(|arg| {
+        arg.strip_prefix("--user-data-dir=")
+            .filter(|dir| dir.contains(BROWSER_PROFILE_MARK))
+    })?;
+    let target = std::fs::read_link(Path::new(profile).join("SingletonSocket")).ok()?;
+    target.parent().map(Path::to_path_buf)
 }
 
 pub fn chrome() -> Chrome {
@@ -2765,6 +2830,20 @@ pub const CASE_FLAGS: [&str; 3] = [
     "--disable-component-update",
 ];
 
+/// The headless_chrome defaults a case's Chrome goes without (#s710). With `--enable-automation`,
+/// Chrome for Testing 159 leaves a headless window's page 57px shorter than 151 does (measured on
+/// denali: a 1280x1100 window's page 900px tall under 159 and 957px under 151 with the flag; 957px
+/// under both without it), by its "controlled by automated test software" bar, presumably: the
+/// height was measured, the bar was not looked at. Nothing in the suite reads what else the flag
+/// changes (`navigator.webdriver`, the password bubble). Every launch a case makes passes these as
+/// `ignore_default_args`.
+pub const IGNORED_DEFAULTS: [&str; 1] = ["--enable-automation"];
+
+/// [`IGNORED_DEFAULTS`] as headless_chrome's `ignore_default_args` takes them.
+pub fn ignored_defaults() -> Vec<&'static std::ffi::OsStr> {
+    IGNORED_DEFAULTS.iter().map(std::ffi::OsStr::new).collect()
+}
+
 /// `extra`, then [`CASE_FLAGS`]: the arguments of a Chrome a case launches itself.
 pub fn chrome_args<'a>(extra: &[&'a str]) -> Vec<&'a std::ffi::OsStr> {
     extra
@@ -2810,6 +2889,7 @@ pub fn launch_within(
                 .window_size(Some((1400, 900)))
                 .user_data_dir(Some(dir.clone()))
                 .port(Some(port))
+                .ignore_default_args(ignored_defaults())
                 .args(args)
                 .build()
                 .unwrap(),
