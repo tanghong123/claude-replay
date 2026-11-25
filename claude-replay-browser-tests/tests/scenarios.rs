@@ -21698,6 +21698,71 @@ fn app_shell_a_phone_keeps_each_message_to_its_own_side() {
     }
 }
 
+/// #s697, Hong: "the progresses on mobile seems to waste too much precious screen real estate".
+/// A Progress row was three columns (its dot, the label, the text), and on a phone the text had a
+/// column of about 60 percent of the row. On a phone, upright and held sideways, the label now
+/// leads the text on its first line and the text below takes the row's width: read off the text's
+/// own line boxes, its first line sits beside the label and its last line starts where the label
+/// does. A desktop keeps the columns: the text starts right of the label. The lines the text takes
+/// are printed for each, to compare with the columns'.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_a_phone_gives_a_progress_line_the_rows_width() {
+    let _serial = serial();
+    let fx = message_sides_fixture("scenario-progress-width-app");
+    let page = open_with(Surface::AppShell, &fx, 3209, "mountall=1");
+    let tab = &page.tab;
+    jump_to_end(tab, Surface::AppShell);
+    await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
+    settle();
+    let read = "(function () { document.querySelectorAll('#sessionView .process-surface.closed [data-process-toggle]').forEach(function (h) { h.click(); }); \
+        var v = document.getElementById('sessionView'), c = [...document.querySelectorAll('#sessionView .process-commentary')].pop(); \
+        if (!c) return JSON.stringify({ phone: v.classList.contains('pl-phone'), w: innerWidth, row: null }); \
+        var l = c.querySelector('.process-commentary-label').getBoundingClientRect(), p = c.querySelector('.process-commentary-copy'), \
+            q = p.getBoundingClientRect(), r = c.getBoundingClientRect(), rects = [], tw = document.createTreeWalker(p, NodeFilter.SHOW_TEXT), n; \
+        while ((n = tw.nextNode())) { var g = document.createRange(); g.selectNodeContents(n); [...g.getClientRects()].forEach(function (b) { if (b.width > 0) rects.push(b); }); } \
+        var first = rects[0], last = rects[rects.length - 1], tops = {}; rects.forEach(function (b) { tops[Math.round(b.top)] = 1; }); \
+        return JSON.stringify({ phone: v.classList.contains('pl-phone'), w: innerWidth, row: Math.round(r.width), \
+          firstBeside: !!first && first.left >= l.right - 1 && Math.abs(first.top - l.top) <= 6, \
+          lastAtLabel: !!last && Math.abs(last.left - l.left) <= 2, \
+          toEdge: q.right >= r.right - 8, besideLabel: q.left >= l.right, \
+          lines: Object.keys(tops).length }); })()";
+    let poll = |done: &dyn Fn(&serde_json::Value) -> bool| -> serde_json::Value {
+        let mut last = serde_json::Value::Null;
+        for _ in 0..40 {
+            last = serde_json::from_str(eval(tab, read).as_str().unwrap_or("null"))
+                .unwrap_or(serde_json::Value::Null);
+            if done(&last) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        last
+    };
+    let ran_in = |v: &serde_json::Value| {
+        v["firstBeside"] == true && v["lastAtLabel"] == true && v["toEdge"] == true
+    };
+    let desk = poll(&|v| v["phone"] == false && v["besideLabel"] == true);
+    harness::phone(tab, 390, 844);
+    let up = poll(&|v| v["phone"] == true && v["w"] == 390 && ran_in(v));
+    harness::phone(tab, 874, 402);
+    let side = poll(&|v| v["phone"] == true && v["w"] == 874 && ran_in(v));
+    println!(
+        "PROGRESS lines: desktop {} (row {}), upright {} (row {}), sideways {} (row {})",
+        desk["lines"], desk["row"], up["lines"], up["row"], side["lines"], side["row"]
+    );
+    assert!(
+        desk["phone"] == false && desk["besideLabel"] == true,
+        "a desktop keeps the Progress row's columns, the text right of its label: {desk}"
+    );
+    for (held, v) in [("upright", &up), ("sideways", &side)] {
+        assert!(
+            v["phone"] == true && ran_in(v),
+            "a phone held {held}: the Progress label leads its text on the first line and the text takes the row's width (desktop {desk}, upright {up}, sideways {side})"
+        );
+    }
+}
+
 /// #s83: a message the agent SENT to another session shows the message on its card, with the
 /// client's delivery receipt beneath it as a sentence. The owner found the card showing only the
 /// receipt's JSON (`{"success":true,"message":"…"}`), with the message itself nowhere. Written

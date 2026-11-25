@@ -1820,6 +1820,14 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      column's whole width, so a long one read as neither side's. */
   #sessionView .turn.user .user-prompt{max-width:calc(100% - 40px)}
   #sessionView .turn.peer .peer-card{max-width:calc(100% - 40px)}
+  /* #s697, Hong: "the progresses on mobile seems to waste too much precious screen real estate".
+     A Progress row was three columns, its dot, the label and the text, so on a phone the text had
+     a column of about 60 percent of the width and a short note took five lines. Here the label
+     leads the text on its first line and the lines below take the row's whole width; the dot keeps
+     its place in the gutter, and the label its x. */
+  #sessionView .process-commentary,#sessionView .process-surface .process-commentary{display:block;position:relative;padding-left:22px}
+  #sessionView .process-commentary-mark{position:absolute;left:8px;top:14px;margin:0}
+  #sessionView .process-commentary-label{float:left;margin:0 7px 0 0}
   #sessionView .turn.user .turn-time{margin:4px 2px 0 8px}
   #sessionView .spot-link,#sessionView .renderer>.renderer-spot{display:none!important}
 
