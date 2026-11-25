@@ -7370,7 +7370,7 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
     let wide = harness::probe(&tab, VIEW_LAYOUT);
     let wide_dock = harness::probe(
         &tab,
-        "(function(){ var v = document.getElementById('sessionView').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(); return { viewLeft: Math.round(v.left), dockLeft: Math.round(d.left), dockRight: Math.round(d.right), width: innerWidth }; })()",
+        "(function(){ var v = document.getElementById('sessionView').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(), p = document.getElementById('dockPill').getBoundingClientRect(), q = document.querySelector('#phoneDock>.header-search-cluster').getBoundingClientRect(); return { viewLeft: Math.round(v.left), dockLeft: Math.round(d.left), dockRight: Math.round(d.right), width: innerWidth, pillLeft: Math.round(p.left), pillRight: Math.round(p.right), searchLeft: Math.round(q.left) }; })()",
     );
     // #s703: beside the column the panes open from the dock as upright, so the Turns sheet is offered
     // there and held to the layers' rules like the rest.
@@ -7547,13 +7547,15 @@ fn the_app_shell_view_lays_itself_out_where_its_own_box_differs_from_the_window(
         "a review sheet opened at ⤢ covers the whole screen, its close control inside the island's \
          inset: {wide_full}"
     );
-    // #s703: beside the column the pill sits at the session's right, 12px inside the right-hand inset
-    // (62px sideways), and starts inside the view.
+    // #s703: beside the column the dock sits at the session's right, 12px inside the right-hand inset
+    // (62px sideways), the pill right beside the search's circle and inside the view. Before, the dock
+    // spanned the session from 12px inside the view, the pill at its left and the circle at its right.
     assert!(
         wide_dock["dockRight"].as_i64() == wide_dock["width"].as_i64().map(|w| w - 12 - 62)
-            && wide_dock["dockLeft"].as_i64() >= wide_dock["viewLeft"].as_i64().map(|x| x + 12),
-        "beside the column the dock's pill keeps 12px inside the right-hand inset and starts inside the \
-         view: {wide_dock}"
+            && wide_dock["pillLeft"].as_i64() > wide_dock["viewLeft"].as_i64().map(|x| x + 12)
+            && wide_dock["searchLeft"].as_i64().zip(wide_dock["pillRight"].as_i64()).is_some_and(|(q, p)| q >= p && q - p <= 16),
+        "beside the column the dock sits at the session's right inside the right-hand inset, the pill \
+         beside the search's circle: {wide_dock}"
     );
     assert_eq!(
         rows["minHeight"], "44px",
