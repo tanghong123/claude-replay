@@ -125,12 +125,11 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
    strip and the tree are items of, and the sidebar's column gives it the room below its head. Its
    controls and the filter sheet are placed in the sidebar's head and its rail parts in the rail
    (`place`); a host that places nothing gets them in a head of the list's own, which the sheet hangs
-   from. Where the app hides the strip and the tree (the rail, a wide phone's column showing a pane),
-   the box takes no room. */
+   from. Where the app hides the strip and the tree (the rail), the box takes no room. */
 #sessionList{display:flex;flex-direction:column;min-height:0;min-width:0}
 #sessionList[hidden]{display:none}
 .sidebar>.session-list{flex:1}
-#app.sidebar-off .sidebar>.session-list,#app.column-pane-on>.sidebar>.session-list{flex:none}
+#app.sidebar-off .sidebar>.session-list{flex:none}
 /* #s430 stage 4: the list's controls are one strip (`place("controls")`), an element a host can hold
    and place again. It draws no box, so each control stays an item of the row it is placed in: the
    sidebar head's one row here, the list's own head in a host that places nothing. */
@@ -494,10 +493,6 @@ body[data-shared-codex] #sessionView :is(.compose-attach,.compose-images){displa
 .session-filter-options .scope-option[role="radio"] .scope-check{border-radius:50%}
 .session-filter-options .scope-option.arrange-app{height:auto;min-height:30px;align-items:start;padding-top:5px;padding-bottom:5px}
 .session-filter-options .scope-option.disabled{opacity:.55;cursor:not-allowed}
-/* #s664: the sheet's fold rows, shown only where the app's wide-phone column takes the two glyphs out
-   of its head (below); each row wears its glyph where a checkbox would be. */
-.session-filter-options [data-group-part]{display:none}
-.session-filter-options [data-group-action] .icon{width:16px;height:16px;color:var(--sub)}
 .arrange-text{display:flex;flex-direction:column;gap:1px;min-width:0}
 .arrange-note{font-size:10.5px;line-height:13px;color:var(--faint);white-space:normal}
 .arrange-note:empty{display:none}
@@ -1763,7 +1758,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   .phone-pane-close{width:44px;height:44px;border-radius:10px;background:transparent;color:var(--sub);font-size:17px;cursor:pointer}
   /* #s616: the list's filter is the sheet head's (session-view.js `renderFilter`), beside the title and
      before ✕, so a short list held sideways keeps all its height for the list; the list's own row is
-     not drawn in the sheet (a wide phone's column, which has no such head, still shows it). The title
+     not drawn in the sheet, where it is the head control's source. The title
      and ✕ never shrink: a long label is cut with an ellipsis, and ✕ stays a 44px target. */
   .phone-pane-head strong,.phone-pane-close{flex:none}
   .phone-pane-filter:not([hidden]){flex:0 1 auto;min-width:0;height:44px;margin-left:auto;padding:0 10px;border-radius:10px;background:transparent;color:var(--primary);font:inherit;font-size:14px;font-weight:570;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer}
@@ -2018,12 +2013,12 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #sessionView .composer.production-show .compose-attach .icon{width:20px;height:20px}
   #sessionView .composer.production-show.attachable textarea{padding-left:50px}
 }
-/* A wide phone held sideways: the column holds Sessions, Turns, Tasks and Agents, so the pill keeps
-   Aa beside the search, at the transcript's foot on the right — and takes the panes back while the
-   column is hidden, or nothing would reach them; the find pill spans the transcript. */
+/* A wide phone held sideways: the pill holds Turns, Tasks, Agents and Aa, as upright, at the
+   transcript's foot on the right beside the search, the column shown or hidden (#s703, Hong: "I'd put
+   them to the right bottom, similar to the portrait mode"); with the column hidden the find pill spans
+   the transcript. */
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
   .phone-dock{left:auto}
-  #app:not(.phone-column-off) .dock-pill .phone-pane{display:none}
   #app.phone-column-off .phone-dock:has(.header-searchbox:is(.phone-open,.has-query)){left:calc(12px + env(safe-area-inset-left,0px))}
 }
 
@@ -2060,12 +2055,10 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    and Notes do there: the session list docked at the left, no scrim, the session beside it at its
    reading width. The handle hides and shows the column (`phone-column-off`, remembered under its own
    key, never the desktop's rail nor the drawer's `mobile-detail`, #s33), and sits at the session's
-   top left, by its title, as iPad apps keep their sidebar button with the content. The column's head
-   is ONE row and no brand (the owner): the switcher's glyphs — Sessions, or one of the outline's
-   panes, the same live lists the drop-downs borrow — then the sidebar's own glyphs; glyphs rather
-   than words, so the column stays narrow. Hidden, the column leaves the session at its reading width:
-   the Reading menu's Wide transcript widens it, as on a desktop. */
-.column-switch,.column-pane{display:none}
+   top left, by its title, as iPad apps keep their sidebar button with the content. The column holds
+   the sessions alone (#s703: the outline's panes open from the dock, as upright); its head is ONE row
+   of the sidebar's own glyphs and no brand (the owner). Hidden, the column leaves the session at its
+   reading width: the Reading menu's Wide transcript widens it, as on a desktop. */
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
   /* The sidebar's head, nav and list are sized by `--sidebar` (reference.css), which a phone sets to
      the drawer's width: the column is 280px, so its contents are too. */
@@ -2080,29 +2073,15 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .side-head{flex:none;height:auto;min-height:0;padding:4px 6px;flex-wrap:nowrap;align-items:center;column-gap:0}
   #app .side-head>.brand{display:none}
   #app .side-head>.head-actions{flex:0 0 auto;margin-left:auto;flex-wrap:nowrap}
-  /* #s664 (Hong's choice on #s661): eight glyphs at a finger's 44 points (#313) need 352 of the head's
-     268, so here Collapse every group and Expand every group are the filter sheet's first two rows,
-     and the six glyphs left (the switcher, the theme, the filter) take 44 each, abutting: 264. With a
-     pane in the column the filter goes too (below), and five are left. */
+  /* Each glyph a finger's 44 points (#313), abutting: the theme, Collapse all, Expand all and the
+     filter take 176 of the head's 268. (#s664 moved the two fold glyphs into the filter sheet while the
+     head also held the panes' switcher, eight glyphs in all; #s703 took the switcher out.) */
   #app .side-head .iconbtn{width:44px;height:44px;flex:none}
   #app .side-head>.head-actions{gap:0}
-  #app .side-head :is(#collapseBtn,#expandBtn){display:none}
-  #app .session-filter-options [data-group-part]:not([data-no-groups]){display:block}
-  #app:not(.phone-column-off) .column-switch{display:flex;flex:none;gap:0}
-  .column-switch .iconbtn{position:relative;display:grid;place-items:center;border-radius:9px;background:transparent;color:var(--sub)}
-  .column-switch .iconbtn.on{background:var(--hover);color:var(--ink)}
-  .column-switch-count{position:absolute;top:2px;right:-1px;min-width:14px;height:14px;padding:0 3px;border-radius:7px;background:var(--hover);color:var(--sub);font:600 9px/14px var(--mono);text-align:center}
-  .column-switch .iconbtn.on .column-switch-count{background:var(--bg)}
-  .column-switch-count:empty{display:none}
   #app:not(.phone-column-off) .drawer-handle{left:calc(var(--sidebar) + env(safe-area-inset-left,0px) + 4px)}
   /* The column covers the island's side, so the session beside it pads only the other. */
   #app:not(.phone-column-off) #sessionView .workspace>.topbar{padding-left:50px}
   #app:not(.phone-column-off) .transcript{padding-left:0}
-  #app.column-pane-on:not(.phone-column-off) .column-pane{display:block}
-  #app.column-pane-on>.sidebar>.nav,#app.column-pane-on>.sidebar>:where(.session-list)>.tree,#app.column-pane-on>.sidebar>:where(.session-list)>.arrange-strip{display:none}
-  /* Collapse all, Expand all and the session filter act on the session list alone: while the column
-     shows a pane they go (the owner); the theme applies everywhere and stays. */
-  #app.column-pane-on .side-head .head-actions>.session-list-controls{display:none}
 }
 
 /* #s41 — held sideways a sheet is a POPOVER at its control's side, as iOS draws them at a regular

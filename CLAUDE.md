@@ -280,14 +280,16 @@ over the drawer's head upright; `harness::safe_area` emulates them through Chrom
 sideways the transcript is a centred reading column (500px, about 75 characters of prose); and a
 WIDE phone held sideways (`WIDE_PHONE_QUERY`, ≥900px: the Plus and Max iPhones) shows the session
 list as a 280px COLUMN beside the session, its head ONE row of glyphs and no brand (the owner), never
-shrunk by a long pane under it (`flex:none`; #s41, it was cut to 11px): the
-switcher (Sessions / Turns / Tasks / Agents, borrowing the outline's live lists as the sheets do —
-Sessions wears a conversation glyph, never the sidebar glyph, which every desktop reads as "hide the
-sidebar": the owner tapped it to hide the column and called it dead, #s41), then
-the sidebar's own (Collapse all, Expand all and the session filter go while a pane is shown: they act
-on the list alone; Collapse all and Expand all are never glyphs there but the session filter sheet's
-first two rows, so the six glyphs left take a finger's 44 points each, #s664, Hong's choice on #s661); the pill keeps only Aa beside search — and takes the panes back while the column
-is hidden, or nothing would reach them. The handle sits at the session's top left, by
+shrunk by a long pane under it (`flex:none`; #s41, it was cut to 11px): the sidebar's own glyphs,
+the theme, Collapse all, Expand all and the session filter, each a finger's 44 points. **The column
+holds the sessions alone; Turns, Tasks and Agents are in the dock's pill at the bottom right with
+Aa, as upright** (#s703, Hong: "I feel it is a mistake to put the glyphs for the outline panes to the
+left. Instead, I'd put them to the right bottom, similar to the portrait mode"), each opening its
+sheet there as a popover, whether the column is shown or hidden; the column's switcher and the
+filter sheet's fold rows (#s664, which made room for its eight glyphs) are gone with them
+(`a_wide_phone_held_sideways_opens_its_panes_from_the_dock_at_the_bottom_right`). While the right
+pane covers the session beside the column, the dock goes under it with the session, the panes
+included. The handle sits at the session's top left, by
 the title (as iPad apps keep their sidebar button, and wearing its sidebar glyph there; ☰ is the
 drawer's), and hides and shows the column under its own key
 (`am-phone-column`; never the rail's, never `mobile-detail`); hidden, the session stays at its
@@ -1368,9 +1370,9 @@ resizes the others (#159). Six drawer cases catch that in one run.
   finished agents or Show N finished agents (#s358, Hong's choice on #s357; `phoneAgentsFilter`), and
   its Tasks list one for Top-level only, Hide follow-ups or Show N follow-ups (#s606;
   `phoneTasksFilter`); with an agent running the list is not empty, so the empty line alone would
-  strand the reader. In a wide phone's column the control is a row at the top of the list, because
-  the list can be long; in a sheet it is in the sheet's HEAD beside its title (#s616, `renderFilter`,
-  the row not drawn there), because held sideways the sheet's list is about 97px and the Tasks
+  strand the reader. The control is in the sheet's HEAD beside its title (#s616, `renderFilter`,
+  copied from a row at the top of the list, which the sheet does not draw; a wide phone's column drew
+  the row until #s703 took the panes out of it), because held sideways the sheet's list is about 97px and the Tasks
   sheet's opening scroll to what is still moving took a row at the top out of reach, while a row
   pinned there left no task readable. A phone's Tasks pane shows every state (#319), so it needs no
   state filter. **A task the session recorded no title for is not listed** in that pane

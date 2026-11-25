@@ -1554,16 +1554,14 @@ assert.match(viewSource, /if \(target && turnsFollow\) revealInPane\(target\);/,
 }
 assert.match(productionCss, /\n:is\(#collapseBtn,#expandBtn\)\[data-flat\]\{display:none\}/, "flat, the group controls go: the list marks the two it places, since the head is outside its element (#s430 stage 3)");
 assert.match(listSource, /const noGroups = \(flat && !grouped\) \|\| arranged;\n  for \(const control of \[collapseBtn, expandBtn\]\) control\.toggleAttribute\("data-flat", noGroups\);/, "…with the same verdict as its own sessions-flat, except that grouped by machine (#s561) the machines' heads still fold");
-assert.match(listSource, /filterSheet\.querySelector\("\[data-group-part\]"\)\?\.toggleAttribute\("data-no-groups", noGroups\);/, "#s664: the sheet's fold rows go with the glyphs, under a mark of their own");
 assert.equal((listSource.match(/\sdata-flat[\s>]/g) || []).length, 1, "data-flat is drawn on the One list by activity option alone, and only the two head glyphs outside the sheet are marked with it (#s664's landing: the fold rows wore it, and the cases' #sessionFilter [data-flat] found them first)");
 assert.equal((listSource.match(/toggleAttribute\("data-flat"/g) || []).length, 1, "…and the script sets data-flat in one place, on the two head glyphs: the #s664 landing's red came from a second element marked with it as the list went flat");
-// #s664 (Hong's choice on #s661): the filter sheet's first two rows are Collapse and Expand every group, drawn with any
-// sheet, shown only where the app's wide-phone column takes the two glyphs out of its head, and doing what the glyphs do.
-assert.match(listSource, /data-group-action="collapse"[^\n]*<span>Collapse every group<\/span>/, "#s664: the sheet's Collapse every group row");
-assert.match(listSource, /data-group-action="expand"[^\n]*<span>Expand every group<\/span>/, "#s664: the sheet's Expand every group row");
-assert.match(listSource, /if \(group\) \{ toggleFilterSheet\(false\); \(group\.dataset\.groupAction === "collapse" \? collapseBtn : expandBtn\)\.onclick\(\); return; \}/, "#s664: a fold row closes the sheet and does what its glyph does");
-assert.match(productionCss, /\n\.session-filter-options \[data-group-part\]\{display:none\}/, "#s664: the fold rows are not shown by default (a host, a desktop, the drawer)");
-assert.match(productionCss, /@media\(pointer:coarse\) and \(max-height:500px\) and \(min-width:900px\)\{[^@]*#app \.side-head :is\(#collapseBtn,#expandBtn\)\{display:none\}[^@]*#app \.session-filter-options \[data-group-part\]:not\(\[data-no-groups\]\)\{display:block\}/, "#s664: on a wide phone held sideways the two glyphs leave the column head and the sheet shows its fold rows");
+// #s703 (Hong: "I'd put them to the right bottom, similar to the portrait mode"): held sideways on a wide phone
+// the outline's panes open from the dock's pill, as upright; the column holds the sessions alone, its head the
+// sidebar's own glyphs, Collapse all and Expand all among them.
+assert.doesNotMatch(appSource, /columnSwitch|data-column-tab|columnPane/, "#s703: the wide phone's column has no switcher and borrows no pane");
+assert.doesNotMatch(productionCss, /\.dock-pill \.phone-pane\{display:none\}/, "#s703: nothing takes the panes out of the dock's pill");
+assert.doesNotMatch(productionCss, /#collapseBtn,#expandBtn\)\{display:none\}/, "#s703: nothing takes Collapse all and Expand all out of the column's head");
 assert.match(appSource, /indexState\.selectedWasRow && !selectedRow\(\)\) sessionGone\(\)/, "a sub-agent child, never a list row, is not declared gone by the index poll");
 assert.match(viewSource, /meta\?\.ancestors\?\.at\(-1\)/, "the parent control reads the last ancestor from the session's own meta");
 assert.match(productionCss, /\.session-parent\.is-live\{display:inline-flex;/, "the reference parent control is shown by a production state, not by editing the shell");
@@ -5182,8 +5180,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 }
 
 // #s429 stage 3: the app and the session view call each other by NAME, the view's options and the
-// handle it returns. Most options are optional callbacks (`options.paneCount?.(…)`), so a rename on
-// one side would fail silently: a wide phone's pane counts, or a deep-linked child's Back. So every
+// handle it returns. Most options are optional callbacks (`options.parentShown?.(…)`), so a rename on
+// one side would fail silently: a deep-linked child's Back, or the list laid out for the pane. So every
 // option the view reads is one the app passes or one the doc comment names as optional, every option
 // passed is read, every option read is documented, every handler of what the view tells its host
 // (`on…`) is called, and every member of the handle the app calls is one the view returns.
@@ -5504,7 +5502,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listSource, /const flat = arrangement\(\) === "flat" \|\|/, "the tree reads the arrangement it draws");
   assert.doesNotMatch(listSource.slice(listSource.indexOf("function renderTree(")), /indexState\.flat\b/, "never the reader's own choice past it");
   for (const part of ["filter", "hiding", "arrangements"]) assert.match(listSource, new RegExp(`^if \\(shows\\("${part}"\\)\\) sheetParts\\.push\\(`, "m"), `the filter's sheet draws the ${part} part only while it is shown`);
-  assert.match(listSource, /^filterSheet\.innerHTML = \(sheetParts\.length \? `\$\{groupPart\}\\n` : ""\) \+ sheetParts\.join\(`\\n<div class="scope-menu-divider"><\/div>\\n`\);$/m, "joined as the sheet always was, after the fold rows (#s664), which only a sheet with a part gets");
+  assert.match(listSource, /^filterSheet\.innerHTML = sheetParts\.join\(`\\n<div class="scope-menu-divider"><\/div>\\n`\);$/m, "joined as the sheet always was (#s703 took #s664's fold rows away)");
   assert.match(listSource, /^const hasSheet = sheetParts\.length > 0;$/m, "and with nothing to offer it is neither drawn nor handed over");
   // Keys: engaged, the list's element hears them and answers only on a row; the page's, the app's
   // keymap calls the handle's.
@@ -5549,7 +5547,6 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // The controls are one strip a host can hold, drawn as no box.
   assert.match(listSource, /^const controls = document\.createElement\("div"\);\ncontrols\.className = "session-list-controls";$/m, "the controls are one element");
   assert.match(productionCss, /\n\.session-list-controls\{display:contents\}\n/, "that draws no box");
-  assert.match(productionCss, /#app\.column-pane-on \.side-head \.head-actions>\.session-list-controls\{display:none\}/, "and goes while the column shows a pane");
   // The unmount. Every listener the list binds on the page carries its signal (read to its closing
   // parenthesis, past strings and nested brackets).
   const body = listSource.slice(listSource.indexOf("export function mountSessionList(element, options = {}) {"));

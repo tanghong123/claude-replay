@@ -18,7 +18,7 @@ import { bindKeymap, hintFor } from "./shared/keymap.js";
 import { parseJumpQuery } from "./jump-query.js";
 import { escapeText } from "./view-model.js";
 import { mountSessionList, OPTIONAL_CONTROLS as LIST_CONTROLS } from "./session-list-view.js";
-import { mountSessionView, OPTIONAL_CONTROLS as VIEW_CONTROLS, PHONE_PANES } from "./session-view.js";
+import { mountSessionView, OPTIONAL_CONTROLS as VIEW_CONTROLS } from "./session-view.js";
 import { page, viewRoot } from "./view-root.js";
 import { arrangeApp, GLIDE_MS, LIST_MIN } from "./pane-layout.js";
 
@@ -297,15 +297,14 @@ function showSession(id, push) {
   viewHandle.open(where.id);
   paintWrite();
 }
-/** Mount the view again on `machine` (#s595): a confirm still open is cancelled and the wide phone's
- *  column gives back the pane's list it borrowed first, then the view goes as its unmount takes it (the draft, the tabs, the search, a send
- *  still out), and comes back on that machine's handle, which every call it makes then goes to. */
+/** Mount the view again on `machine` (#s595): a confirm still open is cancelled, then the view goes as
+ *  its unmount takes it (the draft, the tabs, the search, a send still out), and comes back on that
+ *  machine's handle, which every call it makes then goes to. */
 function remountOn(machine) {
   // A grant's confirm still open names the old machine's pane: it is cancelled, as a newer ask would,
   // and a passcode typed for that machine is not offered to the next.
   confirming?.(null);
   const passcode = page.$(".passcode-input"); if (passcode) passcode.value = "";
-  mobileShell?.showSessions();
   viewHandle.unmount();
   viewMachine = machine;
   mountView();
@@ -701,74 +700,15 @@ var mobileShell;
   });
   setDrawer(!app.classList.contains("mobile-detail"));
 
-  // The column's switcher: Sessions, or one of the outline's panes, holding the SAME live list the
-  // drop-downs borrow (moved in while shown, back after) — one renderer, one click handler. A row
-  // chosen here moves the transcript and leaves the column as it is, as Mail does. Glyphs with their
-  // counts, in the head's one row before the sidebar's own glyphs (the owner: glyphs, "so the side bar
-  // width can be relatively small"; no brand row, which only took the height).
-  const columnSwitch = document.createElement("div");
-  columnSwitch.className = "column-switch";
-  columnSwitch.id = "columnSwitch";
-  columnSwitch.setAttribute("role", "tablist");
-  columnSwitch.setAttribute("aria-label", "Show in the column");
-  // Sessions wears a conversation, never the sidebar glyph: that one means "hide the sidebar" on every
-  // desktop and iPad, and the owner tapped it to hide the column and read the tab as dead (#s41).
-  const SESSIONS_GLYPH = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.5a7.5 7.5 0 0 1-11 6.6L4 19.5l1.4-4.3A7.5 7.5 0 1 1 20 11.5Z"/></svg>';
-  columnSwitch.innerHTML = [["sessions", "Sessions", null], ...PHONE_PANES.map(([key, label]) => [key, label, key])]
-    .map(([key, label, icon]) => `<button type="button" class="iconbtn${key === "sessions" ? " on" : ""}" role="tab" data-column-tab="${key}" title="${label}" aria-label="${label}" aria-selected="${key === "sessions"}">${icon ? svg(icon) : SESSIONS_GLYPH}<span class="column-switch-count"></span></button>`)
-    .join("");
-  const columnPane = document.createElement("div");
-  columnPane.className = "column-pane phone-pane-body";
-  columnPane.id = "columnPane";
-  const sideHead = page.$("#app>.sidebar>.side-head");
-  sideHead.querySelector(".head-actions").before(columnSwitch);
-  sideHead.after(columnPane);
-  let columnNode = null, columnHome = null;
-  const returnColumnList = () => {
-    if (columnNode && columnHome) columnHome.parent.insertBefore(columnNode, columnHome.next && columnHome.next.parentNode === columnHome.parent ? columnHome.next : null);
-    columnNode = null;
-    columnHome = null;
-  };
-  const showColumnTab = key => {
-    returnColumnList();
-    app.classList.toggle("column-pane-on", key !== "sessions");
-    for (const tab of columnSwitch.querySelectorAll("[data-column-tab]")) {
-      const on = tab.dataset.columnTab === key;
-      tab.classList.toggle("on", on);
-      tab.setAttribute("aria-selected", String(on));
-    }
-    const node = viewHandle.paneNode(key);
-    if (!node) return;
-    viewHandle.closePane();
-    columnHome = { parent: node.parentNode, next: node.nextSibling };
-    columnNode = node;
-    columnPane.append(node);
-    // The current turn in the middle of the column, by its OWN scroller (the contract's rule).
-    columnPane.scrollTop = 0;
-    const current = node.querySelector(".outline-turn-row.current");
-    if (current) {
-      const box = columnPane.getBoundingClientRect(), row = current.getBoundingClientRect();
-      columnPane.scrollTop += row.top - box.top - (box.height - row.height) / 2;
-    }
-  };
-  columnSwitch.addEventListener("click", event => { const tab = event.target.closest("[data-column-tab]"); if (tab) showColumnTab(tab.dataset.columnTab); });
-  columnPane.addEventListener("click", event => viewHandle.outlineClick(event));
-  // Out of the wide layout the column's borrowed list goes home and the handle speaks of the drawer
-  // again (the view closes its drop-down going in).
-  WIDE.addEventListener("change", () => { if (!WIDE.matches) showColumnTab("sessions"); labelHandle(); });
+  // #s703 (Hong: "I'd put them to the right bottom, similar to the portrait mode"): the column holds
+  // the sessions alone, and Turns, Tasks and Agents open from the dock as upright (session-view.js).
+  // Across the wide layout the handle speaks of the column or of the drawer.
+  WIDE.addEventListener("change", labelHandle);
 
   mobileShell = {
     setDrawer,
-    /** The column shows its sessions, and the pane's list it borrowed goes back to the view (#s595: before
-     *  the view is mounted again on another machine). */
-    showSessions: () => showColumnTab("sessions"),
     /** What the handle does: the drawer opens or shuts, or a wide phone's column shows or hides. */
     toggle: () => handle.onclick(),
-    /** A pane's count on the column switch's tab, as the dock's badge reads it. */
-    paneCount(key, text) {
-      const tab = columnSwitch.querySelector(`[data-column-tab="${key}"] .column-switch-count`);
-      if (tab) tab.textContent = text;
-    },
   };
 }
 
@@ -974,7 +914,6 @@ viewHandle = mountSessionView(viewRoot.element(), {
   // The pane opening or shutting can change the list (the owner's order): the app arranges it at once,
   // before the view decides in the same task, so the view decides at its new width.
   paneLayout: (name, on) => { app.classList.toggle(name, on); if (name === "preview-off") arrangeList({ remeasure: false }); },
-  paneCount: (key, text) => mobileShell?.paneCount(key, text),
   // What the view tells its host (stage 6). The view still draws its own top bar, title, turn and
   // Info included (the app's phone bar takes them at embedding's step 6), and the app has no use yet
   // for a file opened or a link copied: today's page does nothing with any of them. It shows a toast.

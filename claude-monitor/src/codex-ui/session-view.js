@@ -52,7 +52,7 @@ export const MOUNT_OPTIONS = Object.freeze([
   "theme", "grid", "backend", "show", "keyboard", "write", "frame", "assets", "reviewSheet", "detachTo",
   "selectedId", "sessionRow", "sessionWorkers", "selectSession", "renderList", "refreshIndex", "pauseIndex", "resumeIndex",
   "onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast", "onOutline",
-  "room", "parentShown", "openList", "openSidebar", "paneLayout", "paneCount",
+  "room", "parentShown", "openList", "openSidebar", "paneLayout",
 ]);
 
 /** Draw the session view in `element` and return its handle. The element becomes `#sessionView`, the
@@ -188,13 +188,11 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  - `paneLayout(name, on)`: the artifact pane opens or shuts, goes full or is being resized; said
  *    before the view wears the state `on` names (#s431 stage 3), so the app lays out its list for the
  *    pane first and the view decides its arrangement at the box that leaves it.
- *  - `paneCount(key, text)`: a phone pane's count changed (a wide phone's column shows it too).
  *
  *  The handle: `select(id)` and `open(id)` (a session chosen: the view takes it, then reads it),
  *  `session()`, `close(title, detail)`, `indexChanged()`, `writeChanged()`, `resized()`,
- *  `setTheme(theme)`, `keys` (the view's key actions), `closePane()`, `paneNode(key)` and
- *  `outlineClick(event)` (the wide phone's column), `persist()` (remember the reader's choices of
- *  the view now), `unmount()`, and, for the monitor's own native mode, `controls` and
+ *  `setTheme(theme)`, `keys` (the view's key actions), `closePane()`, `persist()` (remember the
+ *  reader's choices of the view now), `unmount()`, and, for the monitor's own native mode, `controls` and
  *  `installNativeControls(…)`.
  *
  *  `unmount()` takes the view away: it stops all it started (its listeners on the page, its timers,
@@ -2047,7 +2045,7 @@ function showFilteredControl(pane, hidden, label = "Show them") {
 /** A phone's way to Top-level only (#s606), as `phoneAgentsFilter` is to Active only: a row at the
  *  top of the Tasks list, on the same remembered choice, for whichever end applies. Only where some
  *  task follows another up, since otherwise the choice changes nothing. A sheet does not draw the
- *  row; its head mirrors it (#s616, `renderFilter`), and a wide phone's column draws it. */
+ *  row; its head mirrors it (#s616, `renderFilter`). */
 function phoneTasksFilter(topLevelOnly, hidden, followUps) {
   if (!layout.phone()) return "";
   const what = n => `${n} ${n === 1 ? "follow-up" : "follow-ups"}`;
@@ -4706,7 +4704,6 @@ var infoPopoverToggle, addInfoTrigger;
 var phoneDock;
 {
   const PHONE = layout.query("phone");
-  const WIDE = layout.query("wide");
   const TOUCH = layout.query("touch");
   const topbar = viewRoot.$(".topbar");
 
@@ -4913,8 +4910,8 @@ var phoneDock;
   // that undoes each) is drawn in the sheet's HEAD, beside its title, where it costs the list nothing.
   // Held sideways the list is about 97px, and the opening scroll to what is still moving took the row
   // at the list's top out of reach; pinned there, the row and a state's head left no task readable.
-  // The list keeps its row (not drawn in the sheet, production.css; a wide phone's column shows it),
-  // and the head's control carries the row's data, so a press goes through `navigatorClick` as the
+  // The list keeps its row (not drawn in the sheet, production.css; a wide phone's column drew it
+  // until #s703), and the head's control carries the row's data, so a press goes through `navigatorClick` as the
   // row's did, and the redraw it makes calls this again (`tasksChanged`).
   const renderFilter = () => {
     const row = openPane ? menuBody.querySelector(".tasks-filter-row, .agents-filter-row") : null;
@@ -5246,22 +5243,16 @@ var phoneDock;
   // So does a change of screen (#s511): off a touch screen the page's offset is no keyboard's, and a
   // transform a ride wrote there would stay until the next scroll or viewport event.
   TOUCH.addEventListener("change", () => rideAgain(), { signal });
-  // Into the wide layout the drop-down has no button (the column shows its panes); out of it, the
-  // app sends the column's borrowed list home and the handle speaks of the drawer again.
-  WIDE.addEventListener("change", () => { if (WIDE.matches) closePane(); place(); }, { signal });
   place();
 
   mobileShell = {
     closePane,
-    paneNode: key => { const pane = panes.find(p => p.key === key); return pane ? byId(pane.body) : null; },
     counts(turns, tasks, agents) {
       for (const [pane, n] of [[panes[0], turns], [panes[1], tasks], [panes[2], agents]]) {
         const badge = pane.button.querySelector(".phone-pane-count");
         badge.hidden = !n;
         // #339: a long session's turns and tasks run to hundreds; 99+ hid how many.
         badge.textContent = n > 999 ? "999+" : String(n);
-        // A wide phone's column switch shows the same count on its tab (the app's).
-        options.paneCount?.(pane.key, n ? badge.textContent : "");
       }
     },
     tasksChanged: renderJumps,
@@ -5352,7 +5343,6 @@ return fenced({
     for (const observer of observers) observer.disconnect();
     timers.clear(); frames.clear(); observers.clear();
     taskScrim.remove(); taskPopover.remove();
-    for (const [, , id] of PHONE_PANES) { const node = byId(id); if (node && !element.contains(node)) node.remove(); }
     for (const { node, style, values } of hostStyles) {
       for (const [name, atMount, priorityAtMount] of values) {
         const wrote = viewWrote.get(node)?.get(name);
@@ -5374,11 +5364,8 @@ return fenced({
   setTheme: applyTheme,
   /** The view's key actions, by the keymap's names. */
   keys: keyActions,
-  /** A phone's pane sheet closes; a pane's list, by key, for a wide phone's column to borrow; and a
-   *  click inside a borrowed list, which the outline answers. */
+  /** A phone's pane sheet closes. */
   closePane: () => mobileShell.closePane(),
-  paneNode: key => mobileShell.paneNode(key),
-  outlineClick: event => navigatorClick(event),
   /** The compose box's controls, ordinary or native: native mode hooks the session list too. */
   get controls() { return controls; },
   /** Install native routing (the monitor's own): `index` hooks the app's session index. */

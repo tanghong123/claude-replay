@@ -265,7 +265,6 @@ export const APP_CHROME = Object.freeze([
   ".app-mount",
   ".attention-count", ".attention-filter", ".attention-mini",
   ".brand",
-  ".column-pane", ".column-switch", ".column-switch-count",
   ".confirm-layer", ".dialog-actions", ".passcode-input", ".primary",
   ".drawer-handle", ".drawer-scrim", ".head-actions",
   ".nav", ".nav-tooltip", ".navbtn",
@@ -322,10 +321,10 @@ export const LIST_OUTSIDE = Object.freeze([
 ]);
 
 /** The app's states, kept on `#app` (stage 5a's groups): its rail, the drawer, and a wide phone's
- *  column and its pane. A rule that reads one is the app placing or styling the
+ *  column. A rule that reads one is the app placing or styling the
  *  view from outside, and stays the app's (stage 6 lays the view out by its own pane's size). */
 export const APP_STATES = Object.freeze([
-  ".column-pane-on", ".mobile-detail", ".phone-column-off", ".sidebar-off", ".sidebar-tight", ".app-drawer", ".app-holding",
+  ".mobile-detail", ".phone-column-off", ".sidebar-off", ".sidebar-tight", ".app-drawer", ".app-holding",
 ]);
 
 /** Names the app's chrome and the view both draw: the glyph button, generic states and labels, and
@@ -361,9 +360,10 @@ export const ROOT_CLASSES = Object.freeze([
  *  - what the view appends to `viewRoot.layer()`, the page's `body`: only the copy field and a
  *    download's link, which carry no class (the task card and its dim are drawn in the view's element
  *    since #s431 stage 4);
- *  - the outline's Turns, Tasks and Agents lists, which a wide phone's column borrows into the app's
- *    `#columnPane` (`PHONE_PANES`), with their rows. Read off the page in each of those states, plus
- *    the rows the hermetic page cannot draw (stage 5a's shared list).
+ *  - the outline's Turns, Tasks and Agents lists, which a wide phone's column borrowed into the app's
+ *    sidebar (`PHONE_PANES`) until #s703, with their rows; nothing draws them outside the view now,
+ *    and #s704 takes them out of this list. Read off the page in each of those states, plus the rows
+ *    the hermetic page cannot draw (stage 5a's shared list).
  *  A name that is one of these, or starts with one and a hyphen. */
 export const OUTSIDE = Object.freeze([
   "#navigatorTurns", "#navigatorWork", "#navigatorAgents", ".navigator-list",
