@@ -18230,45 +18230,46 @@ fn a_phone_agents_sheet_head_follows_each_press_with_one_running() {
 }
 
 /// #s358: with an agent still running the list is not empty, so the emptied pane's Show them is not
-/// there: a phone that hid the finished agents would be stuck the other way. The list's top row
-/// carries whichever end applies. Run where a wide phone keeps the list, the column's Agents tab, so
-/// both homes of the list are held, and no sheet is left to close.
+/// there: a phone that hid the finished agents would be stuck the other way. The Agents sheet's head
+/// carries whichever end applies (#s616). Run on a wide phone held sideways, whose sheet opens from the
+/// dock at the bottom right (#s703; the column's Agents tab held the list before) as a popover narrower
+/// than an upright sheet, where the head's control still takes a finger's 44 points.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
-fn a_wide_phone_column_shows_and_hides_finished_agents_with_one_running() {
+fn a_wide_phone_s_agents_sheet_shows_and_hides_finished_agents_with_one_running() {
     let _serial = serial();
     let (m, _b, tab, _sid) =
         emptied_panes_world(2760, "phone-filter-running", Some((956, 440)), true);
-    phone_tap(&tab, "#columnSwitch [data-column-tab=\"agents\"]");
-    let rows = "document.querySelectorAll('#navigatorAgents .outline-agent-copy').length";
+    phone_tap(&tab, "#phonePane-agents");
+    let sheet = "!document.getElementById('phonePaneMenu').hidden";
+    let rows = "document.querySelectorAll('#phonePaneMenu .outline-agent-copy').length";
+    let head = "(function(){ var b = document.querySelector('#phonePaneMenu .phone-pane-head .phone-pane-filter'); return b && !b.hidden ? b.textContent : ''; })()";
     harness::until(
         &tab,
-        &format!("{rows} === 1 && /Show 2 finished agents/.test((document.querySelector('#navigatorAgents .agents-filter-row') || {{}}).textContent || '')"),
-        "the running agent, under a row offering the two finished ones",
+        &format!("{sheet} && {rows} === 1 && {head} === 'Show 2 finished agents'"),
+        "the running agent, the sheet's head offering the two finished ones",
         Duration::from_secs(20),
-        "document.getElementById('navigatorAgents').innerText.slice(0, 200)",
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
     );
-    finger_on_filter(&tab, "#navigatorAgents .agents-filter-row");
+    finger_on_filter(&tab, "#phonePaneMenu .phone-pane-filter");
     harness::until(
         &tab,
-        &format!(
-            "{rows} === 3 && !!document.querySelector('#navigatorAgents [data-hide-finished]')"
-        ),
-        "all three listed, under a row that hides the finished ones",
+        &format!("{sheet} && {rows} === 3 && {head} === 'Hide finished agents' && !!document.querySelector('#phonePaneMenu .phone-pane-filter[data-hide-finished]')"),
+        "all three listed, the head offering to hide the finished ones",
         Duration::from_secs(10),
-        "document.getElementById('navigatorAgents').innerText.slice(0, 200)",
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
     );
     assert_eq!(
         harness::eval(&tab, AGENTS_FILTER_ON),
         serde_json::json!(false)
     );
-    finger_on_filter(&tab, "#navigatorAgents [data-hide-finished]");
+    finger_on_filter(&tab, "#phonePaneMenu .phone-pane-filter");
     harness::until(
         &tab,
-        &format!("{rows} === 1 && !!document.querySelector('#navigatorAgents [data-show-filtered=\"agents\"]')"),
+        &format!("{sheet} && {rows} === 1 && !!document.querySelector('#phonePaneMenu .phone-pane-filter[data-show-filtered=\"agents\"]')"),
         "back to the running agent, with the way back on offer",
         Duration::from_secs(10),
-        "document.getElementById('navigatorAgents').innerText.slice(0, 200)",
+        "document.getElementById('phonePaneMenu').innerText.slice(0, 200)",
     );
     assert_eq!(
         harness::eval(&tab, AGENTS_FILTER_ON),
@@ -21830,7 +21831,8 @@ fn a_phone_task_card_dims_what_is_behind_it() {
 /// card open, and a tap on the dim where the sidebar handle lies beneath it. The card closed and the
 /// column hid as well: the dim went at the touch, and the tap's click then landed on the handle. A
 /// tap on the dim is spent closing the card, as the pane's dim's is (#s55). A tap on the dim
-/// elsewhere still closes the card, and the handle answers the next tap.
+/// elsewhere still closes the card, and the handle answers the next tap. The Tasks list opens from
+/// the dock now (#s703), and the card lies over its sheet (#319), the column shown beside them.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_wide_phone_s_task_card_dim_spends_its_tap_on_closing_the_card() {
@@ -21862,7 +21864,7 @@ fn a_wide_phone_s_task_card_dim_spends_its_tap_on_closing_the_card() {
     m.open(&tab, &format!("?ui=app&session={PHONE_SID}"));
     harness::until(
         &tab,
-        "!!document.querySelector('.transcript .turn.user') && innerWidth === 956 && !!document.querySelector('#columnSwitch [data-column-tab=tasks]') && getComputedStyle(document.getElementById('columnSwitch')).display !== 'none'",
+        "!!document.querySelector('.transcript .turn.user') && innerWidth === 956 && document.getElementById('phonePane-tasks').getClientRects().length > 0 && document.querySelector('#app>.sidebar').getClientRects().length > 0",
         "the session beside its list column at the phone's size",
         Duration::from_secs(20),
         "innerWidth + 'x' + innerHeight + ' ' + document.getElementById('app').className",
@@ -21873,17 +21875,17 @@ fn a_wide_phone_s_task_card_dim_spends_its_tap_on_closing_the_card() {
             .unwrap_or_default()
     };
     assert_eq!(column()["off"], false, "the column is shown: {}", column());
-    let tasks = page_point(&tab, "the column's Tasks tab", "(function(){ var b = document.querySelector('#columnSwitch [data-column-tab=tasks]').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); })()");
+    let tasks = page_point(&tab, "the dock's Tasks", "(function(){ var b = document.getElementById('phonePane-tasks').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); })()");
     harness::finger_tap(&tab, tasks[0], tasks[1]);
     harness::until(
         &tab,
-        "document.querySelectorAll('#columnPane .work-task-head').length === 3",
-        "the column to list the session's three tasks",
+        "!document.getElementById('phonePaneMenu').hidden && document.querySelectorAll('#phonePaneMenu .work-task-head').length === 3",
+        "the Tasks sheet to list the session's three tasks",
         Duration::from_secs(10),
-        "document.querySelectorAll('#columnPane .work-task-head').length",
+        "document.querySelectorAll('#phonePaneMenu .work-task-head').length",
     );
     let open_card = || {
-        let row = page_point(&tab, "a task row in the column", "(function(){ var r = [...document.querySelectorAll('#columnPane .work-task-head')].map(function (h) { return h.getBoundingClientRect(); }).find(function (b) { var e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!e && !!e.closest('#columnPane .work-task-head'); }); return r ? JSON.stringify([r.left + r.width / 2, r.top + r.height / 2]) : 'none'; })()");
+        let row = page_point(&tab, "a task row in the sheet", "(function(){ var r = [...document.querySelectorAll('#phonePaneMenu .work-task-head')].map(function (h) { return h.getBoundingClientRect(); }).find(function (b) { var e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!e && !!e.closest('#phonePaneMenu .work-task-head'); }); return r ? JSON.stringify([r.left + r.width / 2, r.top + r.height / 2]) : 'none'; })()");
         harness::finger_tap(&tab, row[0], row[1]);
         harness::until(
             &tab,
@@ -21932,7 +21934,15 @@ fn a_wide_phone_s_task_card_dim_spends_its_tap_on_closing_the_card() {
         "…and leave the column shown: {}",
         column()
     );
-    // And the handle answers the next tap.
+    // And, the sheet closed, the handle answers the next tap.
+    phone_tap(&tab, "#phonePaneMenu .phone-pane-close");
+    harness::until(
+        &tab,
+        "document.getElementById('phonePaneMenu').hidden",
+        "the Tasks sheet to close",
+        Duration::from_secs(5),
+        "document.getElementById('phonePaneMenu').hidden",
+    );
     harness::finger_tap(&tab, handle[0], handle[1]);
     harness::until(
         &tab,
@@ -26056,7 +26066,7 @@ fn safe_area_facts(
     let probe = format!(
         r#"(function(){{
         var T = {top}, R = {right}, B = {bottom}, L = {left}, W = innerWidth, H = innerHeight;
-        var scrolling = '.transcript, .tree, .column-pane, .phone-pane-body, .preview-body';
+        var scrolling = '.transcript, .tree, .phone-pane-body, .preview-body';
         var bad = [];
         document.querySelectorAll('button, a[href], input, select, textarea, [role=button], [role=tab]').forEach(function (e) {{
             if (e.closest(scrolling)) return;
@@ -26156,8 +26166,8 @@ const FIRST_LINE_CHARS: &str = "(function(){ var p = [...document.querySelectorA
 
 /// #s37 (design/phone-landscape.md §3.2), the owner's choice for the largest iPhones held sideways:
 /// two columns, as Mail, Messages and Notes do there. The session list is a column BESIDE the
-/// session, never over it; its switcher shows Sessions or one of the outline's panes (Turns, Tasks,
-/// Agents), and a turn chosen there moves the transcript and leaves the column as it is. The
+/// session, never over it; the outline's panes open from the dock (#s703: the column's switcher held
+/// them before), and a turn chosen there moves the transcript and leaves the column as it is. The
 /// transcript runs at a reading measure beside it. The handle hides and shows the column, and that
 /// choice is the column's own: it survives a reload, it touches neither the desktop's rail nor the
 /// drawer, and turning the phone upright finds the drawer as a phone left it.
@@ -26197,24 +26207,17 @@ fn a_wide_phone_held_sideways_shows_the_session_list_beside_the_session() {
         serde_json::Value::String("none".into()),
         "nothing dims the session beside the column"
     );
-    // The switcher: Turns shows the outline's turn list in the column.
-    let tab_at = |key: &str| -> Vec<f64> {
-        page_point(&tab, key, &format!("(function(){{ var b = document.querySelector('#columnSwitch [data-column-tab={key}]').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2, b.height]); }})()"))
-    };
-    let turns = tab_at("turns");
-    assert!(
-        turns[2] >= 44.0,
-        "a switcher tab is finger-sized: {turns:?}"
-    );
-    harness::finger_tap(&tab, turns[0], turns[1]);
+    // Turns from the dock lists the session's eight turns in its sheet, beside the column, which keeps
+    // its sessions.
+    phone_tap(&tab, "#phonePane-turns");
     harness::until(
         &tab,
-        "document.querySelectorAll('#columnPane .outline-turn-row').length === 8 && getComputedStyle(document.querySelector('#app>.sidebar .tree')).display === 'none'",
-        "the column showing the session's eight turns in place of the sessions",
+        "!document.getElementById('phonePaneMenu').hidden && document.querySelectorAll('#phonePaneMenu .outline-turn-row').length === 8 && getComputedStyle(document.querySelector('#app>.sidebar .tree')).display !== 'none'",
+        "the Turns sheet listing the session's eight turns, the column keeping its sessions",
         Duration::from_secs(10),
-        "document.querySelectorAll('#columnPane .outline-turn-row').length + ' ' + document.getElementById('app').className",
+        "document.querySelectorAll('#phonePaneMenu .outline-turn-row').length + ' ' + document.getElementById('app').className",
     );
-    let row = page_point(&tab, "the third turn's row", "(function(){ var r = document.querySelectorAll('#columnPane .outline-turn-row')[2].getBoundingClientRect(); return JSON.stringify([r.left + r.width / 2, r.top + r.height / 2]); })()");
+    let row = page_point(&tab, "the third turn's row", "(function(){ var r = document.querySelectorAll('#phonePaneMenu .outline-turn-row')[2].getBoundingClientRect(); return JSON.stringify([r.left + r.width / 2, r.top + r.height / 2]); })()");
     harness::finger_tap(&tab, row[0], row[1]);
     harness::until(
         &tab,
@@ -26225,29 +26228,24 @@ fn a_wide_phone_held_sideways_shows_the_session_list_beside_the_session() {
     );
     let after = drawer_facts(&tab);
     assert_eq!(
-        harness::eval(
-            &tab,
-            "document.querySelectorAll('#columnPane .outline-turn-row').length"
-        ),
-        serde_json::json!(8),
-        "the column still shows the turns once one is chosen: {after}"
-    );
-    assert_eq!(
         after["sbRight"], beside["sbRight"],
-        "and has not moved: {after}"
+        "the column has not moved once a turn is chosen: {after}"
     );
-    // Sessions puts the session list back, and the turn list goes home to the outline.
-    let sessions = tab_at("sessions");
-    harness::finger_tap(&tab, sessions[0], sessions[1]);
-    harness::until(
-        &tab,
-        "getComputedStyle(document.querySelector('#app>.sidebar .tree')).display !== 'none' && !!document.getElementById('navigatorTurns').closest('.session-navigator')",
-        "the sessions in the column, the turn list back in the outline",
-        Duration::from_secs(10),
-        "document.getElementById('app').className",
-    );
+    if !harness::eval(&tab, "document.getElementById('phonePaneMenu').hidden")
+        .as_bool()
+        .unwrap_or(true)
+    {
+        phone_tap(&tab, "#phonePaneMenu .phone-pane-close");
+        harness::until(
+            &tab,
+            "document.getElementById('phonePaneMenu').hidden",
+            "the Turns sheet closed",
+            Duration::from_secs(5),
+            "document.getElementById('phonePaneMenu').hidden",
+        );
+    }
     // Choosing a session leaves the column where it is.
-    // The column is short sideways (its head, switcher and nav above the list), so the next session
+    // The column is short sideways (its head and nav above the list), so the next session
     // is brought into view first.
     harness::eval(&tab, "(function(){ var t = document.querySelector('#app>.sidebar .tree'), r = [...t.querySelectorAll('.tree-row.session')][1]; t.scrollTop += r.getBoundingClientRect().top - t.getBoundingClientRect().top - 8; return 'ok'; })()");
     let pick = page_point(&tab, "another session's row", "(function(){ var rows = [...document.querySelectorAll('#app>.sidebar .tree-row.session')].filter(function (r) { var b = r.getBoundingClientRect(); return b.top > 0 && b.bottom < innerHeight && !r.classList.contains('selected'); }); if (!rows.length) return 'no row: ' + document.querySelectorAll('#app>.sidebar .tree-row.session').length + ' rows, tree ' + JSON.stringify(document.querySelector('#app>.sidebar .tree').getBoundingClientRect()) + ' scrollTop ' + document.querySelector('#app>.sidebar .tree').scrollTop + ' first ' + [...document.querySelectorAll('#app>.sidebar .tree-row.session')].slice(0, 4).map(function (r) { var b = r.getBoundingClientRect(); return Math.round(b.top) + '-' + Math.round(b.bottom) + (r.classList.contains('selected') ? 's' : ''); }).join(' '); var b = rows[0].getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); })()");
@@ -26281,12 +26279,12 @@ fn a_wide_phone_held_sideways_shows_the_session_list_beside_the_session() {
         centred[0] <= 500 && (centred[1] - centred[2]).abs() <= 2,
         "with the column hidden the transcript is a centred reading column, not the whole width: {centred:?}"
     );
-    // With the column hidden the panes are back in the pill — or nothing would reach them.
+    // With the column hidden the panes are still in the pill.
     phone_tap(&tab, "#phonePane-turns");
     harness::until(
         &tab,
         "!document.getElementById('phonePaneMenu').hidden && document.querySelectorAll('#phonePaneMenu .outline-turn-row').length >= 1",
-        "the pill's Turns opening its sheet (the session chosen above) while the column is hidden",
+        "the pill's Turns opening its sheet (the session chosen above) with the column hidden",
         Duration::from_secs(10),
         "document.getElementById('phonePaneMenu').hidden",
     );
@@ -28433,7 +28431,8 @@ fn a_phone_held_sideways_draws_its_sheets_over_the_drawer_handle() {
 /// sidebar glyph), the column's head cut in half under a long pane, "the go to bottom chip should
 /// move to the bottom", "hide go to bottom when in search", and no filter in the find pill. Each
 /// sheet is now a popover at its control's side, beside the column; the head never shrinks; the
-/// jump sits on the dock's row and steps aside for the search; the funnel stays.
+/// jump sits on the dock's row and steps aside for the search; the funnel stays. Since #s703 the
+/// column holds the sessions alone and the long list is the Turns sheet's, from the dock.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_whole() {
@@ -28465,33 +28464,46 @@ fn a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_wh
         shut >= 0,
         "the shut right pane lies past the screen's right edge, {shut}px beyond it"
     );
-    // The handle by the title wears the sidebar glyph; the Sessions tab does not.
+    // The handle by the title wears the sidebar glyph.
     assert_eq!(
-        harness::eval(&tab, "!!document.querySelector('#drawerHandle svg rect') && !document.querySelector('#columnSwitch [data-column-tab=sessions] svg rect')"),
+        harness::eval(&tab, "!!document.querySelector('#drawerHandle svg rect')"),
         serde_json::Value::Bool(true),
-        "the sidebar glyph is the handle's, never the Sessions tab's"
+        "the sidebar glyph is the handle's"
     );
-    // A long pane in the column leaves its head whole.
-    let tab_at = |key: &str| -> Vec<f64> {
-        page_point(&tab, key, &format!("(function(){{ var b = document.querySelector('#columnSwitch [data-column-tab={key}]').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); }})()"))
-    };
-    let turns = tab_at("turns");
-    harness::finger_tap(&tab, turns[0], turns[1]);
+    // A long list in the column (thirty sessions) and the thirty turns' sheet beside it leave the
+    // column's head whole, every glyph answering a tap once the sheet is closed.
+    phone_tap(&tab, "#phonePane-turns");
     harness::until(
         &tab,
-        "document.querySelectorAll('#columnPane .outline-turn-row').length === 30",
-        "the column showing thirty turns",
+        "!document.getElementById('phonePaneMenu').hidden && document.querySelectorAll('#phonePaneMenu .outline-turn-row').length === 30",
+        "the Turns sheet showing thirty turns",
         Duration::from_secs(10),
-        "document.querySelectorAll('#columnPane .outline-turn-row').length",
+        "document.querySelectorAll('#phonePaneMenu .outline-turn-row').length",
     );
-    let head = harness::eval(&tab, &format!("(function(){{ var h = document.querySelector('.side-head').getBoundingClientRect(); return JSON.stringify({{ height: Math.round(h.height), tabs: [...document.querySelectorAll('#columnSwitch [data-column-tab]')].every({PHONE_HITTABLE}) }}); }})()"));
+    let sheet_left = harness::eval(
+        &tab,
+        "Math.round(document.getElementById('phonePaneMenu').getBoundingClientRect().left)",
+    )
+    .as_i64()
+    .unwrap_or(0);
+    assert!(
+        sheet_left >= column_right,
+        "the Turns sheet rises beside the column: {sheet_left} ≥ {column_right}"
+    );
+    phone_tap(&tab, "#phonePaneMenu .phone-pane-close");
+    harness::until(
+        &tab,
+        "document.getElementById('phonePaneMenu').hidden",
+        "the Turns sheet to close",
+        Duration::from_secs(5),
+        "document.getElementById('phonePaneMenu').hidden",
+    );
+    let head = harness::eval(&tab, &format!("(function(){{ var h = document.querySelector('.side-head').getBoundingClientRect(); return JSON.stringify({{ height: Math.round(h.height), glyphs: [...document.querySelectorAll('.side-head .iconbtn')].filter(function (b) {{ return b.getClientRects().length > 0; }}).every({PHONE_HITTABLE}) }}); }})()"));
     let head: serde_json::Value = serde_json::from_str(head.as_str().unwrap_or("{}")).unwrap();
     assert!(
-        head["height"].as_i64().unwrap_or(0) >= 44 && head["tabs"] == true,
-        "the column's head keeps its height and every tab answers a tap: {head}"
+        head["height"].as_i64().unwrap_or(0) >= 44 && head["glyphs"] == true,
+        "the column's head keeps its height and every glyph answers a tap: {head}"
     );
-    let sessions = tab_at("sessions");
-    harness::finger_tap(&tab, sessions[0], sessions[1]);
     // Aa: a popover beside the column, every label readable, and a tap on a label flips its switch.
     phone_tap(&tab, "#readingBtn");
     harness::until(
@@ -30094,9 +30106,9 @@ fn finger_scroll(tab: &headless_chrome::Tab, sel: &str, top: i64) {
     assert_eq!(r.as_str(), Some("ok"), "a finger on {sel}");
 }
 
-/// #s207 on a phone: the Turns list in the upright sheet and in a wide phone's column held sideways
-/// follows the same rule — a finger dragging it unlocks it and a tailed turn leaves it where it
-/// was; choosing a turn (the sheet) or a finger on the session (the column) locks it again.
+/// #s207 on a phone: the Turns list in the sheet, upright and on a wide phone held sideways (#s703: the
+/// column held it there before), follows the same rule — a finger dragging it unlocks it and a tailed
+/// turn leaves it where it was; choosing a turn locks it again.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_s_turns_list_stays_where_the_finger_left_it() {
@@ -30151,13 +30163,8 @@ fn a_phone_s_turns_list_stays_where_the_finger_left_it() {
             serde_json::from_str(harness::eval(&tab, TURNS_PANE_JS).as_str().unwrap_or("{}"))
                 .unwrap()
         };
-        // The list where a phone draws it: the Turns sheet upright, the column's Turns tab sideways.
-        let sideways = w > 500;
-        if sideways {
-            phone_tap(&tab, "#columnSwitch [data-column-tab=\"turns\"]");
-        } else {
-            phone_tap(&tab, "#phonePane-turns");
-        }
+        // The list where a phone draws it: the Turns sheet, from the dock.
+        phone_tap(&tab, "#phonePane-turns");
         harness::until(
             &tab,
             &format!("(function(){{ var p = JSON.parse(({TURNS_PANE_JS})); return p.scroller && p.max > 200 && p.currentShown; }})()"),
@@ -30197,27 +30204,15 @@ fn a_phone_s_turns_list_stays_where_the_finger_left_it() {
             (Some("unlocked"), Some(0)),
             "{w}x{h}: the tailed turn leaves the list where the finger left it: {tailed}"
         );
-        if sideways {
-            // A finger on the session beside the column locks it again and shows the current turn.
-            finger_scroll(&tab, ".transcript .turn.user", 0);
-            harness::until(
-                &tab,
-                &format!("(function(){{ var p = JSON.parse(({TURNS_PANE_JS})); return p.follow === 'locked' && p.currentShown; }})()"),
-                "a finger on the session to lock the column's list on the current turn",
-                Duration::from_secs(10),
-                TURNS_PANE_JS,
-            );
-        } else {
-            // Choosing a turn in the sheet locks it again: the sheet closes on the chosen turn.
-            let chosen = harness::eval(&tab, "(function(){ var r = document.querySelectorAll('#navigatorTurns .outline-turn-row')[3]; r.click(); return r.dataset.turnRecord; })()");
-            harness::until(
-                &tab,
-                &format!("document.getElementById('navigatorTurns').dataset.follow === 'locked' && (document.querySelector('#navigatorTurns .outline-turn-row.current') || {{}}).dataset.turnRecord === {chosen}"),
-                "choosing a turn to lock the list on it",
-                Duration::from_secs(10),
-                "document.getElementById('navigatorTurns').dataset.follow",
-            );
-        }
+        // Choosing a turn in the sheet locks it again: the sheet closes on the chosen turn.
+        let chosen = harness::eval(&tab, "(function(){ var r = document.querySelectorAll('#navigatorTurns .outline-turn-row')[3]; r.click(); return r.dataset.turnRecord; })()");
+        harness::until(
+            &tab,
+            &format!("document.getElementById('navigatorTurns').dataset.follow === 'locked' && (document.querySelector('#navigatorTurns .outline-turn-row.current') || {{}}).dataset.turnRecord === {chosen}"),
+            &format!("{w}x{h}: choosing a turn to lock the list on it"),
+            Duration::from_secs(10),
+            "document.getElementById('navigatorTurns').dataset.follow",
+        );
         drop(monitor);
     }
 }
@@ -32946,19 +32941,170 @@ fn drawer_head_targets_hold(tab: &headless_chrome::Tab, what: &str) {
     }
 }
 
-/// #s664, Hong's choice on #s661: on a wide phone held sideways the session list is a 280-point column
-/// whose head is one row of glyphs, and its eight (Sessions, Turns, Tasks, Agents, the theme, Collapse
-/// all, Expand all, the session filter) sat 32 points wide, since eight at 44 need 352. There Collapse
-/// all and Expand all leave the head for two rows at the top of the session filter's sheet:
-/// - the head's six glyphs each take a finger's 44 points (#313), in one row inside the column, without
-///   overlapping, every point of the 44-point disc around each one's centre hitting it;
-/// - each row does what its glyph did and closes the sheet; the rows go where the glyphs go (one list
-///   by activity) and come back with the tree;
-/// - with a pane in the column the five glyphs left take 44 points too;
-/// - upright, in the drawer, and on a desktop the glyphs stay in the head and the sheet draws no rows.
+/// #s703, Hong on the iOS app held sideways: "I feel it is a mistake to put the glyphs for the outline
+/// panes to the left. Instead, I'd put them to the right bottom, similar to the portrait mode." On a
+/// wide phone held sideways, with the session list's column shown and hidden:
+/// - Turns, Tasks, Agents and Aa sit in the dock's pill at the bottom right, as upright: each a finger's
+///   44 points, side by side without overlapping, inside the safe area, beside the column, right of
+///   the session's middle;
+/// - each pane opens its sheet from there, beside the column and above the dock, its title on top;
+/// - the column's head draws no pane glyph;
+/// - the jump to the latest overlaps none of the dock's controls, and answers a tap.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
-fn a_wide_phone_held_sideways_folds_the_session_list_from_the_filter_sheet() {
+fn a_wide_phone_held_sideways_opens_its_panes_from_the_dock_at_the_bottom_right() {
+    let _serial = serial();
+    let (_m, _b, tab) = drawer_world(
+        3703,
+        "wide-dock-panes",
+        956,
+        440,
+        false,
+        30,
+        Some(harness::SIDEWAYS_INSETS),
+    );
+    harness::until(
+        &tab,
+        "!document.getElementById('app').classList.contains('phone-column-off') && document.querySelector('#app>.sidebar').getClientRects().length > 0",
+        "the session list's column shown",
+        Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    dock_panes_hold(&tab, "the column shown");
+    phone_tap(&tab, "#drawerHandle");
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('phone-column-off')",
+        "the handle to hide the column",
+        Duration::from_secs(5),
+        "document.getElementById('app').className",
+    );
+    dock_panes_hold(&tab, "the column hidden");
+}
+
+/// The dock's pill, its panes' sheets and the jump to the latest on a wide phone held sideways: see
+/// `a_wide_phone_held_sideways_opens_its_panes_from_the_dock_at_the_bottom_right`.
+fn dock_panes_hold(tab: &headless_chrome::Tab, what: &str) {
+    const PILL: [&str; 4] = [
+        "#phonePane-turns",
+        "#phonePane-tasks",
+        "#phonePane-agents",
+        "#readingBtn",
+    ];
+    harness::pause("the dock to lay out", Duration::from_millis(300));
+    assert_eq!(
+        harness::eval(
+            tab,
+            "[...document.querySelectorAll('#app>.sidebar [data-column-tab], #app>.sidebar [data-phone-pane]')].filter(function (e) { return e.getClientRects().length > 0; }).length"
+        ),
+        serde_json::json!(0),
+        "{what}: the column's head draws no pane glyph"
+    );
+    let seen = find_targets(tab, &PILL);
+    find_controls_hold(&seen, what, "the dock's pill");
+    // Where they sit: at the foot, right of the session's middle, beside the column, inside the safe
+    // area (the insets the harness gives the page: left and right 62, bottom 20).
+    let list = serde_json::to_string(&PILL).unwrap();
+    let place = harness::eval(
+        tab,
+        &format!("(function(){{ var side = document.querySelector('#app>.sidebar'), col = side.getClientRects().length ? Math.round(side.getBoundingClientRect().right) : 0, w = document.querySelector('#sessionView>.workspace').getBoundingClientRect(); return JSON.stringify({{ col: col, mid: Math.round((w.left + w.right) / 2), w: innerWidth, h: innerHeight, boxes: {list}.map(function (s) {{ var r = document.querySelector(s).getBoundingClientRect(); return [Math.round(r.left), Math.round(r.right), Math.round(r.top), Math.round(r.bottom)]; }}) }}); }})()"),
+    );
+    let place: serde_json::Value =
+        serde_json::from_str(place.as_str().unwrap_or("{}")).unwrap_or_default();
+    let n = |v: &serde_json::Value| v.as_i64().unwrap_or(-9999);
+    let (col, mid, w, h) = (
+        n(&place["col"]),
+        n(&place["mid"]),
+        n(&place["w"]),
+        n(&place["h"]),
+    );
+    let boxes = place["boxes"].as_array().cloned().unwrap_or_default();
+    assert!(
+        boxes.len() == PILL.len()
+            && boxes.iter().all(|b| {
+                let (l, r, t, bt) = (n(&b[0]), n(&b[1]), n(&b[2]), n(&b[3]));
+                l >= col.max(62) && r <= w - 62 && bt <= h - 20 && t >= h - 90 && (l + r) / 2 > mid
+            }),
+        "{what}: the pill's glyphs sit at the foot, right of the session's middle ({mid}), beside the column ({col}) and inside the safe area: {place}"
+    );
+    // Each pane opens its sheet from the pill: beside the column, inside the safe area, above the dock.
+    for (key, title) in [("turns", "Turns"), ("tasks", "Tasks"), ("agents", "Agents")] {
+        phone_tap(tab, &format!("#phonePane-{key}"));
+        harness::until(
+            tab,
+            &format!("!document.getElementById('phonePaneMenu').hidden && document.getElementById('phonePane-{key}').getAttribute('aria-expanded') === 'true'"),
+            &format!("{what}: the {title} sheet open"),
+            Duration::from_secs(5),
+            "document.getElementById('phonePaneMenu').hidden",
+        );
+        harness::pause("the sheet to lay out", Duration::from_millis(300));
+        let sheet = harness::eval(
+            tab,
+            &format!("(function(){{ var m = document.getElementById('phonePaneMenu').getBoundingClientRect(), d = document.getElementById('dockPill').getBoundingClientRect(), t = document.querySelector('#phonePaneMenu .phone-pane-head strong'); return JSON.stringify({{ left: Math.round(m.left), right: Math.round(m.right), bottom: Math.round(m.bottom), dockTop: Math.round(d.top), title: t.textContent, onTop: ({PHONE_HITTABLE})(t) }}); }})()"),
+        );
+        let sheet: serde_json::Value =
+            serde_json::from_str(sheet.as_str().unwrap_or("{}")).unwrap_or_default();
+        assert!(
+            n(&sheet["left"]) >= col.max(62)
+                && n(&sheet["right"]) <= w - 62
+                && n(&sheet["bottom"]) <= n(&sheet["dockTop"])
+                && sheet["title"] == title
+                && sheet["onTop"] == true,
+            "{what}: the {title} sheet rises from the pill beside the column ({col}), inside the safe area and above the dock, its title on top: {sheet}"
+        );
+        phone_tap(tab, "#phonePaneMenu .phone-pane-close");
+        harness::until(
+            tab,
+            "document.getElementById('phonePaneMenu').hidden",
+            &format!("{what}: the {title} sheet to close"),
+            Duration::from_secs(5),
+            "document.getElementById('phonePaneMenu').hidden",
+        );
+    }
+    // The jump to the latest keeps clear of the dock's controls and answers a tap.
+    harness::wheel_scroll(tab, harness::APP_SCROLLER, "s.scrollTop = 0");
+    harness::until(
+        tab,
+        "document.querySelector('.jump-to-bottom').classList.contains('show')",
+        &format!("{what}: the jump to the latest once the reader has moved up"),
+        Duration::from_secs(10),
+        "document.querySelector('.jump-to-bottom').className",
+    );
+    harness::pause("the jump to lay out", Duration::from_millis(300));
+    let jump = harness::eval(
+        tab,
+        &format!("(function(){{ var j = document.querySelector('.jump-to-bottom'), r = j.getBoundingClientRect(), hits = [...document.querySelectorAll('#phoneDock .iconbtn, #phoneDock .header-searchbox')].filter(function (c) {{ var o = c.getBoundingClientRect(); return c.getClientRects().length && o.left < r.right && o.right > r.left && o.top < r.bottom && o.bottom > r.top; }}).map(function (c) {{ return c.id || String(c.className); }}); return JSON.stringify({{ box: [Math.round(r.left), Math.round(r.right), Math.round(r.top), Math.round(r.bottom)], overlaps: hits, onTop: ({PHONE_HITTABLE})(j) }}); }})()"),
+    );
+    let jump: serde_json::Value =
+        serde_json::from_str(jump.as_str().unwrap_or("{}")).unwrap_or_default();
+    assert!(
+        jump["overlaps"].as_array().is_some_and(Vec::is_empty) && jump["onTop"] == true,
+        "{what}: the jump to the latest overlaps none of the dock's controls and answers a tap: {jump}"
+    );
+    phone_tap(tab, ".jump-to-bottom");
+    harness::until(
+        tab,
+        "!document.querySelector('.jump-to-bottom').classList.contains('show')",
+        &format!("{what}: the jump to take the reader to the latest"),
+        Duration::from_secs(10),
+        "document.querySelector('.jump-to-bottom').className",
+    );
+}
+
+/// #s703 on the column's head: with Turns, Tasks and Agents gone to the dock, the head of a wide phone's
+/// session list column held sideways is the sidebar's own glyphs, the theme, Collapse all, Expand all
+/// and the session filter. #s664 (Hong's choice on #s661) had moved Collapse all and Expand all into the
+/// filter sheet only because eight glyphs at a finger's 44 points did not fit the head's 268; four take
+/// 176, so they are back in the head as upright:
+/// - the head's four glyphs each take a finger's 44 points (#313), in one row inside the column, without
+///   overlapping, every point of the 44-point disc around each one's centre hitting it;
+/// - Collapse all folds every group and Expand all opens them again; both go in one list by activity
+///   and come back with the tree;
+/// - the filter's sheet draws no fold rows, here, upright and on a desktop;
+/// - held sideways in Safari with its tab bar the sheet ends inside the window and its last row takes a tap.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_wide_phone_held_sideways_folds_the_session_list_from_its_head() {
     let _serial = serial();
     let (m, _b, tab) = drawer_world(
         3388,
@@ -32969,70 +33115,51 @@ fn a_wide_phone_held_sideways_folds_the_session_list_from_the_filter_sheet() {
         3,
         Some(harness::SIDEWAYS_INSETS),
     );
-    const TABS: [&str; 4] = [
-        "#columnSwitch [data-column-tab=sessions]",
-        "#columnSwitch [data-column-tab=turns]",
-        "#columnSwitch [data-column-tab=tasks]",
-        "#columnSwitch [data-column-tab=agents]",
-    ];
-    let head = [TABS.as_slice(), &["#themeBtn", "#filterBtn"]].concat();
-    column_head_holds(
-        &tab,
-        "the session list showing",
-        &head,
-        &["#collapseBtn", "#expandBtn"],
-    );
-
-    // The two rows at the top of the sheet, each a finger's 44 points.
-    let rows = open_group_rows(&tab, "the session list showing");
-    for key in ["collapse", "expand"] {
-        let row = &rows["rows"][key];
-        assert!(
-            row["shown"] == true && row["hit"] == true && row["h"].as_i64().unwrap_or(0) >= 44,
-            "the sheet's {key} row is drawn, on top and a finger's 44 points tall: {rows}"
-        );
-        assert!(
-            row["top"].as_f64().unwrap_or(9999.0) < rows["firstHead"].as_f64().unwrap_or(0.0),
-            "the sheet's {key} row comes before its first heading: {rows}"
-        );
-    }
-    // Collapse all folds every group and closes the sheet; Expand all opens them again.
-    tap_group_row(&tab, "collapse");
+    const HEAD: [&str; 4] = ["#themeBtn", "#collapseBtn", "#expandBtn", "#filterBtn"];
+    column_head_holds(&tab, "the session list showing", &HEAD, &[]);
+    no_fold_rows(&tab, "the session list showing");
+    // Collapse all folds every group; Expand all opens them again.
+    phone_tap(&tab, "#collapseBtn");
     harness::until(
         &tab,
-        &format!("document.getElementById('sessionFilter').hidden && {VISIBLE_SESSION_ROWS} === 0 && document.querySelectorAll('#app>.sidebar .agent-label[aria-expanded=false]').length > 0"),
-        "Collapse all from the sheet to fold every group and close the sheet",
+        &format!("{VISIBLE_SESSION_ROWS} === 0 && document.querySelectorAll('#app>.sidebar .agent-label[aria-expanded=false]').length > 0"),
+        "Collapse all to fold every group",
         Duration::from_secs(5),
-        &format!("document.getElementById('sessionFilter').hidden + ' rows ' + {VISIBLE_SESSION_ROWS}"),
+        &format!("'rows ' + {VISIBLE_SESSION_ROWS}"),
     );
-    open_group_rows(&tab, "after Collapse all");
-    tap_group_row(&tab, "expand");
+    phone_tap(&tab, "#expandBtn");
     harness::until(
         &tab,
-        &format!("document.getElementById('sessionFilter').hidden && {VISIBLE_SESSION_ROWS} > 30"),
-        "Expand all from the sheet to open every group and close the sheet",
+        &format!("{VISIBLE_SESSION_ROWS} > 30"),
+        "Expand all to open every group",
         Duration::from_secs(5),
-        &format!(
-            "document.getElementById('sessionFilter').hidden + ' rows ' + {VISIBLE_SESSION_ROWS}"
-        ),
+        &format!("'rows ' + {VISIBLE_SESSION_ROWS}"),
     );
-    // One list by activity has nothing to fold: the rows go, as the glyphs did; the tree brings them back.
-    open_group_rows(&tab, "before one list by activity");
+    // One list by activity has nothing to fold: the two glyphs go; the tree brings them back.
+    let folds_shown = "[document.getElementById('collapseBtn'), document.getElementById('expandBtn')].map(function (b) { return b.getClientRects().length > 0; }).join()";
+    phone_tap(&tab, "#filterBtn");
+    harness::until(
+        &tab,
+        "!document.getElementById('sessionFilter').hidden",
+        "the session filter's sheet",
+        Duration::from_secs(5),
+        "document.getElementById('sessionFilter').hidden",
+    );
     phone_tap(&tab, "#sessionFilter [data-arrange=flat]");
     harness::until(
         &tab,
-        "!document.getElementById('sessionFilter').hidden && [...document.querySelectorAll('#sessionFilter [data-group-action]')].every(function (r) { return !r.getClientRects().length; })",
-        "one list by activity to take the sheet's fold rows away",
+        &format!("({folds_shown}) === 'false,false'"),
+        "one list by activity to take the two fold glyphs away",
         Duration::from_secs(5),
-        "[...document.querySelectorAll('#sessionFilter [data-group-action]')].map(function (r) { return r.getClientRects().length; }).join()",
+        folds_shown,
     );
     phone_tap(&tab, "#sessionFilter [data-arrange=tree]");
     harness::until(
         &tab,
-        "!document.getElementById('sessionFilter').hidden && [...document.querySelectorAll('#sessionFilter [data-group-action]')].length === 2 && [...document.querySelectorAll('#sessionFilter [data-group-action]')].every(function (r) { return r.getClientRects().length > 0; })",
-        "the tree to bring the sheet's fold rows back",
+        &format!("({folds_shown}) === 'true,true'"),
+        "the tree to bring the two fold glyphs back",
         Duration::from_secs(5),
-        "[...document.querySelectorAll('#sessionFilter [data-group-action]')].map(function (r) { return r.getClientRects().length; }).join()",
+        folds_shown,
     );
     phone_tap(&tab, "#filterBtn");
     harness::until(
@@ -33042,25 +33169,9 @@ fn a_wide_phone_held_sideways_folds_the_session_list_from_the_filter_sheet() {
         Duration::from_secs(5),
         "document.getElementById('sessionFilter').hidden",
     );
-    // A pane in the column: the five glyphs left take 44 points too.
-    phone_tap(&tab, TABS[1]);
-    harness::until(
-        &tab,
-        "document.getElementById('app').classList.contains('column-pane-on')",
-        "the column to show the Turns pane",
-        Duration::from_secs(5),
-        "document.getElementById('app').className",
-    );
-    let pane = [TABS.as_slice(), &["#themeBtn"]].concat();
-    column_head_holds(
-        &tab,
-        "a pane showing",
-        &pane,
-        &["#collapseBtn", "#expandBtn", "#filterBtn"],
-    );
-    phone_tap(&tab, TABS[0]);
-    // Held sideways in Safari with its tab bar the page is about 330 points tall (#s287): the sheet,
-    // two rows longer, still ends inside the window, and scrolls to its last row, which takes a tap.
+    column_head_holds(&tab, "back on the tree", &HEAD, &[]);
+    // Held sideways in Safari with its tab bar the page is about 330 points tall (#s287): the sheet
+    // still ends inside the window, and its last row, scrolled to if it must be, takes a tap.
     harness::phone(&tab, 956, 330);
     harness::until(
         &tab,
@@ -33069,19 +33180,24 @@ fn a_wide_phone_held_sideways_folds_the_session_list_from_the_filter_sheet() {
         Duration::from_secs(10),
         "innerWidth + 'x' + innerHeight",
     );
-    open_group_rows(&tab, "in Safari's sideways height");
+    phone_tap(&tab, "#filterBtn");
+    harness::until(
+        &tab,
+        "!document.getElementById('sessionFilter').hidden",
+        "the sheet at Safari's sideways height",
+        Duration::from_secs(5),
+        "document.getElementById('sessionFilter').hidden",
+    );
+    harness::pause("the sheet to rest", Duration::from_millis(300));
     let end = harness::eval(
         &tab,
-        &format!("(function(){{ var s = document.getElementById('sessionFilter'); var b = s.getBoundingClientRect(); var out = {{ bottom: Math.round(b.bottom), window: innerHeight, scrolls: s.scrollHeight > s.clientHeight + 1 }}; s.scrollTop = s.scrollHeight; var rows = [...s.querySelectorAll('[data-arrange], [data-include-hidden]')].filter(function (r) {{ return r.getClientRects().length > 0; }}); var last = rows[rows.length - 1]; out.last = last ? (last.dataset.arrange || 'include hidden') : null; out.atEnd = Math.abs(s.scrollTop + s.clientHeight - s.scrollHeight) <= 1; out.hit = !!last && ({PHONE_HITTABLE})(last); return JSON.stringify(out); }})()"),
+        &format!("(function(){{ var s = document.getElementById('sessionFilter'); var b = s.getBoundingClientRect(); var out = {{ bottom: Math.round(b.bottom), window: innerHeight }}; s.scrollTop = s.scrollHeight; var rows = [...s.querySelectorAll('[data-arrange], [data-include-hidden]')].filter(function (r) {{ return r.getClientRects().length > 0; }}); var last = rows[rows.length - 1]; out.last = last ? (last.dataset.arrange || 'include hidden') : null; out.atEnd = Math.abs(s.scrollTop + s.clientHeight - s.scrollHeight) <= 1; out.hit = !!last && ({PHONE_HITTABLE})(last); return JSON.stringify(out); }})()"),
     );
     let end: serde_json::Value =
         serde_json::from_str(end.as_str().unwrap_or("null")).unwrap_or_default();
     assert!(
-        end["bottom"].as_i64().unwrap_or(i64::MAX) <= 330
-            && end["scrolls"] == true
-            && end["atEnd"] == true
-            && end["hit"] == true,
-        "in Safari's sideways height the sheet ends inside the window and scrolls to its last row, which takes a tap: {end}"
+        end["bottom"].as_i64().unwrap_or(i64::MAX) <= 330 && end["atEnd"] == true && end["hit"] == true,
+        "in Safari's sideways height the sheet ends inside the window and its last row takes a tap: {end}"
     );
     phone_tap(&tab, "#filterBtn");
     harness::until(
@@ -33092,7 +33208,7 @@ fn a_wide_phone_held_sideways_folds_the_session_list_from_the_filter_sheet() {
         "document.getElementById('sessionFilter').hidden",
     );
 
-    // Upright the drawer keeps both glyphs in its head, and the sheet has no fold rows.
+    // Upright the drawer keeps both glyphs in its head too, and the sheet has no fold rows.
     let (_bu, up) = phone_tab(&m, 440, 956);
     phone_tap(&up, "#drawerHandle");
     harness::until(
@@ -33168,33 +33284,13 @@ fn column_head_holds(tab: &headless_chrome::Tab, what: &str, shown: &[&str], gon
     );
 }
 
-/// Opens the session filter's sheet with a finger and reads its fold rows: each one's display, height,
-/// top, and whether a tap at its middle reaches it, with the top of the sheet's first heading.
-fn open_group_rows(tab: &headless_chrome::Tab, what: &str) -> serde_json::Value {
-    let f = page_point(tab, "the filter", "(function(){ var b = document.getElementById('filterBtn').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); })()");
-    harness::finger_tap(tab, f[0], f[1]);
-    harness::until(
-        tab,
-        "!document.getElementById('sessionFilter').hidden",
-        &format!("{what}: the session filter's sheet"),
-        Duration::from_secs(5),
-        "document.getElementById('sessionFilter').hidden",
+/// The session filter's sheet draws no fold rows (#s703: #s664's two rows are gone with the switcher).
+fn no_fold_rows(tab: &headless_chrome::Tab, what: &str) {
+    assert_eq!(
+        harness::eval(tab, "document.querySelectorAll('#sessionFilter [data-group-action], #sessionFilter [data-group-part]').length"),
+        serde_json::json!(0),
+        "{what}: the filter's sheet draws no fold rows"
     );
-    harness::pause("the sheet to rest", Duration::from_millis(300));
-    group_rows(tab)
-}
-
-fn group_rows(tab: &headless_chrome::Tab) -> serde_json::Value {
-    let raw = harness::eval(
-        tab,
-        &format!("(function(){{ var s = document.getElementById('sessionFilter'), out = {{ open: !s.hidden, rows: {{}} }}; ['collapse', 'expand'].forEach(function (k) {{ var r = s.querySelector('[data-group-action=' + k + ']'); if (!r) {{ out.rows[k] = null; return; }} var b = r.getBoundingClientRect(); out.rows[k] = {{ shown: r.getClientRects().length > 0, h: Math.round(b.height), top: b.top, hit: ({PHONE_HITTABLE})(r) }}; }}); var h = s.querySelector('.scope-menu-head'); out.firstHead = h ? h.getBoundingClientRect().top : null; return JSON.stringify(out); }})()"),
-    );
-    serde_json::from_str(raw.as_str().unwrap_or("null")).unwrap_or_default()
-}
-
-fn tap_group_row(tab: &headless_chrome::Tab, key: &str) {
-    let p = page_point(tab, key, &format!("(function(){{ var b = document.querySelector('#sessionFilter [data-group-action={key}]').getBoundingClientRect(); return JSON.stringify([b.left + b.width / 2, b.top + b.height / 2]); }})()"));
-    harness::finger_tap(tab, p[0], p[1]);
 }
 
 /// Collapse all and Expand all stay in the list's head, and the filter's sheet draws no fold rows.
@@ -33204,21 +33300,7 @@ fn glyphs_stay_and_rows_do_not_show(tab: &headless_chrome::Tab, what: &str) {
         !seen["controls"]["#collapseBtn"].is_null() && !seen["controls"]["#expandBtn"].is_null(),
         "{what}: Collapse all and Expand all stay in the head: {seen}"
     );
-    phone_tap(tab, "#filterBtn");
-    harness::until(
-        tab,
-        "!document.getElementById('sessionFilter').hidden",
-        &format!("{what}: the session filter's sheet"),
-        Duration::from_secs(5),
-        "document.getElementById('sessionFilter').hidden",
-    );
-    let rows = group_rows(tab);
-    for key in ["collapse", "expand"] {
-        assert!(
-            rows["rows"][key].is_null() || rows["rows"][key]["shown"] == false,
-            "{what}: the sheet draws no {key} row: {rows}"
-        );
-    }
+    no_fold_rows(tab, what);
 }
 
 const SWITCH_FROM: &str = "48900000-0000-4000-8000-00000000000a";
