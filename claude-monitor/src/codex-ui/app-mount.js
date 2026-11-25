@@ -520,16 +520,19 @@ let navRun = 0, navQuietUntil = 0, navGlide = 0;
 /** Folds the nav's rows away, or brings them back. A fold starts from the rows' height (`--nav-h`), so
  *  its glide has somewhere to come from; `nav-sliding` holds that height until a return has glided
  *  (on a clock, since a reader who asks for less motion gets no transition to end). */
-function navAway(away) {
+function navAway(away, instant = false) {
   if (app.classList.contains("nav-away") === away) return;
   navRun = 0;
   navQuietUntil = performance.now() + NAV_QUIET_MS;
   // A fold glides from the rows' height; a return to their content's now (folded, the box has no
   // padding: 16px stands in for it), which a turn of the phone may have changed.
   sideNav.style.setProperty("--nav-h", `${away ? sideNav.offsetHeight : sideNav.scrollHeight + 16}px`);
+  // `instant`: no glide, the new layout there before this returns (for the filter's sheet, below).
+  if (instant) sideNav.style.transition = "none";
   app.classList.add("nav-sliding");
   sideNav.getBoundingClientRect();
   app.classList.toggle("nav-away", away);
+  if (instant) { sideNav.getBoundingClientRect(); sideNav.style.transition = ""; }
   clearTimeout(navGlide);
   if (!away) navGlide = setTimeout(() => app.classList.contains("nav-away") || app.classList.remove("nav-sliding"), NAV_GLIDE_MS);
 }
@@ -542,15 +545,36 @@ sessionListBox.addEventListener("scroll", event => {
   const top = Math.min(Math.max(scroller.scrollTop, 0), Math.max(room, 0)), seen = navSeen.get(scroller);
   navSeen.set(scroller, { top, height });
   if (!app.classList.contains("app-drawer")) return;
-  if (scroller.scrollTop <= 0) return navAway(false);
-  // While the filter's sheet hangs over the list, its room was measured with the rows where they are.
+  // While the filter's sheet hangs over the list the rows stay as they are, even at its top: the sheet
+  // measured its room with them there. They come back as it closes (below).
   if (listSheet && !listSheet.hidden) return;
+  if (scroller.scrollTop <= 0) return navAway(false);
   if (!seen || seen.height !== height || performance.now() < navQuietUntil) return;
   const step = top - seen.top;
   navRun = step * navRun > 0 ? navRun + step : step;
   if (navRun >= NAV_AWAY_AFTER && room > sideNav.offsetHeight + NAV_AWAY_AFTER) navAway(true);
   else if (navRun <= -NAV_BACK_AFTER) navAway(false);
 }, { capture: true, passive: true });
+// Where the room below the row over the list is short (a phone held sideways: in Safari with its tab
+// bar the page is 292pt, the row ends at 182 and left the filter's sheet 82, #s705), the rows step
+// aside as the sheet opens, at once, so that the list measures the sheet's room without them, and
+// come back as it closes; so do rows the list's scroll folded, if it closes with the list at its top.
+const SHEET_ROOM = 240;
+let navForSheet = false;
+sideListHead.addEventListener("click", event => {
+  if (!listSheet?.hidden || !app.classList.contains("drawer-one-row") || app.classList.contains("nav-away")) return;
+  if (!(event.target instanceof Element) || !event.target.closest("#filterBtn")) return;
+  const foot = Math.min(innerHeight, sessionListBox.getBoundingClientRect().bottom);
+  if (foot - sideListHead.getBoundingClientRect().bottom >= SHEET_ROOM) return;
+  navForSheet = true;
+  navAway(true, true);
+}, { capture: true });
+if (listSheet) new MutationObserver(() => {
+  if (!listSheet.hidden) return;
+  const atTop = ![...sessionListBox.children].some(child => child.scrollTop > 0);
+  if (navForSheet || atTop) navAway(false);
+  navForSheet = false;
+}).observe(listSheet, { attributes: true, attributeFilter: ["hidden"] });
 
 let listArranged = null, listGlideUntil = 0;
 /** What the order reads for the list: the window, the screen, the reader's width and collapse, and what

@@ -1887,8 +1887,11 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /^  const top = Math\.min\(Math\.max\(scroller\.scrollTop, 0\), Math\.max\(room, 0\)\), seen = navSeen\.get\(scroller\);$/m, "#s701: iOS's bounce past either end reads as the end");
   assert.match(appSource, /^    if \(open\) navAway\(false\);$/m, "#s701: the rows come back as the drawer opens");
   assert.equal((appSource.match(/^    if \(open\) navAway\(false\);$/gm) || []).length, 2, "#s701: …and as a wide phone's column is shown again");
-  const navBlock = appSource.slice(appSource.indexOf("// #s701 (Hong"), appSource.indexOf("}, { capture: true, passive: true });", appSource.indexOf("// #s701 (Hong")));
-  assert.ok(navBlock.includes("function navAway(away)"), "#s701: the quick return's block is found");
+  const navBlock = appSource.slice(appSource.indexOf("// #s701 (Hong"), appSource.indexOf("}).observe(listSheet, { attributes: true, attributeFilter: [\"hidden\"] });", appSource.indexOf("// #s701 (Hong")));
+  assert.ok(navBlock.includes("function navAway(away, instant = false)") && navBlock.includes("const SHEET_ROOM = 240;"), "#s701: the quick return's block is found, the filter's sheet's part with it");
+  assert.match(appSource, /^  if \(listSheet && !listSheet\.hidden\) return;\n  if \(scroller\.scrollTop <= 0\) return navAway\(false\);$/m, "#s705: while the filter's sheet is open the rows stay as they are, at the list's top too");
+  assert.match(appSource, /^  navAway\(true, true\);$/m, "#s705: where the room below its row is short, the rows step aside at once as the sheet opens");
+  assert.match(appSource, /^  if \(navForSheet \|\| atTop\) navAway\(false\);$/m, "#s705: …and come back as it closes");
   assert.doesNotMatch(navBlock, /scrollTop\s*=[^=]|scrollTo\(|scrollBy\(/, "#s701: the fold never writes the list's offset");
   assert.doesNotMatch(appShell, /id="attentionBtn"|id="sidebarMiniAttention"/, "the demo's Needs attention button and the rail's bell are gone (cut from the served shell)");
   assert.doesNotMatch(shellSource, /hiddenBtn|"Show Hidden"/, "…and the Show Hidden control with them");
