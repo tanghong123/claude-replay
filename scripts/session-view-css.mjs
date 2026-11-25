@@ -253,25 +253,24 @@ export function declarations(body) {
 // uses, sorted by what they are; the contract checks they still cover what the app names.
 
 /** The app's own chrome, which the view never draws: the session list and its tree, the rail and its
- *  flyout, the arrangement strip and the section menu, the session filter, the brand, the drawer and
- *  a wide phone's column, the session search layer (⌘K), the confirm layer (and the passcode field
+ *  flyout, the arrangement strip and the section menu, the session filter, the brand, the drawer, its
+ *  row over the list (#s705) and a wide phone's column, the session search layer (⌘K), the confirm layer (and the passcode field
  *  the app draws in it since stage 7), the toast, and the wrapper the web app is mounted in (#s551).
  *  `.primary` is the confirm layer's button: the
  *  view's own primary buttons are `.sv-primary`, a name the collaboration app does not style
  *  (#s438), so the view never draws `.primary`. The session list's names are in the two lists
  *  after this one (#s430 stage 3). */
 export const APP_CHROME = Object.freeze([
-  "#sidebarCollapse",
+  "#machinesHead", "#sidebarCollapse",
   ".app-mount",
   ".attention-count", ".attention-filter", ".attention-mini",
   ".brand",
-  ".column-pane", ".column-switch", ".column-switch-count",
   ".confirm-layer", ".dialog-actions", ".passcode-input", ".primary",
   ".drawer-handle", ".drawer-scrim", ".head-actions",
   ".nav", ".nav-tooltip", ".navbtn",
   ".result-copy", ".result-kind", ".result-machine-note", ".result-why",
   ".search-input", ".search-layer", ".search-result", ".search-result-machine-stale", ".search-result-stale", ".search-results", ".searchbox",
-  ".side-head", ".sidebar", ".sidebar-collapse", ".sidebar-mini", ".sidebar-mini-badge", ".sidebar-mini-button", ".sidebar-mini-separator", ".sidebar-resizer",
+  ".side-head", ".side-list-head", ".sidebar", ".sidebar-collapse", ".sidebar-mini", ".sidebar-mini-badge", ".sidebar-mini-button", ".sidebar-mini-separator", ".sidebar-resizer",
   ".toast",
   ".write-control", ".write-help", ".write-info", ".write-reason",
 ]);
@@ -298,8 +297,8 @@ export const LIST_CHROME = Object.freeze([
 /** The names of the list's body that the page also shows OUTSIDE `#sessionList`: the rows the rail's
  *  flyout draws in the page's body (an agent's projects and sessions, through the same functions the
  *  tree draws them with), and the empty line, which the flyout and the app's session search draw too.
- *  A rule naming only these (and shared words) is in both files, as the view's `OUTSIDE` are: the
- *  app's copy styles them where they are shown, the list's in its element. The contract reads the
+ *  A rule naming only these (and shared words) is in both files: the app's copy styles them where
+ *  they are shown, the list's in its element. The contract reads the
  *  flyout's functions and holds this list to what they draw. */
 export const LIST_SHOWN_OUTSIDE = Object.freeze([
   ".agent-monogram", ".machine-stale", ".no-results",
@@ -321,18 +320,20 @@ export const LIST_OUTSIDE = Object.freeze([
   ".sidebar-mini-agent", ".sidebar-mini-agents",
 ]);
 
-/** The app's states, kept on `#app` (stage 5a's groups): its rail, the drawer, and a wide phone's
- *  column and its pane. A rule that reads one is the app placing or styling the
+/** The app's states, kept on `#app` (stage 5a's groups): its rail, the drawer and its one-row head
+ *  (#s705), the nav's rows folded as the list scrolls (#s701), a wide phone's column, and the side a
+ *  phone held sideways keeps its island on (#s702; the view reads its own, `pl-island-*`). A rule that reads one is the app placing or styling the
  *  view from outside, and stays the app's (stage 6 lays the view out by its own pane's size). */
 export const APP_STATES = Object.freeze([
-  ".column-pane-on", ".mobile-detail", ".phone-column-off", ".sidebar-off", ".sidebar-tight", ".app-drawer", ".app-holding",
+  ".mobile-detail", ".phone-column-off", ".sidebar-off", ".sidebar-tight", ".app-drawer", ".app-holding", ".drawer-one-row", ".nav-away", ".nav-sliding",
+  ".island-left", ".island-right",
 ]);
 
 /** Names the app's chrome and the view both draw: the glyph button, generic states and labels, and
  *  the popover rows the session filter borrows from the outline's menu. A rule that names only these
  *  (or no name at all: `button`, `*`) styles both, and is in both files. */
 export const SHARED = Object.freeze([
-  ".active", ".count", ".current", ".disabled", ".dragging", ".icon", ".iconbtn", ".label", ".mode-switch", ".navigator-options", ".on", ".phone-pane-body",
+  ".active", ".count", ".current", ".disabled", ".dragging", ".icon", ".iconbtn", ".label", ".mode-switch", ".navigator-options", ".on",
   ".project", ".scope-check", ".scope-count", ".scope-menu-action", ".scope-menu-divider", ".scope-menu-head", ".scope-menu-list", ".scope-option",
   ".selected", ".session", ".show", ".smallbtn",
 ]);
@@ -354,22 +355,6 @@ export const COMMON = Object.freeze([
  *  rule led by one may style the view's element itself. */
 export const ROOT_CLASSES = Object.freeze([
   ".session-view", ".composing", ".keyboard-up", ".outline-in-bar", ".pane-open", ".preview-full", ".preview-off", ".resizing", ".sv-mounting", ".wide", ".wrap-code",
-]);
-
-/** What the view draws that the page shows OUTSIDE `#sessionView`, so a rule for it is in both files
- *  and the app's copy styles it where it is:
- *  - what the view appends to `viewRoot.layer()`, the page's `body`: only the copy field and a
- *    download's link, which carry no class (the task card and its dim are drawn in the view's element
- *    since #s431 stage 4);
- *  - the outline's Turns, Tasks and Agents lists, which a wide phone's column borrows into the app's
- *    `#columnPane` (`PHONE_PANES`), with their rows. Read off the page in each of those states, plus
- *    the rows the hermetic page cannot draw (stage 5a's shared list).
- *  A name that is one of these, or starts with one and a hyphen. */
-export const OUTSIDE = Object.freeze([
-  "#navigatorTurns", "#navigatorWork", "#navigatorAgents", ".navigator-list",
-  ".activity-empty", ".agent-state", ".agents-filter-row", ".tasks-filter-row", ".outline-agent", ".outline-epoch", ".outline-label", ".outline-number", ".outline-peer",
-  ".outline-quote-marker", ".outline-quoted", ".outline-reply-count", ".outline-turn-pending", ".outline-turn-row",
-  ".task-state", ".work-copy", ".work-group", ".work-tail", ".work-task",
 ]);
 
 /** Custom properties a script writes on the page's root (`viewRoot.styleRoot()` or `page.html()`), or
@@ -422,7 +407,6 @@ const CHROME_NAMES = new Set([...APP_CHROME, ...LIST_CHROME, ...LIST_OUTSIDE]);
 const STATE_NAMES = new Set(APP_STATES);
 const SHARED_NAMES = new Set([...SHARED, ...COMMON]);
 const ROOT_NAMES = new Set(ROOT_CLASSES);
-const isOutside = name => OUTSIDE.some(prefix => name === prefix || name.startsWith(`${prefix}-`));
 const namesIn = text => text.match(NAME) || [];
 /** A compound without its `:not(…)` parts (two levels of parentheses inside, as the sources write). */
 const withoutNot = text => text.replace(/:not\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)/g, "");
@@ -511,7 +495,6 @@ export function classify(selector) {
   const under = `${root()} ${joinCompounds(rest)}`;
   const selectors = onRoot ? [`${root()}${lead.replace(/^\*/, "")}${tailText}`, under] : [under];
   if (!view.length) return { kind: "both: no name of the view's own", app: selector, view: selectors };
-  if (view.some(isOutside)) return { kind: "both: the view's, shown outside it", app: selector, view: selectors };
   return { kind: "the view's", app: null, view: selectors };
 }
 
@@ -722,9 +705,9 @@ const APP_QUERIES = new Map([
  *  tracks; the outline's token on the page's root, which the view's element redeclares; and a wide
  *  phone held sideways, whose column is the phone's own. */
 export const APP_KEPT_QUERIES = Object.freeze(["@media(max-width:1180px)", "@media(max-width:900px)", "@media(pointer:coarse)and(max-height:500px)and(min-width:900px)"]);
-const DRAWER_PART = /(?:\.sidebar|\.side-head|\.tree-row|\.tree|\.drawer-scrim|\.drawer-handle|\.sidebar-mini|\.sidebar-resizer|#sidebarCollapse|\.section-view-scrim|\.section-view-menu|\.session-filter-options)(?![\w-])/;
+const DRAWER_PART = /(?:\.sidebar|\.side-head|\.side-list-head|#machinesHead|#machinesBtn|\.tree-row|\.tree|\.drawer-scrim|\.drawer-handle|\.sidebar-mini|\.sidebar-resizer|#sidebarCollapse|\.section-view-scrim|\.section-view-menu|\.session-filter-options)(?![\w-])/;
 const APP_GRID = /^(?:\.app|#app)(?:\.preview-off)?$/;
-const PHONE_VIEW_PART = /(?:\.phone-pane-body|\.phone-pane-jump|\.navigator-options|\.toast|\.activity-empty)(?![\w-])|^(?:input|textarea|select)(?![\w-])|\s(?:button)$/;
+const PHONE_VIEW_PART = /(?:\.navigator-options|\.toast)(?![\w-])|^(?:input|textarea|select)(?![\w-])|\s(?:button)$/;
 export const APP_ARRANGED = Object.freeze({ drawer: "#app.app-drawer", listed: "#app:not(.app-drawer)", phone: "#sessionView.pl-phone" });
 export function appGate(sel, mode, body = "") {
   if (mode === "dropped") return { kind: "dropped" };

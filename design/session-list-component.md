@@ -220,7 +220,7 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      into the app's own, the list's body (`LIST_CHROME`: the tree, its rows and labels, the strip
      and the arrangements, the state chips) and the list's parts the app places (`LIST_OUTSIDE`:
      the controls, the sheet, the rail's filter and marks, the flyout, the section menu), which go
-     in both files as the view's `OUTSIDE` does. The list's rules hang on
+     in both files as the view's `OUTSIDE` did until #s704. The list's rules hang on
      `:where(#sessionList)` with the view's stand-ins for the page's root (`.session-list`, its
      `[data-theme]`), keeping every weight; its keyframes take the prefix `sl-`. The two generated
      reference rules that name the tree as the sidebar's child (`.sidebar>.tree`, and under
@@ -237,7 +237,7 @@ the rail and its flyout, the filter, the arrangements, a wide phone's column) be
      and the app's file keeps its own unless the rule is the list's alone. One thing the plan did not
      see: the rail's flyout, in the page's body, draws an agent's rows with the functions the tree
      draws them with, and the bare `.tree-row`, `.tree-title`, `.session-state`… rules style them
-     there. So a rule naming only those names is in both files, as the view's `OUTSIDE` are
+     there. So a rule naming only those names is in both files, as the view's `OUTSIDE` were
      (`LIST_SHOWN_OUTSIDE`, which the contract holds to what the flyout's functions draw, both ways);
      what leaves `app-shell.css` is the list's body that only the list's element holds: the tree,
      the agent heads, the strip and the arranged sections, and every rule led by `#sessionList`. A

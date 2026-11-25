@@ -100,6 +100,26 @@ side changes with the direction the phone is turned). This alone fixes issues 1 
   and called it dead. The sidebar glyph is now the handle's, by the title, as on an iPad, and ☰
   stays the portrait drawer's. The column's head never shrinks under a long pane: it was a flex
   item, and the Tasks pane squeezed it to 11px, its glyphs cut in half.
+- **As changed (#s703, Hong on the iOS app, 2026-11-25):** "I feel it is a mistake to put the glyphs
+  for the outline panes to the left. Instead, I'd put them to the right bottom, similar to the
+  portrait mode." Turns, Tasks and Agents leave the column for the dock's pill, at the bottom right
+  beside Aa and the search circle, as upright, and each opens its sheet there, the popover it already
+  was sideways. The column holds the sessions alone, so it has no switcher: its head is the
+  sidebar's own glyphs, the theme, Collapse all, Expand all and the session filter, each a finger's
+  44pt. Collapse all and Expand all are back in the head. #s664 moved them into the filter sheet only
+  to make room for eight glyphs, and four take 176 of the head's 268. While the right pane covers the
+  session beside the column, the dock goes under it with the session, the panes included; closing the
+  pane brings them back, as it brings back Aa and the search.
+- **The rows above the list quick-return** (#s701, Hong: "too much space taken by write, search,
+  machines, I'd like to implement fast return for those (also apply to portrait mode)", then "Yes,
+  quick return"). Write mode, Search and, in the native app, Machines fold away once the list has
+  scrolled down a little on end, and come back on the first scroll up, at the list's top, and as the
+  portrait drawer opens, where the same rule holds (Machines sits in the drawer's head there since
+  #s705). They fold rather than float over the list, so no row is ever under them and the list's
+  offset is never written: an offset written into an iOS glide does not stick. A desktop's sidebar
+  keeps them. Where the drawer is too short for the session filter's sheet under its head (Safari
+  held sideways on a 17 Pro leaves a 292pt page), the funnel's tap folds them first, at once, so
+  the sheet has their room, and closing the sheet brings them back.
 - **The transcript gets what is left:** about 530pt, 65–70 characters a line. The width that made
   lines too long now holds the navigation (issue 3).
 - **The handle hides and shows the column.** With it hidden, the transcript is centred at its
@@ -164,9 +184,9 @@ simpler rather than adding to it:
   (User messages, Agent replies, Thinking, Tools and each tool, Whole words) as a sheet above the
   pill, so the count is in view while the reader ticks. Nothing sits on the home indicator any
   more, which is the collision the owner saw in the flat bar.
-- **Sideways.** On a narrower phone, the same pill as portrait. On a wide phone, the left column
-  already holds Sessions, Turns, Tasks and Agents, so the pill carries what is left (Aa) beside the
-  search circle, at the bottom right of the transcript.
+- **Sideways.** On a narrower phone, the same pill as portrait. On a wide phone, the same pill too
+  since #s703 (Turns, Tasks, Agents and Aa), beside the search circle at the bottom right of the
+  transcript; before it, the left column held the panes and the pill carried Aa alone.
 
 What it costs, named in advance:
 
@@ -196,7 +216,7 @@ found four things, and the build follows the first three:
   gives way now. The strip scrolls as a whole (#353), so the funnel costs it no chip.
 - **The panes stay reachable.** On a wide phone with the column hidden, the pill had no Turns, Tasks
   or Agents and the column held them: nothing reached them. The pill takes them back while the
-  column is hidden.
+  column is hidden. (Since #s703 the pill holds them always.)
 - **Kept:** while a search holds the dock, the toolbar pill steps aside, so Turns is a tap on ✕
   away. Safari's Find on Page replaces its toolbar the same way until Done.
 
@@ -228,7 +248,8 @@ column on both kinds of phone (issue 7). As built, the owner kept it at the bott
 session (#332: "Jump to last should be positioned in the middle"), 44px. Upright it sits just above
 the dock, because the pill reaches the middle of the dock's row. Sideways it sits ON the dock's row
 (#s41, the owner: "should move to the bottom"), where the middle is free; the dock above floated it
-mid-height in a 330pt page. It is gone while the find pill holds the dock (#s41: over the keyboard it
+mid-height in a 330pt page. Beside a wide phone's column it is above the dock again (#s703): the
+session there is about 614pt, and the pill at its right reaches its middle. It is gone while the find pill holds the dock (#s41: over the keyboard it
 floated on the text, and the arrows step through the matches anyway).
 
 ### 3.5d As built after the owner's iPhone (#s41)
@@ -356,8 +377,9 @@ restores each layout as it was left.
 - **Predicates, in the audit's style, not selector lists:**
   - every visible interactive element's rectangle lies inside the safe rectangle;
   - the transcript's prose runs at most about 75 characters a line;
-  - on the wide phone, Turns, Tasks and Agents are reachable in the left column, and choosing a
-    turn moves the transcript without closing the column;
+  - on the wide phone, Turns, Tasks and Agents are reachable in the dock's pill at the bottom right
+    (#s703; the left column held them before), and choosing a turn moves the transcript without
+    closing the column;
   - on the narrow phone, those three icons sit in the bar's left half;
   - the jump control and the find bar cover no text line's middle.
 - **Each layout's state is separate:** a case shows the column, turns the phone to portrait, and

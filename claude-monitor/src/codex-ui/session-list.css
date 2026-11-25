@@ -237,8 +237,6 @@
 :where(#sessionList) .session-filter-options .scope-option[role="radio"] .scope-check{border-radius:50%}
 :where(#sessionList) .session-filter-options .scope-option.arrange-app{height:auto;min-height:30px;align-items:start;padding-top:5px;padding-bottom:5px}
 :where(#sessionList) .session-filter-options .scope-option.disabled{opacity:.55;cursor:not-allowed}
-:where(#sessionList) .session-filter-options [data-group-part]{display:none}
-:where(#sessionList) .session-filter-options [data-group-action] .icon{width:16px;height:16px;color:var(--sub)}
 :where(#sessionList) .arrange-text{display:flex;flex-direction:column;gap:1px;min-width:0}
 :where(#sessionList) .arrange-note{font-size:10.5px;line-height:13px;color:var(--faint);white-space:normal}
 :where(#sessionList) .arrange-note:empty{display:none}
@@ -269,7 +267,6 @@
 #sessionList .arrange-strip-more{display:inline-flex;align-items:center;min-width:44px;min-height:44px;margin:-15px 0;padding:0 6px;vertical-align:middle}
 }
 @media(max-width:760px),(pointer:coarse) and (max-height:500px){
-:where(#sessionList) .phone-pane-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 6px 6px}
 :where(#sessionList) input:not([type=checkbox]):not([type=radio]):not([type=range]),:where(#sessionList) textarea,:where(#sessionList) select{font-size:16px!important}
 }
 :where(#sessionList).session-list{--peer:#2b6f8e}
