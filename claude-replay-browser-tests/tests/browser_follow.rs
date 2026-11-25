@@ -27655,7 +27655,21 @@ fn a_search_step_after_an_unheard_move_enters_at_the_nearest_hit() {
     }
     stores.claude_session(PHONE_SID, &t);
     let m = harness::Monitor::spawn(harness::Kind::V1, 3250, &base, Some(&stores), true);
-    let (_b, tab) = desktop_tab(&m);
+    // #s711: every wait below is the page's own (`until_still` reads its idle tracker), never a
+    // fixed pause: under load a step's landing, or the engine's answer to the scripted move, came
+    // after the pause and the case read the hit before it (red once, at load 9 to 15).
+    let (_b, tab) = harness::chrome_tab();
+    harness::track_idle(&tab);
+    harness::resize(&tab, 1280.0, 900.0);
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={PHONE_SID}"));
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user') && innerWidth >= 1200",
+        "the desktop to open on the session",
+        Duration::from_secs(20),
+        "innerWidth + ' ' + document.getElementById('app').className",
+    );
     harness::eval(&tab, "(function(){ var b = document.getElementById('transcriptSearchInput'); b.value = 'needle'; b.dispatchEvent(new Event('input', { bubbles: true })); return 'ok'; })()");
     harness::until(
         &tab,
@@ -27664,16 +27678,26 @@ fn a_search_step_after_an_unheard_move_enters_at_the_nearest_hit() {
         Duration::from_secs(10),
         "document.getElementById('transcriptSearchCount').textContent",
     );
-    harness::pause("the query to settle", Duration::from_millis(400));
     let landed = "(function(){ var m = document.querySelector('.virtual-window mark.search-mark.current'); return m ? Number((m.parentElement.textContent.match(/answer (\\d+)/) || [0, -1])[1]) : -1; })()";
+    // The hit marked current and where the transcript is, so a landing still scrolling reads as
+    // moving.
+    let reading = format!("{landed} + '@' + Math.round(document.querySelector('.sv-session-main>.transcript').scrollTop)");
+    let hit = |v: &serde_json::Value| -> i64 {
+        v.as_str()
+            .and_then(|s| s.split('@').next())
+            .and_then(|h| h.parse().ok())
+            .unwrap_or(-1)
+    };
+    let bound = Duration::from_secs(10);
+    harness::until_still(&tab, &reading, |_| true, bound);
     harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
-    harness::pause("the step's landing to settle", Duration::from_millis(600));
-    let first = harness::eval(&tab, landed).as_i64().unwrap_or(-1);
+    let (v, _) = harness::until_still(&tab, &reading, |v| hit(v) >= 0, bound);
+    let first = hit(&v);
     assert!(first >= 0, "the first step lands a hit");
     // Far from it, by script: no wheel, no key, nothing the engine hears as the reader.
     let to = if first < 5 { 0.7 } else { 0.25 };
     harness::eval(&tab, &format!("(function(){{ var s = document.querySelector('.sv-session-main>.transcript'); s.scrollTo({{ top: s.scrollHeight * {to}, behavior: 'instant' }}); return 'ok'; }})()"));
-    harness::pause("the move to settle", Duration::from_millis(700));
+    harness::until_still(&tab, &reading, |_| true, bound);
     // The nearest hit: the first at or below the unit at the top, as the page reads the top.
     let nearest = "(function(){ var t = document.querySelector('.sv-session-main>.transcript'), line = t.getBoundingClientRect().top + (parseFloat(getComputedStyle(t).scrollPaddingTop) || 18) + 8; var kids = [...document.querySelector('.virtual-window').children], at = 0; kids.forEach(function (c, i) { if (c.getBoundingClientRect().top <= line) at = i; }); for (var i = at; i < kids.length; i++) { var m = kids[i].textContent.match(/answer (\\d+) holds the needle/); if (m) return Number(m[1]); } return -1; })()";
     let want = harness::eval(&tab, nearest).as_i64().unwrap_or(-1);
@@ -27682,12 +27706,12 @@ fn a_search_step_after_an_unheard_move_enters_at_the_nearest_hit() {
         "premise: the move took the reader away from hit {first} and its next: nearest is {want}"
     );
     harness::eval(&tab, "document.getElementById('findNext').click(); 'ok'");
-    harness::pause("the step's landing to settle", Duration::from_millis(600));
-    let got = harness::eval(&tab, landed).as_i64().unwrap_or(-1);
+    let (v, seen) = harness::until_still(&tab, &reading, |v| hit(v) >= 0, bound);
+    let got = hit(&v);
     assert_eq!(
         got,
         want,
-        "after a move the engine did not hear, the step enters at the hit nearest the reader (the last landed was {first})"
+        "after a move the engine did not hear, the step enters at the hit nearest the reader (the last landed was {first}; readings {seen:?})"
     );
 }
 
