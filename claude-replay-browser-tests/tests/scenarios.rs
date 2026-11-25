@@ -15034,7 +15034,8 @@ fn turn_time_layout_fixture(name: &str) -> Fixture {
 /// order, the last ending at the bubble's edge, and a notice below them. The classic page draws its
 /// prompt as a card the width of the column, the time in the card's own head row, and is left as
 /// it is. #s716: another session's message keeps its time and duration on one line too, below its
-/// card at the card's LEFT edge (they stacked, a line each, under a card laid out as a column).
+/// card at the card's LEFT edge (they stacked, a line each, under a card laid out as a column), and
+/// every check holds on a phone held sideways too.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_puts_a_turns_time_and_duration_below_its_bubble() {
@@ -15088,7 +15089,10 @@ fn the_app_shell_puts_a_turns_time_and_duration_below_its_bubble() {
                 return false;
             };
             t.iter().all(|r| {
-                n(r, 1) >= n(card, 3) && n(r, 2) <= n(turn, 2) && (n(r, 1) - n(&t[0], 1)).abs() <= 1
+                n(r, 1) >= n(card, 3)
+                    && n(r, 2) <= n(turn, 2)
+                    && n(r, 3) <= n(turn, 3)
+                    && (n(r, 1) - n(&t[0], 1)).abs() <= 1
             }) && n(&t[0], 2) <= n(&t[1], 0)
                 && (n(&t[0], 0) - n(card, 0)).abs() <= 5
         };
@@ -15133,6 +15137,10 @@ fn the_app_shell_puts_a_turns_time_and_duration_below_its_bubble() {
         "a phone: the same, the time and duration sharing one line rather than a line each",
         &|v| v["w"] == 390 && v["phone"] == true && below(v),
     );
+    harness::phone(tab, 874, 402);
+    poll("a phone held sideways: the same", &|v| {
+        v["w"] == 874 && v["phone"] == true && below(v)
+    });
 }
 
 /// An `AskUserQuestion` call and the answers that came back (#255).
