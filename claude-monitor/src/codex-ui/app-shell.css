@@ -508,7 +508,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 #app:where(:has(>.drawer-handle)):where(.app-drawer) #sessionView .workspace>.topbar{padding-left:calc(50px + env(safe-area-inset-left,0px))}
 #app:where(.app-drawer) .side-head{height:auto;min-height:52px;padding-left:52px}
 #app:where(.app-drawer) .side-head .iconbtn{width:44px;height:44px;flex:none}
-#app.drawer-one-row:where(.app-drawer) .side-head{flex-wrap:nowrap;align-items:center;align-content:normal;padding-right:6px}
+#app.drawer-one-row:where(.app-drawer) .side-head{flex-wrap:nowrap;align-items:center;align-content:normal;min-height:0;padding-top:2px;padding-bottom:4px;padding-right:6px}
 #app.drawer-one-row:where(.app-drawer) .side-head>.brand{flex:1 1 auto;display:flex;align-items:baseline;min-width:0}
 #app.drawer-one-row:where(.app-drawer) .side-head>.brand small{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
 #app.drawer-one-row:where(.app-drawer) .side-head>.head-actions{flex:none;flex-wrap:nowrap;margin-left:auto;gap:0}

@@ -1709,7 +1709,7 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
      at its right, and its filter's sheet hangs from that row in the room below it (`--room-below`, set
      as it opens). The Machines row of the nav goes, its glyph in the head. A wide phone's column keeps
      its own head (#s703). */
-  #app.drawer-one-row .side-head{flex-wrap:nowrap;align-items:center;align-content:normal;padding-right:6px}
+  #app.drawer-one-row .side-head{flex-wrap:nowrap;align-items:center;align-content:normal;min-height:0;padding-top:2px;padding-bottom:4px;padding-right:6px}
   #app.drawer-one-row .side-head>.brand{flex:1 1 auto;display:flex;align-items:baseline;min-width:0}
   #app.drawer-one-row .side-head>.brand small{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
   #app.drawer-one-row .side-head>.head-actions{flex:none;flex-wrap:nowrap;margin-left:auto;gap:0}
