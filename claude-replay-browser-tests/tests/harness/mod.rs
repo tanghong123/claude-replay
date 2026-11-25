@@ -2801,6 +2801,19 @@ pub const CASE_FLAGS: [&str; 3] = [
     "--disable-component-update",
 ];
 
+/// The headless_chrome defaults a case's Chrome goes without (#s710). Chrome for Testing 159 draws
+/// `--enable-automation`'s "controlled by automated test software" bar in a headless window, 57px
+/// tall, which 151 never drew there (measured on denali: a 1280x1100 window's page 900px tall
+/// under 159 and 957px under 151 with the flag; 957px under both without it), so a case's page was
+/// 57px shorter on the newer Chrome. Nothing here reads what the flag changes (`navigator.webdriver`).
+/// Every launch a case makes passes these as `ignore_default_args`.
+pub const IGNORED_DEFAULTS: [&str; 1] = ["--enable-automation"];
+
+/// [`IGNORED_DEFAULTS`] as headless_chrome's `ignore_default_args` takes them.
+pub fn ignored_defaults() -> Vec<&'static std::ffi::OsStr> {
+    IGNORED_DEFAULTS.iter().map(std::ffi::OsStr::new).collect()
+}
+
 /// `extra`, then [`CASE_FLAGS`]: the arguments of a Chrome a case launches itself.
 pub fn chrome_args<'a>(extra: &[&'a str]) -> Vec<&'a std::ffi::OsStr> {
     extra
@@ -2846,6 +2859,7 @@ pub fn launch_within(
                 .window_size(Some((1400, 900)))
                 .user_data_dir(Some(dir.clone()))
                 .port(Some(port))
+                .ignore_default_args(ignored_defaults())
                 .args(args)
                 .build()
                 .unwrap(),
