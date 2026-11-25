@@ -634,6 +634,9 @@ mod tests {
             // #s701: the nav's rows folded away as the list scrolls down, and their glide.
             ".nav-away",
             ".nav-sliding",
+            // #s702: the side a phone held sideways keeps its island on (the view reads its own).
+            ".island-left",
+            ".island-right",
         ];
         // What `:is(#sessionView,#app)` may reach: elements the app's chrome shares with the view
         // (the glyph button, the session filter's and section menu's popover rows) and the lists
