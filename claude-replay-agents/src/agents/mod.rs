@@ -32,7 +32,10 @@ pub mod qoder {
     pub mod discover;
 }
 pub mod antigravity {
+    pub mod discover;
     pub mod limits;
+    pub(crate) mod metrics;
+    pub(crate) mod model;
 }
 
 #[cfg(test)]

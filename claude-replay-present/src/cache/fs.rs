@@ -35,6 +35,8 @@ impl<T: serde::Serialize + serde::de::DeserializeOwned + Clone> NoteBounds for T
 /// mechanism. `lease` is `None` under [`SingleWriter`], whose root lock outlives any entry.
 pub struct EntryWriter {
     pub(crate) meta: MetaWriter,
+    pub(crate) versions: Versions,
+    pub(crate) reset_pending: bool,
     _lease: Option<lock::Lease>,
 }
 
@@ -172,9 +174,11 @@ fn armed_writer(
     how: admit::Rewind,
     lease: Option<lock::Lease>,
 ) -> Option<EntryWriter> {
-    match admit::writer_for(dir, src, versions, how) {
+    match admit::writer_for(dir, src, versions.clone(), how) {
         Ok(meta) => Some(EntryWriter {
             meta,
+            versions,
+            reset_pending: false,
             _lease: lease,
         }),
         Err(_) => None, // dropping `lease` here releases the lock — RAII covers the error path

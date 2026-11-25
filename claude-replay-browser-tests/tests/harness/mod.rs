@@ -1167,6 +1167,7 @@ impl Stores {
             ("CLAUDE_PROJECTS_DIR", self.root.join("claude")),
             ("QODERWORK_PROJECTS_DIR", self.root.join("qoderwork")),
             ("QWENWORK_PROJECTS_DIR", self.root.join("qwenwork")),
+            ("ANTIGRAVITY_CLI_HOME", self.root.join("antigravity")),
             ("QWENWORK_DB", self.root.join("qwenwork.db")),
             ("QODER_PROJECTS_DIR", self.root.join("qoder")),
             ("CODEX_HOME", self.root.join("codex")),

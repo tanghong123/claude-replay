@@ -199,6 +199,7 @@ impl CostLedger {
     /// may overshoot the remainder rather than starve forever behind one huge file.
     pub(crate) fn cost(&mut self, agent: Agent, path: &Path, budget: &mut u64) -> CostUpdate {
         let stem = stem_of(path);
+        let snapshot = adapter(agent).rewrites_transcript();
         if !self.entries.contains_key(&stem) && self.probed.insert(stem.clone()) {
             if let Some(e) = load_entry(&self.dir.join(format!("{stem}.json"))) {
                 self.entries.insert(stem.clone(), e);
@@ -220,6 +221,11 @@ impl CostLedger {
         }
         let cached = self.entries.get(&stem);
         if *budget == 0 {
+            if snapshot {
+                // An exact refresh needs a complete pass. Leave the existing row in place
+                // until this session receives its turn in the fresh-byte budget.
+                return CostUpdate::Keep;
+            }
             // A larger file is not proof of append: an atomically replaced transcript can be
             // longer too. Validate the parked cursor's CRC window before publishing any cached
             // prefix. This reads only the bounded witness window, not fresh transcript events.
@@ -271,6 +277,15 @@ impl CostLedger {
         *budget = budget.saturating_sub(read.saturating_sub(from));
         let m = fold.metrics();
         let complete = read >= len;
+        if snapshot
+            && (!complete
+                || std::fs::metadata(path).ok().is_none_or(|after| {
+                    after.len() != meta.len() || after.modified().ok() != meta.modified().ok()
+                }))
+        {
+            // A torn or changing snapshot cannot supersede a previously complete view.
+            return CostUpdate::Keep;
+        }
         // `len` records HOW FAR THIS FILE IS FOLDED — the file's own length whenever the fold
         // reached EOF, which is the complete case and was every case before chunking. A
         // partial fold stores the offset it reached, so the no-op fast path (`e.len == len`)
@@ -350,7 +365,7 @@ fn save_entry(path: &Path, e: &Entry) {
 /// A transcript's ledger key — its file stem, the same key the index rows use (one key for
 /// a rollout in either form, #s383).
 fn stem_of(path: &Path) -> String {
-    claude_replay_core::source::stem(path)
+    claude_replay_core::discover::transcript_stem(path)
         .unwrap_or_default()
         .to_string()
 }
@@ -408,6 +423,38 @@ mod tests {
     /// The monitor prices both stores through their own adapter. This pins the rail-facing
     /// ledger seam, not just the adapters' full-session folds: two credits are $0.02 at the
     /// shared subscription-plan conversion rate.
+    #[test]
+    fn antigravity_retains_cost_when_a_snapshot_is_deferred_or_torn() {
+        let dir = scratch("agy-torn-cost");
+        let path = dir.join("transcript.jsonl");
+        let step = r#"{"step_index":1,"type":"PLANNER_RESPONSE","source":"MODEL","status":"DONE","created_at":"2026-10-07T10:00:00Z","model":"gemini-local","input_tokens":7}"#;
+        std::fs::write(&path, format!("{step}\n")).unwrap();
+        let mut ledger = CostLedger::new(&dir.join("cache"));
+        let mut budget = COST_BUDGET_BYTES;
+        assert_eq!(
+            ledger.cost(Agent::ANTIGRAVITY, &path, &mut budget),
+            CostUpdate::Replace(Some(CostSummary {
+                known_usd: None,
+                partial: true
+            }))
+        );
+        std::fs::write(&path, &step[..step.len() - 1]).unwrap();
+        assert_eq!(
+            ledger.cost(Agent::ANTIGRAVITY, &path, &mut 0),
+            CostUpdate::Keep
+        );
+        assert_eq!(
+            ledger.cost(Agent::ANTIGRAVITY, &path, &mut budget),
+            CostUpdate::Keep
+        );
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(
+            ledger.cost(Agent::ANTIGRAVITY, &path, &mut budget),
+            CostUpdate::Replace(None)
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn prices_qoder_and_qoderwork_credits() {
         let d = scratch("qoder-family");

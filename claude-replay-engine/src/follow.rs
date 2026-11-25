@@ -4,7 +4,9 @@
 //! poll — no whole-file re-read/re-decode. On a truncation/rewrite (compaction) the tail
 //! resets and the Replayer rebuilds from scratch (a full replay of the new content).
 
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::engine::builder::{SessionAccumulator, StreamRead};
 use crate::engine::reader::{ElisionCounts, LineSource, TornTail};
@@ -35,10 +37,48 @@ impl Tick {
     }
 }
 
-/// Follows a transcript file, folding only newly-appended lines each poll through a shared
-/// [`SessionAccumulator`]. Everything agent-specific — the L1 decoder, the L2 `Shaping`, the
-/// metrics accumulator — lives in the accumulator, so the follower itself is agent-agnostic and
-/// is just the byte-offset reader plus the same incremental fold the batch parse uses.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SnapshotStamp {
+    len: u64,
+    modified: SystemTime,
+    #[cfg(unix)]
+    identity: (u64, u64, i64, i64),
+}
+
+impl SnapshotStamp {
+    fn read(path: &Path) -> std::io::Result<Self> {
+        let metadata = path.metadata()?;
+        #[cfg(unix)]
+        use std::os::unix::fs::MetadataExt;
+        Ok(Self {
+            len: metadata.len(),
+            modified: metadata.modified()?,
+            #[cfg(unix)]
+            identity: (
+                metadata.dev(),
+                metadata.ino(),
+                metadata.ctime(),
+                metadata.ctime_nsec(),
+            ),
+        })
+    }
+}
+
+// A filesystem can return the same timestamp for writes within one clock tick.
+const SNAPSHOT_SETTLE_WINDOW: Duration = Duration::from_millis(100);
+
+struct SnapshotPrefix {
+    stamp: SnapshotStamp,
+    /// Verify content at least once after the stamp's first observation has aged
+    /// past a filesystem clock tick. Once verified, metadata is the idle fast path.
+    verify_until: Option<Instant>,
+    records: usize,
+    digest: u64,
+}
+
+/// Follows a transcript through a shared [`SessionAccumulator`]. Append-only sources read
+/// newly appended lines and snapshot sources verify their folded prefix before extending it. Both paths
+/// use the same fold as the batch parse.
 ///
 /// Generic over the accumulator's [`BlockStore`] `S` (default [`InMemoryStore`] — blocks resident
 /// in RAM). The **light streaming surface** (`advance_stream` / `stream_read` / the accessors)
@@ -55,6 +95,7 @@ pub struct FollowParser<S: BlockStore = InMemoryStore> {
     src: Option<LineSource<BufReader<crate::source::Source>>>,
     /// Gauges already banked into the metrics accumulator; each poll banks the delta.
     banked: ElisionCounts,
+    snapshot: Option<SnapshotPrefix>,
     /// Previous poll's committed length + open-turn blocks — the O(turn) state
     /// [`poll_delta`](Self::poll_delta) diffs against to report `changed_from`. Only touched by
     /// `poll_delta`.
@@ -98,6 +139,7 @@ impl<S: BlockStore> FollowParser<S> {
             cursor: 0,
             src: None,
             banked: ElisionCounts::default(),
+            snapshot: None,
             prev_committed: 0,
             prev_provisional: Vec::new(),
         }
@@ -133,6 +175,7 @@ impl<S: BlockStore> FollowParser<S> {
             cursor: resume.replay_from,
             src: None,
             banked: ElisionCounts::default(),
+            snapshot: None,
             prev_committed,
             prev_provisional: Vec::new(),
         }
@@ -144,6 +187,9 @@ impl<S: BlockStore> FollowParser<S> {
     /// `None` if append-only — see [`SessionAccumulator::advance_at`](crate::SessionAccumulator)).
     /// O(delta) except on a rewrite.
     fn advance_from_source(&mut self) -> std::io::Result<Tick> {
+        if self.adapter.rewrites_transcript() {
+            return self.advance_snapshot();
+        }
         // Truncation / compaction: the file shrank below the cursor — the kept prefix
         // changed. Rebuild from scratch (fresh metrics accumulator too, so the gauge bank
         // restarts with it) and re-fold the whole new file.
@@ -245,6 +291,128 @@ impl<S: BlockStore> FollowParser<S> {
             .set_spawn_links(self.adapter.spawn_links(&self.path));
         Ok(Tick {
             advanced: true,
+            reset,
+            patch_floor,
+        })
+    }
+
+    fn advance_snapshot(&mut self) -> std::io::Result<Tick> {
+        let Some(path) = crate::source::resolve(&self.path) else {
+            let reset = self.snapshot.take().is_some()
+                || self.cursor > 0
+                || self.builder.committed_len() > 0;
+            if reset {
+                self.builder.reset();
+                self.cursor = 0;
+                self.banked = ElisionCounts::default();
+            }
+            return Ok(Tick {
+                advanced: reset,
+                reset,
+                patch_floor: None,
+            });
+        };
+        let stamp = SnapshotStamp::read(&path)?;
+        let now = Instant::now();
+        let same_stamp = self.snapshot.as_ref().filter(|old| old.stamp == stamp);
+        if same_stamp.is_some_and(|old| old.verify_until.is_none()) {
+            return Ok(Tick::idle());
+        }
+        let previous_deadline = same_stamp.and_then(|old| old.verify_until);
+
+        let pending = self.snapshot.as_ref().map_or(0, |old| old.records);
+        let source = crate::source::open(&path)?;
+        let len = source.len()?;
+        let mut scan = LineSource::new(
+            BufReader::new(source),
+            0,
+            TornTail::Stop,
+            self.adapter.elision(),
+        );
+        // Hash the projection we fold, including source offsets. Only one bounded line and the
+        // running digest are resident even if the client rewrites the entire transcript.
+        let mut hash = DefaultHasher::new();
+        let mut matches = pending == 0 && self.cursor == 0 && self.builder.committed_len() == 0;
+        let mut records = 0;
+        while let Some((offset, line)) = scan.next()? {
+            (offset, line).hash(&mut hash);
+            records += 1;
+            if records == pending {
+                matches = self
+                    .snapshot
+                    .as_ref()
+                    .is_some_and(|old| old.digest == hash.finish());
+            }
+        }
+        let end = scan.offset();
+        if SnapshotStamp::read(&path).ok() != Some(stamp) {
+            return Ok(Tick::idle());
+        }
+        // During an in-place rewrite the last line may not be complete yet. Keep the old view
+        // until a poll can establish whether that record survived, changed, or was removed.
+        if end < len && (records < pending || !matches) {
+            return Ok(Tick::idle());
+        }
+        let reset = (!matches || end < self.cursor)
+            && (self.snapshot.is_some() || self.cursor > 0 || self.builder.committed_len() > 0);
+        let digest = hash.finish();
+        let counts = scan.elided;
+        let start = if reset { 0 } else { self.cursor };
+        let mut patch_floor = None;
+        let mut advanced = counts != self.banked;
+        if reset {
+            self.builder.reset();
+            self.banked = ElisionCounts::default();
+        }
+        // Apply only the stable suffix (or the rebuilt view). On an I/O error or a concurrent
+        // rewrite, invalidate the witness so the next poll rebuilds the in-memory fold.
+        self.snapshot = None;
+        self.cursor = end;
+        if start < end {
+            let mut reader = scan.into_inner();
+            reader.seek(SeekFrom::Start(start))?;
+            let mut tail = LineSource::new(
+                BufReader::new(std::io::Read::take(reader, end - start)),
+                start,
+                TornTail::Stop,
+                self.adapter.elision(),
+            );
+            while tail.offset() < end {
+                let Some((offset, line)) = tail.next()? else {
+                    break;
+                };
+                advanced = true;
+                if let Some(i) = self.builder.advance_at(offset, line) {
+                    patch_floor = Some(patch_floor.map_or(i, |old: usize| old.min(i)));
+                }
+            }
+        }
+        self.builder.bank_elision(ElisionCounts {
+            elided_lines: counts.elided_lines.saturating_sub(self.banked.elided_lines),
+            elided_bytes: counts.elided_bytes.saturating_sub(self.banked.elided_bytes),
+            skipped_lines: counts
+                .skipped_lines
+                .saturating_sub(self.banked.skipped_lines),
+        });
+        self.banked = counts;
+        if SnapshotStamp::read(&path).ok() == Some(stamp) {
+            // An equal stamp can hide a same-tick write, including a same-size rewrite
+            // immediately after an append. Watch its digest until one check after the
+            // settle window has matched. Coarser clocks can still hide indistinguishable
+            // edits after this window.
+            let verify_until = match previous_deadline {
+                Some(deadline) if !reset && !advanced => (now < deadline).then_some(deadline),
+                _ => Some(now + SNAPSHOT_SETTLE_WINDOW),
+            };
+            self.snapshot = Some(SnapshotPrefix {
+                stamp,
+                verify_until,
+                records,
+                digest,
+            });
+        }
+        Ok(Tick {
+            advanced: advanced || reset,
             reset,
             patch_floor,
         })
@@ -408,7 +576,10 @@ impl FollowParser<InMemoryStore> {
             return Ok(None);
         }
         let mut s = self.builder.snapshot();
-        s.cwd = crate::discover::first_cwd(&self.path);
+        s.cwd = self
+            .adapter
+            .project_dir(&self.path)
+            .or_else(|| crate::discover::first_cwd(&self.path));
         crate::engine::session::populate_sub_agent_transcripts(
             self.adapter,
             &self.path,

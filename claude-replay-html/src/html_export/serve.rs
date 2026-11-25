@@ -388,7 +388,9 @@ impl SessionService {
             }
         }
         let agent = discover::detect_agent(path);
-        let cwd = discover::first_cwd(path)
+        let cwd = crate::adapter(agent)
+            .project_dir(path)
+            .or_else(|| discover::first_cwd(path))
             .map(|c| c.display().to_string())
             .unwrap_or_default();
         {
@@ -457,7 +459,9 @@ impl SessionService {
             .find(|r| r.id == id)
             .map(|r| r.cwd.clone())
             .unwrap_or_else(|| {
-                discover::first_cwd(src.path())
+                crate::adapter(src.agent())
+                    .project_dir(src.path())
+                    .or_else(|| discover::first_cwd(src.path()))
                     .map(|p| p.display().to_string())
                     .unwrap_or_default()
             });
@@ -490,7 +494,7 @@ impl SessionService {
             }
             // The prefix matches: resolve where this session's repo lives NOW. Only a genuine
             // move (project_path != the dead first_cwd) is worth trying.
-            if let Some(proj) = discover::project_path(&r.path) {
+            if let Some(proj) = discover::project_path_for(r.agent, &r.path) {
                 if proj != old {
                     let candidate = crate::sys::relocate(dead, old, &proj);
                     if candidate.exists() {
@@ -679,7 +683,7 @@ impl SessionService {
             if !cwd.is_empty() {
                 allow.push(PathBuf::from(cwd));
             }
-            if let Some(proj) = discover::project_path(transcript) {
+            if let Some(proj) = discover::project_path_for(*agent, transcript) {
                 allow.push(proj);
             }
             if let Some(dir) = transcript.parent() {
@@ -9191,6 +9195,84 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn antigravity_pulls_serve_workspace_files_and_replace_persisted_counters() {
+        use crate::cache::{Cursor, MetaReader};
+        use crate::engine::meta_stream::MaterializedMeta;
+
+        let base = std::env::temp_dir().join(format!("cr-serve-agy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let project = base.join("project");
+        let file = project.join("README.md");
+        let sid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let logs = base.join("brain").join(sid).join(".system_generated/logs");
+        let path = logs.join("transcript_full.jsonl");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(base.join("cache")).unwrap();
+        std::fs::write(&file, "project file").unwrap();
+        // AGY's workspace catalog fallback has the same directory mapping as its SQLite catalog.
+        std::fs::write(
+            base.join("cache/last_conversations.json"),
+            json!({ project.to_str().unwrap(): sid }).to_string(),
+        )
+        .unwrap();
+        let mut transcript = String::new();
+        for turn in 0..10 {
+            use std::fmt::Write;
+            writeln!(transcript, "{}", json!({"step_index": 2 * turn, "type": "USER_INPUT", "source": "USER_EXPLICIT", "status": "DONE", "created_at": "2026-10-07T10:00:00Z", "content": "Read the file"})).unwrap();
+            writeln!(transcript, "{}", json!({"step_index": 2 * turn + 1, "type": "PLANNER_RESPONSE", "source": "MODEL", "status": "DONE", "created_at": "2026-10-07T10:00:01Z", "content": "Reply A", "tool_calls": [{"name": "read_file", "args": {"Path": "README.md"}}]})).unwrap();
+        }
+        std::fs::write(&path, &transcript).unwrap();
+        let live = SessionService {
+            fold: FoldPolicy::default(),
+            roots: std::sync::Mutex::new(Vec::new()),
+            cache: test_cache(&base),
+            port: std::sync::Arc::new(std::sync::OnceLock::new()),
+        };
+        assert_eq!(live.register_root(&path), sid);
+        let pull = || {
+            serde_json::from_str::<Value>(&body(live.pull_response(sid, Cursor::default())))
+                .unwrap()
+        };
+        let first = pull();
+        assert_eq!(first["meta"]["agent"], "antigravity");
+        assert_eq!(first["meta"]["cwd"], json!(project));
+        assert_eq!(
+            live.contained_kind(&file, false),
+            Some(file.canonicalize().unwrap())
+        );
+        let records = test_records(&base, sid);
+        assert!(std::fs::read_to_string(&records)
+            .unwrap()
+            .contains(file.to_str().unwrap()));
+
+        let counts = || {
+            let (_, reader) = MetaReader::open(records.parent().unwrap())
+                .unwrap()
+                .unwrap();
+            let mut meta = MaterializedMeta::default();
+            for record in reader {
+                meta.push(&record);
+            }
+            (meta.session_meta.turns, meta.session_meta.tools)
+        };
+        let cold = counts();
+        assert!(
+            cold.0 > 0 && cold.1 > 0,
+            "the initial pull commits metadata"
+        );
+        for reply in ["Reply B", "Reply C"] {
+            let replacement = path.with_extension("next");
+            std::fs::write(&replacement, transcript.replace("Reply A", reply)).unwrap();
+            std::fs::rename(replacement, &path).unwrap();
+            pull();
+            assert_eq!(counts(), cold, "the persistent metadata reflects one fold");
+        }
+        drop(live);
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

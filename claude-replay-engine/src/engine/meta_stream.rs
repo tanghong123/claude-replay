@@ -443,15 +443,20 @@ pub const COMPACT_AFTER: usize = 256;
 /// the tally of the session a move or fork came from, carried over, and is not this session's
 /// reported cost; a v93 cursor knows neither the copies' last time nor each epoch's end.
 ///
-/// v95: #s688 — a Claude reply with no `requestSessionId` whose `session_id` names another
+/// v95: !31477063 — Antigravity now groups activity spans, matches result rows to the call's
+/// step position, shows the tool summary as the fallback target, and includes requested
+/// Write and Edit diffs.
+///
+/// v96: #s688 — a Claude reply with no `requestSessionId` whose `session_id` names another
 /// session than its `sessionId` (a copy a fork by clients 2.1.287 to 2.1.310 opens with) adds
-/// no tokens and times no answer, where a v94 stream's persisted deltas priced it in both.
+/// no tokens and times no answer, where a v95 stream's persisted deltas priced it in both; and
+/// such a fork's client tally carried from its parent is left out (#s687).
 ///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 95;
+pub const FOLD_VERSION: u16 = 96;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

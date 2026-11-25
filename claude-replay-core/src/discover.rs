@@ -11,6 +11,24 @@ use anyhow::{anyhow, Result};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 
+fn adapter_session_id(path: &Path) -> Option<&str> {
+    crate::adapter::adapters()
+        .iter()
+        .find_map(|adapter| adapter.session_id_from_path(path))
+}
+
+/// The file-based session identity, including agent-specific transcript paths.
+pub fn transcript_stem(path: &Path) -> Option<&str> {
+    adapter_session_id(path).or_else(|| claude_replay_engine::source::stem(path))
+}
+
+/// The agent-specific path identity or the session id recorded in the transcript.
+pub fn session_id(path: &Path) -> Option<String> {
+    adapter_session_id(path)
+        .map(str::to_owned)
+        .or_else(|| claude_replay_engine::discover::session_id(path))
+}
+
 /// Sessions for the current directory across **every** agent, filtered to `only`
 /// when set (else all agents), sorted cwd-matches-first then most-recent.
 pub fn candidates_all(only: Option<Agent>) -> Vec<Candidate> {
@@ -146,6 +164,13 @@ pub fn detect_agent_claimed(path: &Path) -> (Agent, bool) {
         }
     }
     (can_parse.unwrap_or(Agent::CLAUDE), false)
+}
+
+/// The project directory for a transcript with a known agent, including its store metadata.
+pub fn project_path_for(agent: Agent, path: &Path) -> Option<PathBuf> {
+    crate::adapter::adapter(agent)
+        .project_dir(path)
+        .or_else(|| project_path(path))
 }
 
 /// The **transcript file path** of sub-agent `child_id` spawned under the session at `root`,
@@ -370,7 +395,7 @@ fn resolve_lone(cands: &mut Vec<Candidate>, cwd: &Path) -> Result<PathBuf> {
             let mut msg =
                 format!("{n} sessions match this directory — give a session id or use --latest:");
             for c in cands.iter().take(10) {
-                let id = claude_replay_engine::source::stem(&c.path).unwrap_or("<unnamed>");
+                let id = transcript_stem(&c.path).unwrap_or("<unnamed>");
                 let age = match c.mtime.elapsed() {
                     Ok(d) if d.as_secs() < 3600 => format!("{}m ago", d.as_secs() / 60),
                     Ok(d) if d.as_secs() < 86_400 => format!("{}h ago", d.as_secs() / 3600),
@@ -533,6 +558,8 @@ mod tests {
         let empty = base.join("empty");
         std::fs::create_dir_all(&empty).unwrap();
 
+        let home = std::env::var_os("ANTIGRAVITY_CLI_HOME");
+        std::env::set_var("ANTIGRAVITY_CLI_HOME", &empty);
         std::env::set_var("CLAUDE_PROJECTS_DIR", &claude);
         std::env::set_var("QODERWORK_PROJECTS_DIR", &qw);
         std::env::set_var("QWENWORK_PROJECTS_DIR", &empty);
@@ -543,6 +570,10 @@ mod tests {
         std::env::set_var("CODEX_HOME", base.join("codex"));
         let all = store_all(None);
         let claude_only = store_all(Some(Agent::CLAUDE));
+        match home {
+            Some(home) => std::env::set_var("ANTIGRAVITY_CLI_HOME", home),
+            None => std::env::remove_var("ANTIGRAVITY_CLI_HOME"),
+        }
         for v in [
             "CLAUDE_PROJECTS_DIR",
             "QODERWORK_PROJECTS_DIR",

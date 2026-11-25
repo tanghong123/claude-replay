@@ -350,6 +350,27 @@ pub trait TranscriptAdapter: Sync {
     /// agent never needs a carve-out in Claude's sniff to be detected correctly.
     fn sniff(&self, head: &Value) -> SniffClaim;
 
+    /// Project directory from store metadata held outside the transcript.
+    fn project_dir(&self, _path: &Path) -> Option<PathBuf> {
+        None
+    }
+
+    /// Whether a transcript can replace or delete earlier records. The live follower verifies
+    /// the folded prefix; standalone metrics folds always start at the beginning.
+    fn rewrites_transcript(&self) -> bool {
+        false
+    }
+
+    /// Session identity encoded in an agent's transcript path, if its stem is not the identity.
+    fn session_id_from_path<'p>(&self, _path: &'p Path) -> Option<&'p str> {
+        None
+    }
+
+    /// Top-level timestamp field shared by the agent's transcript records.
+    fn timestamp_field(&self) -> &'static str {
+        "timestamp"
+    }
+
     // ── whole-file parse ──
     /// Load sub-agent child transcripts into their `SubAgent.blocks`. Default no-op for
     /// adapters whose source has no resolvable sub-agent tree. Backs the facade's
@@ -400,7 +421,15 @@ pub trait TranscriptAdapter: Sync {
             crate::engine::TornTail::Yield,
             Elision::Aggressive,
         );
-        while let Ok(Some((_, body))) = src.next() {
+        loop {
+            let body = match src.next() {
+                Ok(Some((_, body))) => body,
+                Ok(None) => break,
+                Err(_) => {
+                    acc.malformed_line();
+                    break;
+                }
+            };
             let parsed = if matches!(preprocessor.process(body), PreprocessedLine::Ignore) {
                 continue;
             } else {

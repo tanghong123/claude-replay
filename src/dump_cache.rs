@@ -81,7 +81,7 @@ pub(crate) fn write_cached<W: Write + ?Sized>(
     out: &mut W,
 ) -> anyhow::Result<Served> {
     // The entry's key is the transcript's stem, as the TUI's is: a session id, never a title.
-    let Some(id) = claude_replay_core::source::stem(path) else {
+    let Some(id) = claude_replay_core::discover::transcript_stem(path) else {
         write_plain(agent, path, out)?;
         return Ok(Served::Plain(Fallback::Unavailable));
     };

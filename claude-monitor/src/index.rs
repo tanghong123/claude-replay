@@ -1359,31 +1359,36 @@ impl Index {
                 register(&path);
                 let now_mtime = latest_tree_activity(&path);
                 let now_len = std::fs::metadata(&path).map(|m| m.len()).ok();
-                let row = st.rows.entry(sid).or_insert_with(|| Row {
-                    path: path.clone(),
-                    agent: a.agent(),
-                    cwd: discover::project_path(&path).map(|p| p.display().to_string()),
-                    repo: discover::repo_root(&path).map(|p| p.display().to_string()),
-                    title: String::new(),
-                    tree_mtime: None,
-                    transcript_len: None,
-                    last_event: None,
-                    first_event: None,
-                    start_probed: false,
-                    one_shot: false,
-                    brief: None,
-                    fork_from: None,
-                    fork_probed: false,
-                    launched_by: None,
-                    spawned_by: None,
-                    spawn_probed: false,
-                    proved_pid: None,
-                    continued_in: None,
-                    grew_at: None,
-                    invalidated_growth: None,
-                    counters: None,
-                    title_mtime: None,
-                    cost: None,
+                let row = st.rows.entry(sid).or_insert_with(|| {
+                    let cwd = discover::project_path_for(a.agent(), &path);
+                    Row {
+                        path: path.clone(),
+                        agent: a.agent(),
+                        cwd: cwd.as_ref().map(|p| p.display().to_string()),
+                        repo: cwd
+                            .map(discover::repo_root_from)
+                            .map(|p| p.display().to_string()),
+                        title: String::new(),
+                        tree_mtime: None,
+                        transcript_len: None,
+                        last_event: None,
+                        first_event: None,
+                        start_probed: false,
+                        one_shot: false,
+                        brief: None,
+                        fork_from: None,
+                        fork_probed: false,
+                        launched_by: None,
+                        spawned_by: None,
+                        spawn_probed: false,
+                        proved_pid: None,
+                        continued_in: None,
+                        grew_at: None,
+                        invalidated_growth: None,
+                        counters: None,
+                        title_mtime: None,
+                        cost: None,
+                    }
                 });
                 // A Codex rollout changes form under its row (#s383): compressed once it has gone
                 // seven days untouched, decompressed again when its thread is resumed. The row
@@ -1401,7 +1406,7 @@ impl Index {
                 // append in the same tick as the last scan leaves the mtime where it was.
                 if row.tree_mtime != now_mtime || row.transcript_len != now_len {
                     let prev_event = row.last_event;
-                    row.last_event = last_event_ts(&row.path).or(row.last_event);
+                    row.last_event = last_event_ts(&row.path, row.agent).or(row.last_event);
                     let now_secs = SystemTime::now()
                         .duration_since(SystemTime::UNIX_EPOCH)
                         .map(|d| d.as_secs())
@@ -1427,7 +1432,7 @@ impl Index {
                         // what settled it (a prompt appended between the two reads would settle a
                         // head whose start was read before it); asked on each unsettled pass, and
                         // a failed read keeps a start already found.
-                        row.first_event = first_event_ts(&row.path).or(row.first_event);
+                        row.first_event = first_event_ts(&row.path, row.agent).or(row.first_event);
                     }
                     // #142: which session this one was forked from, and (#s653) which one's
                     // tools started it, from the head with the start: a fork's origin is fixed
@@ -1485,10 +1490,16 @@ impl Index {
                         .to_string();
                     row.title_mtime = t_mtime;
                     if row.cwd.is_none() {
-                        row.cwd = discover::project_path(&path).map(|p| p.display().to_string());
+                        row.cwd = discover::project_path_for(row.agent, &path)
+                            .map(|p| p.display().to_string());
                     }
                     if row.repo.is_none() {
-                        row.repo = discover::repo_root(&path).map(|p| p.display().to_string());
+                        row.repo = row
+                            .cwd
+                            .as_deref()
+                            .map(PathBuf::from)
+                            .map(discover::repo_root_from)
+                            .map(|p| p.display().to_string());
                     }
                     if !row.spawn_probed {
                         if let Some(cwd) = row.cwd.as_deref() {
@@ -2694,20 +2705,25 @@ pub(crate) static STATE_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[cfg(test)]
 pub(crate) struct StateEnv {
     _lock: std::sync::MutexGuard<'static, ()>,
-    prev: [(&'static str, Option<std::ffi::OsString>); 2],
+    prev: [(&'static str, Option<std::ffi::OsString>); 3],
 }
 
 #[cfg(test)]
 impl StateEnv {
-    const VARS: [&'static str; 2] = ["AGENT_MONITOR_STATE", "CLAUDE_MONITOR_STATE"];
+    const VARS: [&'static str; 3] = [
+        "AGENT_MONITOR_STATE",
+        "CLAUDE_MONITOR_STATE",
+        "ANTIGRAVITY_CLI_HOME",
+    ];
 
     /// Redirect the state dir at `dir` for as long as the guard lives.
     pub(crate) fn set(dir: impl AsRef<Path>) -> Self {
         let lock = STATE_ENV.lock().unwrap_or_else(|e| e.into_inner());
         let prev = Self::VARS.map(|v| (v, std::env::var_os(v)));
-        for v in Self::VARS {
+        for v in ["AGENT_MONITOR_STATE", "CLAUDE_MONITOR_STATE"] {
             std::env::set_var(v, dir.as_ref());
         }
+        std::env::set_var("ANTIGRAVITY_CLI_HOME", dir.as_ref().join("antigravity"));
         Self { _lock: lock, prev }
     }
 }
@@ -3631,12 +3647,17 @@ fn apply_registry(procs: &mut [Proc], default_home: &Path) {
 /// The agent a process IS, by its executable — or `None` for one the monitor cannot place (a
 /// configured extra pattern), which stays a candidate for any agent's session (#s59).
 fn proc_agent(p: &Proc) -> Option<Agent> {
-    match p.exe_base.to_ascii_lowercase().as_str() {
+    builtin_agent(&p.exe_base)
+}
+
+fn builtin_agent(exe_base: &str) -> Option<Agent> {
+    match exe_base.to_ascii_lowercase().as_str() {
         "claude" => Some(Agent::CLAUDE),
         "codex" => Some(Agent::CODEX),
         "qoderwork" => Some(Agent::QODERWORK),
         "qoder" => Some(Agent::QODER),
         "qwenwork" | "qwenworkcn" => Some(Agent::QWENWORK),
+        "agy" | "antigravity" => Some(Agent::ANTIGRAVITY),
         _ => None,
     }
 }
@@ -3852,16 +3873,7 @@ fn extra_agent_patterns() -> &'static [AgentPattern] {
 }
 
 fn is_agent_exe(exe_base: &str, argv: &str) -> bool {
-    // Qwenwork's desktop app runs as `QwenWorkCN`; its own CLI as `qwenwork` (#358).
-    const BUILTINS: &[&str] = &[
-        "claude",
-        "codex",
-        "qoderwork",
-        "qoder",
-        "qwenwork",
-        "qwenworkcn",
-    ];
-    BUILTINS.iter().any(|b| exe_base.eq_ignore_ascii_case(b))
+    builtin_agent(exe_base).is_some()
         || extra_agent_patterns()
             .iter()
             .any(|p| p.matches(exe_base, argv))
@@ -4316,13 +4328,13 @@ const NON_ACTIVITY_TYPES: &[&str] = &["file-history-snapshot", "summary", "conti
 /// snapshot` lines of ~25 KiB each and its first real line sits 424 KiB in. The cheap
 /// window resolves every other session on this machine; the wide one is the fallback, and
 /// the caller probes ONCE per session (an append-only log's head never changes).
-fn first_event_ts(path: &Path) -> Option<u64> {
+fn first_event_ts(path: &Path, agent: Agent) -> Option<u64> {
     [64 * 1024, 1024 * 1024]
         .into_iter()
-        .find_map(|cap| first_event_within(path, cap))
+        .find_map(|cap| first_event_within(path, agent, cap))
 }
 
-fn first_event_within(path: &Path, cap: usize) -> Option<u64> {
+fn first_event_within(path: &Path, agent: Agent, cap: usize) -> Option<u64> {
     use std::io::Read;
     let mut buf = vec![0u8; cap];
     // The JSONL's head, a compressed rollout decoded only that far (#s383).
@@ -4343,12 +4355,13 @@ fn first_event_within(path: &Path, cap: usize) -> Option<u64> {
     if !complete {
         lines.pop();
     }
+    let clock = transcript_clock(agent);
     for line in lines {
         let ty = field_after(line, "\"type\":\"").next();
         if ty.is_some_and(|t| NON_ACTIVITY_TYPES.contains(&t)) {
             continue;
         }
-        for ts in field_after(line, "\"timestamp\":\"") {
+        for ts in field_after(line, &clock) {
             if let Some(secs) = metrics::parse_ts(ts).filter(|s| *s > 0) {
                 return Some(secs as u64);
             }
@@ -4371,11 +4384,11 @@ const IDLE_COMPACTION_NOTICE: &str = "Compacted while idle";
 /// `parse_ts`; `None` when the window holds no parseable activity timestamp. An idle compaction
 /// whose boundary lies beyond that window — 194 KB and 254 KB behind its notice, measured — is
 /// read again through 4 MiB.
-fn last_event_ts(path: &Path) -> Option<u64> {
-    match last_event_within(path, 32 * 1024) {
+fn last_event_ts(path: &Path, agent: Agent) -> Option<u64> {
+    match last_event_within(path, agent, 32 * 1024) {
         Activity::At(secs) => Some(secs),
         Activity::Nothing => None,
-        Activity::Behind => match last_event_within(path, 4 * 1024 * 1024) {
+        Activity::Behind => match last_event_within(path, agent, 4 * 1024 * 1024) {
             Activity::At(secs) => Some(secs),
             Activity::Nothing | Activity::Behind => None,
         },
@@ -4391,7 +4404,7 @@ enum Activity {
     Behind,
 }
 
-fn last_event_within(path: &Path, window: u64) -> Activity {
+fn last_event_within(path: &Path, agent: Agent, window: u64) -> Activity {
     use std::io::{Read, Seek, SeekFrom};
     let read = || -> Option<Vec<u8>> {
         // The JSONL's tail, a compressed rollout's decoded one (#s383).
@@ -4411,6 +4424,7 @@ fn last_event_within(path: &Path, window: u64) -> Activity {
     // The clock as it stood at the newest compaction boundary in the window.
     let mut at_boundary: Option<Option<u64>> = None;
     let mut behind = false;
+    let clock = transcript_clock(agent);
     for line in buf.lines() {
         // Field-level (no per-line JSON parse — pure cost here). Skip housekeeping rows by
         // their `"type"`; take the newest timestamp on everything else.
@@ -4433,7 +4447,7 @@ fn last_event_within(path: &Path, window: u64) -> Activity {
             }
             continue;
         }
-        for ts in field_after(line, "\"timestamp\":\"") {
+        for ts in field_after(line, &clock) {
             if let Some(secs) = metrics::parse_ts(ts).filter(|s| *s > 0) {
                 last = Some(last.map_or(secs as u64, |cur: u64| cur.max(secs as u64)));
             }
@@ -4444,6 +4458,13 @@ fn last_event_within(path: &Path, window: u64) -> Activity {
         None if behind => Activity::Behind,
         None => Activity::Nothing,
     }
+}
+
+fn transcript_clock(agent: Agent) -> String {
+    format!(
+        "\"{}\":\"",
+        claude_replay_core::adapter(agent).timestamp_field()
+    )
 }
 
 /// Every quoted value following `pat` on `line`.
@@ -4465,7 +4486,7 @@ fn field_after<'a>(line: &'a str, pat: &str) -> impl Iterator<Item = &'a str> {
 /// A row's key: the transcript's stem, one key for a Codex rollout whether it is plain or
 /// compressed (#s383), so a session keeps its row as Codex moves it between the two.
 fn stem_of(path: &Path) -> String {
-    claude_replay_core::source::stem(path)
+    claude_replay_core::discover::transcript_stem(path)
         .unwrap_or("session")
         .to_string()
 }
@@ -4776,7 +4797,7 @@ mod tests {
     /// changes form in either direction between scans.
     #[test]
     fn a_compressed_codex_rollout_is_listed_and_keeps_one_row_as_it_changes_form() {
-        struct RestoreStores([(&'static str, Option<std::ffi::OsString>); 3]);
+        struct RestoreStores([(&'static str, Option<std::ffi::OsString>); 4]);
         impl Drop for RestoreStores {
             fn drop(&mut self) {
                 for (name, previous) in &self.0 {
@@ -4790,7 +4811,12 @@ mod tests {
         let scratch = std::env::temp_dir().join(format!("cm-zst-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&scratch);
         let _state_env = StateEnv::set(scratch.join("state"));
-        let variables = ["CLAUDE_PROJECTS_DIR", "CODEX_HOME", "CODEX_SESSIONS_DIR"];
+        let variables = [
+            "CLAUDE_PROJECTS_DIR",
+            "CODEX_HOME",
+            "CODEX_SESSIONS_DIR",
+            "ANTIGRAVITY_CLI_HOME",
+        ];
         let _restore = RestoreStores(variables.map(|name| (name, std::env::var_os(name))));
         let codex_home = scratch.join("codex");
         let day = codex_home.join("sessions/2026/10/01");
@@ -4799,6 +4825,7 @@ mod tests {
         std::env::set_var("CLAUDE_PROJECTS_DIR", scratch.join("claude/projects"));
         std::env::set_var("CODEX_HOME", &codex_home);
         std::env::set_var("CODEX_SESSIONS_DIR", codex_home.join("sessions"));
+        std::env::set_var("ANTIGRAVITY_CLI_HOME", codex_home.join("empty-antigravity"));
 
         let id = "0193a5c0-0000-7000-8000-00000000m383";
         let sid = format!("rollout-2026-10-01T09-00-00-{id}");
@@ -4872,7 +4899,7 @@ mod tests {
 
     #[test]
     fn shared_runtime_refuses_codex_materialized_after_legacy_ownership_scan() {
-        struct RestoreStores([(&'static str, Option<std::ffi::OsString>); 3]);
+        struct RestoreStores([(&'static str, Option<std::ffi::OsString>); 4]);
         impl Drop for RestoreStores {
             fn drop(&mut self) {
                 for (name, previous) in &self.0 {
@@ -4895,7 +4922,12 @@ mod tests {
         // StateEnv holds the process-global environment lock until the store
         // overrides have also been restored. No real transcript store is read.
         let _state_env = StateEnv::set(scratch.join("state"));
-        let variables = ["CLAUDE_PROJECTS_DIR", "CODEX_HOME", "CODEX_SESSIONS_DIR"];
+        let variables = [
+            "CLAUDE_PROJECTS_DIR",
+            "CODEX_HOME",
+            "CODEX_SESSIONS_DIR",
+            "ANTIGRAVITY_CLI_HOME",
+        ];
         let _restore_stores = RestoreStores(variables.map(|name| (name, std::env::var_os(name))));
         let claude_store = scratch.join("claude/projects");
         let codex_home = scratch.join("codex");
@@ -4906,6 +4938,7 @@ mod tests {
         std::env::set_var("CLAUDE_PROJECTS_DIR", &claude_store);
         std::env::set_var("CODEX_HOME", &codex_home);
         std::env::set_var("CODEX_SESSIONS_DIR", codex_home.join("sessions"));
+        std::env::set_var("ANTIGRAVITY_CLI_HOME", codex_home.join("empty-antigravity"));
         let standalone = Index::new(
             scratch.join("standalone-cache"),
             scratch.join("state"),
@@ -5523,6 +5556,27 @@ mod tests {
     /// #s426: an index over chosen stores lists their sessions and none of this machine's, and
     /// with process probing off a scan reads no processes at all.
     #[test]
+    fn antigravity_clock_uses_the_adapter_even_off_the_native_path() {
+        let path = std::env::temp_dir().join(format!("cm-agy-clock-{}.jsonl", std::process::id()));
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"type":"USER_INPUT","created_at":"2026-10-07T10:00:00Z"}"#,
+                "\n",
+                r#"{"type":"PLANNER_RESPONSE","created_at":"2026-10-07T10:00:06Z"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let start = metrics::parse_ts("2026-10-07T10:00:00Z").unwrap() as u64;
+        assert_eq!(first_event_ts(&path, Agent::ANTIGRAVITY), Some(start));
+        assert_eq!(last_event_ts(&path, Agent::ANTIGRAVITY), Some(start + 6));
+        assert_eq!(first_event_ts(&path, Agent::CLAUDE), None);
+        assert_eq!(last_event_ts(&path, Agent::CODEX), None);
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
     fn an_index_over_chosen_stores_lists_them_alone_and_probes_nothing() {
         let base = std::env::temp_dir().join(format!("cm-index-stores-{}", std::process::id()));
         let _env = StateEnv::set(base.join("state"));
@@ -5612,7 +5666,11 @@ mod tests {
         // #153: the state dir is the fixture's own, never this machine's. The hide-list
         // assertions below toggle keys, and a toggle SAVES — under the ambient resolver this
         // very test wrote `[]` over the developer's real `~/.local/state/…/ignored.json`.
-        let idx = Index::new(root.clone(), base.join("state"), Vec::new());
+        let idx = Index::new(
+            root.clone(),
+            base.join("state"),
+            vec![Agent::CLAUDE, Agent::CODEX],
+        );
         let find = |json: &str| -> Value {
             let v: Value = serde_json::from_str(json).unwrap();
             v["groups"]
@@ -6044,7 +6102,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            first_event_ts(&straddle),
+            first_event_ts(&straddle, Agent::CLAUDE),
             metrics::parse_ts("2026-08-02T10:00:00Z").map(|s| s as u64),
             "a real line spanning the 64 KiB boundary resolves via the wide window, and \
              the snapshot's own timestamp is never mistaken for the start"
@@ -6054,7 +6112,11 @@ mod tests {
         // (the rail then shows no span rather than a wrong one).
         let far = d.join("far.jsonl");
         std::fs::write(&far, filler.repeat(45)).unwrap();
-        assert_eq!(first_event_ts(&far), None, "housekeeping only: no start");
+        assert_eq!(
+            first_event_ts(&far, Agent::CLAUDE),
+            None,
+            "housekeeping only: no start"
+        );
 
         let _ = std::fs::remove_dir_all(&d);
     }
@@ -6074,7 +6136,7 @@ mod tests {
              {\"type\":\"file-history-snapshot\",\"timestamp\":\"2026-08-07T13:55:48Z\"}\n",
         )
         .unwrap();
-        let got = last_event_ts(&p).expect("has activity");
+        let got = last_event_ts(&p, Agent::CLAUDE).expect("has activity");
         assert_eq!(
             got as i64,
             metrics::parse_ts("2026-08-06T16:55:05Z").unwrap(),
@@ -6086,7 +6148,7 @@ mod tests {
             "{\"type\":\"file-history-snapshot\",\"timestamp\":\"2026-08-07T13:55:48Z\"}\n",
         )
         .unwrap();
-        assert!(last_event_ts(&p).is_none());
+        assert!(last_event_ts(&p, Agent::CLAUDE).is_none());
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -6116,7 +6178,7 @@ mod tests {
 
         std::fs::write(&p, format!("{answer}{compaction}{notice}")).unwrap();
         assert_eq!(
-            last_event_ts(&p),
+            last_event_ts(&p, Agent::CLAUDE),
             Some(ts("2026-10-09T01:15:00Z")),
             "compacted while idle: the clock is the answer's"
         );
@@ -6124,14 +6186,14 @@ mod tests {
         let prompt = "{\"type\":\"user\",\"timestamp\":\"2026-10-09T03:00:00Z\",\"message\":{\"role\":\"user\",\"content\":\"next\"}}\n";
         std::fs::write(&p, format!("{answer}{compaction}{notice}{prompt}")).unwrap();
         assert_eq!(
-            last_event_ts(&p),
+            last_event_ts(&p, Agent::CLAUDE),
             Some(ts("2026-10-09T03:00:00Z")),
             "a prompt after it is activity again"
         );
 
         std::fs::write(&p, format!("{answer}{compaction}")).unwrap();
         assert_eq!(
-            last_event_ts(&p),
+            last_event_ts(&p, Agent::CLAUDE),
             Some(ts("2026-10-09T02:06:01Z")),
             "a compaction that says nothing of idleness is the agent working"
         );
@@ -9507,6 +9569,33 @@ n/Users/x/proj
         assert!(st.rows.values().all(|row| row.proved_pid.is_none()));
     }
 
+    #[test]
+    fn a_quiet_antigravity_process_keeps_its_session_live_and_read_only() {
+        let scratch = std::env::temp_dir().join(format!("cm-agy-link-{}", std::process::id()));
+        let idx = Index::new(scratch.join("cache"), scratch.join("state"), Vec::new());
+        let cwd = "/w/harbor";
+        let mut procs = parse_ps("700 /opt/bin/agy\n900 codex\n");
+        apply_lsof(
+            &mut procs,
+            "p700\nfcwd\nn/w/harbor\np900\nfcwd\nn/w/harbor\n",
+        );
+        assert!(is_agent_exe(&procs[0].exe_base, &procs[0].argv));
+        let mut st = State {
+            procs,
+            ..State::default()
+        };
+        let mut agy = growth_row(cwd, false);
+        agy.agent = Agent::ANTIGRAVITY;
+        agy.tree_mtime = Some(SystemTime::now() - Duration::from_secs(3600));
+        st.rows.insert("agy-session".into(), agy);
+        let snapshot = idx.assemble(&st, &mut Vec::new());
+        let row = registry_row(&snapshot, "agy-session");
+        assert_eq!(row["pid"], 700);
+        assert_eq!(row["state"], "idle");
+        assert!(row.get("injectable").is_none());
+        let _ = std::fs::remove_dir_all(scratch);
+    }
+
     /// An open transcript reserves its process as firmly as an argv identity. Removing
     /// that session from recency must not give its process to an older history.
     #[test]
@@ -10601,7 +10690,7 @@ n/Users/x/proj
             "\n",
         );
         std::fs::write(&p, conversation).unwrap();
-        let before = last_event_ts(&p);
+        let before = last_event_ts(&p, Agent::CLAUDE);
         assert!(before.is_some());
         let ledger = concat!(
             r#"{"type":"derived-from","v":1,"sessionId":"r","sessions":[{"type":"claude_code_session","id":"r","via":"resume"}]}"#,
@@ -10612,7 +10701,11 @@ n/Users/x/proj
             "\n",
         );
         std::fs::write(&p, format!("{conversation}{ledger}")).unwrap();
-        assert_eq!(last_event_ts(&p), before, "the ledger moves no clock");
+        assert_eq!(
+            last_event_ts(&p, Agent::CLAUDE),
+            before,
+            "the ledger moves no clock"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

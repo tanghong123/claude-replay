@@ -30,8 +30,7 @@ impl Agent {
     /// (`~/.qwenworkcn/projects/`) and title database; the same Claude-shaped transcripts and the
     /// same `runtime-config` head, so it is told apart by WHERE a file lives, never by its content.
     pub const QWENWORK: Agent = Agent("qwenwork");
-    /// Antigravity CLI (`agy`, Google's) — for now only its subscription limits, which its
-    /// status-line command is handed (#s43); its transcripts are a follow-up (#s44).
+    /// Google's Antigravity CLI (`agy`).
     pub const ANTIGRAVITY: Agent = Agent("antigravity");
 
     /// Mint an agent id a third-party adapter registers under. The id doubles as the

@@ -634,6 +634,9 @@ impl<S: BlockStore> SessionAccumulator<S> {
         self.committed_agents.clear();
         self.committed_inbox.clear();
         self.committed_peers.clear();
+        self.boundary.clear();
+        self.emitted = Boundary::default();
+        self.meta_out.clear();
         self.since_checkpoint = 0;
         self.task_fold = crate::engine::tasks::TaskFold::default();
         // An append-only store (tier-b) discards its backing too — the rebuilt session's

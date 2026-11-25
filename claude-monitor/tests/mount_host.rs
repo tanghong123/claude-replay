@@ -270,6 +270,7 @@ fn a_host_mounts_the_table_under_its_own_path_with_its_own_sessions_and_sign_in(
     for (var, dir) in [
         ("QODERWORK_PROJECTS_DIR", "qoderwork"),
         ("QWENWORK_PROJECTS_DIR", "qwenwork"),
+        ("ANTIGRAVITY_CLI_HOME", "antigravity"),
         ("QODER_PROJECTS_DIR", "qoder"),
         ("CODEX_HOME", "codex"),
     ] {

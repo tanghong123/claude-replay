@@ -119,6 +119,7 @@ fn monitor(base: &Path, run: &Path, port: u16) -> Command {
         .env("QODERWORK_PROJECTS_DIR", stores.join("qoderwork"))
         .env("QODERWORK_DB", stores.join("qoderwork.db"))
         .env("QWENWORK_PROJECTS_DIR", stores.join("qwenwork"))
+        .env("ANTIGRAVITY_CLI_HOME", stores.join("antigravity"))
         .env("QWENWORK_DB", stores.join("qwenwork.db"))
         .stdin(Stdio::null())
         .stdout(log.try_clone().unwrap())

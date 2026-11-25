@@ -377,19 +377,23 @@ pub fn project_path(path: &Path) -> Option<PathBuf> {
 /// `project_path`; a consumer that groups by project uses this. A plain `.git` stat-walk (no
 /// `git` shell-out), so a monitor scan over many sessions stays cheap — no cache needed.
 pub fn repo_root(path: &Path) -> Option<PathBuf> {
-    let start = project_path(path)?;
+    project_path(path).map(repo_root_from)
+}
+
+/// Find the repository containing a discovered project directory.
+pub fn repo_root_from(start: PathBuf) -> PathBuf {
     // `project_path`'s last resort is the DEAD recorded cwd (the unsolved plain-`mv` case: the
     // recorded cwd is gone AND the store dir doesn't decode). Never walk a dead path's ancestors
     // — they can be live and unrelated (a moved repo whose old parent now sits under a `~/.git`
     // dotfiles repo would wrongly collapse into it). Return it as-is; both live branches of
     // `project_path` already proved `is_dir`, so this only guards that dead fallback.
     if !start.is_dir() {
-        return Some(start);
+        return start;
     }
     let mut cur: &Path = &start;
     loop {
         if cur.join(".git").exists() {
-            return Some(cur.to_path_buf());
+            return cur.to_path_buf();
         }
         match cur.parent() {
             Some(parent) => cur = parent,
@@ -397,7 +401,7 @@ pub fn repo_root(path: &Path) -> Option<PathBuf> {
         }
     }
     // No `.git` anywhere above: the session is outside a repo — group it under its own dir.
-    Some(start)
+    start
 }
 
 /// Decode a Claude project store-dir name back to its absolute cwd. The encoding replaces every
@@ -433,9 +437,9 @@ fn decode_store_dir(path: &Path) -> Option<PathBuf> {
     Some(cur)
 }
 
-/// The session id recorded in the transcript head — Claude's top-level `sessionId` or
-/// Codex's `payload.id` of `session_meta`. `None` when absent (a caller then falls back to
-/// the file stem). Agent-neutral, mirroring [`first_cwd`].
+/// The session id recorded in the transcript head
+/// (Claude's top-level `sessionId` or Codex's `payload.id` of `session_meta`).
+/// Returns `None` when neither supplies an id.
 pub fn session_id(path: &Path) -> Option<String> {
     for line in crate::engine::bounded_lines(path, crate::engine::Elision::None).take(50) {
         let Ok(v) = serde_json::from_str::<Value>(&line) else {

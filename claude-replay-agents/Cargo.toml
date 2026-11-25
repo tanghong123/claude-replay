@@ -18,16 +18,12 @@ anyhow = "1"
 # #s272: HMAC-SHA256 for a relayed message's signature, written out over `sha2` as
 # claude-replay-html's `sig.rs` does (`sha2` is already in this workspace; `hmac` is not).
 sha2 = "0.10"
+url = "2"
 
 # QoderWork keeps its session titles in SQLite, not in the transcript, so reading them needs a
 # database — and since ~July 2026 QoderWork stopped writing the plaintext `<sid>-session.json`
-# sidecar, so the database is the ONLY title source for new sessions. macOS-only (QoderWork is
-# an Electron app that ships there; `db_path()` is a macOS path), so a Linux build never
-# compiles the one C dependency in an otherwise pure-Rust workspace. This was an opt-in
-# `qoderwork-titles` feature, which meant a plain `cargo build` on macOS silently showed every
-# new QoderWork session as its cryptic workspace-dir leaf — a local build must not be quietly
-# worse than the release. `bundled` so the build never depends on the host's libsqlite3.
-[target.'cfg(target_os = "macos")'.dependencies]
+# sidecar, so the database is the only title source for new QoderWork sessions. Antigravity
+# also uses SQLite for its conversation catalog on all platforms.
 rusqlite = { version = "0.40", features = ["bundled"] }
 
 [dev-dependencies]
