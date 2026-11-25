@@ -620,6 +620,16 @@ fn the_web_app_over_two_machines_reads_each_session_from_its_own_machine() {
         serde_json::json!("false"),
         "write mode does not turn on for an unpaired machine"
     );
+    // The click opened the help, which stays open across machines and says what writing needs on
+    // the machine of the session open now (#s709).
+    let help = "(function () { var h = document.getElementById('writeHelp'); return h.hidden ? null : h.textContent; })()";
+    let unpaired_help = harness::probe(&tab, help);
+    assert!(
+        unpaired_help
+            .as_str()
+            .is_some_and(|h| !h.starts_with("Monitor is paired") && h.contains("pair")),
+        "a click on the unpaired machine's switch opens its help: {unpaired_help}"
+    );
 
     // The document the second machine's session carries, in mdrev with the app's bundle.
     harness::eval(
@@ -704,6 +714,13 @@ fn the_web_app_over_two_machines_reads_each_session_from_its_own_machine() {
         (&serde_json::json!(true), &serde_json::json!(true), &serde_json::json!(false), &serde_json::json!(format!("a/{SID_BOTH}"))),
         "a new view on the first machine, the pane's state on #app the new view's, no pairing hint on the paired machine, and the list's id in the address: {switched}"
     );
+    let paired_help = harness::probe(&tab, help);
+    assert!(
+        paired_help
+            .as_str()
+            .is_some_and(|h| h.starts_with("Monitor is paired")),
+        "the help left open says the paired machine's, not the unpaired one's: {paired_help}"
+    );
     // Write mode turns on for the paired machine.
     let write = "document.getElementById('writeSwitch').getAttribute('aria-checked')";
     harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
@@ -775,6 +792,11 @@ fn the_web_app_over_two_machines_reads_each_session_from_its_own_machine() {
         chose,
         serde_json::json!({ "address": format!("b/{SID_BOTH}"), "write": "false", "pairHint": true }),
         "⌘K's row opens on its machine, where write mode is off: the machine is not paired"
+    );
+    assert_eq!(
+        harness::probe(&tab, help),
+        unpaired_help,
+        "back on the unpaired machine the open help says its words again"
     );
 
     // The browser's Back, across machines and on one, the list's selection following.

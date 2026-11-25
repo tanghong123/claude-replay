@@ -31050,6 +31050,13 @@ fn the_write_switch_says_why_it_is_off_for_this_reader() {
                     .is_some_and(|r| r.contains("Pair this browser first")),
             "its switch is disabled and says to pair this browser first: {unpaired_browser}"
         );
+        // #s709: the rail's ✎ says it in its own words for this machine (`railHere`), never the
+        // tooltip's, which offers a click the rail does not.
+        assert_eq!(
+            harness::eval(&other, "document.getElementById('sidebarMiniWrite').title"),
+            serde_json::json!("Write mode: Pair this browser first to turn on write mode: run agent-monitor --pair in a terminal here."),
+            "at this machine the rail's ✎ names the command to run here"
+        );
         harness::eval(
             &other,
             "document.getElementById('writeSwitch').click(); 'ok'",
@@ -31102,6 +31109,11 @@ fn the_write_switch_says_why_it_is_off_for_this_reader() {
             Duration::from_secs(20),
             "document.body && document.body.dataset.write",
         );
+        assert_eq!(
+            harness::eval(&remote, "document.getElementById('sidebarMiniWrite').title"),
+            serde_json::json!("Write mode: Pair this browser first to turn on write mode: Write mode's help in the sidebar gives the command to run on the monitor's machine."),
+            "elsewhere the rail's ✎ points at the help in the sidebar (`rail`)"
+        );
         harness::eval(
             &remote,
             "document.getElementById('writeSwitch').click(); 'ok'",
@@ -31137,11 +31149,12 @@ fn the_write_switch_says_why_it_is_off_for_this_reader() {
 }
 
 /// What the pair-first advice reads off the page: the line under Write mode's switch, the tooltip
-/// beside it with its computed display and visibility and its box against the row's, the sidebar's
-/// and the open help's title and first paragraph, the row's greyed class and whether the pointer is
-/// over it, the switch's `aria-describedby`, the rail's ✎ title, the help, and whether this is a
-/// touch screen.
-const WRITE_TIP: &str = "(function(){ var $ = function (id) { return document.getElementById(id); }, tip = $('writeTip'), cs = tip ? getComputedStyle(tip) : null, row = $('writeBtn').getBoundingClientRect(), side = document.querySelector('#app>.sidebar').getBoundingClientRect(), box = tip && tip.getClientRects().length ? tip.getBoundingClientRect() : null, line = $('writeReason'), help = $('writeHelp'), meets = function (el) { if (!box || !el || !el.getClientRects().length) return false; var r = el.getBoundingClientRect(); return box.left < r.right && r.left < box.right && box.top < r.bottom && r.top < box.bottom; }; return JSON.stringify({ write: document.body.dataset.write, disabled: $('writeSwitch').getAttribute('aria-disabled'), rowDisabled: $('writeBtn').classList.contains('disabled'), rowHover: $('writeBtn').matches(':hover'), line: line.hidden ? null : line.textContent, lineShown: !line.hidden && line.getClientRects().length > 0, tip: tip ? tip.textContent : null, tipDisplay: cs ? cs.display : null, tipShown: !!cs && cs.display !== 'none' && cs.visibility === 'visible' && cs.opacity === '1', belowRow: !!box && box.top >= row.bottom - 1, insideSidebar: !!box && box.left >= side.left && box.right <= side.right + 0.5, overHelp: meets(help.querySelector('b')) || meets(help.querySelector('p')), describedBy: $('writeSwitch').getAttribute('aria-describedby'), rail: $('sidebarMiniWrite').title, help: help.hidden ? null : help.textContent, pairButton: [...document.querySelectorAll('#writeHelp .write-pair button')].map(function (b) { return b.textContent; }), coarse: matchMedia('(pointer: coarse)').matches }); })()";
+/// beside it with its computed display and visibility and its box against the row's and the
+/// sidebar's, whether it would cover the open help's title or first paragraph if it were drawn (its
+/// box read with its display forced for that one read: hidden, it has none), the row's greyed class
+/// and whether the pointer is over it, the switch's `aria-describedby`, the rail's ✎ title, the
+/// help, and whether this is a touch screen.
+const WRITE_TIP: &str = "(function(){ var $ = function (id) { return document.getElementById(id); }, tip = $('writeTip'), cs = tip ? getComputedStyle(tip) : null, row = $('writeBtn').getBoundingClientRect(), side = document.querySelector('#app>.sidebar').getBoundingClientRect(), box = tip && tip.getClientRects().length ? tip.getBoundingClientRect() : null, line = $('writeReason'), help = $('writeHelp'), meets = function (el, at) { if (!at || !el || !el.getClientRects().length) return false; var r = el.getBoundingClientRect(); return at.left < r.right && r.left < at.right && at.top < r.bottom && r.top < at.bottom; }, drawn = function () { if (!tip) return null; var was = tip.style.display; tip.style.display = 'block'; var r = tip.getBoundingClientRect(); tip.style.display = was; return r; }, would = drawn(); return JSON.stringify({ write: document.body.dataset.write, disabled: $('writeSwitch').getAttribute('aria-disabled'), rowDisabled: $('writeBtn').classList.contains('disabled'), rowHover: $('writeBtn').matches(':hover'), line: line.hidden ? null : line.textContent, lineShown: !line.hidden && line.getClientRects().length > 0, tip: tip ? tip.textContent : null, tipDisplay: cs ? cs.display : null, tipShown: !!cs && cs.display !== 'none' && cs.visibility === 'visible' && cs.opacity === '1', belowRow: !!box && box.top >= row.bottom - 1, insideSidebar: !!box && box.left >= side.left && box.right <= side.right + 0.5, wouldCover: !help.hidden && (meets(help.querySelector('b'), would) || meets(help.querySelector('p'), would)), describedBy: $('writeSwitch').getAttribute('aria-describedby'), rail: $('sidebarMiniWrite').title, help: help.hidden ? null : help.textContent, pairButton: [...document.querySelectorAll('#writeHelp .write-pair button')].map(function (b) { return b.textContent; }), coarse: matchMedia('(pointer: coarse)').matches }); })()";
 
 fn write_tip(tab: &headless_chrome::Tab) -> serde_json::Value {
     serde_json::from_str(harness::eval(tab, WRITE_TIP).as_str().unwrap_or("{}")).unwrap_or_default()
@@ -31159,10 +31172,12 @@ fn centre_of(tab: &headless_chrome::Tab, selector: &str) -> (f64, f64) {
 /// Where writing needs pairing, Write mode's greyed switch advises pairing first wherever the reader
 /// looks: the line under it leads with "Pair first", hovering the row shows how in a tooltip under it
 /// (at this machine, that a click shows how to pair this browser, and the command), and the rail's ✎
-/// says to pair first and the command in its title, offering no click, since on the rail the help
-/// opens inside the list it hides. Over ⓘ the tooltip gives way to ⓘ's own title. A mouse click on
-/// the row opens the help with its Pair this browser button, and with the pointer still resting on
-/// the row the tooltip is gone rather than over the help; a click on the line opens it too. A phone
+/// says to pair first and the command to run here in its title, offering no click, since on the rail
+/// the help opens inside the list it hides. Over ⓘ the tooltip gives way to ⓘ's own title. A mouse
+/// click on the row opens the help with its Pair this browser button, and with the pointer still
+/// resting on the row the tooltip is gone rather than over the help, where drawn it would lie; a
+/// click on the line opens it too, and so does Enter on the focused switch, the focus left there
+/// showing no tooltip over the help either (#s709). A phone
 /// has no hover, so no tooltip is drawn there at all (its computed display, which no hover state
 /// decides); the line stands, and a tap on it opens the same help. A page that may write carries no
 /// advice: its row is not greyed, and the tooltip stays empty and hidden over it.
@@ -31202,7 +31217,7 @@ fn a_disabled_write_switch_advises_pairing_first() {
                 .is_some_and(|l| l.starts_with("Pair first to turn it on")
                     && l.contains("agent-monitor --pair"))
             && away["rail"]
-                == "Write mode: Pair first to turn on write mode: run agent-monitor --pair in a terminal on the monitor's machine.",
+                == "Write mode: Pair first to turn on write mode: run agent-monitor --pair in a terminal here.",
         "away from the greyed row the advice is the line under it, and the rail's ✎ says to pair first and how, offering no click: {away}"
     );
     // Over the row's label: ⓘ sits beside it, and over ⓘ the tooltip gives way.
@@ -31267,8 +31282,8 @@ fn a_disabled_write_switch_advises_pairing_first() {
             && helped["pairButton"] == serde_json::json!(["Pair this browser"])
             && helped["rowHover"] == true
             && helped["tipShown"] == false
-            && helped["overHelp"] == false,
-        "a click on the row opens the help, which offers pairing this browser, and with the pointer still on the row no tooltip covers it: {helped}"
+            && helped["wouldCover"] == true,
+        "a click on the row opens the help, which offers pairing this browser, and with the pointer still on the row no tooltip covers it, where one drawn would: {helped}"
     );
     // A click on the line opens the help as well, on a page where it is not yet open.
     unpaired.open(&tab, &format!("?ui=app&session={WRITE_SID}"));
@@ -31297,6 +31312,54 @@ fn a_disabled_write_switch_advises_pairing_first() {
             && lined["pairButton"] == serde_json::json!(["Pair this browser"]),
         "a click on the line opens the help: {lined}"
     );
+    // The keyboard (#s709): Enter on the focused switch opens the help too, a button's own
+    // activation, and with the focus left there the tooltip a focus shows gives way to the help as
+    // a resting pointer's does. In a browser of its own, which goes with the key it pressed: a CDP
+    // key the page does not take can repeat into what comes after (#270).
+    {
+        let (_keys_browser, keys) = harness::chrome_tab();
+        harness::resize(&keys, 1280.0, 900.0);
+        unpaired.pair(&keys);
+        unpaired.open(&keys, &format!("?ui=app&session={WRITE_SID}"));
+        harness::until(
+            &keys,
+            "document.body.dataset.write === 'monitor' && !!document.querySelector('.transcript .turn.user') && document.getElementById('writeHelp').hidden",
+            "the unpaired page to open in a browser of its own, the help shut",
+            Duration::from_secs(20),
+            WRITE_TIP,
+        );
+        harness::eval(
+            &keys,
+            "document.getElementById('writeSwitch').focus(); 'ok'",
+        );
+        // The premise: a focus no pointer gave shows the tooltip, as a hover does, so the help is
+        // what takes it away below.
+        harness::until(
+            &keys,
+            "(function(){ var s = document.getElementById('writeSwitch'), cs = getComputedStyle(document.getElementById('writeTip')); return s.matches(':focus-visible') && cs.visibility === 'visible' && cs.opacity === '1' && document.getElementById('writeHelp').hidden; })()",
+            "the focused switch to show the tooltip, the help still shut",
+            Duration::from_secs(5),
+            WRITE_TIP,
+        );
+        keys.press_key("Enter").expect("Enter");
+        harness::until(
+            &keys,
+            "!document.getElementById('writeHelp').hidden && document.activeElement === document.getElementById('writeSwitch')",
+            "Enter on the focused switch to open the help, the focus left on the switch",
+            Duration::from_secs(5),
+            WRITE_TIP,
+        );
+        std::thread::sleep(Duration::from_millis(500));
+        let keyed = write_tip(&keys);
+        assert!(
+            keyed["help"]
+                .as_str()
+                .is_some_and(|h| h.contains("Write mode needs a paired monitor"))
+                && keyed["tipShown"] == false
+                && keyed["wouldCover"] == true,
+            "Enter on the focused switch opens the help, and the focus left there shows no tooltip over it: {keyed}"
+        );
+    }
 
     // A phone: no hover, so the line is the advice and a tap on it opens the help.
     let (_phone_browser, phone) = harness::chrome_tab();

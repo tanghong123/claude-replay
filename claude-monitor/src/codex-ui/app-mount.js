@@ -873,11 +873,15 @@ var mobileShell;
 // the switch or ⓘ opens the help, which says the same how at length.
 // The collapsed rail's ✎ says it in its title (`rail`, `railHere`, else `tip`), which offers no
 // click: on the rail the help would open inside the list the rail hides, so nothing would show.
+// The help, once open, stays open, and says what writing needs NOW: over several machines a session
+// of another may open beside it (#s709), so a paint draws it again while it is open, when its words
+// would change (a redraw with the same words would only drop a focus or a selection inside it).
 const WRITE_NEED = {
   monitor: {
     line: "Pair first to turn it on: <code>agent-monitor --pair</code>",
     tip: "Pair first to turn on write mode: run agent-monitor --pair in a terminal on the monitor's machine.",
     tipHere: "Pair first to turn on write mode. Click for how to pair this browser (it pairs the monitor too), or run agent-monitor --pair in a terminal here.",
+    railHere: "Pair first to turn on write mode: run agent-monitor --pair in a terminal here.",
     help: "<b>Write mode needs a paired monitor</b><p>Run this in a terminal on the monitor's machine:</p><code>agent-monitor --pair</code>",
     here: "<b>Write mode needs a paired monitor</b><p>Pairing this browser pairs the monitor too: from then on it requires pairing for every browser and tool that reaches it.</p><p class='write-pair'></p><p>Or run this in a terminal on this machine:</p><code>agent-monitor --pair</code>",
   },
@@ -956,8 +960,21 @@ function paintWrite() {
   writeTip.textContent = need ? writeTipText(need) : "";
   if (need) page.byId("writeSwitch").setAttribute("aria-describedby", "writeTip");
   else page.byId("writeSwitch").removeAttribute("aria-describedby");
+  if (!page.byId("writeHelp").hidden && pairHelpKey() !== drawnPairHelp) drawPairHelp();
 }
+/** What decides the help's words: what writing needs, whether the reader pairs from here, and the
+ *  server the help is about (its command and its button name it). */
+const pairHelpKey = () => `${writeNeedNow()}|${pairsHere(writeNeedWords())}|${handleOf(viewMachine)?.base || ""}`;
+let drawnPairHelp = "";
 function showPairHelp() {
+  drawPairHelp();
+  const help = page.byId("writeHelp");
+  help.hidden = false; help.classList.add("show");
+}
+/** The help's words for what writing needs now (`showPairHelp` opens it, `paintWrite` keeps it
+ *  current while it is open). */
+function drawPairHelp() {
+  drawnPairHelp = pairHelpKey();
   const help = page.byId("writeHelp");
   const need = writeNeedWords();
   // The server whose writes the help is about: the open session's machine's over several.
@@ -978,7 +995,6 @@ function showPairHelp() {
     go.onclick = () => location.assign(`${handle.base || ""}/pair`);
     help.querySelector(".write-pair").append(go);
   }
-  help.hidden = false; help.classList.add("show");
 }
 page.byId("writeSwitch").onclick = () => {
   if (writeNeedNow()) { showPairHelp(); return; }
