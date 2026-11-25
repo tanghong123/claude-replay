@@ -526,6 +526,8 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 :where(:root:has(#sessionView.pl-phone)) .toast{bottom:calc(max(calc(64px + env(safe-area-inset-bottom,0px)),calc(var(--phone-kb,0px) + 64px)) + 10px)}
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
 #app.phone-column-off .phone-dock:has(.header-searchbox:is(.phone-open,.has-query)){left:calc(12px + env(safe-area-inset-left,0px))}
+#app:not(.phone-column-off) .phone-dock:not(:has(.header-searchbox:is(.phone-open,.has-query))){left:auto}
+#app:not(.phone-column-off) #sessionView .jump-to-bottom{bottom:calc(var(--phone-dock-h) + 10px)}
 }
 :where(#app.app-drawer) .drawer-handle{left:calc(4px + env(safe-area-inset-left,0px))}
 #app:where(.app-drawer)>.sidebar{width:calc(min(86vw,360px) + env(safe-area-inset-left,0px));padding-top:env(safe-area-inset-top,0px);padding-left:env(safe-area-inset-left,0px);padding-bottom:env(safe-area-inset-bottom,0px)}

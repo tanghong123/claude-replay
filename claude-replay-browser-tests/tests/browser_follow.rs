@@ -28394,7 +28394,7 @@ fn a_phone_held_sideways_draws_its_sheets_over_the_drawer_handle() {
         );
         check(&tab, &format!("{at} Aa"), "#readingOptions");
         phone_tap(&tab, "#readingBtn");
-        // The panes ride the pill while it holds them (a wide phone's column takes them otherwise).
+        // The panes ride the pill (since #s703 on a wide phone's column too).
         let pill_has_turns = harness::eval(
             &tab,
             "(function(){ var b = document.getElementById('phonePane-turns'); return !!b && b.getBoundingClientRect().width > 0; })()",
@@ -28548,7 +28548,8 @@ fn a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_wh
         "Info sits beside the column and ends above the dock: {info}"
     );
     phone_tap(&tab, "#phoneInfo");
-    // The jump to the latest: on the dock's row, centred in the session.
+    // The jump to the latest: centred in the session, above the dock, whose pill reaches the middle of
+    // its row beside the column since #s703 (on its row with the column hidden, #s41).
     harness::wheel_scroll(&tab, harness::APP_SCROLLER, "s.scrollTop = 0");
     harness::until(
         &tab,
@@ -28557,11 +28558,11 @@ fn a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_wh
         Duration::from_secs(10),
         "document.querySelector('.jump-to-bottom').className",
     );
-    let jump = harness::eval(&tab, "(function(){ var j = document.querySelector('.jump-to-bottom').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(), w = document.querySelector('#sessionView>.workspace').getBoundingClientRect(); return JSON.stringify({ dy: Math.round(Math.abs((j.top + j.bottom) / 2 - (d.top + d.bottom) / 2)), dx: Math.round(Math.abs((j.left + j.right) / 2 - (w.left + w.right) / 2)) }); })()");
+    let jump = harness::eval(&tab, "(function(){ var j = document.querySelector('.jump-to-bottom').getBoundingClientRect(), d = document.getElementById('phoneDock').getBoundingClientRect(), w = document.querySelector('#sessionView>.workspace').getBoundingClientRect(); return JSON.stringify({ above: Math.round(d.top - j.bottom), dx: Math.round(Math.abs((j.left + j.right) / 2 - (w.left + w.right) / 2)) }); })()");
     let jump: serde_json::Value = serde_json::from_str(jump.as_str().unwrap_or("{}")).unwrap();
     assert!(
-        jump["dy"].as_i64().unwrap_or(99) <= 4 && jump["dx"].as_i64().unwrap_or(99) <= 2,
-        "the jump sits on the dock's row at the session's centre: {jump}"
+        jump["above"].as_i64().unwrap_or(-99) >= 0 && jump["dx"].as_i64().unwrap_or(99) <= 2,
+        "the jump sits above the dock at the session's centre: {jump}"
     );
     // The search: the jump steps aside, the funnel is there while typing, one tap opens the filter,
     // and the ✕ ends the search and its filter with it.

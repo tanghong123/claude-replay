@@ -2020,6 +2020,13 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
   .phone-dock{left:auto}
   #app.phone-column-off .phone-dock:has(.header-searchbox:is(.phone-open,.has-query)){left:calc(12px + env(safe-area-inset-left,0px))}
+  /* Beside the column the view is narrower than the 900px it calls wide, and so kept its dock across
+     the session with the pill at the left (the case measured it at the column's edge). The app, which
+     knows the column is there, puts it at the right, but while the find pill spans the session. */
+  #app:not(.phone-column-off) .phone-dock:not(:has(.header-searchbox:is(.phone-open,.has-query))){left:auto}
+  /* …which reaches the middle of its row there, where #s41 put the jump to the latest: the jump rises
+     above the dock, as it does beside a half-screen pane (#s645). */
+  #app:not(.phone-column-off) #sessionView .jump-to-bottom{bottom:calc(var(--phone-dock-h) + 10px)}
 }
 
 /* #s37 (design/phone-landscape.md §3.1) — the safe area. The page asks for the whole screen
