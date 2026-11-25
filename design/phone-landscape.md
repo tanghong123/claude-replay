@@ -117,7 +117,9 @@ side changes with the direction the phone is turned). This alone fixes issues 1 
   portrait drawer opens, where the same rule holds (Machines sits in the drawer's head there since
   #s705). They fold rather than float over the list, so no row is ever under them and the list's
   offset is never written: an offset written into an iOS glide does not stick. A desktop's sidebar
-  keeps them.
+  keeps them. Where the drawer is too short for the session filter's sheet under its head (Safari
+  held sideways on a 17 Pro leaves a 292pt page), the funnel's tap folds them first, at once, so
+  the sheet has their room, and closing the sheet brings them back.
 - **The transcript gets what is left:** about 530pt, 65–70 characters a line. The width that made
   lines too long now holds the navigation (issue 3).
 - **The handle hides and shows the column.** With it hidden, the transcript is centred at its
