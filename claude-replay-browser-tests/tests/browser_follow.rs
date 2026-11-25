@@ -32946,8 +32946,8 @@ fn drawer_head_targets_hold(tab: &headless_chrome::Tab, what: &str) {
 /// panes to the left. Instead, I'd put them to the right bottom, similar to the portrait mode." On a
 /// wide phone held sideways, with the session list's column shown and hidden:
 /// - Turns, Tasks, Agents and Aa sit in the dock's pill at the bottom right, as upright: each a finger's
-///   44 points, side by side without overlapping, inside the safe area, beside the column, right of
-///   the session's middle;
+///   44 points, side by side without overlapping, inside the safe area, beside the column, the pill
+///   right beside the search and centred right of the session's middle;
 /// - each pane opens its sheet from there, beside the column and above the dock, its title on top;
 /// - the column's head draws no pane glyph;
 /// - the jump to the latest overlaps none of the dock's controls, and answers a tap.
@@ -33003,12 +33003,13 @@ fn dock_panes_hold(tab: &headless_chrome::Tab, what: &str) {
     );
     let seen = find_targets(tab, &PILL);
     find_controls_hold(&seen, what, "the dock's pill");
-    // Where they sit: at the foot, right of the session's middle, beside the column, inside the safe
-    // area (the insets the harness gives the page: left and right 62, bottom 20).
+    // Where they sit: at the foot, beside the column, inside the safe area (the insets the harness
+    // gives the page: left and right 62, bottom 20), the pill right beside the search and centred right
+    // of the session's middle (beside the column the session is too narrow for every glyph to be).
     let list = serde_json::to_string(&PILL).unwrap();
     let place = harness::eval(
         tab,
-        &format!("(function(){{ var side = document.querySelector('#app>.sidebar'), col = side.getClientRects().length ? Math.round(side.getBoundingClientRect().right) : 0, w = document.querySelector('#sessionView>.workspace').getBoundingClientRect(); return JSON.stringify({{ col: col, mid: Math.round((w.left + w.right) / 2), w: innerWidth, h: innerHeight, boxes: {list}.map(function (s) {{ var r = document.querySelector(s).getBoundingClientRect(); return [Math.round(r.left), Math.round(r.right), Math.round(r.top), Math.round(r.bottom)]; }}) }}); }})()"),
+        &format!("(function(){{ var side = document.querySelector('#app>.sidebar'), col = side.getClientRects().length ? Math.round(side.getBoundingClientRect().right) : 0, w = document.querySelector('#sessionView>.workspace').getBoundingClientRect(); return JSON.stringify({{ col: col, mid: Math.round((w.left + w.right) / 2), w: innerWidth, h: innerHeight, search: Math.round(document.querySelector('#phoneDock .header-searchbox').getBoundingClientRect().left), boxes: {list}.map(function (s) {{ var r = document.querySelector(s).getBoundingClientRect(); return [Math.round(r.left), Math.round(r.right), Math.round(r.top), Math.round(r.bottom)]; }}) }}); }})()"),
     );
     let place: serde_json::Value =
         serde_json::from_str(place.as_str().unwrap_or("{}")).unwrap_or_default();
@@ -33020,13 +33021,20 @@ fn dock_panes_hold(tab: &headless_chrome::Tab, what: &str) {
         n(&place["h"]),
     );
     let boxes = place["boxes"].as_array().cloned().unwrap_or_default();
+    let (first, last) = (
+        boxes.first().map(|b| n(&b[0])).unwrap_or(-9999),
+        boxes.last().map(|b| n(&b[1])).unwrap_or(-9999),
+    );
     assert!(
         boxes.len() == PILL.len()
             && boxes.iter().all(|b| {
                 let (l, r, t, bt) = (n(&b[0]), n(&b[1]), n(&b[2]), n(&b[3]));
-                l >= col.max(62) && r <= w - 62 && bt <= h - 20 && t >= h - 90 && (l + r) / 2 > mid
-            }),
-        "{what}: the pill's glyphs sit at the foot, right of the session's middle ({mid}), beside the column ({col}) and inside the safe area: {place}"
+                l >= col.max(62) && r <= w - 62 && bt <= h - 20 && t >= h - 90
+            })
+            && (first + last) / 2 > mid
+            && last <= n(&place["search"])
+            && last >= n(&place["search"]) - 24,
+        "{what}: the pill's glyphs sit at the foot, beside the column ({col}) and inside the safe area, the pill right beside the search and centred right of the session's middle ({mid}): {place}"
     );
     // Each pane opens its sheet from the pill: beside the column, inside the safe area, above the dock.
     for (key, title) in [("turns", "Turns"), ("tasks", "Tasks"), ("agents", "Agents")] {

@@ -2027,6 +2027,9 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   /* …which reaches the middle of its row there, where #s41 put the jump to the latest: the jump rises
      above the dock, as it does beside a half-screen pane (#s645). */
   #app:not(.phone-column-off) #sessionView .jump-to-bottom{bottom:calc(var(--phone-dock-h) + 10px)}
+  /* Aa's sheet and the panes' rise from the pill there, at the right (a dock beside an open pane is
+     not drawn there: the rule beside the half-screen pane below). */
+  #app:not(.phone-column-off) #sessionView .reading-cluster>.reading-options,#app:not(.phone-column-off) .phone-pane-menu:not([hidden]){left:auto;right:calc(12px + env(safe-area-inset-right,0px))}
 }
 
 /* #s37 (design/phone-landscape.md §3.1) — the safe area. The page asks for the whole screen
