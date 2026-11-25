@@ -2125,7 +2125,7 @@
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .turn.peer .peer-card{max-width:calc(100% - 40px)}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .process-commentary,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .process-surface .process-commentary{display:block;position:relative;padding-left:22px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .process-commentary-mark{position:absolute;left:8px;top:14px;margin:0}
-#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .process-commentary-label{float:left;margin:0 7px 0 0}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .process-commentary-label{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .turn.user .turn-time{margin:4px 2px 0 8px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .spot-link,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .renderer>.renderer-spot{display:none!important}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .jump-to-bottom{right:auto;left:50%;translate:-50% 0;min-width:44px;height:44px;bottom:calc(var(--phone-dock-h) + 10px)}
