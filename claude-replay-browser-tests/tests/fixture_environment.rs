@@ -548,3 +548,42 @@ fn a_urls_origin_drops_its_path_query_and_fragment() {
         assert_eq!(harness::origin_of(url), origin, "the origin of {url}");
     }
 }
+
+/// #s710: what `--enable-automation` does to a case's page, measured on the Chrome the suite runs.
+/// A case's Chrome goes without the flag ([`harness::IGNORED_DEFAULTS`]); Chrome for Testing 159
+/// and branded Google Chrome 158 draw its "controlled by automated test software" bar in a headless
+/// window, 56px of a 1400x900 window's page (measured on a Mac), and 151 draws none. The case
+/// launches three browsers, a case's own, one given the flag back and one with `--test-type`, which
+/// keeps every startup bar away (measured on 158), and fails, naming the three heights and the
+/// Chrome, wherever the flag takes any of the page: the number CI's Linux Chrome gives is what
+/// decides how the cases that only fit a shorter page are fixed.
+#[test]
+#[ignore = "needs a local Chrome"]
+fn what_the_automation_flag_takes_of_a_case_s_page() {
+    let _serial = harness::serial();
+    let height = |extra: &[&str]| -> (i64, String) {
+        let (browser, tab) = harness::chrome_with_tab(extra);
+        tab.navigate_to("data:text/html,<p>height</p>").unwrap();
+        tab.wait_until_navigated().unwrap();
+        // Two readings a second apart that agree: a startup bar comes in after the first page.
+        let mut last = -1;
+        for _ in 0..10 {
+            std::thread::sleep(std::time::Duration::from_millis(1000));
+            let now = harness::eval(&tab, "innerHeight").as_i64().unwrap_or(-1);
+            if now == last {
+                break;
+            }
+            last = now;
+        }
+        let version = browser.get_version().map(|v| v.product).unwrap_or_default();
+        (last, version)
+    };
+    let (case, version) = height(&[]);
+    let (flagged, _) = height(&["--enable-automation"]);
+    let (test_type, _) = height(&["--test-type"]);
+    assert_eq!(
+        case, flagged,
+        "{version}, a 1400x900 window: a case's page {case}px tall, {flagged}px with \
+         --enable-automation, {test_type}px with --test-type"
+    );
+}
