@@ -399,7 +399,7 @@ let droppedAttention = "";
       if (kind === "dropped") continue;
       assert.ok(sel.includes(kind === "drawer" ? ".app-drawer" : kind === "listed" ? ":not(.app-drawer)" : "#sessionView.pl-phone"), `${kind}: ${sel}`);
       if (/\.(?:drawer-handle|drawer-scrim|sidebar-mini|side-head|tree-row)(?![\w-])/.test(sel)) assert.equal(kind, "drawer", `the list's parts are the drawer's: ${sel}`);
-      if (/\.(?:phone-pane-body|toast)(?![\w-])|#taskPopover/.test(sel)) assert.equal(kind, "phone", `the view's parts are the phone reader's: ${sel}`);
+      if (/\.toast(?![\w-])|#taskPopover/.test(sel)) assert.equal(kind, "phone", `the view's parts are the phone reader's: ${sel}`);
     }
     const widthQueries = [...new Set((derived.app.match(/@media[^{]*/g) || []).filter(q => /width/.test(q)).map(q => q.replace(/\s+/g, "")))];
     assert.deepEqual(widthQueries.filter(q => !styles.APP_KEPT_QUERIES.includes(q)), [], "the app's file keeps a window's width only where the order does not decide (APP_KEPT_QUERIES)");

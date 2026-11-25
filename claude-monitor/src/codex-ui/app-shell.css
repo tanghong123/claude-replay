@@ -415,7 +415,6 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 #app:where(.app-drawer) .section-view-menu .section-menu-name{max-width:60%;font-size:12px}
 :where(:root:has(#sessionView.pl-phone)) :is(#sessionView,#app) .navigator-options .scope-option{height:44px;font-size:14px}
 :where(:root:has(#sessionView.pl-phone)) :is(#sessionView,#app) .navigator-options .scope-menu-action{min-height:36px;padding:0 8px}
-:where(:root:has(#sessionView.pl-phone)) .phone-pane-body{flex:1 1 auto;min-height:0;overflow-y:auto;overscroll-behavior:contain;padding:0 6px 6px}
 :where(:root:has(#sessionView.pl-phone)) input:not([type=checkbox]):not([type=radio]):not([type=range]),:where(:root:has(#sessionView.pl-phone)) textarea,:where(:root:has(#sessionView.pl-phone)) select{font-size:16px!important}
 :where(:root:has(#sessionView.pl-phone)) :is(#sessionView,#app) button{-webkit-user-select:none;user-select:none;-webkit-touch-callout:none}
 :where(:root:has(#sessionView.pl-phone)) .toast{bottom:calc(max(calc(64px + env(safe-area-inset-bottom,0px)),calc(var(--phone-kb,0px) + 64px)) + 10px)}

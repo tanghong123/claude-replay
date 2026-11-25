@@ -333,7 +333,7 @@ export const APP_STATES = Object.freeze([
  *  the popover rows the session filter borrows from the outline's menu. A rule that names only these
  *  (or no name at all: `button`, `*`) styles both, and is in both files. */
 export const SHARED = Object.freeze([
-  ".active", ".count", ".current", ".disabled", ".dragging", ".icon", ".iconbtn", ".label", ".mode-switch", ".navigator-options", ".on", ".phone-pane-body",
+  ".active", ".count", ".current", ".disabled", ".dragging", ".icon", ".iconbtn", ".label", ".mode-switch", ".navigator-options", ".on",
   ".project", ".scope-check", ".scope-count", ".scope-menu-action", ".scope-menu-divider", ".scope-menu-head", ".scope-menu-list", ".scope-option",
   ".selected", ".session", ".show", ".smallbtn",
 ]);
@@ -707,7 +707,7 @@ const APP_QUERIES = new Map([
 export const APP_KEPT_QUERIES = Object.freeze(["@media(max-width:1180px)", "@media(max-width:900px)", "@media(pointer:coarse)and(max-height:500px)and(min-width:900px)"]);
 const DRAWER_PART = /(?:\.sidebar|\.side-head|\.side-list-head|#machinesHead|#machinesBtn|\.tree-row|\.tree|\.drawer-scrim|\.drawer-handle|\.sidebar-mini|\.sidebar-resizer|#sidebarCollapse|\.section-view-scrim|\.section-view-menu|\.session-filter-options)(?![\w-])/;
 const APP_GRID = /^(?:\.app|#app)(?:\.preview-off)?$/;
-const PHONE_VIEW_PART = /(?:\.phone-pane-body|\.phone-pane-jump|\.navigator-options|\.toast|\.activity-empty)(?![\w-])|^(?:input|textarea|select)(?![\w-])|\s(?:button)$/;
+const PHONE_VIEW_PART = /(?:\.navigator-options|\.toast)(?![\w-])|^(?:input|textarea|select)(?![\w-])|\s(?:button)$/;
 export const APP_ARRANGED = Object.freeze({ drawer: "#app.app-drawer", listed: "#app:not(.app-drawer)", phone: "#sessionView.pl-phone" });
 export function appGate(sel, mode, body = "") {
   if (mode === "dropped") return { kind: "dropped" };
