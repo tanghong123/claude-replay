@@ -248,11 +248,12 @@ pane, so step 6 also makes the view's root what they are placed against.
        view's (`.process-row.warn`, `.transcript .kbd`), alone it is in both files.
      - A name inside `:not()` decides nothing (`.turn:not(.dim)` is the view's).
      - `ROOT_CLASSES`: the classes the view's element carries.
-     - `OUTSIDE`: what the view draws that the page shows outside `#sessionView`, so the app's copy
-       of its rule styles it where it is: the Turns, Tasks and Agents lists with their rows, which a
-       wide phone's column borrows into the app's `#columnPane`. Read off the page in those states.
-       (The task card and its scrim were here while `viewRoot.layer()` appended them to `body`;
-       since #s431 stage 4 they are drawn in the view's element.)
+     - `OUTSIDE` (gone since #s704): what the view drew that the page showed outside
+       `#sessionView`, so the app's copy of its rule styled it where it was: the Turns, Tasks and
+       Agents lists with their rows, which a wide phone's column borrowed into the app's
+       `#columnPane` until #s703, and the task card and its scrim while `viewRoot.layer()` appended
+       them to `body` (drawn in the view's element since #s431 stage 4). Nothing the view draws is
+       shown outside it now.
      - Everything else is the view's alone.
    - **What cannot hang under the view stops the build**, none of it in the sources today: a
      selector going on from the view's element to its siblings (`.pane-open+.x`); one led by a

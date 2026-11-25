@@ -297,8 +297,8 @@ export const LIST_CHROME = Object.freeze([
 /** The names of the list's body that the page also shows OUTSIDE `#sessionList`: the rows the rail's
  *  flyout draws in the page's body (an agent's projects and sessions, through the same functions the
  *  tree draws them with), and the empty line, which the flyout and the app's session search draw too.
- *  A rule naming only these (and shared words) is in both files, as the view's `OUTSIDE` are: the
- *  app's copy styles them where they are shown, the list's in its element. The contract reads the
+ *  A rule naming only these (and shared words) is in both files: the app's copy styles them where
+ *  they are shown, the list's in its element. The contract reads the
  *  flyout's functions and holds this list to what they draw. */
 export const LIST_SHOWN_OUTSIDE = Object.freeze([
   ".agent-monogram", ".machine-stale", ".no-results",
@@ -321,17 +321,19 @@ export const LIST_OUTSIDE = Object.freeze([
 ]);
 
 /** The app's states, kept on `#app` (stage 5a's groups): its rail, the drawer and its one-row head
- *  (#s705), the nav's rows folded as the list scrolls (#s701), and a wide phone's column. A rule that reads one is the app placing or styling the
+ *  (#s705), the nav's rows folded as the list scrolls (#s701), a wide phone's column, and the side a
+ *  phone held sideways keeps its island on (#s702; the view reads its own, `pl-island-*`). A rule that reads one is the app placing or styling the
  *  view from outside, and stays the app's (stage 6 lays the view out by its own pane's size). */
 export const APP_STATES = Object.freeze([
   ".mobile-detail", ".phone-column-off", ".sidebar-off", ".sidebar-tight", ".app-drawer", ".app-holding", ".drawer-one-row", ".nav-away", ".nav-sliding",
+  ".island-left", ".island-right",
 ]);
 
 /** Names the app's chrome and the view both draw: the glyph button, generic states and labels, and
  *  the popover rows the session filter borrows from the outline's menu. A rule that names only these
  *  (or no name at all: `button`, `*`) styles both, and is in both files. */
 export const SHARED = Object.freeze([
-  ".active", ".count", ".current", ".disabled", ".dragging", ".icon", ".iconbtn", ".label", ".mode-switch", ".navigator-options", ".on", ".phone-pane-body",
+  ".active", ".count", ".current", ".disabled", ".dragging", ".icon", ".iconbtn", ".label", ".mode-switch", ".navigator-options", ".on",
   ".project", ".scope-check", ".scope-count", ".scope-menu-action", ".scope-menu-divider", ".scope-menu-head", ".scope-menu-list", ".scope-option",
   ".selected", ".session", ".show", ".smallbtn",
 ]);
@@ -353,23 +355,6 @@ export const COMMON = Object.freeze([
  *  rule led by one may style the view's element itself. */
 export const ROOT_CLASSES = Object.freeze([
   ".session-view", ".composing", ".keyboard-up", ".outline-in-bar", ".pane-open", ".preview-full", ".preview-off", ".resizing", ".sv-mounting", ".wide", ".wrap-code",
-]);
-
-/** What the view draws that the page shows OUTSIDE `#sessionView`, so a rule for it is in both files
- *  and the app's copy styles it where it is:
- *  - what the view appends to `viewRoot.layer()`, the page's `body`: only the copy field and a
- *    download's link, which carry no class (the task card and its dim are drawn in the view's element
- *    since #s431 stage 4);
- *  - the outline's Turns, Tasks and Agents lists, which a wide phone's column borrowed into the app's
- *    sidebar (`PHONE_PANES`) until #s703, with their rows; nothing draws them outside the view now,
- *    and #s704 takes them out of this list. Read off the page in each of those states, plus the rows
- *    the hermetic page cannot draw (stage 5a's shared list).
- *  A name that is one of these, or starts with one and a hyphen. */
-export const OUTSIDE = Object.freeze([
-  "#navigatorTurns", "#navigatorWork", "#navigatorAgents", ".navigator-list",
-  ".activity-empty", ".agent-state", ".agents-filter-row", ".tasks-filter-row", ".outline-agent", ".outline-epoch", ".outline-label", ".outline-number", ".outline-peer",
-  ".outline-quote-marker", ".outline-quoted", ".outline-reply-count", ".outline-turn-pending", ".outline-turn-row",
-  ".task-state", ".work-copy", ".work-group", ".work-tail", ".work-task",
 ]);
 
 /** Custom properties a script writes on the page's root (`viewRoot.styleRoot()` or `page.html()`), or
@@ -422,7 +407,6 @@ const CHROME_NAMES = new Set([...APP_CHROME, ...LIST_CHROME, ...LIST_OUTSIDE]);
 const STATE_NAMES = new Set(APP_STATES);
 const SHARED_NAMES = new Set([...SHARED, ...COMMON]);
 const ROOT_NAMES = new Set(ROOT_CLASSES);
-const isOutside = name => OUTSIDE.some(prefix => name === prefix || name.startsWith(`${prefix}-`));
 const namesIn = text => text.match(NAME) || [];
 /** A compound without its `:not(…)` parts (two levels of parentheses inside, as the sources write). */
 const withoutNot = text => text.replace(/:not\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)/g, "");
@@ -511,7 +495,6 @@ export function classify(selector) {
   const under = `${root()} ${joinCompounds(rest)}`;
   const selectors = onRoot ? [`${root()}${lead.replace(/^\*/, "")}${tailText}`, under] : [under];
   if (!view.length) return { kind: "both: no name of the view's own", app: selector, view: selectors };
-  if (view.some(isOutside)) return { kind: "both: the view's, shown outside it", app: selector, view: selectors };
   return { kind: "the view's", app: null, view: selectors };
 }
 
@@ -724,7 +707,7 @@ const APP_QUERIES = new Map([
 export const APP_KEPT_QUERIES = Object.freeze(["@media(max-width:1180px)", "@media(max-width:900px)", "@media(pointer:coarse)and(max-height:500px)and(min-width:900px)"]);
 const DRAWER_PART = /(?:\.sidebar|\.side-head|\.side-list-head|#machinesHead|#machinesBtn|\.tree-row|\.tree|\.drawer-scrim|\.drawer-handle|\.sidebar-mini|\.sidebar-resizer|#sidebarCollapse|\.section-view-scrim|\.section-view-menu|\.session-filter-options)(?![\w-])/;
 const APP_GRID = /^(?:\.app|#app)(?:\.preview-off)?$/;
-const PHONE_VIEW_PART = /(?:\.phone-pane-body|\.phone-pane-jump|\.navigator-options|\.toast|\.activity-empty)(?![\w-])|^(?:input|textarea|select)(?![\w-])|\s(?:button)$/;
+const PHONE_VIEW_PART = /(?:\.navigator-options|\.toast)(?![\w-])|^(?:input|textarea|select)(?![\w-])|\s(?:button)$/;
 export const APP_ARRANGED = Object.freeze({ drawer: "#app.app-drawer", listed: "#app:not(.app-drawer)", phone: "#sessionView.pl-phone" });
 export function appGate(sel, mode, body = "") {
   if (mode === "dropped") return { kind: "dropped" };

@@ -20,7 +20,7 @@ import { escapeText } from "./view-model.js";
 import { mountSessionList, OPTIONAL_CONTROLS as LIST_CONTROLS } from "./session-list-view.js";
 import { mountSessionView, OPTIONAL_CONTROLS as VIEW_CONTROLS } from "./session-view.js";
 import { page, viewRoot } from "./view-root.js";
-import { arrangeApp, GLIDE_MS, LIST_MIN } from "./pane-layout.js";
+import { arrangeApp, GLIDE_MS, islandSide, LIST_MIN, onScreenTurn } from "./pane-layout.js";
 
 /** Every option `mountApp` takes; any other name is refused (stage 2: one server; stage 3, #s595:
  *  several machines and the assets the app carries; stage 4, #s596: the native app's own). Each is in
@@ -591,6 +591,7 @@ const listInputs = () => ({
  *  transcript once its width settles), except for the view's own pane and outline: the view remeasures
  *  for those itself, from the arrangement it is about to make. */
 function arrangeList({ remeasure = true } = {}) {
+  paintIsland();
   const decided = arrangeApp(listInputs());
   if (listArranged && JSON.stringify(decided) === JSON.stringify(listArranged)) return;
   // A window narrowed into the drawer finds it shut, over nothing: it opens from its handle.
@@ -654,6 +655,17 @@ page.byId("sidebarCollapse").title = `Collapse the sidebar into its icon rail  (
 addEventListener("resize", () => arrangeList());
 coarseScreen.addEventListener("change", () => arrangeList());
 shortScreen.addEventListener("change", () => arrangeList());
+/** #s702: the side a phone held sideways keeps its island on (`islandSide`, the view's own rule), on
+ *  `#app` as `island-left` or `island-right`: the app's chrome there (the drawer, its handle, a wide
+ *  phone's column) takes the screen's whole inset on that side, and the other side keeps what its
+ *  corners need (production.css, `--safe-cap-left` and `--safe-cap-right`). Read as the list is laid out and
+ *  as the phone turns, which from one side to the other changes no size. */
+function paintIsland() {
+  const side = islandSide();
+  app.classList.toggle("island-left", side === "left");
+  app.classList.toggle("island-right", side === "right");
+}
+onScreenTurn(paintIsland);
 // #s593: the layout width can change with no `resize` event. Safari's page zoom on an iPad (⌘ and =)
 // took an 834px page to 725 and fired none, so the list stayed a column where the order gives the
 // drawer, until a reload. The root's own box sees every change of the width, however it came.
