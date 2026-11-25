@@ -751,10 +751,14 @@ fn usage_tokens(usage: &Value) -> TokenCounts {
 /// is rewritten. Measured on hong-devserver,
 /// 2026-11-24, over every Claude transcript (1,353,275 replies): `session_id` differed from
 /// `sessionId` on exactly the 7,521 copy lines of 12 forks (clients 2.1.287 to 2.1.310, 3,588
-/// calls, about $456 counted in both sessions of a pair) and on no other reply; a sub-agent's
-/// lines carry none. So with no `requestSessionId` the fold reads `session_id`; the key wins
-/// where both are written. A sub-agent's line never reads `session_id`: its `sessionId` names the
-/// root session, so a `session_id` naming the sub-agent itself would read as a copy.
+/// calls, about $456 counted in both sessions of a pair) and on no other reply; a Claude
+/// sub-agent's lines carry none. So with no `requestSessionId` the fold reads `session_id`; a
+/// key that is a string wins where both are written. A sidechain line never reads `session_id`:
+/// a sub-agent's `sessionId` names the root session, so a `session_id` naming the sub-agent
+/// itself would read as a copy (Qwenwork, whose family shares this fold, writes one on its
+/// sidechain lines, equal to `sessionId` on this machine). Such a fork carried its parent's
+/// client tally as well (#s687): 9 of those 12 forks' only epoch began at the parent's
+/// `startTime`, so with its copies told apart that tally is no longer reported as the fork's.
 fn copied_reply(v: &Value) -> bool {
     let own = v.get("sessionId").and_then(Value::as_str);
     let sidechain = v.get("isSidechain").and_then(Value::as_bool) == Some(true);
@@ -762,11 +766,12 @@ fn copied_reply(v: &Value) -> bool {
         .get("requestSessionId")
         .and_then(Value::as_str)
         .or_else(|| {
-            (!sidechain)
-                .then(|| v.get("session_id").and_then(Value::as_str))
-                .flatten()
+            v.get("session_id")
+                .and_then(Value::as_str)
+                .filter(|_| !sidechain)
         });
-    matches!((from, own), (Some(from), Some(own)) if from != own)
+    // An empty value names no session (none met): never a copy on it.
+    matches!((from, own), (Some(from), Some(own)) if !from.is_empty() && from != own)
 }
 
 /// Last value wins; an empty or non-string value changes nothing. (The Codex family keeps its
@@ -2291,6 +2296,36 @@ mod copied_reply_tests {
         copied["requestSessionId"] = serde_json::json!("old");
         assert!(copied_reply(&copied), "the key names the parent: a copy");
         assert!(copied_reply(&older_reply_in("new", "old", "msg_E", 17)));
+        assert!(
+            !copied_reply(&older_reply_in("new", "", "msg_F", 19)),
+            "an empty session_id names no session"
+        );
+    }
+
+    /// #s688: an older client's fork carried its parent's tally too: on hong-devserver 9 of the 12
+    /// forks' only epoch began at the parent's own `startTime`, before the fork's last copy (one
+    /// fork with no reply of its own reported $3,492.62). So an unkeyed copy sets the #s687
+    /// cutoff as a keyed one does: the carried epoch is left out, and one begun after the copies
+    /// is reported. The copies are dated 2026-11-24T10:00:00Z (`reply_in`).
+    #[test]
+    fn an_older_fork_s_carried_tally_is_not_reported_as_its_own() {
+        const COPY_MS: i64 = 1_795_514_400_000; // 2026-11-24T10:00:00Z
+        let cost_state = |start: i64, usd: f64| {
+            serde_json::json!({"type": "cost-state", "sessionId": "new", "startTime": start,
+                "totalCostUSD": usd, "totalDuration": 600_000, "hasUnknownModelCost": false})
+        };
+        let mut acc = MetricsAcc::default();
+        for line in [
+            older_reply_in("new", "old", "msg_A", 5),
+            older_reply_in("new", "new", "msg_C", 11),
+            cost_state(COPY_MS - 86_400_000, 3_492.62),
+        ] {
+            acc.push(&line);
+        }
+        assert!(acc.clone().finish().reported_cost.is_none());
+        acc.push(&cost_state(COPY_MS + 300_000, 3.5));
+        let r = acc.finish().reported_cost.expect("the fork's own tally");
+        assert_eq!((r.epochs, r.usd), (1, 3.5));
     }
 
     /// The moved session's transcript in miniature: two copied calls (one over two lines, one
