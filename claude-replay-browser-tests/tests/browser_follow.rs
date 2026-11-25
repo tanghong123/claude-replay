@@ -29235,7 +29235,13 @@ fn a_phone_offers_the_jump_to_the_latest_after_a_fold_opened_at_the_end() {
     let jump = "JSON.stringify((function(){ var j = document.getElementById('jumpToBottom'), t = document.querySelector('#sessionView .transcript'); return { show: j.classList.contains('show'), opacity: getComputedStyle(j).opacity, below: Math.round(t.scrollHeight - t.scrollTop - t.clientHeight) }; })())";
     let offered = "(function(){ var j = document.getElementById('jumpToBottom'), t = document.querySelector('#sessionView .transcript'); if (t.scrollHeight - t.scrollTop - t.clientHeight <= 40 || !j.classList.contains('show') || getComputedStyle(j).opacity !== '1') return false; var r = j.getBoundingClientRect(), e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!e && (e === j || j.contains(e)); })()";
     let at_end = "(function(){ var t = document.querySelector('#sessionView .transcript'); return t.scrollHeight - t.scrollTop - t.clientHeight <= 4 && !document.getElementById('jumpToBottom').classList.contains('show'); })()";
-    harness::until(&tab, at_end, "the session opens at its end", Duration::from_secs(10), jump);
+    harness::until(
+        &tab,
+        at_end,
+        "the session opens at its end",
+        Duration::from_secs(10),
+        jump,
+    );
     // The last command's activity, opened by a finger where it sits on the screen.
     let (x, y) = phone_point(&tab, "(function(){ var heads = [].slice.call(document.querySelectorAll('#sessionView .transcript .renderer-head')).filter(function (e) { var r = e.getBoundingClientRect(); return r.height > 0 && r.top > 60 && r.bottom < innerHeight - 120 && /Ran 1 shell command/.test(e.textContent); }); var r = heads[heads.length - 1].getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
     harness::finger_tap(&tab, x, y);
@@ -29267,7 +29273,13 @@ fn a_phone_offers_the_jump_to_the_latest_after_a_fold_opened_at_the_end() {
     );
     let (jx, jy) = phone_point(&tab, "(function(){ var r = document.getElementById('jumpToBottom').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
     harness::finger_tap(&tab, jx, jy);
-    harness::until(&tab, at_end, "the jump takes the reader to the end", Duration::from_secs(10), jump);
+    harness::until(
+        &tab,
+        at_end,
+        "the jump takes the reader to the end",
+        Duration::from_secs(10),
+        jump,
+    );
 }
 
 /// #s700, the same stale paint through the one reshape the engine hears of itself: a diagram's
@@ -29278,11 +29290,16 @@ fn a_phone_offers_the_jump_to_the_latest_after_a_fold_opened_at_the_end() {
 fn a_phone_offers_the_jump_to_the_latest_after_a_diagram_s_source_opened_at_the_end() {
     let _serial = serial();
     let diagram = "flowchart LR\\n  A[Sample input] --> B[Mock output]\\n".to_string()
-        + &"%% Invented comment that makes the source tall without changing the diagram.\\n".repeat(60);
+        + &"%% Invented comment that makes the source tall without changing the diagram.\\n"
+            .repeat(60);
     let mut extra = String::new();
     extra += &harness::user_at("question 10: draw the flow", &harness::now_minus(50));
-    extra += &harness::assistant_at(&format!("answer 10: the flow\\n\\n```mermaid\\n{diagram}```"), &harness::now_minus(40));
-    let (_m, _b, tab, _path) = phone_world_at(3221, "phone-jump-after-diagram-source", 390, 844, &extra);
+    extra += &harness::assistant_at(
+        &format!("answer 10: the flow\\n\\n```mermaid\\n{diagram}```"),
+        &harness::now_minus(40),
+    );
+    let (_m, _b, tab, _path) =
+        phone_world_at(3221, "phone-jump-after-diagram-source", 390, 844, &extra);
     let jump = "JSON.stringify((function(){ var j = document.getElementById('jumpToBottom'), t = document.querySelector('#sessionView .transcript'); return { show: j.classList.contains('show'), opacity: getComputedStyle(j).opacity, below: Math.round(t.scrollHeight - t.scrollTop - t.clientHeight), source: !!document.querySelector('[data-mermaid] pre:not([hidden])') }; })())";
     let offered = "(function(){ var j = document.getElementById('jumpToBottom'), t = document.querySelector('#sessionView .transcript'); if (t.scrollHeight - t.scrollTop - t.clientHeight <= 40 || !j.classList.contains('show') || getComputedStyle(j).opacity !== '1') return false; var r = j.getBoundingClientRect(), e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!e && (e === j || j.contains(e)); })()";
     harness::until(
@@ -29309,12 +29326,32 @@ fn jump_after_search(port: u16, case: &str, deep: bool) {
     if deep {
         extra += &harness::tool_open_at("t-deep", &harness::now_minus(58));
         let body: String = (1..=80)
-            .map(|k| if k == 40 { "line 40 plover nest\\n".to_string() } else { format!("line {k}\\n") })
+            .map(|k| {
+                if k == 40 {
+                    "line 40 plover nest\\n".to_string()
+                } else {
+                    format!("line {k}\\n")
+                }
+            })
             .collect();
         extra += &format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"t-deep\",\"content\":\"{body}\"}}]}},\"timestamp\":\"{}\"}}\n", harness::now_minus(57));
         for k in 0..6u64 {
-            extra += &harness::user_at(&format!("question {} after: {}", 10 + k, "lorem ipsum dolor sit amet, consectetur. ".repeat(12)), &harness::now_minus(50 - k * 6));
-            extra += &harness::assistant_at(&format!("answer {} after: {}", 10 + k, "sed do eiusmod tempor incididunt ut labore. ".repeat(24)), &harness::now_minus(48 - k * 6));
+            extra += &harness::user_at(
+                &format!(
+                    "question {} after: {}",
+                    10 + k,
+                    "lorem ipsum dolor sit amet, consectetur. ".repeat(12)
+                ),
+                &harness::now_minus(50 - k * 6),
+            );
+            extra += &harness::assistant_at(
+                &format!(
+                    "answer {} after: {}",
+                    10 + k,
+                    "sed do eiusmod tempor incididunt ut labore. ".repeat(24)
+                ),
+                &harness::now_minus(48 - k * 6),
+            );
         }
     }
     let (_m, _b, tab, _path) = phone_world_at(port, case, 390, 844, &extra);
@@ -29346,7 +29383,8 @@ fn jump_after_search(port: u16, case: &str, deep: bool) {
         Duration::from_secs(5),
         "document.querySelector('.header-searchbox').className",
     );
-    tab.type_str(if deep { "plover" } else { "question" }).unwrap();
+    tab.type_str(if deep { "plover" } else { "question" })
+        .unwrap();
     tab.press_key("Enter").unwrap();
     harness::until(
         &tab,

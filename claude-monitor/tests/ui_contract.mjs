@@ -3029,8 +3029,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(vp, /if \(this\.pendingView\) \{ applyViewChoices\(this\.state, this\.pendingView\); this\.pendingView = null; \}/, "restored with the first batch, after the store's reset");
   assert.match(vp, /const view = viewChoices\(this\.state\);/, "…and saved with the position");
   const viewSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-view.js", import.meta.url), "utf8");
-  assert.match(viewSrc, /rerender: \(\) => \{ viewport\.readerReshaped\(\); viewport\.rerender\(\); viewport\.scheduleRemember\(\); \}/, "every choice schedules a save — and drops the tail pin first (#185), because everything reaching `rerender` is the reader reshaping the page themselves");
-  assert.match(viewSrc, /reshaped: \(\) => viewport\.readerReshaped\(\),/, "…and the branches that grow the page IN PLACE, without a re-render, have their own way to say so — the cap expander reveals rows and never reaches `rerender`, which is the path #185 was actually reported from");
+  assert.match(viewSrc, /rerender: \(\) => \{ viewport\.readerReshaped\(\); viewport\.rerender\(\); viewport\.scheduleRemember\(\); paintJump\(\); \}/, "every choice schedules a save — and drops the tail pin first (#185), because everything reaching `rerender` is the reader reshaping the page themselves; then paints the jump on the grown page (#s700)");
+  assert.match(viewSrc, /reshaped: \(\) => \{ viewport\.readerReshaped\(\); paintJump\(\); \},/, "…and the branches that grow the page IN PLACE, without a re-render, have their own way to say so — the cap expander reveals rows and never reaches `rerender`, which is the path #185 was actually reported from");
   assert.match(viewSrc, /addEventListener\("pagehide", \(\) => viewport\.remember\(\), \{ signal \}\);/, "…and leaving saves at once");
   console.log("#114 view state cases passed");
 }
