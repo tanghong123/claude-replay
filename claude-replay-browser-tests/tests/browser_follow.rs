@@ -10328,14 +10328,42 @@ fn the_app_shell_a_push_with_nothing_below_to_reveal_moves_nothing() {
     // through the whole range — the drawers close from the top, and only once they are heads does
     // the remainder scroll. The gap is measured at every step, not only at the end, because an
     // overlap mid-gesture is exactly what the owner photographed.
-    tab.set_bounds(headless_chrome::types::Bounds::Normal {
-        left: Some(0),
-        top: Some(0),
-        width: Some(1400.0),
-        height: Some(470.0),
-    })
-    .unwrap();
-    std::thread::sleep(std::time::Duration::from_millis(700));
+    //
+    // The short window leaves the column just taller than the SHUT chain, read off the page, so
+    // the walk has to shut every pane above the last to show it, whatever the platform's lines. A
+    // fixed 1400x470 did on the Mac and beneath CI's automation bar; with the page its whole window
+    // (#s710) CI's Linux Chrome showed the last card with Turns still 64px open, and the push
+    // rightly stopped there.
+    let shut_bottom = |s: &serde_json::Value| -> f64 {
+        let boxes = s["boxes"].as_array().cloned().unwrap_or_default();
+        let bodies: f64 = boxes
+            .iter()
+            .map(|b| b["body"].as_f64().unwrap_or(0.0))
+            .sum();
+        boxes
+            .last()
+            .and_then(|b| b["bottom"].as_f64())
+            .unwrap_or(0.0)
+            - bodies
+    };
+    let column = "document.querySelector('.session-navigator').getBoundingClientRect().height";
+    let mut short_h = 470.0;
+    for _ in 0..3 {
+        tab.set_bounds(headless_chrome::types::Bounds::Normal {
+            left: Some(0),
+            top: Some(0),
+            width: Some(1400.0),
+            height: Some(short_h),
+        })
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(700));
+        let view = harness::eval(&tab, column).as_f64().unwrap_or(0.0);
+        let want = shut_bottom(&harness::probe(&tab, state)) + 10.0;
+        if (view - want).abs() <= 3.0 {
+            break;
+        }
+        short_h -= view - want;
+    }
     let short = harness::probe(&tab, state);
     assert_eq!(
         short["lastWhollyVisible"], false,
