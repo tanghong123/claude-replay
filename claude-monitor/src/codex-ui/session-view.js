@@ -617,6 +617,8 @@ const viewport = new Viewport(transcript, byId("transcriptInner"), recordState, 
     // input LATER than the landing (#s259): the jump stamps intent itself, so its own scroll came
     // inside the window and cleared the landing it had just made.
     if (viewport.lastUserInput > recordState.landedAt && performance.now() - viewport.lastUserInput < viewport.userIntentMs) recordState.landed = null;
+    // #s700: the jump follows what is below as the reader moves, not only a flip of the pin.
+    if (byId("jumpToBottom").classList.contains("show") !== jumpWanted()) paintJump();
   },
   followChanged: paintJump
 });
@@ -657,9 +659,11 @@ bindComponentEvents(transcript, recordState, {
   // reader reshaping the page themselves — a fold, a cap, a prompt expanded, a raw toggle. Parked
   // at the tail that growth would otherwise be read as the tail moving away and converged on,
   // scrolling away the thing the click asked to see. The pin is dropped instead.
-  rerender: () => { viewport.readerReshaped(); viewport.rerender(); viewport.scheduleRemember(); },
+  // The pin dropped at the end paints the jump before the page has grown (#s700): paint it again
+  // once it has, so a fold opened at the end offers the way back at once.
+  rerender: () => { viewport.readerReshaped(); viewport.rerender(); viewport.scheduleRemember(); paintJump(); },
   // …and for the branches that grow the page IN PLACE without a re-render (the cap expander).
-  reshaped: () => viewport.readerReshaped(),
+  reshaped: () => { viewport.readerReshaped(); paintJump(); },
   // What only the page knows reaches the viewport history (#197): a fold, a prompt toggle.
   note: (kind, target) => viewport.noteAction(kind, target),
   codeSize: (key, delta) => setCodeOverride(key, { size: clampSize(effectiveCode(key).size + delta * SIZE_STEP) }),
@@ -3717,13 +3721,19 @@ function findRecord(id) { let found = null; const visit = record => { if (!recor
 // the arrow while nothing new arrived; once records arrive with the reader scrolled up, it
 // widens into a pill that SAYS how many, so the count is readable and not a tooltip. The count
 // is records, as the classic page counts them; a jump or a scroll to the tail clears it.
+// Only where there is somewhere to jump (#s41): a fold opened in a session shorter than the screen
+// leaves the reader not following, and the jump offered a way down to nothing below. What is below
+// changes as the reader scrolls and as the page grows, so it is asked again then (#s700: painted only
+// on a flip of the pin or new records, a jump drawn hidden at the end stayed hidden however far up the
+// reader went, a fold opened there being the way in).
+function jumpWanted() {
+  if (recordState.following) return false;
+  return recordState.newRecords > 0 || transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight > 4;
+}
 function paintJump() {
   const button = byId("jumpToBottom");
   const n = recordState.newRecords;
-  // Only where there is somewhere to jump (#s41): a fold opened in a session shorter than the screen
-  // leaves the reader not following, and the jump offered a way down to nothing below.
-  const below = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight > 4;
-  button.classList.toggle("show", !recordState.following && (below || n > 0));
+  button.classList.toggle("show", jumpWanted());
   button.classList.toggle("has-new", n > 0);
   button.setAttribute("aria-hidden", String(recordState.following));
   let count = button.querySelector(".jump-count");

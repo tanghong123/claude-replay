@@ -28681,6 +28681,169 @@ fn a_phone_ends_the_search_on_one_tap_of_its_done_with_the_keyboard_up() {
     );
 }
 
+/// #s700, Hong (the iOS app): "After doing a search, and close the search box, I lose the ability
+/// to jump to the bottom". The jump to the latest steps aside while the find pill holds the dock
+/// (#s41) and must be offered again once the search ends. On a phone: a glide up offers the jump and
+/// it takes the reader to the end (the control); then a search is opened, searched, stepped and ended
+/// with its ✕; then, wherever the reader is not at the end (straight away, or after another glide
+/// up), the jump is drawn, takes a tap, and takes the reader to the end.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_offers_the_jump_to_the_latest_again_after_a_search_ends() {
+    jump_after_search(3210, "phone-jump-after-search", false);
+}
+
+/// #s700 as Hong met it (his screenshots: the keyboard up while searching, then the reader left on
+/// turn 15 of 60 inside an agent process, a Bash output opened by the search): the hit is deep in a
+/// long Bash output with turns below it, and the search ends with the keyboard up.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_offers_the_jump_to_the_latest_again_after_a_search_in_a_tool_output_ends() {
+    jump_after_search(3218, "phone-jump-after-deep-search", true);
+}
+
+/// #s700, the stale paint behind it: at the end of a session the reader opens a fold (here the last
+/// command's activity). That drops the follow pin and paints the jump at once, while nothing is below
+/// yet, so it is drawn hidden; the open fold then puts the end below the reader. A glide up never
+/// flips the pin again (it is already down), and the jump was painted only on a flip or new records,
+/// so it stayed hidden however far the reader went (measured in Chrome before the fix: 1,495px below,
+/// `show` false, the engine not following). The jump follows what is below as the reader scrolls.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_offers_the_jump_to_the_latest_after_a_fold_opened_at_the_end() {
+    let _serial = serial();
+    let mut extra = String::new();
+    extra += &harness::user_at("question 10: read the gauges", &harness::now_minus(50));
+    extra += &harness::tool_open_at("t-gauges", &harness::now_minus(48));
+    extra += &harness::tool_result_lines("t-gauges", 300, &harness::now_minus(46));
+    extra += &harness::assistant_at("answer 10: nothing moved", &harness::now_minus(40));
+    let (_m, _b, tab, _path) = phone_world_at(3219, "phone-jump-after-fold", 390, 844, &extra);
+    let jump = "JSON.stringify((function(){ var j = document.getElementById('jumpToBottom'), t = document.querySelector('#sessionView .transcript'); return { show: j.classList.contains('show'), opacity: getComputedStyle(j).opacity, below: Math.round(t.scrollHeight - t.scrollTop - t.clientHeight) }; })())";
+    let offered = "(function(){ var j = document.getElementById('jumpToBottom'), t = document.querySelector('#sessionView .transcript'); if (t.scrollHeight - t.scrollTop - t.clientHeight <= 40 || !j.classList.contains('show') || getComputedStyle(j).opacity !== '1') return false; var r = j.getBoundingClientRect(), e = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!e && (e === j || j.contains(e)); })()";
+    let at_end = "(function(){ var t = document.querySelector('#sessionView .transcript'); return t.scrollHeight - t.scrollTop - t.clientHeight <= 4 && !document.getElementById('jumpToBottom').classList.contains('show'); })()";
+    harness::until(&tab, at_end, "the session opens at its end", Duration::from_secs(10), jump);
+    // The last command's activity, opened by a finger where it sits on the screen.
+    let (x, y) = phone_point(&tab, "(function(){ var heads = [].slice.call(document.querySelectorAll('#sessionView .transcript .renderer-head')).filter(function (e) { var r = e.getBoundingClientRect(); return r.height > 0 && r.top > 60 && r.bottom < innerHeight - 120 && /Ran 1 shell command/.test(e.textContent); }); var r = heads[heads.length - 1].getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    harness::finger_tap(&tab, x, y);
+    std::thread::sleep(Duration::from_millis(900));
+    println!("JUMP after the fold opened: {}", harness::eval(&tab, jump));
+    harness::touch_glide(&tab, -1500);
+    harness::until(
+        &tab,
+        offered,
+        "a glide up after the fold opened at the end offers the jump to the latest",
+        Duration::from_secs(10),
+        jump,
+    );
+    let (jx, jy) = phone_point(&tab, "(function(){ var r = document.getElementById('jumpToBottom').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    harness::finger_tap(&tab, jx, jy);
+    harness::until(&tab, at_end, "the jump takes the reader to the end", Duration::from_secs(10), jump);
+}
+
+fn jump_after_search(port: u16, case: &str, deep: bool) {
+    let _serial = serial();
+    let mut extra = String::new();
+    if deep {
+        extra += &harness::tool_open_at("t-deep", &harness::now_minus(58));
+        let body: String = (1..=80)
+            .map(|k| if k == 40 { "line 40 plover nest\\n".to_string() } else { format!("line {k}\\n") })
+            .collect();
+        extra += &format!("{{\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":[{{\"type\":\"tool_result\",\"tool_use_id\":\"t-deep\",\"content\":\"{body}\"}}]}},\"timestamp\":\"{}\"}}\n", harness::now_minus(57));
+        for k in 0..6u64 {
+            extra += &harness::user_at(&format!("question {} after: {}", 10 + k, "lorem ipsum dolor sit amet, consectetur. ".repeat(12)), &harness::now_minus(50 - k * 6));
+            extra += &harness::assistant_at(&format!("answer {} after: {}", 10 + k, "sed do eiusmod tempor incididunt ut labore. ".repeat(24)), &harness::now_minus(48 - k * 6));
+        }
+    }
+    let (_m, _b, tab, _path) = phone_world_at(port, case, 390, 844, &extra);
+    let jump = format!("JSON.stringify((function(){{ var j = document.getElementById('jumpToBottom'), t = document.querySelector('#sessionView .transcript'), b = document.querySelector('.header-searchbox'); return {{ show: j.classList.contains('show'), drawn: getComputedStyle(j).display !== 'none', hittable: ({PHONE_HITTABLE})(j), below: Math.round(t.scrollHeight - t.scrollTop - t.clientHeight), box: b.className }}; }})())");
+    let offered = format!("(function(){{ var j = document.getElementById('jumpToBottom'), t = document.querySelector('#sessionView .transcript'); return t.scrollHeight - t.scrollTop - t.clientHeight > 40 && j.classList.contains('show') && ({PHONE_HITTABLE})(j); }})()");
+    let at_end = "(function(){ var t = document.querySelector('#sessionView .transcript'); return t.scrollHeight - t.scrollTop - t.clientHeight <= 4 && !document.getElementById('jumpToBottom').classList.contains('show'); })()";
+    let tap_jump = |what: &str| {
+        let (x, y) = phone_point(&tab, "(function(){ var r = document.getElementById('jumpToBottom').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+        harness::finger_tap(&tab, x, y);
+        harness::until(&tab, at_end, what, Duration::from_secs(10), &jump);
+    };
+    // The control: before any search, a glide up offers the jump, and it works.
+    harness::touch_glide(&tab, -1500);
+    harness::until(
+        &tab,
+        &offered,
+        "before a search: a glide up offers the jump to the latest",
+        Duration::from_secs(10),
+        &jump,
+    );
+    tap_jump("before a search: the jump takes the reader to the end");
+    // A search, opened, searched, stepped, then ended with its ✕.
+    let (gx, gy) = phone_point(&tab, "(function(){ var r = document.querySelector('.header-searchbox').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    phone_tap_at(&tab, gx, gy);
+    harness::until(
+        &tab,
+        "document.querySelector('.header-searchbox').classList.contains('phone-open') && document.activeElement === document.getElementById('transcriptSearchInput')",
+        "a tap on the search to open it",
+        Duration::from_secs(5),
+        "document.querySelector('.header-searchbox').className",
+    );
+    tab.type_str(if deep { "plover" } else { "question" }).unwrap();
+    tab.press_key("Enter").unwrap();
+    harness::until(
+        &tab,
+        "/[1-9]/.test(document.getElementById('transcriptSearchCount').textContent) && !!document.querySelector('mark.search-mark.current')",
+        "the word's hits, one of them current",
+        Duration::from_secs(10),
+        &jump,
+    );
+    if deep {
+        // The keyboard up (336px of the foot covered) and the page scrolled under it, as iOS does.
+        harness::eval(&tab, "(function(){ Object.defineProperty(visualViewport, 'height', { configurable: true, get: function () { return innerHeight - 336; } }); Object.defineProperty(visualViewport, 'pageTop', { configurable: true, get: function () { return 300; } }); visualViewport.dispatchEvent(new Event('resize')); visualViewport.dispatchEvent(new Event('scroll')); return 'ok'; })()");
+        std::thread::sleep(Duration::from_millis(400));
+    } else {
+        harness::eval(&tab, "(function(){ var p = document.getElementById('findPrev'); if (p) { p.click(); p.click(); } return 1; })()");
+    }
+    std::thread::sleep(Duration::from_millis(600));
+    let (x, y) = phone_point(&tab, "(function(){ var r = document.getElementById('phoneSearchDone').getBoundingClientRect(); return [r.left + r.width / 2, r.top + r.height / 2]; })()");
+    harness::eval(&tab, "(function(){ document.getElementById('phoneSearchDone').addEventListener('mousedown', function (e) { e.preventDefault(); }, { once: true }); return 1; })()");
+    harness::finger_tap_late_click(&tab, x, y, Duration::from_millis(250));
+    harness::until(
+        &tab,
+        "(function(){ var b = document.querySelector('.header-searchbox'); return !b.classList.contains('phone-open') && !b.classList.contains('has-query') && !document.querySelector('mark.search-mark'); })()",
+        "the ✕ ending the search",
+        Duration::from_secs(5),
+        &jump,
+    );
+    if deep {
+        // The keyboard goes down with the field's focus, and the page scrolls back.
+        harness::eval(&tab, "(function(){ delete visualViewport.height; delete visualViewport.pageTop; visualViewport.dispatchEvent(new Event('resize')); visualViewport.dispatchEvent(new Event('scroll')); return 'ok'; })()");
+    }
+    std::thread::sleep(Duration::from_millis(400));
+    let ended = harness::eval(&tab, &jump);
+    println!("JUMP after the search ended: {ended}");
+    // Where the steps left the reader above the end, the jump is offered at once; either way a glide
+    // up offers it.
+    let left_above = serde_json::from_str::<serde_json::Value>(ended.as_str().unwrap_or("{}"))
+        .ok()
+        .and_then(|v| v["below"].as_i64())
+        .unwrap_or(0)
+        > 40;
+    if left_above {
+        harness::until(
+            &tab,
+            &offered,
+            "the search ended above the end: the jump offered at once",
+            Duration::from_secs(5),
+            &jump,
+        );
+    }
+    harness::touch_glide(&tab, -1500);
+    harness::until(
+        &tab,
+        &offered,
+        "after the search: a glide up offers the jump to the latest again",
+        Duration::from_secs(10),
+        &jump,
+    );
+    tap_jump("after the search: the jump takes the reader to the end");
+}
+
 /// #s37 (design/phone-landscape.md §3.5): the search docked at the keyboard, as Safari's Find on
 /// Page is. iOS never lifts a fixed bottom element above its keyboard — the layout viewport keeps its
 /// height and the keyboard covers its foot — so the find pill rides the VISUAL viewport. Headless
