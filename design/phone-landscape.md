@@ -110,6 +110,14 @@ side changes with the direction the phone is turned). This alone fixes issues 1 
   to make room for eight glyphs, and four take 176 of the head's 268. While the right pane covers the
   session beside the column, the dock goes under it with the session, the panes included; closing the
   pane brings them back, as it brings back Aa and the search.
+- **The rows above the list quick-return** (#s701, Hong: "too much space taken by write, search,
+  machines, I'd like to implement fast return for those (also apply to portrait mode)", then "Yes,
+  quick return"). Write mode, Search and, in the native app, Machines fold away once the list has
+  scrolled down a little on end, and come back on the first scroll up, at the list's top, and as the
+  portrait drawer opens, where the same rule holds (Machines sits in the drawer's head there since
+  #s705). They fold rather than float over the list, so no row is ever under them and the list's
+  offset is never written: an offset written into an iOS glide does not stick. A desktop's sidebar
+  keeps them.
 - **The transcript gets what is left:** about 530pt, 65–70 characters a line. The width that made
   lines too long now holds the navigation (issue 3).
 - **The handle hides and shows the column.** With it hidden, the transcript is centred at its
@@ -238,7 +246,8 @@ column on both kinds of phone (issue 7). As built, the owner kept it at the bott
 session (#332: "Jump to last should be positioned in the middle"), 44px. Upright it sits just above
 the dock, because the pill reaches the middle of the dock's row. Sideways it sits ON the dock's row
 (#s41, the owner: "should move to the bottom"), where the middle is free; the dock above floated it
-mid-height in a 330pt page. It is gone while the find pill holds the dock (#s41: over the keyboard it
+mid-height in a 330pt page. Beside a wide phone's column it is above the dock again (#s703): the
+session there is about 614pt, and the pill at its right reaches its middle. It is gone while the find pill holds the dock (#s41: over the keyboard it
 floated on the text, and the arrows step through the matches anyway).
 
 ### 3.5d As built after the owner's iPhone (#s41)
