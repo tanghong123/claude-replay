@@ -26474,6 +26474,128 @@ fn a_phone_keeps_its_controls_and_lines_inside_the_safe_area() {
     }
 }
 
+/// #s702: the reachable controls nearest each side of the screen, as `[gap to that edge, name]`, with
+/// the angle and size the page reads: the same controls [`safe_area_facts`] holds inside the safe area.
+const CONTROL_REACH: &str = "(function(){ var W = innerWidth, H = innerHeight, scrolling = '.transcript, .tree, .phone-pane-body, .preview-body', lo = null, hi = null; document.querySelectorAll('button, a[href], input, select, textarea, [role=button], [role=tab]').forEach(function (e) { if (e.closest(scrolling)) return; var cs = getComputedStyle(e); if (cs.visibility !== 'visible' || Number(cs.opacity) === 0) return; var r = e.getBoundingClientRect(); if (r.width < 1 || r.height < 1 || r.left < 0 || r.top < 0 || r.right > W || r.bottom > H) return; var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); if (!hit || !(hit === e || e.contains(hit) || hit.contains(e))) return; var name = String(e.id || e.getAttribute('aria-label') || e.className || e.tagName).slice(0, 40); if (!lo || r.left < lo[0]) lo = [Math.round(r.left), name]; if (!hi || W - r.right < hi[0]) hi = [Math.round(W - r.right), name]; }); return JSON.stringify({ left: lo, right: hi, angle: screen.orientation.angle, size: [W, H] }); })()";
+
+/// #s702: [`CONTROL_REACH`] once the phone is at `w` and `angle` and two readings two frames apart
+/// agree: a turn from one side to the other changes no size, and the page hears it as an event.
+fn reach_when_turned(tab: &headless_chrome::Tab, w: u32, angle: u32) -> serde_json::Value {
+    harness::until(
+        tab,
+        &format!("innerWidth === {w} && screen.orientation.angle === {angle}"),
+        "the phone at its size and angle",
+        Duration::from_secs(10),
+        "innerWidth + 'x' + innerHeight + ' at ' + screen.orientation.angle",
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut last = harness::eval(tab, CONTROL_REACH);
+    loop {
+        harness::eval(tab, TWO_FRAMES);
+        let now = harness::eval(tab, CONTROL_REACH);
+        if now == last || std::time::Instant::now() > deadline {
+            return serde_json::from_str(now.as_str().unwrap_or("{}")).unwrap_or_default();
+        }
+        last = now;
+    }
+}
+
+/// #s702, Hong on the iOS app held sideways with the island on the left (a screenshot): "wasted space
+/// on the right side (seem to be reserved in case of the notch)". iOS gives both sides the island's
+/// inset when a phone is sideways (62px on the largest iPhone), and the page kept both. The side the
+/// island is on keeps the whole inset; the other keeps what its rounded corners need, the home
+/// indicator's inset (20px). The screen's orientation angle says which side (90: the island on the
+/// left, 270: on the right), heard again as the phone turns from one side to the other, which changes
+/// no size. On a wide phone (the session list a column beside the session) and a narrower one (a
+/// drawer, shut and open), every control the reader can reach keeps inside that area, and the far
+/// side's nearest control is at least 20px nearer its edge than the island's inset. Where the page
+/// cannot be sure (an angle of 0, or insets that differ by side) every inset stays whole.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_held_sideways_keeps_the_island_s_inset_on_its_own_side() {
+    let _serial = serial();
+    let (_m, _b, tab) = drawer_world(
+        2763,
+        "island-side",
+        956,
+        440,
+        false,
+        3,
+        Some(harness::SIDEWAYS_INSETS),
+    );
+    let (_, inset, corner, _) = harness::SIDEWAYS_INSETS;
+    let (inset, corner) = (i64::from(inset), i64::from(corner));
+    let mut seen = Vec::new();
+    for (w, h) in [(956, 440), (874, 402)] {
+        for angle in [90, 270] {
+            harness::phone_turned(&tab, w, h, Some(angle));
+            let reach = reach_when_turned(&tab, w, angle);
+            let (l, r) = if angle == 90 {
+                (inset, corner)
+            } else {
+                (corner, inset)
+            };
+            let area = (0, r as u32, corner as u32, l as u32);
+            let shut = safe_area_facts(&tab, area);
+            seen.push((format!("{w}x{h} at {angle}°, shut"), angle, reach, shut));
+            if w < 900 {
+                the_drawer_opens_and_its_list_scrolls(&tab, &format!("{w}x{h} at {angle}°"));
+                let reach = harness::eval(&tab, CONTROL_REACH);
+                let reach =
+                    serde_json::from_str(reach.as_str().unwrap_or("{}")).unwrap_or_default();
+                let open = safe_area_facts(&tab, area);
+                seen.push((
+                    format!("{w}x{h} at {angle}°, the drawer open"),
+                    angle,
+                    reach,
+                    open,
+                ));
+                harness::eval(&tab, "(function(){ document.getElementById('drawerScrim').click(); document.querySelector('#app>.sidebar .tree').scrollTop = 0; return 'ok'; })()");
+                harness::until(
+                    &tab,
+                    "document.getElementById('app').classList.contains('mobile-detail')",
+                    "the drawer shut",
+                    Duration::from_secs(10),
+                    DRAWER_FACTS,
+                );
+            }
+        }
+    }
+    // Where the page cannot be sure, nothing is trimmed: the angle 0 a screen held in its natural
+    // orientation reads, and insets that already differ by side.
+    harness::phone_turned(&tab, 956, 440, Some(0));
+    let unturned = reach_when_turned(&tab, 956, 0);
+    harness::safe_area(&tab, (0, 62, 20, 30));
+    harness::phone_turned(&tab, 956, 440, Some(90));
+    let uneven = reach_when_turned(&tab, 956, 90);
+    for (at, angle, reach, facts) in &seen {
+        assert_eq!(
+            facts["bad"],
+            serde_json::json!([]),
+            "{at}: every control keeps clear of the island ({inset}px) and the far side's corners ({corner}px): {facts}"
+        );
+        let far = if *angle == 90 {
+            &reach["right"]
+        } else {
+            &reach["left"]
+        };
+        if !at.contains("drawer open") || *angle == 270 {
+            assert!(
+                far[0].as_i64().unwrap_or(i64::MAX) <= inset - corner,
+                "{at}: the side away from the island gives its strip back, its nearest control within {}px of the edge: {reach}",
+                inset - corner
+            );
+        }
+    }
+    for (at, reach) in [("at 0°", &unturned), ("with insets of 30 and 62", &uneven)] {
+        assert!(
+            reach["left"][0].as_i64().unwrap_or(-1) >= 29
+                && reach["right"][0].as_i64().unwrap_or(-1) >= inset - 1,
+            "{at}: the page cannot tell the island's side, so every inset stays whole: {reach}"
+        );
+    }
+}
+
 /// #s37: a point on the page, read by `expr` (a JSON array of numbers) — panicking with what it saw
 /// when the page gave none, rather than indexing into nothing.
 fn page_point(tab: &headless_chrome::Tab, what: &str, expr: &str) -> Vec<f64> {
