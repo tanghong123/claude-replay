@@ -109,6 +109,14 @@ take the second and wrap within it. They never share a row, at any width. Below 
 so all five stay inside the sidebar at its 232px minimum (#210). Nothing is hidden at any width; a
 new control in that row is measured against the minimum, not the default, and the case
 (`the_app_shell_resizes_the_session_list`) hit-tests every control there rather than eyeballing it.
+**The DRAWER's head is one row** (#s705, Hong on a phone upright: "machines and theme should go to the
+top row (alongside the Agent Monitor text). The filter glyph moves to right above the session list"):
+in the drawer (`app-drawer`, but a wide phone's column) the app wears `drawer-one-row`, the brand
+shares its row with the native app's Machines glyph (`#machinesHead`, the nav's Machines row hidden)
+and the theme, the version giving way before the name, and `placeDrawerHead` moves the list's strip of
+controls and its filter's sheet into a row of their own right above the list (`#sideListHead`), the
+sheet capped to the room below that row; anywhere else they go back into the head
+(`the_native_app_s_drawer_holds_machines_and_the_theme_beside_its_brand`).
 **On a phone (the view's phone reader since #s431 stage 3: a view under 490px of its own width, or a
 touch screen's view of 760px or less or 500px tall or less; #310 then #313, #s32 a phone held
 sideways) the app shell is a reader and a native-feeling app**, the owner's rules: upright the transcript keeps a 24px margin either side (#s55; the Reading menu's Wide

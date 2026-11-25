@@ -782,6 +782,9 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
    there it was clipped (scrollWidth past clientWidth) even with the brand out of the way.
    Wrapping puts the switch on a line of its own instead of shaving it (#223). */
 .side-head>.head-actions{flex:0 1 100%;flex-wrap:wrap;justify-content:flex-end}
+/* #s705: the drawer's row over the list (`#sideListHead`) and the Machines glyph in its head show only
+   while the drawer's head is one row (`drawer-one-row`, the phone rules below). */
+.side-list-head,#machinesHead{display:none}
 /* #96: the session list's own resize handle, on the sidebar's right edge. `--sidebar-user`
    reaches the grid only off a phone, where the sidebar is a drawer and a drag makes no sense; the
    rail has no width to drag either. "Off a phone" is wider than 760px AND not a phone held
@@ -1692,6 +1695,24 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #app .side-head{height:auto;min-height:52px;padding-left:52px}
   /* #s649: a finger's 44 points each (#313); the row has the room in the drawer at every phone's width. */
   #app .side-head .iconbtn{width:44px;height:44px;flex:none}
+  /* #s705, Hong on the drawer upright: "I think machines and theme should go to the top row (alongside
+     the Agent Monitor text). The filter glyph moves to right above the session list." The drawer's head
+     is ONE row (#223's two lines stay the list's at a width): the brand, then Machines (the native app's)
+     and the theme at its end. The version gives way first where the row is short; the name stays whole.
+     The list's own controls (Collapse all, Expand all, the filter) are a row of their own over the list,
+     at its right, and its filter's sheet hangs from that row in the room below it (`--room-below`, set
+     as it opens). The Machines row of the nav goes, its glyph in the head. A wide phone's column keeps
+     its own head (#s703). */
+  #app.drawer-one-row .side-head{flex-wrap:nowrap;align-items:center;align-content:normal;padding-right:6px}
+  #app.drawer-one-row .side-head>.brand{flex:1 1 auto;display:flex;align-items:baseline;min-width:0}
+  #app.drawer-one-row .side-head>.brand small{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+  #app.drawer-one-row .side-head>.head-actions{flex:none;flex-wrap:nowrap;margin-left:auto;gap:0}
+  #app.drawer-one-row #machinesHead{display:grid}
+  #app.drawer-one-row #machinesBtn{display:none}
+  #app.drawer-one-row .side-list-head{display:flex;flex:none;justify-content:flex-end;align-items:center;position:relative;padding:0 6px}
+  #app.drawer-one-row .side-list-head:not(:has(.iconbtn:not([data-flat]))){display:none}
+  #app.drawer-one-row .side-list-head .iconbtn{width:44px;height:44px;flex:none}
+  #app.drawer-one-row .side-list-head>.session-filter-options{max-height:min(74vh,640px,calc(var(--room-below,74vh) - 8px - env(safe-area-inset-bottom,0px)))}
   /* #s387: an arranged section's menu. Upright it is a sheet at the foot (`.sheet`, set by the
      page), over a dim that takes the closing tap; held sideways it is a popover at its control's
      side over the same dim (#s41). The rows are the shell's 44px menu rows; Arrange's two-line rows

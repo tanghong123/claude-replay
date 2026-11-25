@@ -426,6 +426,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .side-head{height:auto;min-height:72px;flex-wrap:wrap;align-content:center;row-gap:1px;padding-bottom:5px;overflow:visible}
 .side-head>.brand{flex:0 0 100%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .side-head>.head-actions{flex:0 1 100%;flex-wrap:wrap;justify-content:flex-end}
+.side-list-head,#machinesHead{display:none}
 .app:where(:not(.app-drawer)){--sidebar:var(--sidebar-user,300px)}
 :where(#app:not(.app-drawer)) .sidebar{position:relative}
 .sidebar-resizer{position:absolute;top:0;right:0;bottom:0;width:6px;z-index:24;cursor:col-resize;touch-action:none;background:transparent;transition:background-color .12s}
@@ -502,6 +503,16 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 #app:where(:has(>.drawer-handle)):where(.app-drawer) #sessionView .workspace>.topbar{padding-left:calc(50px + env(safe-area-inset-left,0px))}
 #app:where(.app-drawer) .side-head{height:auto;min-height:52px;padding-left:52px}
 #app:where(.app-drawer) .side-head .iconbtn{width:44px;height:44px;flex:none}
+#app.drawer-one-row:where(.app-drawer) .side-head{flex-wrap:nowrap;align-items:center;align-content:normal;padding-right:6px}
+#app.drawer-one-row:where(.app-drawer) .side-head>.brand{flex:1 1 auto;display:flex;align-items:baseline;min-width:0}
+#app.drawer-one-row:where(.app-drawer) .side-head>.brand small{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}
+#app.drawer-one-row:where(.app-drawer) .side-head>.head-actions{flex:none;flex-wrap:nowrap;margin-left:auto;gap:0}
+#app.drawer-one-row:where(.app-drawer) #machinesHead{display:grid}
+#app.drawer-one-row:where(.app-drawer) #machinesBtn{display:none}
+#app.drawer-one-row:where(.app-drawer) .side-list-head{display:flex;flex:none;justify-content:flex-end;align-items:center;position:relative;padding:0 6px}
+#app.drawer-one-row:where(.app-drawer) .side-list-head:not(:has(.iconbtn:not([data-flat]))){display:none}
+#app.drawer-one-row:where(.app-drawer) .side-list-head .iconbtn{width:44px;height:44px;flex:none}
+#app.drawer-one-row:where(.app-drawer) .side-list-head>.session-filter-options{max-height:min(74vh,640px,calc(var(--room-below,74vh) - 8px - env(safe-area-inset-bottom,0px)))}
 #app:where(.app-drawer) .section-view-scrim:not([hidden]){display:block;position:fixed;inset:0;z-index:59;background:transparent}
 #app:where(.app-drawer) .section-view-scrim.dim:not([hidden]){background:rgba(14,19,31,.32)}
 #app:where(.app-drawer) .section-view-menu.sheet{left:calc(8px + env(safe-area-inset-left,0px))!important;right:calc(8px + env(safe-area-inset-right,0px));top:auto!important;bottom:calc(8px + env(safe-area-inset-bottom,0px));width:auto;max-height:calc(100dvh - 72px - env(safe-area-inset-top,0px) - env(safe-area-inset-bottom,0px));padding:12px 14px;border-radius:16px}

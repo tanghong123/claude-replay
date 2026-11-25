@@ -185,8 +185,9 @@ function toast(message) {
 // body, its listeners, the parts it asks the app to place) comes in the order it did. What it needs of
 // the view (native mode's projects) is read as it draws, once the view is mounted; it starts reading
 // the index at the end, as it did.
-// The rail's filter as the list places it (`placeListPart`), for the Machines glyph to follow (#s596).
-let railFilter = null;
+// The rail's filter as the list places it (`placeListPart`), for the Machines glyph to follow (#s596);
+// and the list's strip of controls and its filter's sheet, which the drawer moves (`placeDrawerHead`).
+let railFilter = null, listControls = null, listSheet = null;
 listHandle = mountSessionList(page.byId("sessionList"), {
   // Over several machines the list reads all of them at once (#s541's merged source, #s595).
   ...(merged ? { backend: merged } : {}),
@@ -209,22 +210,42 @@ listHandle = mountSessionList(page.byId("sessionList"), {
   layer: kind => (kind === "flyout" ? page.body() : app),
   place: placeListPart,
 });
+// #s705 (Hong, on the drawer upright: "machines and theme should go to the top row (alongside the
+// Agent Monitor text). The filter glyph moves to right above the session list."): the drawer's row over
+// the list, which holds the list's strip of controls and hangs its filter's sheet while the drawer's
+// head is one row (`placeDrawerHead`). Shown only then.
+const sideListHead = Object.assign(document.createElement("div"), { className: "side-list-head", id: "sideListHead" });
+page.byId("sessionList").before(sideListHead);
+// The filter's sheet hangs from that row, lower in the drawer than under the head, so it is given the
+// room left below the row (`--room-below`), measured as it opens and as the window changes: held
+// sideways its 74vh ran past the window's foot from there.
+const fitListSheet = () => {
+  if (!app.classList.contains("drawer-one-row") || !listSheet || listSheet.hidden) return;
+  sideListHead.style.setProperty("--room-below", `${Math.max(0, Math.floor(innerHeight - sideListHead.getBoundingClientRect().bottom))}px`);
+};
+if (listSheet) new MutationObserver(fitListSheet).observe(listSheet, { attributes: true, attributeFilter: ["hidden"] });
+addEventListener("resize", fitListSheet);
 if (options.onMachines) drawMachines(options.onMachines);
 
 /** The native app's way into its own screens (#s596, Hong on #s553: "A Machines row in the sidebar
- *  (native app only)"): a Machines row in the nav after Search, which shows at every width the nav does
- *  (the drawer and a wide phone's column), and a glyph on the rail, which hides the nav, after the
- *  list's filter (after Search where the app switched the filter off). Each calls `onMachines`; drawn
- *  after the list, so its rail filter is in place. */
+ *  (native app only)"): a Machines row in the nav after Search, which shows where the nav does but in
+ *  the drawer (a wide phone's column, the list at a width); a glyph in the drawer's one-row head before
+ *  the theme (#s705), shown there alone; and a glyph on the rail, which hides the nav, after the list's
+ *  filter (after Search where the app switched the filter off). Each calls `onMachines`; drawn after
+ *  the list, so its rail filter is in place. */
 function drawMachines(onMachines) {
   const glyph = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>';
   const row = Object.assign(document.createElement("button"), { type: "button", className: "navbtn", id: "machinesBtn" });
   row.innerHTML = `<span>${glyph}</span><span class="label">Machines</span>`;
+  const head = Object.assign(document.createElement("button"), { type: "button", className: "iconbtn", id: "machinesHead", title: "Machines" });
+  head.innerHTML = glyph;
+  head.setAttribute("aria-label", "Machines");
   const rail = Object.assign(document.createElement("button"), { type: "button", className: "sidebar-mini-button", id: "sidebarMiniMachines", title: "Machines" });
   rail.innerHTML = glyph;
   rail.setAttribute("aria-label", "Machines");
-  row.onclick = rail.onclick = () => onMachines();
+  row.onclick = head.onclick = rail.onclick = () => onMachines();
   page.byId("searchBtn").after(row);
+  page.byId("themeBtn").before(head);
   (railFilter || page.byId("sidebarMiniSearch")).after(rail);
 }
 
@@ -235,8 +256,8 @@ function drawMachines(onMachines) {
  *  rail's filter after its search, and the agent marks at the rail's end. Called as the list mounts,
  *  so it reads nothing declared below the mount. */
 function placeListPart(part, node) {
-  if (part === "controls") page.byId("sidebarCollapse").before(node);
-  else if (part === "sheet") page.$("#app>.sidebar>.side-head").append(node);
+  if (part === "controls") page.byId("sidebarCollapse").before(listControls = node);
+  else if (part === "sheet") page.$("#app>.sidebar>.side-head").append(listSheet = node);
   else if (part === "rail-filter") page.byId("sidebarMiniSearch").after(railFilter = node);
   else if (part === "marks") page.byId("sidebarMini").append(node);
 }
@@ -477,6 +498,8 @@ const coarseScreen = matchMedia("(pointer:coarse)");
 // app's web view it read the short height 60 to 90 ms after the query saw the page grow back past 500,
 // so the list was laid out short as the keyboard went down and stayed a drawer (#s650).
 const shortScreen = matchMedia("(max-height:500px)");
+// A wide phone held sideways, whose list is a column under `app-drawer` (#s37) with a head of its own.
+const wideScreen = matchMedia(WIDE_PHONE_QUERY);
 let listArranged = null, listGlideUntil = 0;
 /** What the order reads for the list: the window, the screen, the reader's width and collapse, and what
  *  the view has said of itself (its pane, and whether the reader wants its outline). */
@@ -501,6 +524,7 @@ function arrangeList({ remeasure = true } = {}) {
   const hold = performance.now() >= listGlideUntil;
   if (hold) app.classList.add("app-holding");
   app.classList.toggle("app-drawer", decided.list === "drawer");
+  placeDrawerHead();
   if (typeof decided.list === "number") drawListWidth(decided.list);
   // The drawer is a width of its own (`min(86vw, 360px)`), never one the order gave the list: a list
   // narrowed toward 232px kept its `sidebar-tight` into the drawer, whose 10px head padding then
@@ -513,6 +537,22 @@ function arrangeList({ remeasure = true } = {}) {
   if (hold) app.classList.remove("app-holding");
   if (remeasure) viewHandle?.resized();
 }
+/** #s705: the drawer's head is one row, the brand, Machines and the theme (`drawer-one-row`), and the
+ *  list's strip of controls (Collapse all, Expand all, the filter) sits in the row over the list, its
+ *  filter's sheet hanging from that row. Anywhere else (the list at a width, a wide phone's column) the
+ *  strip and the sheet are back in the head, where the list placed them. Called as the list is laid out
+ *  and as a wide phone turns, which lays the list out the same (`app-drawer` either way). */
+function placeDrawerHead() {
+  const oneRow = app.classList.contains("app-drawer") && !wideScreen.matches;
+  app.classList.toggle("drawer-one-row", oneRow);
+  if (oneRow) {
+    for (const node of [listControls, listSheet]) if (node && node.parentNode !== sideListHead) sideListHead.append(node);
+    return;
+  }
+  if (listControls?.parentNode === sideListHead) page.byId("sidebarCollapse").before(listControls);
+  if (listSheet?.parentNode === sideListHead) page.$("#app>.sidebar>.side-head").append(listSheet);
+}
+wideScreen.addEventListener("change", placeDrawerHead);
 // The rail's expand is disabled where the list cannot open beside what the view needs (its title says
 // why; `aria-disabled`, so the title still shows); the drawer's handle always opens the drawer.
 function paintRailExpand() {

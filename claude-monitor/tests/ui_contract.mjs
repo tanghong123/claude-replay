@@ -1867,10 +1867,16 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // fragment before the sidebar collapse, the sheet appended to the head.
   assert.match(listSource, /^controls\.append\(collapseBtn, expandBtn\);\nif \(hasSheet\) controls\.append\(filterBtn\);$/m, "the glyph follows Expand every group, which follows Collapse every group (one strip since stage 4)…");
   assert.match(listSource, /^  options\.place\("controls", controls\);$/m, "…placed by the host as one");
-  assert.match(appSource, /^  if \(part === "controls"\) page\.byId\("sidebarCollapse"\)\.before\(node\);$/m, "…before the sidebar collapse");
+  assert.match(appSource, /^  if \(part === "controls"\) page\.byId\("sidebarCollapse"\)\.before\(listControls = node\);$/m, "…before the sidebar collapse");
   assert.match(listSource, /filterBtn\.className = "iconbtn session-filter"/, "…as an iconbtn like its neighbours");
   assert.match(listSource, /^  if \(hasSheet\) options\.place\("sheet", filterSheet\);$/m, "the sheet is placed by the host…");
-  assert.match(appSource, /^  else if \(part === "sheet"\) page\.\$\("#app>\.sidebar>\.side-head"\)\.append\(node\);$/m, "…under the sidebar's head");
+  assert.match(appSource, /^  else if \(part === "sheet"\) page\.\$\("#app>\.sidebar>\.side-head"\)\.append\(listSheet = node\);$/m, "…under the sidebar's head");
+  // #s705: in the drawer the head is one row, and the strip and the sheet move to the row over the
+  // list; anywhere else they go back where the list placed them.
+  assert.match(appSource, /^  const oneRow = app\.classList\.contains\("app-drawer"\) && !wideScreen\.matches;$/m, "#s705: the drawer's head is one row, but on a wide phone's column");
+  assert.match(appSource, /^    for \(const node of \[listControls, listSheet\]\) if \(node && node\.parentNode !== sideListHead\) sideListHead\.append\(node\);$/m, "#s705: …the strip and the sheet in the row over the list");
+  assert.match(appSource, /^  if \(listControls\?\.parentNode === sideListHead\) page\.byId\("sidebarCollapse"\)\.before\(listControls\);$/m, "#s705: …and back before the sidebar collapse elsewhere");
+  assert.match(appSource, /^page\.byId\("sessionList"\)\.before\(sideListHead\);$/m, "#s705: the row sits right above the session list");
   assert.doesNotMatch(appShell, /id="attentionBtn"|id="sidebarMiniAttention"/, "the demo's Needs attention button and the rail's bell are gone (cut from the served shell)");
   assert.doesNotMatch(shellSource, /hiddenBtn|"Show Hidden"/, "…and the Show Hidden control with them");
   assert.match(listSource, /visibleTree\(agents, \{ showHidden: includeHidden\(\), buckets: filtered \? indexState\.buckets : null, bucketsOf \}\)/, "the tree is filtered by the shared cover — every bucket chosen is no filter");
@@ -5713,7 +5719,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const viewCall = /^viewHandle = mountSessionView\(viewRoot\.element\(\), \{\n([\s\S]*?)\n\}\);/m.exec(mountSource)[1];
   for (const line of ["  show: showFor(VIEW_CONTROLS),", "  reviewSheet: options.reviewSheet ?? undefined,", "  frame: options.frame ?? undefined,"]) assert.ok(viewCall.split("\n").includes(line), `the view gets ${line.trim()}`);
   assert.match(mountSource, /^if \(options\.onMachines\) drawMachines\(options\.onMachines\);$/m, "the Machines row and glyph are drawn only for onMachines");
-  assert.match(mountSource, /^  row\.onclick = rail\.onclick = \(\) => onMachines\(\);\n  page\.byId\("searchBtn"\)\.after\(row\);\n  \(railFilter \|\| page\.byId\("sidebarMiniSearch"\)\)\.after\(rail\);$/m, "the row after Search, the glyph after the rail's filter (or Search, with no filter), each calling it");
+  assert.match(mountSource, /^  row\.onclick = head\.onclick = rail\.onclick = \(\) => onMachines\(\);\n  page\.byId\("searchBtn"\)\.after\(row\);\n  page\.byId\("themeBtn"\)\.before\(head\);\n  \(railFilter \|\| page\.byId\("sidebarMiniSearch"\)\)\.after\(rail\);$/m, "the row after Search, the drawer head's glyph before the theme (#s705), the rail's after its filter (or Search, with no filter), each calling it");
   const themeToStart = new Function(`return ${/^export const themeToStart = (.*);$/m.exec(mountSource)[1]}`)();
   for (const [stored, start, opens] of [
     [null, undefined, null], [null, "dark", "dark"], [null, "light", "light"],

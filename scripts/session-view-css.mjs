@@ -253,15 +253,15 @@ export function declarations(body) {
 // uses, sorted by what they are; the contract checks they still cover what the app names.
 
 /** The app's own chrome, which the view never draws: the session list and its tree, the rail and its
- *  flyout, the arrangement strip and the section menu, the session filter, the brand, the drawer and
- *  a wide phone's column, the session search layer (⌘K), the confirm layer (and the passcode field
+ *  flyout, the arrangement strip and the section menu, the session filter, the brand, the drawer, its
+ *  row over the list (#s705) and a wide phone's column, the session search layer (⌘K), the confirm layer (and the passcode field
  *  the app draws in it since stage 7), the toast, and the wrapper the web app is mounted in (#s551).
  *  `.primary` is the confirm layer's button: the
  *  view's own primary buttons are `.sv-primary`, a name the collaboration app does not style
  *  (#s438), so the view never draws `.primary`. The session list's names are in the two lists
  *  after this one (#s430 stage 3). */
 export const APP_CHROME = Object.freeze([
-  "#sidebarCollapse",
+  "#machinesHead", "#sidebarCollapse",
   ".app-mount",
   ".attention-count", ".attention-filter", ".attention-mini",
   ".brand",
@@ -270,7 +270,7 @@ export const APP_CHROME = Object.freeze([
   ".nav", ".nav-tooltip", ".navbtn",
   ".result-copy", ".result-kind", ".result-machine-note", ".result-why",
   ".search-input", ".search-layer", ".search-result", ".search-result-machine-stale", ".search-result-stale", ".search-results", ".searchbox",
-  ".side-head", ".sidebar", ".sidebar-collapse", ".sidebar-mini", ".sidebar-mini-badge", ".sidebar-mini-button", ".sidebar-mini-separator", ".sidebar-resizer",
+  ".side-head", ".side-list-head", ".sidebar", ".sidebar-collapse", ".sidebar-mini", ".sidebar-mini-badge", ".sidebar-mini-button", ".sidebar-mini-separator", ".sidebar-resizer",
   ".toast",
   ".write-control", ".write-help", ".write-info", ".write-reason",
 ]);
@@ -320,11 +320,11 @@ export const LIST_OUTSIDE = Object.freeze([
   ".sidebar-mini-agent", ".sidebar-mini-agents",
 ]);
 
-/** The app's states, kept on `#app` (stage 5a's groups): its rail, the drawer, and a wide phone's
- *  column. A rule that reads one is the app placing or styling the
+/** The app's states, kept on `#app` (stage 5a's groups): its rail, the drawer and its one-row head
+ *  (#s705), and a wide phone's column. A rule that reads one is the app placing or styling the
  *  view from outside, and stays the app's (stage 6 lays the view out by its own pane's size). */
 export const APP_STATES = Object.freeze([
-  ".mobile-detail", ".phone-column-off", ".sidebar-off", ".sidebar-tight", ".app-drawer", ".app-holding",
+  ".mobile-detail", ".phone-column-off", ".sidebar-off", ".sidebar-tight", ".app-drawer", ".app-holding", ".drawer-one-row",
 ]);
 
 /** Names the app's chrome and the view both draw: the glyph button, generic states and labels, and
@@ -722,7 +722,7 @@ const APP_QUERIES = new Map([
  *  tracks; the outline's token on the page's root, which the view's element redeclares; and a wide
  *  phone held sideways, whose column is the phone's own. */
 export const APP_KEPT_QUERIES = Object.freeze(["@media(max-width:1180px)", "@media(max-width:900px)", "@media(pointer:coarse)and(max-height:500px)and(min-width:900px)"]);
-const DRAWER_PART = /(?:\.sidebar|\.side-head|\.tree-row|\.tree|\.drawer-scrim|\.drawer-handle|\.sidebar-mini|\.sidebar-resizer|#sidebarCollapse|\.section-view-scrim|\.section-view-menu|\.session-filter-options)(?![\w-])/;
+const DRAWER_PART = /(?:\.sidebar|\.side-head|\.side-list-head|#machinesHead|#machinesBtn|\.tree-row|\.tree|\.drawer-scrim|\.drawer-handle|\.sidebar-mini|\.sidebar-resizer|#sidebarCollapse|\.section-view-scrim|\.section-view-menu|\.session-filter-options)(?![\w-])/;
 const APP_GRID = /^(?:\.app|#app)(?:\.preview-off)?$/;
 const PHONE_VIEW_PART = /(?:\.phone-pane-body|\.phone-pane-jump|\.navigator-options|\.toast|\.activity-empty)(?![\w-])|^(?:input|textarea|select)(?![\w-])|\s(?:button)$/;
 export const APP_ARRANGED = Object.freeze({ drawer: "#app.app-drawer", listed: "#app:not(.app-drawer)", phone: "#sessionView.pl-phone" });

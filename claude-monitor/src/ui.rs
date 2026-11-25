@@ -612,6 +612,9 @@ mod tests {
             ".session-filter-options",
             ".drawer-handle",
             ".drawer-scrim",
+            // #s705: the drawer's row over the list, and Machines in its one-row head.
+            ".side-list-head",
+            "#machinesHead",
         ];
         // The app's states, kept on `#app`: the app placing or styling the view from outside —
         // its rail, the drawer, a wide phone's column, and the artifact pane's state
@@ -626,6 +629,8 @@ mod tests {
             ".preview-full",
             // #s431 stage 3: a decision of the owner's order, which lays the list out at once.
             ".app-holding",
+            // #s705: the drawer's head as one row, its list's controls over the list.
+            ".drawer-one-row",
         ];
         // What `:is(#sessionView,#app)` may reach: elements the app's chrome shares with the view
         // (the glyph button, the session filter's and section menu's popover rows) and the lists

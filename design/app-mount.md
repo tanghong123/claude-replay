@@ -272,7 +272,9 @@ to the controls the view and the list already let any host turn off.
   only where the app passes `onMachines`, a withheld option of `mountApp` whose function the row
   calls. A nav row fits at every width the nav shows, the drawer and a wide phone's column included,
   so it takes no slot in the head and needs no other control to give way. The nav is hidden on the
-  rail and in a column showing a pane, which is why the rail has a glyph of its own. Both are drawn
+  rail and in a column showing a pane, which is why the rail has a glyph of its own. Since #s705 (Hong:
+  "machines and theme should go to the top row (alongside the Agent Monitor text)") the drawer shows a
+  Machines glyph in its one-row head, beside the theme, in place of the row. Both are drawn
   by script (production-only chrome, as the session filter is), their classes added to
   `scripts/session-view-css.mjs`'s lists. The alternatives were a native control over the web view
   and none at all.
