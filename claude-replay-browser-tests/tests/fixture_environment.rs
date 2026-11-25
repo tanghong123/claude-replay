@@ -168,7 +168,8 @@ fn a_mute_chrome_launch_is_given_up_and_killed() {
 /// as a case's drop does: the process exits within [`harness::GENTLE_END`], unkilled, and on a Mac
 /// the folder is gone. On Linux Chrome keeps the folder even when it exits on its own (measured on
 /// CI's Ubuntu runner), in `TMPDIR`, the workspace's scratch whose age rule clears it, which the case
-/// checks.
+/// checks. Chrome for Testing 159 keeps it on a Mac as well, and the guard removes it once the
+/// process has gone (#s710); either way no folder is left there.
 #[test]
 #[ignore]
 fn a_dropped_browser_takes_its_singleton_folder_with_it() {
@@ -202,6 +203,69 @@ fn a_dropped_browser_takes_its_singleton_folder_with_it() {
             std::env::temp_dir().display()
         ),
     }
+}
+
+/// #s710: a browser the harness reaps (one still running as its case ends) takes its singleton
+/// folder with it. A Chrome SIGTERMed used to remove the folder itself; Chrome for Testing 159
+/// keeps it, so the reaper reads the folder from the browser's own profile before the signal and
+/// removes it once the process has gone. The browser is a real Chrome, launched here under a
+/// profile named for this runner, as a case's is.
+#[test]
+#[ignore]
+fn a_reaped_browser_takes_its_singleton_folder_with_it() {
+    let _serial = harness::serial();
+    let exe = harness::browser_path()
+        .or_else(|| headless_chrome::browser::default_executable().ok())
+        .expect("a Chrome to launch");
+    let profile = harness::browser_profiles_root()
+        .join(format!("cr-browser-chrome-{}-reaped", std::process::id()));
+    std::fs::create_dir_all(&profile).unwrap();
+    let user_data_dir = format!("--user-data-dir={}", profile.display());
+    let mut chrome = Command::new(&exe)
+        .args(harness::chrome_args(&[
+            "--headless",
+            "--no-first-run",
+            "--remote-debugging-port=0",
+            &user_data_dir,
+            "about:blank",
+        ]))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .unwrap();
+    let link = profile.join("SingletonSocket");
+    let folder = (0..200).find_map(|_| {
+        let target = std::fs::read_link(&link).ok();
+        if target.is_none() {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        target.and_then(|t| t.parent().map(std::path::Path::to_path_buf))
+    });
+    let Some(folder) = folder else {
+        let _ = chrome.kill();
+        let _ = chrome.wait();
+        panic!(
+            "the browser linked no SingletonSocket in 10 s: {}",
+            link.display()
+        );
+    };
+    assert!(
+        folder.exists(),
+        "the folder is there while the browser runs"
+    );
+    harness::reap_own_browsers();
+    let exited = chrome.try_wait().unwrap().is_some();
+    let _ = chrome.kill();
+    let _ = chrome.wait();
+    assert!(exited, "the reaper ended the browser");
+    // On Linux a folder Chrome keeps is in the workspace's scratch, which the sweep clears; the
+    // reaper takes it there too, so only the Mac's rule is strict.
+    let kept_in_scratch = !cfg!(target_os = "macos") && folder.starts_with(std::env::temp_dir());
+    assert!(
+        !folder.exists() || kept_in_scratch,
+        "the reaped browser's singleton folder is gone: {} is still there",
+        folder.display()
+    );
 }
 
 /// #s293: a case that ends takes every process left of the browsers its runner launched with it —

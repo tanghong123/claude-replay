@@ -6226,8 +6226,8 @@ fn scenario_a_clicked_control_at_the_tail_does_not_strand_the_reader(
     let clicked = eval(
         tab,
         match surface {
-            Surface::Classic => "(function(){ var f = [...document.querySelectorAll('#stream .fold[data-open=\"0\"]')].filter(function (x) { var hh = x.querySelector(':scope > .fold-h'); if (!hh) return false; var r = hh.getBoundingClientRect(); return r.height > 0 && r.top >= 96 && r.bottom <= innerHeight; }).pop(); if (!f) return 'none'; var h = f.querySelector(':scope > .fold-h'); if (!h) return 'none'; h.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse', buttons: 1 })); h.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerType: 'mouse' })); h.click(); return 'fold ' + f.id; })()",
-            Surface::AppShell => "(function(){ var b = [...document.querySelectorAll('.virtual-window [data-process-more]')].map(function (x) { var m = /Show (\\d+) more/.exec(x.textContent || ''); return { el: x, n: m ? Number(m[1]) : 0 }; }).sort(function (p, q) { return q.n - p.n; })[0]; if (!b || !b.el) return 'none'; var l = b.el.textContent.trim().slice(0, 18); b.el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse', buttons: 1 })); b.el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerType: 'mouse' })); b.el.click(); return l; })()",
+            Surface::Classic => "(function(){ var f = [...document.querySelectorAll('#stream .fold[data-open=\"0\"]')].filter(function (x) { var hh = x.querySelector(':scope > .fold-h'); if (!hh) return false; var r = hh.getBoundingClientRect(); return r.height > 0 && r.top >= 96 && r.bottom <= innerHeight; }).pop(); if (!f) return 'none'; var h = f.querySelector(':scope > .fold-h'); if (!h) return 'none'; var hr = h.getBoundingClientRect(); h.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse', buttons: 1 })); h.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerType: 'mouse' })); h.click(); return JSON.stringify({ label: 'fold ' + f.id, top: Math.round(hr.top), bottom: Math.round(hr.bottom) }); })()",
+            Surface::AppShell => "(function(){ var b = [...document.querySelectorAll('.virtual-window [data-process-more]')].map(function (x) { var m = /Show (\\d+) more/.exec(x.textContent || ''); return { el: x, n: m ? Number(m[1]) : 0 }; }).sort(function (p, q) { return q.n - p.n; })[0]; if (!b || !b.el) return 'none'; var l = b.el.textContent.trim().slice(0, 18); var br = b.el.getBoundingClientRect(); b.el.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse', buttons: 1 })); b.el.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, cancelable: true, pointerType: 'mouse' })); b.el.click(); return JSON.stringify({ label: l, top: Math.round(br.top), bottom: Math.round(br.bottom) }); })()",
         },
     );
     assert_ne!(
@@ -6235,6 +6235,9 @@ fn scenario_a_clicked_control_at_the_tail_does_not_strand_the_reader(
         "none",
         "{surface:?}: the fixture offers a control to click at the tail"
     );
+    // Where the control was, in the viewport, as the click script read it before pressing.
+    let control: serde_json::Value = serde_json::from_str(clicked.as_str().unwrap()).unwrap();
+    let clicked = serde_json::json!(control["label"]);
     // Give the settle its whole window and then some: the drop happens when the intent timer
     // fires, `userIntentMs` after the click, and the owner's walk took several seconds.
     std::thread::sleep(Duration::from_millis(1500));
@@ -6273,6 +6276,15 @@ fn scenario_a_clicked_control_at_the_tail_does_not_strand_the_reader(
         .zip(after["handles"].as_array().unwrap())
     {
         if b["text"].as_str().unwrap_or("").is_empty() {
+            continue;
+        }
+        // A probe that sampled the clicked control itself says nothing about the reader: "Show 37
+        // more" becomes the rows it reveals. Which probe lands on it depends on the window's height
+        // (#s710: at 57px shorter the 70% probe did).
+        let top = b["top"].as_i64().unwrap_or(i64::MIN);
+        if control["top"].as_i64().is_some_and(|t| top >= t)
+            && control["bottom"].as_i64().is_some_and(|e| top < e)
+        {
             continue;
         }
         assert_eq!(
