@@ -360,7 +360,9 @@ latest sits at the bottom CENTRE of the session (#332): just above the dock upri
 row sideways, where the middle of that row is free (the owner: "should move to the bottom"; above it
 again while the pane is a second column, whose half puts the pill in that middle, #s645, and beside
 a wide phone's column, whose pill sits at the session's right since #s703), and
-gone while the find pill holds the dock (#s41). Inputs are 16px (iOS zooms into anything
+gone while the find pill holds the dock (#s41). Whether it shows is asked again on every scroll and
+after a fold (#s700: painted only when the follow pin flipped or records came, a fold opened at the
+end drew it hidden with nothing below yet, and no scroll up brought it back). Inputs are 16px (iOS zooms into anything
 smaller), targets 44px — a reading row's whole width flips its switch, a facet suggestion is a 44px
 row, a delivered file a 36px chip (at 14px WebKit's tap adjustment gave its tap to the row's head,
 which folded the row), and the jump is offered only where something is below. **On a touch screen hover reveals nothing** (#s41): WebKit spends a tap on a hover that SHOWS
