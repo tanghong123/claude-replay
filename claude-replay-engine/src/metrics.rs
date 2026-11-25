@@ -2025,10 +2025,10 @@ mod price_tests {
             .contains("duplicate pricing evidence"));
     }
 
-    /// Pins all four billing tiers where vendor/model families differ. Both vendors' tables were
-    /// queried 2026-09-09 and re-read since (OpenAI's on 2026-09-25, #279, when its flagship
-    /// table began publishing cache-WRITE rates above input); `pricing.json` records the exact
-    /// query timestamps and source URLs.
+    /// Pins all four billing tiers where vendor/model families differ. Anthropic's and OpenAI's
+    /// tables were queried 2026-09-09 and re-read since (OpenAI's on 2026-09-25, #279, when its
+    /// flagship table began publishing cache-WRITE rates above input), Google's on 2026-11-25
+    /// (#s713); `pricing.json` records the exact query timestamps and source URLs.
     #[test]
     fn prices_match_the_published_tables() {
         for (model, want) in [
@@ -2057,6 +2057,12 @@ mod price_tests {
             ("claude-haiku-3-5", p("0.8", "1", "0.08", "4")),
             ("claude-3-5-haiku-20241022", p("0.8", "1", "0.08", "4")),
             ("claude-3-haiku-20240307", p("0.25", "0.3", "0.03", "1.25")),
+            // #s713: the 2026 rate (it doubles from 2027-01-01); a thinking level is the model's.
+            ("gemini-3.8-flash", p("0.75", "0.75", "0.075", "3.75")),
+            (
+                "gemini-3.8-flash-medium",
+                p("0.75", "0.75", "0.075", "3.75"),
+            ),
             ("gpt-6-astra", p("10", "12.5", "1", "50")),
             ("gpt-6-sol", p("2", "2.5", "0.2", "10")),
             ("gpt-6.1-sol", p("2", "2.5", "0.1", "10")),
