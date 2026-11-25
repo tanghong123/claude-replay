@@ -3210,7 +3210,7 @@ fn reap_stranded_monitor(port: u16) {
 /// with `--port <port>`, and whose test process is gone: re-parented to launchd or init (a parent
 /// of 1, or 0), or whose parent the listing no longer holds. A monitor whose parent is any other
 /// live process (another run's test binary) is not stranded (#s690). Every row with a pid and a
-/// parent counts as a live process, whatever its command reads (a zombie's may be empty).
+/// parent counts as a live process, whatever its command reads, even none.
 pub fn stranded_monitors(ps: &str, marker: &str, port: u16) -> Vec<u32> {
     let rows: Vec<(u32, u32, &str)> = ps
         .lines()
