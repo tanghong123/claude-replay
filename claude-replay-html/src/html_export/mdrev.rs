@@ -1215,9 +1215,12 @@ fn notes_add(rel: &Release, d: &Doc, req: &Request, viewer: Option<&Viewer>) -> 
 
 /// What mdrev's viewer puts in a new note's record (its contract, `POST annotations`): the note's
 /// words, type and anchor, the revision on screen, `fromRev` for a note on struck text, `shared`,
-/// the Save's name, and `target` and `about` where the viewer sets them.
+/// the Save's name, `target` and `about` where the viewer sets them, and, on a note on the whole
+/// document (mdrev 1.1.90, its #s1319), `whole` and the conversation's `session`, which mdrev-cli
+/// checks itself.
 const NOTE_FIELDS: &[&str] = &[
-    "body", "type", "anchor", "rev", "fromRev", "shared", "saveId", "target", "about",
+    "body", "type", "anchor", "rev", "fromRev", "shared", "saveId", "target", "about", "whole",
+    "session",
 ];
 
 /// A note's record (`body`, read as `record`) with every field the viewer does not build taken out:
@@ -3288,15 +3291,15 @@ esac
         let f = fx("note-fields");
         let held = Mutex::new(Held::default());
         let q = doc_query(&f, "docs/doc.md");
-        let forged = br#"{"body":"x","type":"comment","anchor":{"exact":"One"},"rev":"r1","fromRev":"r0","saveId":"sv-1","target":"t","about":"a","author":"someone@else","status":"resolved","resolvedBy":{"note":"done"},"id":"ann-9","replies":[{"body":"y"}],"createdAt":"2020-01-01"}"#;
+        let forged = br#"{"body":"x","type":"comment","anchor":{"exact":"One"},"rev":"r1","fromRev":"r0","saveId":"sv-1","target":"t","about":"a","whole":true,"session":"c-1","author":"someone@else","status":"resolved","resolvedBy":{"note":"done"},"id":"ann-9","replies":[{"body":"y"}],"createdAt":"2020-01-01"}"#;
         let added = call(&f, &held, "annotations", &req("POST", &q, forged, true));
         assert_eq!(added.code, "201 Created");
         let sent: Value =
             serde_json::from_slice(&std::fs::read(f.kit.join("stdin.json")).unwrap()).unwrap();
         assert_eq!(
             sent,
-            json!({"body":"x","type":"comment","anchor":{"exact":"One"},"rev":"r1","fromRev":"r0","saveId":"sv-1","target":"t","about":"a"}),
-            "the author, the status, the id and the replies a request sends never reach mdrev-cli"
+            json!({"body":"x","type":"comment","anchor":{"exact":"One"},"rev":"r1","fromRev":"r0","saveId":"sv-1","target":"t","about":"a","whole":true,"session":"c-1"}),
+            "the author, the status, the id and the replies a request sends never reach mdrev-cli; a whole-document note's `whole` and `session` do (mdrev 1.1.90)"
         );
         let own = br#"{"body":"tighten","anchor":{"exact":"Two"},"saveId":"sv-2"}"#;
         assert_eq!(
