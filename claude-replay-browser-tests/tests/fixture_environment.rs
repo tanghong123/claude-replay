@@ -167,9 +167,10 @@ fn a_mute_chrome_launch_is_given_up_and_killed() {
 /// `Browser.close`, and every launch left one (75,886 on hong-devserver). The case ends its browser
 /// as a case's drop does: the process exits within [`harness::GENTLE_END`], unkilled, and on a Mac
 /// the folder is gone. On Linux Chrome keeps the folder even when it exits on its own (measured on
-/// CI's Ubuntu runner), in `TMPDIR`, the workspace's scratch whose age rule clears it, which the case
-/// checks. Chrome for Testing 159 keeps it on a Mac as well, and the guard removes it once the
-/// process has gone (#s710); either way no folder is left there.
+/// CI's Ubuntu runner), in `TMPDIR`, the workspace's scratch; Chrome for Testing 159 keeps it on a
+/// Mac as well. Wherever it is kept, the guard removes it once the process has gone (#s710), and a
+/// folder left in `TMPDIR` (one holding more than `Singleton*` entries) is the sweep's age rule's,
+/// which the case allows.
 #[test]
 #[ignore]
 fn a_dropped_browser_takes_its_singleton_folder_with_it() {
@@ -258,6 +259,7 @@ fn a_reaped_browser_takes_its_singleton_folder_with_it() {
     let _ = chrome.kill();
     let _ = chrome.wait();
     assert!(exited, "the reaper ended the browser");
+    let _ = std::fs::remove_dir_all(&profile);
     // On Linux a folder Chrome keeps is in the workspace's scratch, which the sweep clears; the
     // reaper takes it there too, so only the Mac's rule is strict.
     let kept_in_scratch = !cfg!(target_os = "macos") && folder.starts_with(std::env::temp_dir());

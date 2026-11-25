@@ -6278,12 +6278,14 @@ fn scenario_a_clicked_control_at_the_tail_does_not_strand_the_reader(
         if b["text"].as_str().unwrap_or("").is_empty() {
             continue;
         }
-        // A probe that sampled the clicked control itself says nothing about the reader: "Show 37
-        // more" becomes the rows it reveals. Which probe lands on it depends on the window's height
-        // (#s710: at 57px shorter the 70% probe did).
+        // A probe that sampled the clicked control itself, where the click changed what it says,
+        // says nothing about the reader: "Show 37 more" becomes the rows it reveals. Which probe
+        // lands on it depends on the window's height (#s710: at 57px shorter the 70% probe did). A
+        // control that stays what it was (the classic page's fold header) is still checked.
         let top = b["top"].as_i64().unwrap_or(i64::MIN);
         if control["top"].as_i64().is_some_and(|t| top >= t)
             && control["bottom"].as_i64().is_some_and(|e| top < e)
+            && b["text"] != a["text"]
         {
             continue;
         }

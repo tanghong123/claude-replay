@@ -2315,10 +2315,11 @@ pub fn browser_path() -> Option<std::path::PathBuf> {
 /// the exit is the whole wait. On Linux Chrome keeps the folder even then (measured on CI's Ubuntu
 /// runner: `com.google.Chrome.XXXXXX`), but it makes it in `TMPDIR`, the workspace's scratch, whose
 /// age rule (`scripts/sweep-scratch.sh`) clears it after a day. Chrome for Testing 159 on a Mac
-/// keeps it too (#s710, measured on denali: SIGTERMed it exits with status 0 in 0.1 s and leaves the
-/// folder; 151 removes it, and both remove it on `Browser.close`), so once the process has gone the
-/// guard removes the folder it read at the launch itself, and only while it holds nothing but
-/// Chrome's own `Singleton*` entries ([`remove_singleton_folder`]). Each end is a [`profile`] row
+/// keeps it too (#s710, measured on denali: SIGTERMed it exits at once and leaves the folder; 151
+/// removes it, and both remove it on `Browser.close`), so once the process has gone the guard
+/// removes the folder it read at the launch itself, wherever Chrome left it (on Linux too), and only
+/// while it holds nothing but Chrome's own `Singleton*` entries ([`remove_singleton_folder`]); the
+/// sweep's age rule is left for a folder the guard never saw. Each end is a [`profile`] row
 /// saying whether the folder went, and who took it (`CR_PROFILE`, which is how a run is checked for
 /// them), and one left outside `TMPDIR` is also a stderr line naming it.
 pub struct Chrome {
@@ -2829,12 +2830,13 @@ pub const CASE_FLAGS: [&str; 3] = [
     "--disable-component-update",
 ];
 
-/// The headless_chrome defaults a case's Chrome goes without (#s710). Chrome for Testing 159 draws
-/// `--enable-automation`'s "controlled by automated test software" bar in a headless window, 57px
-/// tall, which 151 never drew there (measured on denali: a 1280x1100 window's page 900px tall
-/// under 159 and 957px under 151 with the flag; 957px under both without it), so a case's page was
-/// 57px shorter on the newer Chrome. Nothing here reads what the flag changes (`navigator.webdriver`).
-/// Every launch a case makes passes these as `ignore_default_args`.
+/// The headless_chrome defaults a case's Chrome goes without (#s710). With `--enable-automation`,
+/// Chrome for Testing 159 leaves a headless window's page 57px shorter than 151 does (measured on
+/// denali: a 1280x1100 window's page 900px tall under 159 and 957px under 151 with the flag; 957px
+/// under both without it), by its "controlled by automated test software" bar, presumably: the
+/// height was measured, the bar was not looked at. Nothing in the suite reads what else the flag
+/// changes (`navigator.webdriver`, the password bubble). Every launch a case makes passes these as
+/// `ignore_default_args`.
 pub const IGNORED_DEFAULTS: [&str; 1] = ["--enable-automation"];
 
 /// [`IGNORED_DEFAULTS`] as headless_chrome's `ignore_default_args` takes them.
