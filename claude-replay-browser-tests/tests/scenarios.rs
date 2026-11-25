@@ -15004,11 +15004,25 @@ fn turn_time_layout_fixture(name: &str) -> Fixture {
     t += &harness::tool_result_text("d1", "Finished", &now_minus(296));
     t += &assistant_at("Built it.", &now_minus(200));
     t += &harness::turn_duration_at(151_000, &now_minus(199));
+    // #s716: another session's message, with how long the agent worked on it.
+    let body = "skua-HD: the build is green on the north cliff box";
+    t += &format!(
+        "{}\n",
+        serde_json::json!({
+            "type": "user", "cwd": "/r", "timestamp": now_minus(150), "isMeta": true,
+            "promptSource": "system", "turnOrigin": "peer",
+            "origin": {"kind": "peer", "from": "uds:/tmp/s.sock", "verifiedPeerPid": 1, "msg_id": "m-time",
+                       "name": "skua-HD", "fromMode": "bypass", "body": body},
+            "message": {"role": "user", "content": format!("Another Claude session sent a message:\n<cross-session-message from=\"uds:/tmp/s.sock\" from-name=\"skua-HD\" from-mode=\"bypass\">\n{body}\n</cross-session-message>\n\nThis came from another Claude session — not typed by your user.")}
+        })
+    );
+    t += &assistant_at("Noted the green build.", &now_minus(140));
+    t += &harness::turn_duration_at(154_000, &now_minus(139));
     let path = stores.claude_session(name, &t);
     Fixture {
         base,
         path,
-        turns: 7,
+        turns: 8,
     }
 }
 
@@ -15019,7 +15033,8 @@ fn turn_time_layout_fixture(name: &str) -> Fixture {
 /// nothing beside the bubble (its right edge is the turn's), the times under it on one line, in
 /// order, the last ending at the bubble's edge, and a notice below them. The classic page draws its
 /// prompt as a card the width of the column, the time in the card's own head row, and is left as
-/// it is.
+/// it is. #s716: another session's message keeps its time and duration on one line too, below its
+/// card at the card's LEFT edge (they stacked, a line each, under a card laid out as a column).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn the_app_shell_puts_a_turns_time_and_duration_below_its_bubble() {
@@ -15033,7 +15048,11 @@ fn the_app_shell_puts_a_turns_time_and_duration_below_its_bubble() {
           var times = [...u.querySelectorAll(':scope > .turn-time')], n = u.querySelector(':scope > .turn-notice'); \
           return { command: u.classList.contains('command'), turn: r(u), bubble: r(u.querySelector(':scope > .user-prompt')), times: times.map(r), \
             titles: times.map(function (e) { return e.title; }), notice: n ? r(n) : null }; }); \
-        return JSON.stringify({ w: innerWidth, phone: document.getElementById('sessionView').classList.contains('pl-phone'), turns: turns }); })()";
+        var peers = [...document.querySelectorAll('.turn.peer')].filter(function (u) { return u.querySelector(':scope > .turn-time'); }).map(function (u) { \
+          var times = [...u.querySelectorAll(':scope > .turn-time')]; \
+          return { turn: r(u), card: r(u.querySelector(':scope > .peer-card')), times: times.map(r), \
+            titles: times.map(function (e) { return e.title; }) }; }); \
+        return JSON.stringify({ w: innerWidth, phone: document.getElementById('sessionView').classList.contains('pl-phone'), turns: turns, peers: peers }); })()";
     let below = |v: &serde_json::Value| -> bool {
         let n = |a: &serde_json::Value, i: usize| a[i].as_i64().unwrap_or(i64::MIN);
         let Some(turns) = v["turns"].as_array() else {
@@ -15061,10 +15080,32 @@ fn the_app_shell_puts_a_turns_time_and_duration_below_its_bubble() {
                     "How long the agent worked on this turn"
                 ])
         });
+        // #s716: under another session's card, both on one line below it, in order, the first at
+        // the card's left edge, inside the turn.
+        let peer_laid = |u: &serde_json::Value| {
+            let (turn, card) = (&u["turn"], &u["card"]);
+            let Some(t) = u["times"].as_array().filter(|t| t.len() == 2) else {
+                return false;
+            };
+            t.iter().all(|r| {
+                n(r, 1) >= n(card, 3) && n(r, 2) <= n(turn, 2) && (n(r, 1) - n(&t[0], 1)).abs() <= 1
+            }) && n(&t[0], 2) <= n(&t[1], 0)
+                && (n(&t[0], 0) - n(card, 0)).abs() <= 5
+        };
+        let peers = v["peers"].as_array();
         turns.iter().any(|u| u["command"] == true)
             && turns.iter().any(|u| !u["notice"].is_null())
             && timed.count() == 1
             && turns.iter().all(laid)
+            && peers.is_some_and(|p| {
+                p.len() == 1
+                    && p[0]["titles"]
+                        == serde_json::json!([
+                            "When this turn was sent",
+                            "How long the agent worked on this turn"
+                        ])
+                    && peer_laid(&p[0])
+            })
     };
     let poll = |what: &str, done: &dyn Fn(&serde_json::Value) -> bool| {
         let mut last = serde_json::Value::Null;
@@ -15080,7 +15121,7 @@ fn the_app_shell_puts_a_turns_time_and_duration_below_its_bubble() {
     };
     harness::resize(tab, 1440.0, 900.0);
     poll(
-        "a desktop window: each turn's times on one line below its bubble, at its edge, a notice below them",
+        "a desktop window: each turn's times on one line below its bubble, at its edge, a notice below them; a peer card's on one line below it, at its left edge",
         &|v| v["w"] == 1440 && below(v),
     );
     harness::resize(tab, 900.0, 800.0);
