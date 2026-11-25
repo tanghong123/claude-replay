@@ -25695,6 +25695,206 @@ fn drawer_world(
     (m, browser, tab)
 }
 
+/// #s701 (Hong, of a phone's session list: "too much space taken by write, search, machines, I'd like
+/// to implement fast return for those (also apply to portrait mode)", then "Yes, quick return"): in the
+/// drawer upright and a wide phone's column held sideways, the nav's rows (Write mode, Search) fold
+/// away as the list scrolls down, the list taking their room at once, and come back on the first
+/// scroll up wherever the list is, at its top, and as the drawer opens again. The fold never writes
+/// the list's offset. A short scroll does not fold them, and a list that is neither a drawer nor a
+/// column (a desktop's) never does, and brings them back.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_list_folds_its_nav_rows_on_the_way_down_and_brings_them_back_on_the_way_up() {
+    let _serial = serial();
+    // The list scrolled by `step` `n` times, each step its own scroll event (or 150 ms without one);
+    // answers where the list ends up.
+    let scroll = |tab: &headless_chrome::Tab, step: i32, n: u32| -> i64 {
+        harness::eval(tab, &format!("(async function(){{ var s = document.getElementById('tree'); for (var i = 0; i < {n}; i++) {{ var seen = new Promise(function (r) {{ var t = setTimeout(r, 150); s.addEventListener('scroll', function () {{ clearTimeout(t); r(); }}, {{ once: true }}); }}); s.scrollTop += {step}; await seen; }} return Math.round(s.scrollTop); }})()"))
+            .as_i64()
+            .unwrap_or(-1)
+    };
+    let facts = |tab: &headless_chrome::Tab| -> serde_json::Value {
+        harness::probe(tab, &format!("(function(){{ var ok = {PHONE_HITTABLE}, app = document.getElementById('app'), nav = document.querySelector('#app>.sidebar>.nav'), s = document.getElementById('tree'); return {{ away: app.classList.contains('nav-away'), navH: Math.round(nav.getBoundingClientRect().height), write: ok(document.getElementById('writeBtn')), search: ok(document.getElementById('searchBtn')), treeTop: Math.round(s.getBoundingClientRect().top), top: Math.round(s.scrollTop) }}; }})()"))
+    };
+    const FOLDED: &str = "document.getElementById('app').classList.contains('nav-away') && document.querySelector('#app>.sidebar>.nav').getBoundingClientRect().height < 1";
+    const NAV_STATE: &str = "document.getElementById('app').className + ' nav ' + Math.round(document.querySelector('#app>.sidebar>.nav').getBoundingClientRect().height) + ' top ' + Math.round(document.getElementById('tree').scrollTop)";
+    let back = |tab: &headless_chrome::Tab, what: &str, nav_h: i64| {
+        harness::until(
+            tab,
+            &format!("!document.getElementById('app').classList.contains('nav-away') && document.querySelector('#app>.sidebar>.nav').getBoundingClientRect().height >= {nav_h} - 1"),
+            what,
+            Duration::from_secs(5),
+            NAV_STATE,
+        );
+    };
+    let quiet = || harness::pause("the fold's own scroll to pass", Duration::from_millis(400));
+    // Down, folded, then up, back: the rows' room goes to the list and comes back, the list's offset
+    // never written.
+    let down_and_up = |tab: &headless_chrome::Tab, at: &str| -> i64 {
+        let before = facts(tab);
+        assert!(
+            before["away"] == false && before["write"] == true && before["search"] == true,
+            "{at}: Write mode and Search are there before the list moves: {before}"
+        );
+        let nav_h = before["navH"].as_i64().unwrap_or(0);
+        assert!(nav_h >= 70, "{at}: the two rows: {before}");
+        let went = scroll(tab, 12, 8);
+        harness::until(
+            tab,
+            FOLDED,
+            &format!("{at}: the rows fold as the list scrolls down"),
+            Duration::from_secs(5),
+            NAV_STATE,
+        );
+        let folded = facts(tab);
+        assert!(
+            folded["write"] == false && folded["search"] == false,
+            "{at}: folded, neither row takes a tap: {folded}"
+        );
+        assert!(
+            (before["treeTop"].as_i64().unwrap_or(0)
+                - nav_h
+                - folded["treeTop"].as_i64().unwrap_or(0))
+            .abs()
+                <= 2,
+            "{at}: the list takes the rows' room ({nav_h}px): {before} → {folded}"
+        );
+        assert!(
+            (folded["top"].as_i64().unwrap_or(-1) - went).abs() <= 1,
+            "{at}: the fold leaves the list's offset where the reader took it ({went}): {folded}"
+        );
+        quiet();
+        let up = scroll(tab, -6, 2);
+        back(
+            tab,
+            &format!("{at}: the rows back on the first scroll up"),
+            nav_h,
+        );
+        let shown = facts(tab);
+        assert!(
+            shown["write"] == true
+                && shown["search"] == true
+                && (shown["top"].as_i64().unwrap_or(-1) - up).abs() <= 1
+                && up > 0,
+            "{at}: back mid-list, each row a tap away and the list where it was ({up}): {shown}"
+        );
+        quiet();
+        nav_h
+    };
+
+    // Upright: the drawer.
+    {
+        let (_m, _b, tab) =
+            drawer_world(3709, "nav-quick-return-upright", 390, 844, false, 4, None);
+        phone_tap(&tab, "#drawerHandle");
+        harness::until(
+            &tab,
+            DRAWER_OPEN,
+            "the handle to open the drawer",
+            Duration::from_secs(5),
+            DRAWER_STATE,
+        );
+        let nav_h = down_and_up(&tab, "upright");
+        // A short scroll is not a reason to fold.
+        scroll(&tab, 12, 1);
+        harness::pause("a short scroll to settle", Duration::from_millis(400));
+        assert_eq!(
+            facts(&tab)["away"],
+            false,
+            "upright: one short scroll leaves the rows: {}",
+            facts(&tab)
+        );
+        // Folded, the drawer shut and opened again shows them.
+        scroll(&tab, 12, 6);
+        harness::until(
+            &tab,
+            FOLDED,
+            "upright: folded again",
+            Duration::from_secs(5),
+            NAV_STATE,
+        );
+        phone_tap(&tab, "#drawerHandle");
+        harness::until(
+            &tab,
+            DRAWER_SHUT,
+            "the handle to shut the drawer",
+            Duration::from_secs(5),
+            DRAWER_STATE,
+        );
+        phone_tap(&tab, "#drawerHandle");
+        harness::until(
+            &tab,
+            DRAWER_OPEN,
+            "the handle to open the drawer again",
+            Duration::from_secs(5),
+            DRAWER_STATE,
+        );
+        back(&tab, "upright: the rows back as the drawer opens", nav_h);
+        quiet();
+        // Folded, the list's top shows them.
+        scroll(&tab, 12, 6);
+        harness::until(
+            &tab,
+            FOLDED,
+            "upright: folded once more",
+            Duration::from_secs(5),
+            NAV_STATE,
+        );
+        quiet();
+        scroll(&tab, -100_000, 1);
+        back(&tab, "upright: the rows back at the list's top", nav_h);
+    }
+
+    // Held sideways on a wide phone: the column.
+    let (_m, _b, tab) = drawer_world(
+        3710,
+        "nav-quick-return-sideways",
+        956,
+        440,
+        false,
+        4,
+        Some(harness::SIDEWAYS_INSETS),
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('app-drawer') && !document.getElementById('app').classList.contains('phone-column-off') && document.getElementById('tree').getBoundingClientRect().width > 200",
+        "the column shown beside the session",
+        Duration::from_secs(5),
+        NAV_STATE,
+    );
+    down_and_up(&tab, "sideways");
+    // Folded, then a desktop's window: the rows come back, and its list never folds them.
+    scroll(&tab, 12, 6);
+    harness::until(
+        &tab,
+        FOLDED,
+        "sideways: folded again",
+        Duration::from_secs(5),
+        NAV_STATE,
+    );
+    harness::phone(&tab, 1280, 860);
+    harness::until(
+        &tab,
+        "innerWidth === 1280 && !document.getElementById('app').classList.contains('app-drawer')",
+        "a desktop's window",
+        Duration::from_secs(5),
+        NAV_STATE,
+    );
+    back(
+        &tab,
+        "desktop: the rows back where the list is no drawer",
+        40,
+    );
+    quiet();
+    scroll(&tab, 12, 10);
+    harness::pause("a desktop's scroll to settle", Duration::from_millis(400));
+    let desk = facts(&tab);
+    assert!(
+        desk["away"] == false && desk["top"].as_i64().unwrap_or(0) > 60,
+        "desktop: the list scrolled down and the rows stayed: {desk}"
+    );
+}
+
 /// #s33: where the session view and the drawer are, and whether the drawer's list can be reached:
 /// the first session row wholly on screen is hit-tested at its middle.
 const DRAWER_FACTS: &str = "(function(){ var app = document.getElementById('app'); var ws = document.querySelector('#sessionView>.workspace').getBoundingClientRect(); var sb = document.querySelector('#app>.sidebar'); var s = sb.getBoundingClientRect(); var tree = sb.querySelector('.tree'); var rows = [...sb.querySelectorAll('.tree-row.session')]; var row = rows.find(function (r) { var b = r.getBoundingClientRect(); return b.height > 0 && b.top >= 0 && b.bottom <= innerHeight && b.left >= 0; }); var hit = false; if (row) { var b = row.getBoundingClientRect(); var e = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); hit = !!e && row.contains(e); } var title = document.getElementById('sessionTitle').getBoundingClientRect(); var th = document.elementFromPoint(title.left + Math.min(title.width / 2, 20), title.top + title.height / 2); return JSON.stringify({ open: !app.classList.contains('mobile-detail'), rail: app.classList.contains('sidebar-off'), wsTop: Math.round(ws.top), wsLeft: Math.round(ws.left), wsHeight: Math.round(ws.height), h: innerHeight, sbPosition: getComputedStyle(sb).position, sbRight: Math.round(s.right), rowHit: hit, treeShown: !!tree && getComputedStyle(tree).display !== 'none', treeScroll: tree ? tree.scrollHeight - tree.clientHeight : -1, treeTop: tree ? tree.scrollTop : -1, titleOnTop: !!th && document.getElementById('sessionTitle').contains(th) }); })()";
