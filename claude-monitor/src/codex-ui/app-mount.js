@@ -524,7 +524,9 @@ function navAway(away) {
   if (app.classList.contains("nav-away") === away) return;
   navRun = 0;
   navQuietUntil = performance.now() + NAV_QUIET_MS;
-  if (away) sideNav.style.setProperty("--nav-h", `${sideNav.offsetHeight}px`);
+  // A fold glides from the rows' height; a return to their content's now (folded, the box has no
+  // padding: 16px stands in for it), which a turn of the phone may have changed.
+  sideNav.style.setProperty("--nav-h", `${away ? sideNav.offsetHeight : sideNav.scrollHeight + 16}px`);
   app.classList.add("nav-sliding");
   sideNav.getBoundingClientRect();
   app.classList.toggle("nav-away", away);
@@ -541,6 +543,8 @@ sessionListBox.addEventListener("scroll", event => {
   navSeen.set(scroller, { top, height });
   if (!app.classList.contains("app-drawer")) return;
   if (scroller.scrollTop <= 0) return navAway(false);
+  // While the filter's sheet hangs over the list, its room was measured with the rows where they are.
+  if (listSheet && !listSheet.hidden) return;
   if (!seen || seen.height !== height || performance.now() < navQuietUntil) return;
   const step = top - seen.top;
   navRun = step * navRun > 0 ? navRun + step : step;
@@ -572,7 +576,6 @@ function arrangeList({ remeasure = true } = {}) {
   const hold = performance.now() >= listGlideUntil;
   if (hold) app.classList.add("app-holding");
   app.classList.toggle("app-drawer", decided.list === "drawer");
-  placeDrawerHead();
   if (typeof decided.list === "number") drawListWidth(decided.list);
   // The drawer is a width of its own (`min(86vw, 360px)`), never one the order gave the list: a list
   // narrowed toward 232px kept its `sidebar-tight` into the drawer, whose 10px head padding then
@@ -580,6 +583,9 @@ function arrangeList({ remeasure = true } = {}) {
   else if (decided.list === "drawer") app.classList.remove("sidebar-tight");
   app.classList.toggle("sidebar-off", decided.list === "rail");
   listHandle.compact(app.classList.contains("sidebar-off"));
+  // After the rail's flyout has closed, which hands the filter's sheet back to its home (#s705 review:
+  // laid out first, the sheet was taken from the open flyout and left open in the drawer).
+  placeDrawerHead();
   paintRailExpand();
   app.getBoundingClientRect();
   if (hold) app.classList.remove("app-holding");
@@ -589,14 +595,16 @@ function arrangeList({ remeasure = true } = {}) {
  *  list's strip of controls (Collapse all, Expand all, the filter) sits in the row over the list, its
  *  filter's sheet hanging from that row. Anywhere else (the list at a width, a wide phone's column) the
  *  strip and the sheet are back in the head, where the list placed them. Called as the list is laid out
- *  and as a wide phone turns, which lays the list out the same (`app-drawer` either way). */
+ *  and as a wide phone turns, which lays the list out the same (`app-drawer` either way). Each part moves
+ *  only from its home or from the row: a sheet the rail's flyout holds is the flyout's. */
 function placeDrawerHead() {
   const oneRow = app.classList.contains("app-drawer") && !wideScreen.matches;
   app.classList.toggle("drawer-one-row", oneRow);
   // The nav's rows give way only in the drawer and a wide phone's column (#s701).
   if (!app.classList.contains("app-drawer")) navAway(false);
   if (oneRow) {
-    for (const node of [listControls, listSheet]) if (node && node.parentNode !== sideListHead) sideListHead.append(node);
+    if (listControls && listControls.parentNode === page.byId("sidebarCollapse").parentNode) sideListHead.append(listControls);
+    if (listSheet && listSheet.parentNode === page.$("#app>.sidebar>.side-head")) sideListHead.append(listSheet);
     return;
   }
   if (listControls?.parentNode === sideListHead) page.byId("sidebarCollapse").before(listControls);
@@ -772,6 +780,9 @@ var mobileShell;
     try { localStorage.setItem(COLUMN_KEY, open ? "1" : "0"); } catch (_) {}
     app.classList.toggle("phone-column-off", columnOff);
     labelHandle();
+    // Shown again, the column's list is back at its top (a hidden box keeps no offset), and so are its
+    // rows (#s701 review).
+    if (open) navAway(false);
   };
   app.classList.toggle("phone-column-off", columnOff);
   // The drawer keeps its own state on a wide phone too — choosing a session still shuts it — so a

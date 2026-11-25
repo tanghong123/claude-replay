@@ -1874,7 +1874,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // #s705: in the drawer the head is one row, and the strip and the sheet move to the row over the
   // list; anywhere else they go back where the list placed them.
   assert.match(appSource, /^  const oneRow = app\.classList\.contains\("app-drawer"\) && !wideScreen\.matches;$/m, "#s705: the drawer's head is one row, but on a wide phone's column");
-  assert.match(appSource, /^    for \(const node of \[listControls, listSheet\]\) if \(node && node\.parentNode !== sideListHead\) sideListHead\.append\(node\);$/m, "#s705: …the strip and the sheet in the row over the list");
+  assert.match(appSource, /^    if \(listControls && listControls\.parentNode === page\.byId\("sidebarCollapse"\)\.parentNode\) sideListHead\.append\(listControls\);$/m, "#s705: …the strip in the row over the list, from its home");
+  assert.match(appSource, /^    if \(listSheet && listSheet\.parentNode === page\.\$\("#app>\.sidebar>\.side-head"\)\) sideListHead\.append\(listSheet\);$/m, "#s705: …and the sheet, from its home: a sheet the rail's flyout holds is the flyout's");
+  assert.match(appSource, /^  listHandle\.compact\(app\.classList\.contains\("sidebar-off"\)\);\n(?:  \/\/.*\n)*  placeDrawerHead\(\);$/m, "#s705: the head is laid out once the rail's flyout has closed");
   assert.match(appSource, /^  if \(listControls\?\.parentNode === sideListHead\) page\.byId\("sidebarCollapse"\)\.before\(listControls\);$/m, "#s705: …and back before the sidebar collapse elsewhere");
   assert.match(appSource, /^page\.byId\("sessionList"\)\.before\(sideListHead\);$/m, "#s705: the row sits right above the session list");
   // #s701: the nav's rows fold as the list scrolls down and come back on the way up, only in the drawer
@@ -1884,6 +1886,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(appSource, /^  if \(!seen \|\| seen\.height !== height \|\| performance\.now\(\) < navQuietUntil\) return;$/m, "#s701: a scroll that comes with a new height of the list's box, or inside the fold's glide, is not the reader's");
   assert.match(appSource, /^  const top = Math\.min\(Math\.max\(scroller\.scrollTop, 0\), Math\.max\(room, 0\)\), seen = navSeen\.get\(scroller\);$/m, "#s701: iOS's bounce past either end reads as the end");
   assert.match(appSource, /^    if \(open\) navAway\(false\);$/m, "#s701: the rows come back as the drawer opens");
+  assert.equal((appSource.match(/^    if \(open\) navAway\(false\);$/gm) || []).length, 2, "#s701: …and as a wide phone's column is shown again");
   const navBlock = appSource.slice(appSource.indexOf("// #s701 (Hong"), appSource.indexOf("}, { capture: true, passive: true });", appSource.indexOf("// #s701 (Hong")));
   assert.ok(navBlock.includes("function navAway(away)"), "#s701: the quick return's block is found");
   assert.doesNotMatch(navBlock, /scrollTop\s*=[^=]|scrollTo\(|scrollBy\(/, "#s701: the fold never writes the list's offset");
