@@ -1513,8 +1513,8 @@ the sender's chip on its Turns pane row, the label going on after the name (`pee
 `origin.body` is read, never the prose; the tag is read only for a meta record with no `origin`
 (none measured), so a person QUOTING the tag keeps their prompt. Either way the card leaves out the
 notice Claude Code (2.1.322+) appends when the sender has handled others' Artifact content (a blank
-line, `<artifact-content-authored-by-others/>` and its fixed sentence, matched by its opening words:
-the client's word to the model, #s699). The mid-turn one used to render as the person's own prompt. A peer enqueue draws no `⧗
+line, `<artifact-content-authored-by-others/>` and its fixed sentence, matched whole and word for
+word, so words after it are shown: the client's word to the model, #s699, #s717). The mid-turn one used to render as the person's own prompt. A peer enqueue draws no `⧗
 queued` marker (that marker means the person typed it) but stays in the queue, popped at pickup by
 its raw text. Text the person PASTED is `<pasted_content id="X">…</pasted_content id="X">`; the
 adapter rewrites it as a fence labelled `pasted` (one backtick longer than any run inside), applied
@@ -1547,8 +1547,10 @@ ways (an attribute given twice), a sub-agent's record (`isSidechain`) and a queu
 `origin` is not a person's. **One sent as ANOTHER SESSION's message is his on the same terms**
 (#s655, Hong's choice on aries#s322: "Count it as mine when its signature checks"; aries-tell sends
 them since aries#s320, so typing no longer interrupts Aries): the record's own `origin.body`, never
-its prose or the tag's text, with whitespace at its ends stripped, must be one whole v1 element (the
-tag at its first character, the closing tag at its last, no paste around it) whose sig verifies, on
+its prose or the tag's text, with whitespace at its ends stripped and the client's artifact notice
+(#s699), whole and word for word, taken off its end (#s717, Hong's choice on #s707: "Accept it
+with the notice taken off first"), must be one whole v1 element (the tag at its first character,
+the closing tag at its last, no paste around it) whose sig verifies, on
 a record no sub-agent wrote, as a `user` record or a mid-turn pickup; who sent it does not matter.
 The first-id rule counts typed and sent alike, and a later copy sent that way is the session's
 message, drawn as before (`Message::UserInbox`'s `peer`). aries-inbox types a bracketed paste, and Claude Code 2.1.310 records a paste of four
