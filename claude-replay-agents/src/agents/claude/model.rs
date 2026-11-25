@@ -1088,13 +1088,15 @@ const RECORD_TYPES_KNOWN: &[&str] = &[
     // Nothing is drawn: a resume and a compaction show already. With no timestamp, a resume that
     // writes these and nothing else is no activity to the monitor's clock, so no growth. The
     // `derived-from` arm claims a record only when every entry is a `claude_code_session` reached
-    // by one of `DERIVED_FROM_VIA_KNOWN`; any other entry reaches the sweep as `derived-from
-    // <type> via <via>`, and so does what else was not measured (`derived_from_unknown`: another
-    // version, no list, a resume or compaction of another session, a `started` naming another).
-    // REVISIT when one does: the client's code (read, not measured) also names `branch`,
-    // `teleport`, `cloud` and `launch`, and entries of type `unknown` with no id; a `branch`
-    // naming another session may belong in `fork_origin`. Also REVISIT a first `derived-from`
-    // past the head's 64 KB, which the adapter would not read.
+    // by one of `DERIVED_FROM_VIA_KNOWN`, or the `unknown` entry via `subprocess` with no id that
+    // #s718 measured (clients 2.1.331 and 2.1.332: a process started from inside a Claude session
+    // whose id did not reach it, so it names no starter); any other entry reaches the sweep as
+    // `derived-from <type> via <via>`, and so does what else was not measured
+    // (`derived_from_unknown`: another version, no list, a resume or compaction of another session,
+    // a `started` naming another, an `unknown` entry with an id). REVISIT when one does: the
+    // client's code (read, not measured) also names `branch`, `teleport`, `cloud` and `launch`; a
+    // `branch` naming another session may belong in `fork_origin`. Also REVISIT a first
+    // `derived-from` past the head's 64 KB, which the adapter would not read.
     "derived-from",
     "file-history-delta",
     "file-history-snapshot",
@@ -1149,7 +1151,8 @@ const RECORD_TYPES_KNOWN: &[&str] = &[
 /// The `via` values a `derived-from` entry of type `claude_code_session` has been measured with
 /// (#s653; see `RECORD_TYPES_KNOWN`): `resume` and `compact` name the session itself, `fork` a
 /// fork's parent and `subprocess` the session whose tools started this one. Any other entry is
-/// reported by the `derived-from` arm.
+/// reported by the `derived-from` arm, but for the one entry of type `unknown` that
+/// `derived_from_unknown` knows (#s718: via `subprocess`, no id).
 const DERIVED_FROM_VIA_KNOWN: &[&str] = &["compact", "fork", "resume", "subprocess"];
 
 /// What a `derived-from` record holds outside what was measured (#s653), one sweep name each: a
@@ -1157,6 +1160,18 @@ const DERIVED_FROM_VIA_KNOWN: &[&str] = &["compact", "fork", "resume", "subproce
 /// are), no `sessions` list, an entry that is not a `claude_code_session` reached by a known via,
 /// a `resume` or `compact` of ANOTHER session (measured, every one names the session itself), or a
 /// `started` naming another session than the record's own.
+///
+/// One entry that is no `claude_code_session` is known too (#s718): `{type: "unknown", id: null,
+/// via: "subprocess", started: <the record's own session>}`, met 2026-11-25 on hong-devserver in
+/// 13 records of 7 transcripts written by clients 2.1.331 and 2.1.332, in two fresh one-shots and
+/// five interactive sessions continued by a headless resume (there again after each later prompt
+/// cycle, beside a `compact` entry once the session compacted, in either order). As read in the
+/// 2.1.332 client's code, not measured: the client writes it when the process descends from a
+/// Claude session's tool call (`CLAUDE_CODE_CHILD_SESSION`), is no teammate, has no parseable
+/// `CLAUDE_CODE_SESSION_ID`, and its launch chain names nothing but cleared entries, so it names
+/// no starter and `launched_by` answers `None`. An `id` there is reported, and a `started` naming
+/// another session is, as for any entry. REVISIT if an `unknown` entry ever carries an id, a via
+/// other than `subprocess`, or a `started` naming another session.
 fn derived_from_unknown(v: &Value) -> Vec<String> {
     let mut out = Vec::new();
     // The version as a number only, never the value as the record spells it.
@@ -1179,7 +1194,13 @@ fn derived_from_unknown(v: &Value) -> Vec<String> {
         let kind = e.get("type").and_then(Value::as_str).unwrap_or("(absent)");
         let via = e.get("via").and_then(Value::as_str).unwrap_or("(absent)");
         let id = e.get("id").and_then(Value::as_str);
-        if kind != "claude_code_session" || !DERIVED_FROM_VIA_KNOWN.contains(&via) {
+        if kind == "unknown" && via == "subprocess" {
+            // #s718: started from inside a Claude session whose id did not reach it, so the entry
+            // names no session; its `started` is judged below like any other entry's.
+            if e.get("id").is_some_and(|i| !i.is_null()) {
+                out.push("derived-from unknown via subprocess with an id".to_string());
+            }
+        } else if kind != "claude_code_session" || !DERIVED_FROM_VIA_KNOWN.contains(&via) {
             out.push(format!("derived-from {kind} via {via}"));
         } else if matches!(via, "resume" | "compact") && id != own {
             out.push(format!("derived-from via {via} of another session"));
@@ -11792,6 +11813,66 @@ mod tests {
                 .into_iter()
                 .any(|s| s.name.contains("via teleport")),
             "a record that names no session has its entries left unjudged"
+        );
+    }
+
+    /// #s718: the `unknown` entry via `subprocess` with no id (clients 2.1.331 and 2.1.332) is
+    /// known, alone or beside a `compact` of the session itself in either order, with `started`
+    /// the record's own session or absent; one carrying an id, one whose `started` names another
+    /// session, and an `unknown` entry by another via are still reported.
+    #[test]
+    fn the_2_1_331_unknown_entry_via_subprocess_is_known() {
+        let mine = |sid: &str| -> Vec<String> {
+            let mut got: Vec<String> = unknown_shapes()
+                .into_iter()
+                .filter(|s| s.example.as_deref() == Some(sid))
+                .map(|s| s.name)
+                .collect();
+            got.sort();
+            got
+        };
+        let measured = [
+            r#"{"type":"derived-from","v":1,"sessionId":"s-s718","sessions":[{"type":"unknown","id":null,"via":"subprocess","started":"s-s718"}]}"#,
+            r#"{"type":"derived-from","v":1,"sessionId":"s-s718","sessions":[{"type":"unknown","id":null,"via":"subprocess","started":"s-s718"},{"type":"claude_code_session","id":"s-s718","via":"compact"}]}"#,
+            r#"{"type":"derived-from","v":1,"sessionId":"s-s718","sessions":[{"type":"claude_code_session","id":"s-s718","via":"compact"},{"type":"unknown","id":null,"via":"subprocess","started":"s-s718"}]}"#,
+            r#"{"type":"derived-from","v":1,"sessionId":"s-s718","sessions":[{"type":"unknown","via":"subprocess"}]}"#,
+        ];
+        let _ = parse(&measured.join("\n"));
+        assert_eq!(
+            mine("s-s718"),
+            Vec::<String>::new(),
+            "the measured entry is known"
+        );
+        // The registry is the process's and keeps a name's first example, so what is still
+        // reported is judged on the record itself, and only a name no other case reports is
+        // parsed here (another case's `mine` would lose its example to this one).
+        let judged =
+            |line: &str| derived_from_unknown(&serde_json::from_str::<Value>(line).unwrap());
+        for line in measured {
+            assert_eq!(judged(line), Vec::<String>::new(), "{line}");
+        }
+        let other = [
+            (
+                r#"{"type":"derived-from","v":1,"sessionId":"s-s718b","sessions":[{"type":"unknown","id":"p-s718","via":"subprocess","started":"s-s718b"}]}"#,
+                "derived-from unknown via subprocess with an id",
+            ),
+            (
+                r#"{"type":"derived-from","v":1,"sessionId":"s-s718b","sessions":[{"type":"unknown","id":null,"via":"subprocess","started":"q-s718"}]}"#,
+                "derived-from via subprocess started another session",
+            ),
+            (
+                r#"{"type":"derived-from","v":1,"sessionId":"s-s718b","sessions":[{"type":"unknown","id":null,"via":"launch"}]}"#,
+                "derived-from unknown via launch",
+            ),
+        ];
+        for (line, name) in other {
+            assert_eq!(judged(line), vec![name.to_string()], "{line}");
+        }
+        let _ = parse(other[0].0);
+        assert_eq!(
+            mine("s-s718b"),
+            vec!["derived-from unknown via subprocess with an id".to_string()],
+            "and the parse reports it"
         );
     }
 
