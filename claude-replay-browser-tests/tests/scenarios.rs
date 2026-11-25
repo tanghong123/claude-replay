@@ -10982,8 +10982,9 @@ fn scenario_a_fold_opened_at_the_tail_does_not_snap_back(
     // classic run that passed once and failed the next time on the same code.
     // "⋯ N more lines" — the control the owner was actually clicking, and the one that only ever
     // GROWS. A fold head was tried first and is the wrong instrument twice over: its click is a
-    // four-step cycle, so on a head the page had already opened it CLOSES (measured: the classic
-    // page shrank 76px and the case reported itself vacuous), and it routes through the shells'
+    // cycle (four steps then, three since #s698), so on a head the page had already opened it
+    // CLOSES (measured: the classic page shrank 76px and the case reported itself vacuous), and
+    // it routes through the shells'
     // re-render path while a cap expander reveals in place and reaches the engine only through
     // the resize observer — which is exactly the path that was left uncovered.
     let head_selector = match surface {
