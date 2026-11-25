@@ -109,6 +109,29 @@ take the second and wrap within it. They never share a row, at any width. Below 
 so all five stay inside the sidebar at its 232px minimum (#210). Nothing is hidden at any width; a
 new control in that row is measured against the minimum, not the default, and the case
 (`the_app_shell_resizes_the_session_list`) hit-tests every control there rather than eyeballing it.
+**The DRAWER's head is one row** (#s705, Hong on a phone upright: "machines and theme should go to the
+top row (alongside the Agent Monitor text). The filter glyph moves to right above the session list"):
+in the drawer (`app-drawer`, but a wide phone's column) the app wears `drawer-one-row`, the brand
+shares its row with the native app's Machines glyph (`#machinesHead`, the nav's Machines row hidden)
+and the theme, the version giving way before the name, and `placeDrawerHead` moves the list's strip of
+controls and its filter's sheet into a row of their own right above the list (`#sideListHead`), the
+sheet capped to the room between that row and the list's foot, however little (a 120px floor put its
+end past the foot of a 292pt Safari page held sideways); anywhere else they go back into the head
+(`the_native_app_s_drawer_holds_machines_and_the_theme_beside_its_brand`).
+**The nav's rows quick-return** (#s701, Hong: "too much space taken by write, search, machines, I'd
+like to implement fast return for those (also apply to portrait mode)", "Yes, quick return"): in the
+drawer and a wide phone's column (`app-drawer`) Write mode, Search and a column's Machines row fold
+away (`nav-away`) once the list has scrolled down 24px on end, where it has more to show than their
+room, and come back on 8px of scroll up, at the list's top, as the drawer opens and anywhere the list
+is no drawer. They fold rather than float, so nothing lies over a row and the list's offset is never
+written (an iOS glide would not keep it); the scroll the fold itself causes is not read as the
+reader's (`NAV_QUIET_MS`). The filter's sheet folds them too (#s705, walked on an iPhone 17 Pro in
+Safari held sideways, where the drawer's sheet ran 30pt past the page's foot): a tap of the funnel
+in the one-row drawer with under `SHEET_ROOM` (240px) between the row above the list and the list's
+foot folds them at once, with no glide, before the sheet measures its room; closing that sheet
+brings them back, as closing one opened with the list at its top does, and while a sheet is open
+the list's scroll neither folds nor returns them
+(`a_phone_list_folds_its_nav_rows_on_the_way_down_and_brings_them_back_on_the_way_up`).
 **On a phone (the view's phone reader since #s431 stage 3: a view under 490px of its own width, or a
 touch screen's view of 760px or less or 500px tall or less; #310 then #313, #s32 a phone held
 sideways) the app shell is a reader and a native-feeling app**, the owner's rules: upright the transcript keeps a 24px margin either side (#s55; the Reading menu's Wide
@@ -280,14 +303,16 @@ over the drawer's head upright; `harness::safe_area` emulates them through Chrom
 sideways the transcript is a centred reading column (500px, about 75 characters of prose); and a
 WIDE phone held sideways (`WIDE_PHONE_QUERY`, ≥900px: the Plus and Max iPhones) shows the session
 list as a 280px COLUMN beside the session, its head ONE row of glyphs and no brand (the owner), never
-shrunk by a long pane under it (`flex:none`; #s41, it was cut to 11px): the
-switcher (Sessions / Turns / Tasks / Agents, borrowing the outline's live lists as the sheets do —
-Sessions wears a conversation glyph, never the sidebar glyph, which every desktop reads as "hide the
-sidebar": the owner tapped it to hide the column and called it dead, #s41), then
-the sidebar's own (Collapse all, Expand all and the session filter go while a pane is shown: they act
-on the list alone; Collapse all and Expand all are never glyphs there but the session filter sheet's
-first two rows, so the six glyphs left take a finger's 44 points each, #s664, Hong's choice on #s661); the pill keeps only Aa beside search — and takes the panes back while the column
-is hidden, or nothing would reach them. The handle sits at the session's top left, by
+shrunk by a long pane under it (`flex:none`; #s41, it was cut to 11px): the sidebar's own glyphs,
+the theme, Collapse all, Expand all and the session filter, each a finger's 44 points. **The column
+holds the sessions alone; Turns, Tasks and Agents are in the dock's pill at the bottom right with
+Aa, as upright** (#s703, Hong: "I feel it is a mistake to put the glyphs for the outline panes to the
+left. Instead, I'd put them to the right bottom, similar to the portrait mode"), each opening its
+sheet there as a popover, whether the column is shown or hidden; the column's switcher and the
+filter sheet's fold rows (#s664, which made room for its eight glyphs) are gone with them
+(`a_wide_phone_held_sideways_opens_its_panes_from_the_dock_at_the_bottom_right`). While the right
+pane covers the session beside the column, the dock goes under it with the session, the panes
+included. The handle sits at the session's top left, by
 the title (as iPad apps keep their sidebar button, and wearing its sidebar glyph there; ☰ is the
 drawer's), and hides and shows the column under its own key
 (`am-phone-column`; never the rail's, never `mobile-detail`); hidden, the session stays at its
@@ -333,7 +358,8 @@ Safari with its tab bar), so they may rise over the top bar
 (`a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_whole`). The jump to the
 latest sits at the bottom CENTRE of the session (#332): just above the dock upright, ON the dock's
 row sideways, where the middle of that row is free (the owner: "should move to the bottom"; above it
-again while the pane is a second column, whose half puts the pill in that middle, #s645), and
+again while the pane is a second column, whose half puts the pill in that middle, #s645, and beside
+a wide phone's column, whose pill sits at the session's right since #s703), and
 gone while the find pill holds the dock (#s41). Inputs are 16px (iOS zooms into anything
 smaller), targets 44px — a reading row's whole width flips its switch, a facet suggestion is a 44px
 row, a delivered file a 36px chip (at 14px WebKit's tap adjustment gave its tap to the row's head,
@@ -1368,9 +1394,9 @@ resizes the others (#159). Six drawer cases catch that in one run.
   finished agents or Show N finished agents (#s358, Hong's choice on #s357; `phoneAgentsFilter`), and
   its Tasks list one for Top-level only, Hide follow-ups or Show N follow-ups (#s606;
   `phoneTasksFilter`); with an agent running the list is not empty, so the empty line alone would
-  strand the reader. In a wide phone's column the control is a row at the top of the list, because
-  the list can be long; in a sheet it is in the sheet's HEAD beside its title (#s616, `renderFilter`,
-  the row not drawn there), because held sideways the sheet's list is about 97px and the Tasks
+  strand the reader. The control is in the sheet's HEAD beside its title (#s616, `renderFilter`,
+  copied from a row at the top of the list, which the sheet does not draw; a wide phone's column drew
+  the row until #s703 took the panes out of it), because held sideways the sheet's list is about 97px and the Tasks
   sheet's opening scroll to what is still moving took a row at the top out of reach, while a row
   pinned there left no task readable. A phone's Tasks pane shows every state (#319), so it needs no
   state filter. **A task the session recorded no title for is not listed** in that pane

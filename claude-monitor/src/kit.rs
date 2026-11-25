@@ -419,7 +419,7 @@ mod tests {
     /// mdrev's bundle and the Mermaid runtime load from when the app carries them itself; and so is
     /// `reviewSheet` (#s596, Hong on #s555: "The phone's Review sheet on an iPad too (native app
     /// only)"), the pane's Review and its sheet offered at every width.
-    const VIEW_WITHHELD: [&str; 9] = [
+    const VIEW_WITHHELD: [&str; 8] = [
         "keyboard",
         "frame",
         "assets",
@@ -428,7 +428,6 @@ mod tests {
         "openList",
         "openSidebar",
         "paneLayout",
-        "paneCount",
     ];
     const LIST_WITHHELD: [&str; 6] = [
         "keyboard",

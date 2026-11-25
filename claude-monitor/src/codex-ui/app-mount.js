@@ -18,7 +18,7 @@ import { bindKeymap, hintFor } from "./shared/keymap.js";
 import { parseJumpQuery } from "./jump-query.js";
 import { escapeText } from "./view-model.js";
 import { mountSessionList, OPTIONAL_CONTROLS as LIST_CONTROLS } from "./session-list-view.js";
-import { mountSessionView, OPTIONAL_CONTROLS as VIEW_CONTROLS, PHONE_PANES } from "./session-view.js";
+import { mountSessionView, OPTIONAL_CONTROLS as VIEW_CONTROLS } from "./session-view.js";
 import { page, viewRoot } from "./view-root.js";
 import { arrangeApp, GLIDE_MS, LIST_MIN } from "./pane-layout.js";
 
@@ -185,8 +185,9 @@ function toast(message) {
 // body, its listeners, the parts it asks the app to place) comes in the order it did. What it needs of
 // the view (native mode's projects) is read as it draws, once the view is mounted; it starts reading
 // the index at the end, as it did.
-// The rail's filter as the list places it (`placeListPart`), for the Machines glyph to follow (#s596).
-let railFilter = null;
+// The rail's filter as the list places it (`placeListPart`), for the Machines glyph to follow (#s596);
+// and the list's strip of controls and its filter's sheet, which the drawer moves (`placeDrawerHead`).
+let railFilter = null, listControls = null, listSheet = null;
 listHandle = mountSessionList(page.byId("sessionList"), {
   // Over several machines the list reads all of them at once (#s541's merged source, #s595).
   ...(merged ? { backend: merged } : {}),
@@ -209,22 +210,42 @@ listHandle = mountSessionList(page.byId("sessionList"), {
   layer: kind => (kind === "flyout" ? page.body() : app),
   place: placeListPart,
 });
+// #s705 (Hong, on the drawer upright: "machines and theme should go to the top row (alongside the
+// Agent Monitor text). The filter glyph moves to right above the session list."): the drawer's row over
+// the list, which holds the list's strip of controls and hangs its filter's sheet while the drawer's
+// head is one row (`placeDrawerHead`). Shown only then.
+const sideListHead = Object.assign(document.createElement("div"), { className: "side-list-head", id: "sideListHead" });
+page.byId("sessionList").before(sideListHead);
+// The filter's sheet hangs from that row, lower in the drawer than under the head, so it is given the
+// room left below the row (`--room-below`), measured as it opens and as the window changes: held
+// sideways its 74vh ran past the window's foot from there.
+const fitListSheet = () => {
+  if (!app.classList.contains("drawer-one-row") || !listSheet || listSheet.hidden) return;
+  sideListHead.style.setProperty("--room-below", `${Math.max(0, Math.floor(innerHeight - sideListHead.getBoundingClientRect().bottom))}px`);
+};
+if (listSheet) new MutationObserver(fitListSheet).observe(listSheet, { attributes: true, attributeFilter: ["hidden"] });
+addEventListener("resize", fitListSheet);
 if (options.onMachines) drawMachines(options.onMachines);
 
 /** The native app's way into its own screens (#s596, Hong on #s553: "A Machines row in the sidebar
- *  (native app only)"): a Machines row in the nav after Search, which shows at every width the nav does
- *  (the drawer and a wide phone's column), and a glyph on the rail, which hides the nav, after the
- *  list's filter (after Search where the app switched the filter off). Each calls `onMachines`; drawn
- *  after the list, so its rail filter is in place. */
+ *  (native app only)"): a Machines row in the nav after Search, which shows where the nav does but in
+ *  the drawer (a wide phone's column, the list at a width); a glyph in the drawer's one-row head before
+ *  the theme (#s705), shown there alone; and a glyph on the rail, which hides the nav, after the list's
+ *  filter (after Search where the app switched the filter off). Each calls `onMachines`; drawn after
+ *  the list, so its rail filter is in place. */
 function drawMachines(onMachines) {
   const glyph = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>';
   const row = Object.assign(document.createElement("button"), { type: "button", className: "navbtn", id: "machinesBtn" });
   row.innerHTML = `<span>${glyph}</span><span class="label">Machines</span>`;
+  const head = Object.assign(document.createElement("button"), { type: "button", className: "iconbtn", id: "machinesHead", title: "Machines" });
+  head.innerHTML = glyph;
+  head.setAttribute("aria-label", "Machines");
   const rail = Object.assign(document.createElement("button"), { type: "button", className: "sidebar-mini-button", id: "sidebarMiniMachines", title: "Machines" });
   rail.innerHTML = glyph;
   rail.setAttribute("aria-label", "Machines");
-  row.onclick = rail.onclick = () => onMachines();
+  row.onclick = head.onclick = rail.onclick = () => onMachines();
   page.byId("searchBtn").after(row);
+  page.byId("themeBtn").before(head);
   (railFilter || page.byId("sidebarMiniSearch")).after(rail);
 }
 
@@ -235,8 +256,8 @@ function drawMachines(onMachines) {
  *  rail's filter after its search, and the agent marks at the rail's end. Called as the list mounts,
  *  so it reads nothing declared below the mount. */
 function placeListPart(part, node) {
-  if (part === "controls") page.byId("sidebarCollapse").before(node);
-  else if (part === "sheet") page.$("#app>.sidebar>.side-head").append(node);
+  if (part === "controls") page.byId("sidebarCollapse").before(listControls = node);
+  else if (part === "sheet") page.$("#app>.sidebar>.side-head").append(listSheet = node);
   else if (part === "rail-filter") page.byId("sidebarMiniSearch").after(railFilter = node);
   else if (part === "marks") page.byId("sidebarMini").append(node);
 }
@@ -297,15 +318,14 @@ function showSession(id, push) {
   viewHandle.open(where.id);
   paintWrite();
 }
-/** Mount the view again on `machine` (#s595): a confirm still open is cancelled and the wide phone's
- *  column gives back the pane's list it borrowed first, then the view goes as its unmount takes it (the draft, the tabs, the search, a send
- *  still out), and comes back on that machine's handle, which every call it makes then goes to. */
+/** Mount the view again on `machine` (#s595): a confirm still open is cancelled, then the view goes as
+ *  its unmount takes it (the draft, the tabs, the search, a send still out), and comes back on that
+ *  machine's handle, which every call it makes then goes to. */
 function remountOn(machine) {
   // A grant's confirm still open names the old machine's pane: it is cancelled, as a newer ask would,
   // and a passcode typed for that machine is not offered to the next.
   confirming?.(null);
   const passcode = page.$(".passcode-input"); if (passcode) passcode.value = "";
-  mobileShell?.showSessions();
   viewHandle.unmount();
   viewMachine = machine;
   mountView();
@@ -478,6 +498,84 @@ const coarseScreen = matchMedia("(pointer:coarse)");
 // app's web view it read the short height 60 to 90 ms after the query saw the page grow back past 500,
 // so the list was laid out short as the keyboard went down and stayed a drawer (#s650).
 const shortScreen = matchMedia("(max-height:500px)");
+// A wide phone held sideways, whose list is a column under `app-drawer` (#s37) with a head of its own.
+const wideScreen = matchMedia(WIDE_PHONE_QUERY);
+
+// #s701 (Hong, of a phone's list held sideways: "too much space taken by write, search, machines, I'd like
+// to implement fast return for those (also apply to portrait mode)"; then "Yes, quick return"): in the
+// drawer and a wide phone's column (`app-drawer`) the nav's rows, Write mode, Search and Machines where it
+// is a row, give way as the session list scrolls down and come back on the first scroll up, and at its
+// top. They fold (`nav-away`), so the list takes their room at once and nothing lies over its rows; the
+// list's offset is never written, which an iOS glide would not keep. A fold waits for the scroll to
+// go on (`AWAY_AFTER`) and only where the list has more to show than the rows' room, or folding them
+// would leave nothing to scroll and bring them straight back. The scroll the fold itself causes (near
+// the list's end its offset comes down as the list grows) is not read as the reader's: a scroll that
+// comes with a new height of the list's box, or inside the fold's glide (`NAV_QUIET_MS`), moves
+// nothing; nor is iOS's bounce past either end, read as the end itself. The rows come back as the
+// drawer opens, and anywhere the list is not a drawer or a column.
+const NAV_AWAY_AFTER = 24, NAV_BACK_AFTER = 8, NAV_QUIET_MS = 260, NAV_GLIDE_MS = 320;
+const sideNav = page.$("#app>.sidebar>.nav");
+const navSeen = new WeakMap();
+let navRun = 0, navQuietUntil = 0, navGlide = 0;
+/** Folds the nav's rows away, or brings them back. A fold starts from the rows' height (`--nav-h`), so
+ *  its glide has somewhere to come from; `nav-sliding` holds that height until a return has glided
+ *  (on a clock, since a reader who asks for less motion gets no transition to end). */
+function navAway(away, instant = false) {
+  if (app.classList.contains("nav-away") === away) return;
+  navRun = 0;
+  navQuietUntil = performance.now() + NAV_QUIET_MS;
+  // A fold glides from the rows' height; a return to their content's now (folded, the box has no
+  // padding: 16px stands in for it), which a turn of the phone may have changed.
+  sideNav.style.setProperty("--nav-h", `${away ? sideNav.offsetHeight : sideNav.scrollHeight + 16}px`);
+  // `instant`: no glide, the new layout there before this returns (for the filter's sheet, below).
+  if (instant) sideNav.style.transition = "none";
+  app.classList.add("nav-sliding");
+  sideNav.getBoundingClientRect();
+  app.classList.toggle("nav-away", away);
+  if (instant) { sideNav.getBoundingClientRect(); sideNav.style.transition = ""; }
+  clearTimeout(navGlide);
+  if (!away) navGlide = setTimeout(() => app.classList.contains("nav-away") || app.classList.remove("nav-sliding"), NAV_GLIDE_MS);
+}
+// The list's own scroller, its element's child: a scroll does not bubble, but its capture passes here.
+const sessionListBox = page.byId("sessionList");
+sessionListBox.addEventListener("scroll", event => {
+  const scroller = event.target;
+  if (!(scroller instanceof Element) || scroller.parentElement !== sessionListBox) return;
+  const room = scroller.scrollHeight - scroller.clientHeight, height = scroller.clientHeight;
+  const top = Math.min(Math.max(scroller.scrollTop, 0), Math.max(room, 0)), seen = navSeen.get(scroller);
+  navSeen.set(scroller, { top, height });
+  if (!app.classList.contains("app-drawer")) return;
+  // While the filter's sheet hangs over the list the rows stay as they are, even at its top: the sheet
+  // measured its room with them there. They come back as it closes (below).
+  if (listSheet && !listSheet.hidden) return;
+  if (scroller.scrollTop <= 0) return navAway(false);
+  if (!seen || seen.height !== height || performance.now() < navQuietUntil) return;
+  const step = top - seen.top;
+  navRun = step * navRun > 0 ? navRun + step : step;
+  if (navRun >= NAV_AWAY_AFTER && room > sideNav.offsetHeight + NAV_AWAY_AFTER) navAway(true);
+  else if (navRun <= -NAV_BACK_AFTER) navAway(false);
+}, { capture: true, passive: true });
+// Where the room below the row over the list is short (a phone held sideways: in Safari with its tab
+// bar the page is 292pt, the row ends at 182 and left the filter's sheet 82, #s705), the rows step
+// aside as the sheet opens, at once, so that the list measures the sheet's room without them, and
+// come back as it closes; so do rows the list's scroll folded, if it closes with the list at its top.
+const SHEET_ROOM = 240;
+let navForSheet = false;
+sideListHead.addEventListener("click", event => {
+  if (!listSheet?.hidden || !app.classList.contains("drawer-one-row") || app.classList.contains("nav-away")) return;
+  if (!(event.target instanceof Element) || !event.target.closest("#filterBtn")) return;
+  const foot = Math.min(innerHeight, sessionListBox.getBoundingClientRect().bottom);
+  if (foot - sideListHead.getBoundingClientRect().bottom >= SHEET_ROOM) return;
+  navForSheet = true;
+  navAway(true, true);
+}, { capture: true });
+if (listSheet) new MutationObserver(() => {
+  if (!listSheet.hidden) return;
+  const atTop = ![...sessionListBox.children].some(child => child.scrollTop > 0);
+  if (navForSheet || atTop) navAway(false);
+  navForSheet = false;
+}).observe(listSheet, { attributes: true, attributeFilter: ["hidden"] });
+
 let listArranged = null, listGlideUntil = 0;
 /** What the order reads for the list: the window, the screen, the reader's width and collapse, and what
  *  the view has said of itself (its pane, and whether the reader wants its outline). */
@@ -509,11 +607,34 @@ function arrangeList({ remeasure = true } = {}) {
   else if (decided.list === "drawer") app.classList.remove("sidebar-tight");
   app.classList.toggle("sidebar-off", decided.list === "rail");
   listHandle.compact(app.classList.contains("sidebar-off"));
+  // After the rail's flyout has closed, which hands the filter's sheet back to its home (#s705 review:
+  // laid out first, the sheet was taken from the open flyout and left open in the drawer).
+  placeDrawerHead();
   paintRailExpand();
   app.getBoundingClientRect();
   if (hold) app.classList.remove("app-holding");
   if (remeasure) viewHandle?.resized();
 }
+/** #s705: the drawer's head is one row, the brand, Machines and the theme (`drawer-one-row`), and the
+ *  list's strip of controls (Collapse all, Expand all, the filter) sits in the row over the list, its
+ *  filter's sheet hanging from that row. Anywhere else (the list at a width, a wide phone's column) the
+ *  strip and the sheet are back in the head, where the list placed them. Called as the list is laid out
+ *  and as a wide phone turns, which lays the list out the same (`app-drawer` either way). Each part moves
+ *  only from its home or from the row: a sheet the rail's flyout holds is the flyout's. */
+function placeDrawerHead() {
+  const oneRow = app.classList.contains("app-drawer") && !wideScreen.matches;
+  app.classList.toggle("drawer-one-row", oneRow);
+  // The nav's rows give way only in the drawer and a wide phone's column (#s701).
+  if (!app.classList.contains("app-drawer")) navAway(false);
+  if (oneRow) {
+    if (listControls && listControls.parentNode === page.byId("sidebarCollapse").parentNode) sideListHead.append(listControls);
+    if (listSheet && listSheet.parentNode === page.$("#app>.sidebar>.side-head")) sideListHead.append(listSheet);
+    return;
+  }
+  if (listControls?.parentNode === sideListHead) page.byId("sidebarCollapse").before(listControls);
+  if (listSheet?.parentNode === sideListHead) page.$("#app>.sidebar>.side-head").append(listSheet);
+}
+wideScreen.addEventListener("change", placeDrawerHead);
 // The rail's expand is disabled where the list cannot open beside what the view needs (its title says
 // why; `aria-disabled`, so the title still shows); the drawer's handle always opens the drawer.
 function paintRailExpand() {
@@ -683,6 +804,9 @@ var mobileShell;
     try { localStorage.setItem(COLUMN_KEY, open ? "1" : "0"); } catch (_) {}
     app.classList.toggle("phone-column-off", columnOff);
     labelHandle();
+    // Shown again, the column's list is back at its top (a hidden box keeps no offset), and so are its
+    // rows (#s701 review).
+    if (open) navAway(false);
   };
   app.classList.toggle("phone-column-off", columnOff);
   // The drawer keeps its own state on a wide phone too — choosing a session still shuts it — so a
@@ -691,6 +815,7 @@ var mobileShell;
     app.classList.toggle("mobile-detail", !open);
     labelHandle();
     if (open) viewHandle?.closePane();
+    if (open) navAway(false);
   };
   handle.onclick = () => (WIDE.matches ? setColumn(columnOff) : setDrawer(app.classList.contains("mobile-detail")));
   scrim.addEventListener("click", () => setDrawer(false));
@@ -701,74 +826,15 @@ var mobileShell;
   });
   setDrawer(!app.classList.contains("mobile-detail"));
 
-  // The column's switcher: Sessions, or one of the outline's panes, holding the SAME live list the
-  // drop-downs borrow (moved in while shown, back after) — one renderer, one click handler. A row
-  // chosen here moves the transcript and leaves the column as it is, as Mail does. Glyphs with their
-  // counts, in the head's one row before the sidebar's own glyphs (the owner: glyphs, "so the side bar
-  // width can be relatively small"; no brand row, which only took the height).
-  const columnSwitch = document.createElement("div");
-  columnSwitch.className = "column-switch";
-  columnSwitch.id = "columnSwitch";
-  columnSwitch.setAttribute("role", "tablist");
-  columnSwitch.setAttribute("aria-label", "Show in the column");
-  // Sessions wears a conversation, never the sidebar glyph: that one means "hide the sidebar" on every
-  // desktop and iPad, and the owner tapped it to hide the column and read the tab as dead (#s41).
-  const SESSIONS_GLYPH = '<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11.5a7.5 7.5 0 0 1-11 6.6L4 19.5l1.4-4.3A7.5 7.5 0 1 1 20 11.5Z"/></svg>';
-  columnSwitch.innerHTML = [["sessions", "Sessions", null], ...PHONE_PANES.map(([key, label]) => [key, label, key])]
-    .map(([key, label, icon]) => `<button type="button" class="iconbtn${key === "sessions" ? " on" : ""}" role="tab" data-column-tab="${key}" title="${label}" aria-label="${label}" aria-selected="${key === "sessions"}">${icon ? svg(icon) : SESSIONS_GLYPH}<span class="column-switch-count"></span></button>`)
-    .join("");
-  const columnPane = document.createElement("div");
-  columnPane.className = "column-pane phone-pane-body";
-  columnPane.id = "columnPane";
-  const sideHead = page.$("#app>.sidebar>.side-head");
-  sideHead.querySelector(".head-actions").before(columnSwitch);
-  sideHead.after(columnPane);
-  let columnNode = null, columnHome = null;
-  const returnColumnList = () => {
-    if (columnNode && columnHome) columnHome.parent.insertBefore(columnNode, columnHome.next && columnHome.next.parentNode === columnHome.parent ? columnHome.next : null);
-    columnNode = null;
-    columnHome = null;
-  };
-  const showColumnTab = key => {
-    returnColumnList();
-    app.classList.toggle("column-pane-on", key !== "sessions");
-    for (const tab of columnSwitch.querySelectorAll("[data-column-tab]")) {
-      const on = tab.dataset.columnTab === key;
-      tab.classList.toggle("on", on);
-      tab.setAttribute("aria-selected", String(on));
-    }
-    const node = viewHandle.paneNode(key);
-    if (!node) return;
-    viewHandle.closePane();
-    columnHome = { parent: node.parentNode, next: node.nextSibling };
-    columnNode = node;
-    columnPane.append(node);
-    // The current turn in the middle of the column, by its OWN scroller (the contract's rule).
-    columnPane.scrollTop = 0;
-    const current = node.querySelector(".outline-turn-row.current");
-    if (current) {
-      const box = columnPane.getBoundingClientRect(), row = current.getBoundingClientRect();
-      columnPane.scrollTop += row.top - box.top - (box.height - row.height) / 2;
-    }
-  };
-  columnSwitch.addEventListener("click", event => { const tab = event.target.closest("[data-column-tab]"); if (tab) showColumnTab(tab.dataset.columnTab); });
-  columnPane.addEventListener("click", event => viewHandle.outlineClick(event));
-  // Out of the wide layout the column's borrowed list goes home and the handle speaks of the drawer
-  // again (the view closes its drop-down going in).
-  WIDE.addEventListener("change", () => { if (!WIDE.matches) showColumnTab("sessions"); labelHandle(); });
+  // #s703 (Hong: "I'd put them to the right bottom, similar to the portrait mode"): the column holds
+  // the sessions alone, and Turns, Tasks and Agents open from the dock as upright (session-view.js).
+  // Across the wide layout the handle speaks of the column or of the drawer.
+  WIDE.addEventListener("change", labelHandle);
 
   mobileShell = {
     setDrawer,
-    /** The column shows its sessions, and the pane's list it borrowed goes back to the view (#s595: before
-     *  the view is mounted again on another machine). */
-    showSessions: () => showColumnTab("sessions"),
     /** What the handle does: the drawer opens or shuts, or a wide phone's column shows or hides. */
     toggle: () => handle.onclick(),
-    /** A pane's count on the column switch's tab, as the dock's badge reads it. */
-    paneCount(key, text) {
-      const tab = columnSwitch.querySelector(`[data-column-tab="${key}"] .column-switch-count`);
-      if (tab) tab.textContent = text;
-    },
   };
 }
 
@@ -974,7 +1040,6 @@ viewHandle = mountSessionView(viewRoot.element(), {
   // The pane opening or shutting can change the list (the owner's order): the app arranges it at once,
   // before the view decides in the same task, so the view decides at its new width.
   paneLayout: (name, on) => { app.classList.toggle(name, on); if (name === "preview-off") arrangeList({ remeasure: false }); },
-  paneCount: (key, text) => mobileShell?.paneCount(key, text),
   // What the view tells its host (stage 6). The view still draws its own top bar, title, turn and
   // Info included (the app's phone bar takes them at embedding's step 6), and the app has no use yet
   // for a file opened or a link copied: today's page does nothing with any of them. It shows a toast.

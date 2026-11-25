@@ -612,11 +612,12 @@ mod tests {
             ".session-filter-options",
             ".drawer-handle",
             ".drawer-scrim",
-            ".column-switch",
-            ".column-pane",
+            // #s705: the drawer's row over the list, and Machines in its one-row head.
+            ".side-list-head",
+            "#machinesHead",
         ];
         // The app's states, kept on `#app`: the app placing or styling the view from outside —
-        // its rail, the drawer, a wide phone's column and its pane, and the artifact pane's state
+        // its rail, the drawer, a wide phone's column, and the artifact pane's state
         // copied onto `#app` for its grid. Stage 6 lays the view out by its own pane's size
         // instead. The list's arrangement is on the list's own element since #s430 stage 1.
         const APP_STATES: &[&str] = &[
@@ -624,17 +625,21 @@ mod tests {
             ".sidebar-tight",
             ".mobile-detail",
             ".phone-column-off",
-            ".column-pane-on",
             ".preview-off",
             ".preview-full",
             // #s431 stage 3: a decision of the owner's order, which lays the list out at once.
             ".app-holding",
+            // #s705: the drawer's head as one row, its list's controls over the list.
+            ".drawer-one-row",
+            // #s701: the nav's rows folded away as the list scrolls down, and their glide.
+            ".nav-away",
+            ".nav-sliding",
         ];
         // What `:is(#sessionView,#app)` may reach: elements the app's chrome shares with the view
         // (the glyph button, the session filter's and section menu's popover rows) and the lists
-        // a wide phone's column borrows from the outline into the app's sidebar
-        // (`PHONE_PANES`, `#columnPane.phone-pane-body`). In the app both hooks match; in a host,
-        // `#sessionView` alone.
+        // a wide phone's column borrowed from the outline into the app's sidebar until #s703
+        // (`PHONE_PANES`; #s704 takes them out of this list). In the app both hooks match; in a
+        // host, `#sessionView` alone.
         const SHARED: &[&str] = &[
             ".iconbtn",
             ".navigator-options",
