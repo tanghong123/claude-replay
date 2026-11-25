@@ -26568,6 +26568,21 @@ fn a_phone_held_sideways_keeps_the_island_s_inset_on_its_own_side() {
     harness::safe_area(&tab, (0, 62, 20, 30));
     harness::phone_turned(&tab, 956, 440, Some(90));
     let uneven = reach_when_turned(&tab, 956, 90);
+    // That the page heard the turn and still chose no side: neither the app nor the view marks one.
+    let marked = harness::eval(&tab, ISLAND_MARKS);
+    // A page loaded already sideways, the island on the right, decides as it mounts.
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
+    harness::phone_turned(&tab, 956, 440, Some(270));
+    tab.reload(false, None).expect("reload");
+    harness::until(
+        &tab,
+        "!!document.querySelector('.transcript .turn.user') && document.querySelectorAll('#app>.sidebar .tree-row.session').length > 30",
+        "the session and its list again, loaded sideways",
+        Duration::from_secs(20),
+        "document.getElementById('app') && document.getElementById('app').className",
+    );
+    let loaded = reach_when_turned(&tab, 956, 270);
+    let loaded_area = safe_area_facts(&tab, (0, inset as u32, corner as u32, corner as u32));
     for (at, angle, reach, facts) in &seen {
         assert_eq!(
             facts["bad"],
@@ -26594,7 +26609,25 @@ fn a_phone_held_sideways_keeps_the_island_s_inset_on_its_own_side() {
             "{at}: the page cannot tell the island's side, so every inset stays whole: {reach}"
         );
     }
+    assert_eq!(
+        marked,
+        serde_json::json!(""),
+        "with insets of 30 and 62 at 90°, neither the app nor the view marks a side"
+    );
+    assert_eq!(
+        loaded_area["bad"],
+        serde_json::json!([]),
+        "loaded at 270°, every control keeps clear of the island on the right: {loaded_area}"
+    );
+    assert!(
+        loaded["left"][0].as_i64().unwrap_or(i64::MAX) <= inset - corner,
+        "loaded at 270°, the left side gives its strip back as the page mounts: {loaded}"
+    );
 }
+
+/// #s702: the island's side the app (`#app`) and the view (`#sessionView`) mark, joined: "" where
+/// neither marks one.
+const ISLAND_MARKS: &str = "(function(){ var a = document.getElementById('app').classList, v = document.getElementById('sessionView').classList; return [a.contains('island-left') ? 'app left' : '', a.contains('island-right') ? 'app right' : '', v.contains('pl-island-left') ? 'view left' : '', v.contains('pl-island-right') ? 'view right' : ''].filter(Boolean).join(', '); })()";
 
 /// #s37: a point on the page, read by `expr` (a JSON array of numbers) — panicking with what it saw
 /// when the page gave none, rather than indexing into nothing.

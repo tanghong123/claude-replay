@@ -49,18 +49,29 @@ export const bandWidth = view => (phoneView(view) ? view.width : view.width + 30
  *  angle can: 90 with the island on the left (the device's top turned that way), 270 on the right
  *  (measured the same day, turning through upright before each side). It answers only where it is
  *  sure: a touch screen held sideways (the phone query's short screen, wider than tall), the angle
- *  exactly 90 or 270, and both side insets the same and not 0, as iOS gives them. Anything else, a
- *  screen whose insets already differ by side among them, keeps every inset as the screen gives it.
- *  The app (`#app`) and the view (`#sessionView`) both ask it here, so they cannot disagree; it reads
- *  the screen, never the view's box, since the insets are the screen's. */
+ *  exactly 90 or 270 as `screen.orientation` reports it, and both side insets the same and not 0, as
+ *  iOS gives them. Anything else keeps every inset as the screen gives it: a screen whose insets
+ *  already differ by side, and a browser with no `screen.orientation` (the older `window.orientation`
+ *  was never measured, so it is not read). The app (`#app`) and the view (`#sessionView`) both ask it
+ *  here, so they cannot disagree; it reads the screen, never the view's box, since the insets are the
+ *  screen's. */
 export function islandSide() {
   if (typeof matchMedia !== "function" || !matchMedia("(pointer:coarse) and (max-height:500px)").matches || !(innerWidth > innerHeight)) return "";
-  const angle = typeof screen !== "undefined" && typeof screen.orientation?.angle === "number" ? screen.orientation.angle
-    : typeof globalThis.orientation === "number" ? (globalThis.orientation + 360) % 360 : null;
+  const angle = typeof screen !== "undefined" && typeof screen.orientation?.angle === "number" ? screen.orientation.angle : null;
   const side = angle === 90 ? "left" : angle === 270 ? "right" : "";
   if (!side) return "";
   const [left, right] = sideInsets();
   return left > 0 && Math.abs(left - right) < 0.5 ? side : "";
+}
+
+/** Calls `listener` whenever the screen may have turned without a size changing (#s702): from one side
+ *  to the other a phone keeps its size, so no resize says it. Both of the screen's turn events (a
+ *  browser may send either) and `pageshow`, since a page restored from the back-forward cache, or one
+ *  hidden while the phone turned, heard none. Each listener ends with `signal`. */
+export function onScreenTurn(listener, { signal } = {}) {
+  if (typeof screen !== "undefined" && screen.orientation?.addEventListener) screen.orientation.addEventListener("change", listener, { signal });
+  addEventListener("orientationchange", listener, { signal });
+  addEventListener("pageshow", listener, { signal });
 }
 
 /** The screen's left and right safe-area insets in px. Script cannot read `env()` itself, so a hidden
@@ -130,7 +141,11 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange, 
   // pointer. A decision reads nothing more before it writes: a read there would lay the view out in
   // its old arrangement with a state the reader's toggle has just changed, and start that state's
   // transitions, which the decision then cancels (`toggled`).
-  const measure = () => ({ box: element.getBoundingClientRect(), viewport: viewRoot.viewportWidth(), viewportHeight: viewRoot.styleRoot()?.clientHeight ?? innerHeight, height: innerHeight, coarse: coarse.matches, fine: fine.matches, side: islandSide() });
+  // The island's side (#s702), read again only where the screen may have changed (a resize, a turn,
+  // the pointer), never per decision: a host that scrolls the view decides on every frame of a move,
+  // and the read takes a probe and a style pass.
+  let island = islandSide();
+  const measure = () => ({ box: element.getBoundingClientRect(), viewport: viewRoot.viewportWidth(), viewportHeight: viewRoot.styleRoot()?.clientHeight ?? innerHeight, height: innerHeight, coarse: coarse.matches, fine: fine.matches, side: island });
   const decideAt = ({ box, viewport, viewportHeight, height, coarse: isCoarse, fine: isFine, side }) => {
     if (signal?.aborted) return;
     // A box with no size is not laid out: the host hid the view (its `hidden` attribute, #s464, or what
@@ -269,11 +284,10 @@ export function mountPaneLayout(element, { signal, onChange, inputs, onArrange, 
   decide();
   const observer = new ResizeObserver(decide);
   observer.observe(element);
-  for (const query of [coarse, fine]) query.addEventListener("change", decide, { signal });
-  addEventListener("resize", decide, { signal });
-  // A phone turned from one side to the other keeps its size, so no resize says it (#s702).
-  if (typeof screen !== "undefined" && screen.orientation?.addEventListener) screen.orientation.addEventListener("change", decide, { signal });
-  else addEventListener("orientationchange", decide, { signal });
+  const reread = () => { island = islandSide(); decide(); };
+  for (const query of [coarse, fine]) query.addEventListener("change", reread, { signal });
+  addEventListener("resize", reread, { signal });
+  onScreenTurn(reread, { signal });
   signal?.addEventListener("abort", () => { observer.disconnect(); moves?.disconnect(); moves = null; }, { once: true });
   const query = name => {
     if (!(name in family)) throw new Error(`pane-layout: no family named ${name}`);

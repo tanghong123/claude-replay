@@ -20,7 +20,7 @@ import { escapeText } from "./view-model.js";
 import { mountSessionList, OPTIONAL_CONTROLS as LIST_CONTROLS } from "./session-list-view.js";
 import { mountSessionView, OPTIONAL_CONTROLS as VIEW_CONTROLS } from "./session-view.js";
 import { page, viewRoot } from "./view-root.js";
-import { arrangeApp, GLIDE_MS, islandSide, LIST_MIN } from "./pane-layout.js";
+import { arrangeApp, GLIDE_MS, islandSide, LIST_MIN, onScreenTurn } from "./pane-layout.js";
 
 /** Every option `mountApp` takes; any other name is refused (stage 2: one server; stage 3, #s595:
  *  several machines and the assets the app carries; stage 4, #s596: the native app's own). Each is in
@@ -665,8 +665,7 @@ function paintIsland() {
   app.classList.toggle("island-left", side === "left");
   app.classList.toggle("island-right", side === "right");
 }
-if (typeof screen !== "undefined" && screen.orientation?.addEventListener) screen.orientation.addEventListener("change", paintIsland);
-else addEventListener("orientationchange", paintIsland);
+onScreenTurn(paintIsland);
 // #s593: the layout width can change with no `resize` event. Safari's page zoom on an iPad (⌘ and =)
 // took an 834px page to 725 and fired none, so the list stayed a column where the order gives the
 // drawer, until a reload. The root's own box sees every change of the width, however it came.
