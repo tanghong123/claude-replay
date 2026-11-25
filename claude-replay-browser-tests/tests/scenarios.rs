@@ -14957,9 +14957,9 @@ fn both_shells_say_how_long_a_turn_took_and_stay_silent_when_unrecorded() {
         await_tail(&page.tab, surface, "a fresh open to land at the tail");
         settle();
         let js = match surface {
-            Surface::Classic => "(function(){ var c = [...document.querySelectorAll('.ts')].filter(function (e) { return e.title === 'How long this turn took'; }); \
+            Surface::Classic => "(function(){ var c = [...document.querySelectorAll('.ts')].filter(function (e) { return e.title === 'How long the agent worked on this turn'; }); \
                return JSON.stringify({ chips: c.length, texts: c.map(function (e) { return e.textContent.trim(); }) }); })()",
-            Surface::AppShell => "(function(){ var c = [...document.querySelectorAll('.turn-time')].filter(function (e) { return e.title === 'How long this turn took'; }); \
+            Surface::AppShell => "(function(){ var c = [...document.querySelectorAll('.turn-time')].filter(function (e) { return e.title === 'How long the agent worked on this turn'; }); \
                return JSON.stringify({ chips: c.length, texts: c.map(function (e) { return e.textContent.trim(); }) }); })()",
         };
         let seen: serde_json::Value = eval(&page.tab, js)
@@ -14980,7 +14980,7 @@ fn both_shells_say_how_long_a_turn_took_and_stay_silent_when_unrecorded() {
         );
         assert_eq!(
             texts,
-            vec!["3m".to_string()],
+            vec!["worked 3m".to_string()],
             "{surface:?}: 151s reads as minutes through the shared formatter, so the two pages \
              cannot word it differently: {seen}"
         );
@@ -15054,7 +15054,7 @@ fn the_app_shell_puts_a_turns_time_and_duration_below_its_bubble() {
                 && (u["notice"].is_null() || n(&u["notice"], 1) >= n(last, 3))
         };
         let timed = turns.iter().filter(|u| {
-            u["titles"] == serde_json::json!(["When this turn was sent", "How long this turn took"])
+            u["titles"] == serde_json::json!(["When this turn was sent", "How long the agent worked on this turn"])
         });
         turns.iter().any(|u| u["command"] == true)
             && turns.iter().any(|u| !u["notice"].is_null())
@@ -21600,7 +21600,7 @@ fn message_sides_fixture(name: &str) -> Fixture {
     // the_app_shell_ranks_progress_above_thinking_and_activity.
     transcript += &line(serde_json::json!({
         "type": "assistant", "timestamp": now_minus(110),
-        "message": {"role": "assistant", "stop_reason": "tool_use", "content": [{"type": "text", "text": long("Progress")}]}
+        "message": {"role": "assistant", "stop_reason": "tool_use", "content": [{"type": "text", "text": format!("{}\n\n- the late chicks are ringed\n- the count goes to `survey.csv`", long("Progress"))}]}
     }));
     transcript += &harness::tool_open_at("t-sides", &now_minus(105));
     transcript += &harness::tool_result_at("t-sides", &now_minus(100));
@@ -21698,13 +21698,13 @@ fn app_shell_a_phone_keeps_each_message_to_its_own_side() {
     }
 }
 
-/// #s697, Hong: "the progresses on mobile seems to waste too much precious screen real estate".
-/// A Progress row was three columns (its dot, the label, the text), and on a phone the text had a
-/// column of about 60 percent of the row. On a phone, upright and held sideways, the label now
-/// leads the text on its first line and the text below takes the row's width: read off the text's
-/// own line boxes, its first line sits beside the label and its last line starts where the label
-/// does. A desktop keeps the columns: the text starts right of the label. The lines the text takes
-/// are printed for each, to compare with the columns'.
+/// #s697, Hong: "the progresses on mobile seems to waste too much precious screen real estate",
+/// then "I wonder if it may be easier simply remove the progress heading, and just display the
+/// block text?". A Progress row was three columns (its dot, the label, the text), and on a phone
+/// the text had a column of about 60 percent of the row. On a phone, upright and held sideways, the
+/// heading is gone from sight and the text, a Markdown list included, takes the row from just after
+/// its dot to its edge. A desktop keeps the columns: the heading shows and the text starts right of
+/// it. The lines the text takes are printed for each, to compare with the columns'.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn app_shell_a_phone_gives_a_progress_line_the_rows_width() {
@@ -21719,13 +21719,15 @@ fn app_shell_a_phone_gives_a_progress_line_the_rows_width() {
         var v = document.getElementById('sessionView'), c = [...document.querySelectorAll('#sessionView .process-commentary')].pop(); \
         if (!c) return JSON.stringify({ phone: v.classList.contains('pl-phone'), w: innerWidth, row: null }); \
         var l = c.querySelector('.process-commentary-label').getBoundingClientRect(), p = c.querySelector('.process-commentary-copy'), \
-            q = p.getBoundingClientRect(), r = c.getBoundingClientRect(), rects = [], tw = document.createTreeWalker(p, NodeFilter.SHOW_TEXT), n; \
+            q = p.getBoundingClientRect(), r = c.getBoundingClientRect(), d = c.querySelector('.process-commentary-mark').getBoundingClientRect(), \
+            li = [...p.querySelectorAll('li')].map(function (e) { return e.getBoundingClientRect(); }), rects = [], tw = document.createTreeWalker(p, NodeFilter.SHOW_TEXT), n; \
         while ((n = tw.nextNode())) { var g = document.createRange(); g.selectNodeContents(n); [...g.getClientRects()].forEach(function (b) { if (b.width > 0) rects.push(b); }); } \
-        var first = rects[0], last = rects[rects.length - 1], tops = {}; rects.forEach(function (b) { tops[Math.round(b.top)] = 1; }); \
+        var first = rects[0], tops = {}; rects.forEach(function (b) { tops[Math.round(b.top)] = 1; }); \
         return JSON.stringify({ phone: v.classList.contains('pl-phone'), w: innerWidth, row: Math.round(r.width), \
-          firstBeside: !!first && first.left >= l.right - 1 && Math.abs(first.top - l.top) <= 6, \
-          lastAtLabel: !!last && Math.abs(last.left - l.left) <= 2, \
-          toEdge: q.right >= r.right - 8, besideLabel: q.left >= l.right, \
+          labelShown: l.width > 2 && l.height > 2, besideLabel: q.left >= l.right, \
+          fromDot: Math.round(q.left - d.right), textAtCopy: !!first && Math.abs(first.left - q.left) <= 2, \
+          toEdge: q.right >= r.right - 8, items: li.length, \
+          itemsWide: li.length > 0 && li.every(function (b) { return b.left >= q.left && b.right >= r.right - 12; }), \
           lines: Object.keys(tops).length }); })()";
     let poll = |done: &dyn Fn(&serde_json::Value) -> bool| -> serde_json::Value {
         let mut last = serde_json::Value::Null;
@@ -21739,26 +21741,34 @@ fn app_shell_a_phone_gives_a_progress_line_the_rows_width() {
         }
         last
     };
-    let ran_in = |v: &serde_json::Value| {
-        v["firstBeside"] == true && v["lastAtLabel"] == true && v["toEdge"] == true
+    // The heading out of sight, the text from just after the dot (within 16px of it) to the row's
+    // edge, its first line where the copy starts, and the list's items as wide as the text.
+    let whole = |v: &serde_json::Value| {
+        v["labelShown"] == false
+            && (0..=16).contains(&v["fromDot"].as_i64().unwrap_or(-1))
+            && v["textAtCopy"] == true
+            && v["toEdge"] == true
+            && v["items"] == 2
+            && v["itemsWide"] == true
     };
-    let desk = poll(&|v| v["phone"] == false && v["besideLabel"] == true);
+    let desk =
+        poll(&|v| v["phone"] == false && v["besideLabel"] == true && v["labelShown"] == true);
     harness::phone(tab, 390, 844);
-    let up = poll(&|v| v["phone"] == true && v["w"] == 390 && ran_in(v));
+    let up = poll(&|v| v["phone"] == true && v["w"] == 390 && whole(v));
     harness::phone(tab, 874, 402);
-    let side = poll(&|v| v["phone"] == true && v["w"] == 874 && ran_in(v));
+    let side = poll(&|v| v["phone"] == true && v["w"] == 874 && whole(v));
     println!(
         "PROGRESS lines: desktop {} (row {}), upright {} (row {}), sideways {} (row {})",
         desk["lines"], desk["row"], up["lines"], up["row"], side["lines"], side["row"]
     );
     assert!(
-        desk["phone"] == false && desk["besideLabel"] == true,
-        "a desktop keeps the Progress row's columns, the text right of its label: {desk}"
+        desk["phone"] == false && desk["labelShown"] == true && desk["besideLabel"] == true,
+        "a desktop keeps the Progress row's columns, its heading shown and the text right of it: {desk}"
     );
     for (held, v) in [("upright", &up), ("sideways", &side)] {
         assert!(
-            v["phone"] == true && ran_in(v),
-            "a phone held {held}: the Progress label leads its text on the first line and the text takes the row's width (desktop {desk}, upright {up}, sideways {side})"
+            v["phone"] == true && whole(v),
+            "a phone held {held}: the Progress row shows no heading, and its text, a Markdown list included, takes the row from just after its dot to its edge (desktop {desk}, upright {up}, sideways {side})"
         );
     }
 }
