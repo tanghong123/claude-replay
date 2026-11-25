@@ -3205,23 +3205,32 @@ fn reap_stranded_monitor(port: u16) {
     }
 }
 
-/// The pids, in a `ps -Awwo pid=,ppid=,command=` listing, of the monitors built at `marker` and
-/// started with `--port <port>` whose test process is gone: re-parented to launchd or init (a
-/// parent of 1, or 0), or whose parent the listing no longer holds. A monitor whose parent is any
-/// other live process (another run's test binary) is not stranded (#s690).
+/// The pids, in a `ps -Awwo pid=,ppid=,command=` listing, of the monitors whose command is the
+/// binary at `marker` (the whole path: `agent-monitor-fleet` beside it is another program) started
+/// with `--port <port>`, and whose test process is gone: re-parented to launchd or init (a parent
+/// of 1, or 0), or whose parent the listing no longer holds. A monitor whose parent is any other
+/// live process (another run's test binary) is not stranded (#s690). Every row with a pid and a
+/// parent counts as a live process, whatever its command reads (a zombie's may be empty).
 pub fn stranded_monitors(ps: &str, marker: &str, port: u16) -> Vec<u32> {
     let rows: Vec<(u32, u32, &str)> = ps
         .lines()
         .filter_map(|line| {
-            let (pid, rest) = line.trim_start().split_once(char::is_whitespace)?;
-            let (ppid, command) = rest.trim_start().split_once(char::is_whitespace)?;
-            Some((pid.parse().ok()?, ppid.parse().ok()?, command.trim_start()))
+            let mut words = line.trim_start().splitn(2, char::is_whitespace);
+            let pid = words.next()?.parse().ok()?;
+            let rest = words.next()?.trim_start();
+            let (ppid, command) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            Some((pid, ppid.parse().ok()?, command.trim_start()))
         })
         .collect();
     let listed: std::collections::HashSet<u32> = rows.iter().map(|&(pid, _, _)| pid).collect();
+    let runs_marker = |command: &str| {
+        command
+            .strip_prefix(marker)
+            .is_some_and(|args| args.is_empty() || args.starts_with(' '))
+    };
     rows.iter()
         .filter(|&&(_, ppid, command)| {
-            command.contains(marker)
+            runs_marker(command)
                 && names_port(command, port)
                 && (ppid <= 1 || !listed.contains(&ppid))
         })

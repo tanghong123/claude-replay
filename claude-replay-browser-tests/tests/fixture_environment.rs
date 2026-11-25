@@ -341,20 +341,26 @@ fn the_stranded_monitor_reaper_matches_the_whole_port() {
 #[test]
 fn the_stranded_monitor_reaper_leaves_a_live_runs_monitor_alone() {
     let bin = "/w/target/release/agent-monitor";
-    let ps = format!(
-        "  501     1 {bin} --port 2820 --no-open\n\
-           640   600 /w/target/debug/deps/browser_follow-0a1b --ignored --skip a_phone\n\
-           777   640 {bin} --port 2820 --pair --no-open\n\
-           888   999 {bin} --port 2820\n\
-           901   640 {bin} --port 2821\n\
-           902     1 {bin} --port 28201\n\
-           903     1 /opt/homebrew/bin/agent-monitor --port 2820\n"
-    );
+    let ps = [
+        "  501     1 {bin} --port 2820 --no-open",
+        "  600     1",
+        "  640   600 /w/target/debug/deps/browser_follow-0a1b --ignored --skip a_phone",
+        "  777   640 {bin} --port 2820 --pair --no-open",
+        "  888   999 {bin} --port 2820",
+        "  901     1 {bin} --port 2821",
+        "  902     1 {bin} --port 28201",
+        "  903     1 /opt/homebrew/bin/agent-monitor --port 2820",
+        "  904     1 {bin}-fleet --port 2820",
+        "  905   600 {bin} --port 2820",
+    ]
+    .join("\n")
+    .replace("{bin}", bin);
     assert_eq!(
         harness::stranded_monitors(&ps, bin, 2820),
         vec![501, 888],
         "re-parented to launchd (501) or a parent gone from the listing (888); never the live \
-         run's (777), another port's (901, 902) or one built elsewhere (903)"
+         run's (777), nor one whose parent's row shows no command (905), another port's (901, \
+         902), one built elsewhere (903) or another program beside it (904)"
     );
     assert!(harness::stranded_monitors("", bin, 2820).is_empty());
 }
