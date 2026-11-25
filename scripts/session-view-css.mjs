@@ -297,8 +297,8 @@ export const LIST_CHROME = Object.freeze([
 /** The names of the list's body that the page also shows OUTSIDE `#sessionList`: the rows the rail's
  *  flyout draws in the page's body (an agent's projects and sessions, through the same functions the
  *  tree draws them with), and the empty line, which the flyout and the app's session search draw too.
- *  A rule naming only these (and shared words) is in both files, as the view's `OUTSIDE` are: the
- *  app's copy styles them where they are shown, the list's in its element. The contract reads the
+ *  A rule naming only these (and shared words) is in both files: the app's copy styles them where
+ *  they are shown, the list's in its element. The contract reads the
  *  flyout's functions and holds this list to what they draw. */
 export const LIST_SHOWN_OUTSIDE = Object.freeze([
   ".agent-monogram", ".machine-stale", ".no-results",
@@ -357,23 +357,6 @@ export const ROOT_CLASSES = Object.freeze([
   ".session-view", ".composing", ".keyboard-up", ".outline-in-bar", ".pane-open", ".preview-full", ".preview-off", ".resizing", ".sv-mounting", ".wide", ".wrap-code",
 ]);
 
-/** What the view draws that the page shows OUTSIDE `#sessionView`, so a rule for it is in both files
- *  and the app's copy styles it where it is:
- *  - what the view appends to `viewRoot.layer()`, the page's `body`: only the copy field and a
- *    download's link, which carry no class (the task card and its dim are drawn in the view's element
- *    since #s431 stage 4);
- *  - the outline's Turns, Tasks and Agents lists, which a wide phone's column borrowed into the app's
- *    sidebar (`PHONE_PANES`) until #s703, with their rows; nothing draws them outside the view now,
- *    and #s704 takes them out of this list. Read off the page in each of those states, plus the rows
- *    the hermetic page cannot draw (stage 5a's shared list).
- *  A name that is one of these, or starts with one and a hyphen. */
-export const OUTSIDE = Object.freeze([
-  "#navigatorTurns", "#navigatorWork", "#navigatorAgents", ".navigator-list",
-  ".activity-empty", ".agent-state", ".agents-filter-row", ".tasks-filter-row", ".outline-agent", ".outline-epoch", ".outline-label", ".outline-number", ".outline-peer",
-  ".outline-quote-marker", ".outline-quoted", ".outline-reply-count", ".outline-turn-pending", ".outline-turn-row",
-  ".task-state", ".work-copy", ".work-group", ".work-tail", ".work-task",
-]);
-
 /** Custom properties a script writes on the page's root (`viewRoot.styleRoot()` or `page.html()`), or
  *  on the app's grid. The view's element must not declare them, or it would hide what was written
  *  above it. Tokens an `#app` rule declares are added to these by `deriveStylesheets`. */
@@ -424,7 +407,6 @@ const CHROME_NAMES = new Set([...APP_CHROME, ...LIST_CHROME, ...LIST_OUTSIDE]);
 const STATE_NAMES = new Set(APP_STATES);
 const SHARED_NAMES = new Set([...SHARED, ...COMMON]);
 const ROOT_NAMES = new Set(ROOT_CLASSES);
-const isOutside = name => OUTSIDE.some(prefix => name === prefix || name.startsWith(`${prefix}-`));
 const namesIn = text => text.match(NAME) || [];
 /** A compound without its `:not(…)` parts (two levels of parentheses inside, as the sources write). */
 const withoutNot = text => text.replace(/:not\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)/g, "");
@@ -513,7 +495,6 @@ export function classify(selector) {
   const under = `${root()} ${joinCompounds(rest)}`;
   const selectors = onRoot ? [`${root()}${lead.replace(/^\*/, "")}${tailText}`, under] : [under];
   if (!view.length) return { kind: "both: no name of the view's own", app: selector, view: selectors };
-  if (view.some(isOutside)) return { kind: "both: the view's, shown outside it", app: selector, view: selectors };
   return { kind: "the view's", app: null, view: selectors };
 }
 

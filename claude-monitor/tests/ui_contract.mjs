@@ -390,9 +390,11 @@ let droppedAttention = "";
   // under the phone's window query read what the order decided: the drawer for the list's parts and
   // the app's grid, the phone reader for the view's parts the app's file styles; the desktop's
   // complement stands where the list is not the drawer, and the demo's rail-off rules at 700px go.
+  // The phone reader's rules in the app's file are fewer since #s704, which made the outline's lists
+  // the view's alone.
   {
     const kinds = derived.report.appArranged.reduce((n, { kind }) => ({ ...n, [kind]: (n[kind] || 0) + 1 }), {});
-    assert.ok(kinds.drawer >= 20 && kinds.phone >= 15 && kinds.listed >= 3 && kinds.dropped >= 4, `the app's rules the order decides: ${JSON.stringify(kinds)}`);
+    assert.ok(kinds.drawer >= 20 && kinds.phone >= 6 && kinds.listed >= 3 && kinds.dropped >= 4, `the app's rules the order decides: ${JSON.stringify(kinds)}`);
     for (const { kind, sel } of derived.report.appArranged) {
       if (kind === "dropped") continue;
       assert.ok(sel.includes(kind === "drawer" ? ".app-drawer" : kind === "listed" ? ":not(.app-drawer)" : "#sessionView.pl-phone"), `${kind}: ${sel}`);
@@ -438,9 +440,8 @@ let droppedAttention = "";
   const used = new Set();
   const visit = nodes => { for (const node of nodes) { if (node.kind === "group") visit(node.children); else if (node.kind === "rule") for (const n of node.prelude.match(/[.#]-?[A-Za-z_][A-Za-z0-9_-]*/g) || []) used.add(n); } };
   for (const css of [referenceCss, productionCss]) visit(styles.parseCss(styles.stripComments(css)));
-  const isOutside = n => styles.OUTSIDE.some(prefix => n === prefix || n.startsWith(`${prefix}-`));
   const listed = new Set([...styles.APP_CHROME, ...styles.LIST_CHROME, ...styles.LIST_OUTSIDE, ...styles.APP_STATES, ...styles.SHARED, ...styles.COMMON, ...styles.ROOT_CLASSES, "#app", ".app", "#sessionView"]);
-  const unlisted = [...drawn].filter(n => used.has(n) && !listed.has(n) && !isOutside(n)).sort();
+  const unlisted = [...drawn].filter(n => used.has(n) && !listed.has(n)).sort();
   assert.deepEqual(unlisted, [], "every name the app draws that a selector uses is in one of the classifier's lists (scripts/session-view-css.mjs)");
   const stale = [...styles.APP_CHROME, ...styles.LIST_CHROME, ...styles.LIST_OUTSIDE, ...styles.APP_STATES].filter(n => !drawn.has(n) && !new RegExp(`["'\\s.#]${n.slice(1)}(?![\\w-])`).test(appText)).sort();
   assert.deepEqual(stale, [], "every name the app's lists hold is one the app draws");
