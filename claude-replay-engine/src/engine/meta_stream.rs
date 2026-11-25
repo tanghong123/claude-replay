@@ -460,7 +460,8 @@ pub const COMPACT_AFTER: usize = 256;
 /// when its sender has handled Artifact content others wrote: a v97 stream's `PeerText` ends with it.
 ///
 /// v99: #s717 — a signed message from the person sent as another session's message whose body ends
-/// in that notice is his `UserInbox`, where a v98 stream holds it as the session's `PeerText`.
+/// in that notice is his `UserInbox`, where a v98 stream holds it as the session's `PeerText`; and
+/// a `PeerText` whose notice has words after it keeps them, where v98 left them out.
 ///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
