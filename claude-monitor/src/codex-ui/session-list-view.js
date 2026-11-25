@@ -848,7 +848,9 @@ function toggleFilterSheet(open) {
 /** The sheet ends on the screen (#s206): its stylesheet caps it at 74% of the viewport, which
  *  forgets where it STARTS — under the drawer's head on a phone held sideways (a 292px page in
  *  Safari) it ran 16px past the screen's foot, half of Include hidden and all of the row below out
- *  of reach. Capped at the room below its top instead, it scrolls within what is on screen. */
+ *  of reach. Capped at the room below its top instead, it scrolls within what is on screen, however
+ *  short that room is (#s705: a floor of 120px ran it past the screen's foot in Safari held sideways,
+ *  where the row it hangs from left it 82). */
 function fitFilterSheet() {
   filterSheet.style.maxHeight = "";
   if (filterSheet.hidden || railFlyoutFor === "filter") return;
@@ -867,7 +869,7 @@ function fitFilterSheet() {
     }
   }
   const room = Math.floor(foot - filterSheet.getBoundingClientRect().top - 8);
-  if (room > 0 && filterSheet.scrollHeight > room) filterSheet.style.maxHeight = `${Math.max(120, room)}px`;
+  if (room > 0 && filterSheet.scrollHeight > room) filterSheet.style.maxHeight = `${room}px`;
 }
 addEventListener("resize", fitFilterSheet, { signal });
 filterBtn.onclick = () => toggleFilterSheet(filterSheet.hidden);
