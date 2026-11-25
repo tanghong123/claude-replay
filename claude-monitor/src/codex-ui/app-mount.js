@@ -862,7 +862,8 @@ var mobileShell;
 // The collapsed rail's ✎ says it in its title (`rail`, `railHere`, else `tip`), which offers no
 // click: on the rail the help would open inside the list the rail hides, so nothing would show.
 // The help, once open, stays open, and says what writing needs NOW: over several machines a session
-// of another opened beside it (#s709), so each paint draws it again while it is open.
+// of another may open beside it (#s709), so a paint draws it again while it is open, when its words
+// would change (a redraw with the same words would only drop a focus or a selection inside it).
 const WRITE_NEED = {
   monitor: {
     line: "Pair first to turn it on: <code>agent-monitor --pair</code>",
@@ -947,8 +948,12 @@ function paintWrite() {
   writeTip.textContent = need ? writeTipText(need) : "";
   if (need) page.byId("writeSwitch").setAttribute("aria-describedby", "writeTip");
   else page.byId("writeSwitch").removeAttribute("aria-describedby");
-  if (!page.byId("writeHelp").hidden) drawPairHelp();
+  if (!page.byId("writeHelp").hidden && pairHelpKey() !== drawnPairHelp) drawPairHelp();
 }
+/** What decides the help's words: what writing needs, whether the reader pairs from here, and the
+ *  server the help is about (its command and its button name it). */
+const pairHelpKey = () => `${writeNeedNow()}|${pairsHere(writeNeedWords())}|${handleOf(viewMachine)?.base || ""}`;
+let drawnPairHelp = "";
 function showPairHelp() {
   drawPairHelp();
   const help = page.byId("writeHelp");
@@ -957,6 +962,7 @@ function showPairHelp() {
 /** The help's words for what writing needs now (`showPairHelp` opens it, `paintWrite` keeps it
  *  current while it is open). */
 function drawPairHelp() {
+  drawnPairHelp = pairHelpKey();
   const help = page.byId("writeHelp");
   const need = writeNeedWords();
   // The server whose writes the help is about: the open session's machine's over several.

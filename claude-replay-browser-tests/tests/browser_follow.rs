@@ -31177,6 +31177,15 @@ fn a_disabled_write_switch_advises_pairing_first() {
             &keys,
             "document.getElementById('writeSwitch').focus(); 'ok'",
         );
+        // The premise: a focus no pointer gave shows the tooltip, as a hover does, so the help is
+        // what takes it away below.
+        harness::until(
+            &keys,
+            "(function(){ var s = document.getElementById('writeSwitch'), cs = getComputedStyle(document.getElementById('writeTip')); return s.matches(':focus-visible') && cs.visibility === 'visible' && cs.opacity === '1' && document.getElementById('writeHelp').hidden; })()",
+            "the focused switch to show the tooltip, the help still shut",
+            Duration::from_secs(5),
+            WRITE_TIP,
+        );
         keys.press_key("Enter").expect("Enter");
         harness::until(
             &keys,
