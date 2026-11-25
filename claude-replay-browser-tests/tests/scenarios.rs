@@ -15054,7 +15054,11 @@ fn the_app_shell_puts_a_turns_time_and_duration_below_its_bubble() {
                 && (u["notice"].is_null() || n(&u["notice"], 1) >= n(last, 3))
         };
         let timed = turns.iter().filter(|u| {
-            u["titles"] == serde_json::json!(["When this turn was sent", "How long the agent worked on this turn"])
+            u["titles"]
+                == serde_json::json!([
+                    "When this turn was sent",
+                    "How long the agent worked on this turn"
+                ])
         });
         turns.iter().any(|u| u["command"] == true)
             && turns.iter().any(|u| !u["notice"].is_null())
