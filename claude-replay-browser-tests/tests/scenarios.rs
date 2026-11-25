@@ -17765,6 +17765,42 @@ fn app_shell_the_rail_opens_an_agent_s_sessions_and_the_filter_in_flyouts() {
         Some("[true,true]"),
         "the filter menu is back in the sidebar's head, shut: {home}"
     );
+    // #s705 review: the filter flyout pinned open on the rail, the window narrowed into the drawer. The
+    // flyout closes and the menu waits shut in the drawer's row over the list (it was taken from the
+    // flyout and left open there).
+    eval(
+        &tab,
+        "document.getElementById('sidebarCollapse').click(); 'ok'",
+    );
+    harness::until(
+        &tab,
+        "document.getElementById('app').classList.contains('sidebar-off')",
+        "the rail again",
+        Duration::from_secs(10),
+        "document.getElementById('app').className",
+    );
+    settle();
+    eval(
+        &tab,
+        "document.getElementById('sidebarMiniFilter').click(); 'ok'",
+    );
+    until_open("the filter flyout, pinned by a click");
+    harness::mouse_window(&tab, 500, 800);
+    harness::until(
+        &tab,
+        "innerWidth === 500 && document.getElementById('app').classList.contains('drawer-one-row')",
+        "a window narrowed into the drawer",
+        Duration::from_secs(10),
+        "innerWidth + ' ' + document.getElementById('app').className",
+    );
+    settle();
+    let drawn = eval(&tab, "(function(){ var s = document.getElementById('sessionFilter'); return JSON.stringify([s.parentElement ? s.parentElement.id : '', s.hidden, document.getElementById('railFlyout').hidden]); })()");
+    assert_eq!(
+        drawn.as_str(),
+        Some(r#"["sideListHead",true,true]"#),
+        "narrowed into the drawer, the pinned filter flyout closes and its menu waits shut in the row over the list: {drawn}"
+    );
+    harness::clear_metrics(&tab);
     drop(m);
 }
 

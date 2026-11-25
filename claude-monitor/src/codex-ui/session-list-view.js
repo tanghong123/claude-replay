@@ -713,9 +713,6 @@ function renderTree() {
   drawnGroupedFlat = grouped && flat;
   const noGroups = (flat && !grouped) || arranged;
   for (const control of [collapseBtn, expandBtn]) control.toggleAttribute("data-flat", noGroups);
-  // The sheet's fold rows (#s664) wear a mark of their own: in the sheet `data-flat` names the One list
-  // by activity option, which a reader (the cases' `#sessionFilter [data-flat]`) finds by it.
-  filterSheet.querySelector("[data-group-part]")?.toggleAttribute("data-no-groups", noGroups);
   if (arranged) html = arrangedSessionsHtml(layout, agents, shownAgents);
   else if (grouped) html = machineGroupsHtml(shownAgents, flat, filtered);
   else if (flat) html = flatSessionsHtml(shownAgents);
@@ -819,16 +816,7 @@ if (shows("filter")) sheetParts[0] += `
 <div data-machine-part><div class="scope-menu-divider"></div><div class="scope-menu-list">
 <button class="scope-option" type="button" role="checkbox" aria-checked="false" data-by-machine title="A head for each machine, holding its own agents and projects"><span class="scope-check"></span><span>Group by machine</span></button>
 </div></div>`;
-// #s664 (Hong's choice on #s661): Collapse every group and Expand every group as the sheet's first two
-// rows. They are drawn with any sheet and shown only where the app's layout takes the two glyphs out of
-// the head: on a wide phone held sideways, whose column head cannot give eight glyphs a finger's 44
-// points each. Elsewhere the glyphs stay and the rows are not shown. They go where the glyphs go
-// (`data-no-groups`, at each draw), and a row closes the sheet, so the list it folded is in view.
-const groupPart = `<div data-group-part><div class="scope-menu-list">
-<button class="scope-option" type="button" data-group-action="collapse" title="Fold every agent, project and machine">${svg("collapseStack")}<span>Collapse every group</span></button>
-<button class="scope-option" type="button" data-group-action="expand" title="Open every agent, project and machine">${svg("expandStack")}<span>Expand every group</span></button>
-</div><div class="scope-menu-divider"></div></div>`;
-filterSheet.innerHTML = (sheetParts.length ? `${groupPart}\n` : "") + sheetParts.join(`\n<div class="scope-menu-divider"></div>\n`);
+filterSheet.innerHTML = sheetParts.join(`\n<div class="scope-menu-divider"></div>\n`);
 // Hidden at once, before the first index answer draws anything: the sheet can be opened during the
 // first scan.
 paintMachinePart();
@@ -860,32 +848,33 @@ function toggleFilterSheet(open) {
 /** The sheet ends on the screen (#s206): its stylesheet caps it at 74% of the viewport, which
  *  forgets where it STARTS — under the drawer's head on a phone held sideways (a 292px page in
  *  Safari) it ran 16px past the screen's foot, half of Include hidden and all of the row below out
- *  of reach. Capped at the room below its top instead, it scrolls within what is on screen. */
+ *  of reach. Capped at the room below its top instead, it scrolls within what is on screen, however
+ *  short that room is (#s705: a floor of 120px ran it past the screen's foot in Safari held sideways,
+ *  where the row it hangs from left it 82). */
 function fitFilterSheet() {
   filterSheet.style.maxHeight = "";
   if (filterSheet.hidden || railFlyoutFor === "filter") return;
-  // In the list's own head (a host's) it ends at the list's foot, or higher at the foot of a box of
-  // the host's that clips the list (a scrolling pane the list is taller than, one contained or
-  // clipped by a path), so a pane that clips the list never cuts its last rows off; placed by the
-  // app, at the window's. The page's own root and body are left out: a body's overflow is the
-  // window's, which the window's height already says.
-  let foot = innerHeight;
+  // It ends at the list's foot: placed by the app over the list, that is above a phone's home
+  // indicator, where the sidebar's padding keeps the list (#s705: hung from the row over the list
+  // held sideways, the sheet ran into it). In the list's own head (a host's) it ends higher at the
+  // foot of a box of the host's that clips the list (a scrolling pane the list is taller than, one
+  // contained or clipped by a path), so a pane that clips the list never cuts its last rows off. The
+  // page's own root and body are left out: a body's overflow is the window's, which the window's
+  // height already says.
+  let foot = Math.min(innerHeight, sessionList.getBoundingClientRect().bottom);
   if (sessionList.contains(filterSheet)) {
-    foot = Math.min(foot, sessionList.getBoundingClientRect().bottom);
     for (let at = sessionList.parentElement; at && at.localName !== "body" && at.localName !== "html"; at = at.parentElement) {
       const style = getComputedStyle(at);
       if (style.overflowY !== "visible" || /paint|strict|content/.test(style.contain) || style.clipPath !== "none") foot = Math.min(foot, at.getBoundingClientRect().bottom);
     }
   }
   const room = Math.floor(foot - filterSheet.getBoundingClientRect().top - 8);
-  if (room > 0 && filterSheet.scrollHeight > room) filterSheet.style.maxHeight = `${Math.max(120, room)}px`;
+  if (room > 0 && filterSheet.scrollHeight > room) filterSheet.style.maxHeight = `${room}px`;
 }
 addEventListener("resize", fitFilterSheet, { signal });
 filterBtn.onclick = () => toggleFilterSheet(filterSheet.hidden);
 filterMini.onclick = () => { if (railFlyoutFor === "filter" && railFlyoutPinned) closeRailFlyout(false); else openRailFlyout("filter", filterMini, true); };
 filterSheet.addEventListener("click", event => {
-  const group = event.target.closest("[data-group-action]");
-  if (group) { toggleFilterSheet(false); (group.dataset.groupAction === "collapse" ? collapseBtn : expandBtn).onclick(); return; }
   if (event.target.closest("[data-filter-reset]")) { setBuckets(FILTER_BUCKETS); return; }
   if (event.target.closest("[data-include-hidden]")) { indexState.showHidden = !indexState.showHidden; renderTree(); return; }
   if (event.target.closest("[data-by-machine]")) { indexState.byMachine = !indexState.byMachine; persist(); renderTree(); return; }

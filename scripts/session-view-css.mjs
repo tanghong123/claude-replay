@@ -253,25 +253,24 @@ export function declarations(body) {
 // uses, sorted by what they are; the contract checks they still cover what the app names.
 
 /** The app's own chrome, which the view never draws: the session list and its tree, the rail and its
- *  flyout, the arrangement strip and the section menu, the session filter, the brand, the drawer and
- *  a wide phone's column, the session search layer (⌘K), the confirm layer (and the passcode field
+ *  flyout, the arrangement strip and the section menu, the session filter, the brand, the drawer, its
+ *  row over the list (#s705) and a wide phone's column, the session search layer (⌘K), the confirm layer (and the passcode field
  *  the app draws in it since stage 7), the toast, and the wrapper the web app is mounted in (#s551).
  *  `.primary` is the confirm layer's button: the
  *  view's own primary buttons are `.sv-primary`, a name the collaboration app does not style
  *  (#s438), so the view never draws `.primary`. The session list's names are in the two lists
  *  after this one (#s430 stage 3). */
 export const APP_CHROME = Object.freeze([
-  "#sidebarCollapse",
+  "#machinesHead", "#sidebarCollapse",
   ".app-mount",
   ".attention-count", ".attention-filter", ".attention-mini",
   ".brand",
-  ".column-pane", ".column-switch", ".column-switch-count",
   ".confirm-layer", ".dialog-actions", ".passcode-input", ".primary",
   ".drawer-handle", ".drawer-scrim", ".head-actions",
   ".nav", ".nav-tooltip", ".navbtn",
   ".result-copy", ".result-kind", ".result-machine-note", ".result-why",
   ".search-input", ".search-layer", ".search-result", ".search-result-machine-stale", ".search-result-stale", ".search-results", ".searchbox",
-  ".side-head", ".sidebar", ".sidebar-collapse", ".sidebar-mini", ".sidebar-mini-badge", ".sidebar-mini-button", ".sidebar-mini-separator", ".sidebar-resizer",
+  ".side-head", ".side-list-head", ".sidebar", ".sidebar-collapse", ".sidebar-mini", ".sidebar-mini-badge", ".sidebar-mini-button", ".sidebar-mini-separator", ".sidebar-resizer",
   ".toast",
   ".write-control", ".write-help", ".write-info", ".write-reason",
 ]);
@@ -321,11 +320,11 @@ export const LIST_OUTSIDE = Object.freeze([
   ".sidebar-mini-agent", ".sidebar-mini-agents",
 ]);
 
-/** The app's states, kept on `#app` (stage 5a's groups): its rail, the drawer, and a wide phone's
- *  column and its pane. A rule that reads one is the app placing or styling the
+/** The app's states, kept on `#app` (stage 5a's groups): its rail, the drawer and its one-row head
+ *  (#s705), the nav's rows folded as the list scrolls (#s701), and a wide phone's column. A rule that reads one is the app placing or styling the
  *  view from outside, and stays the app's (stage 6 lays the view out by its own pane's size). */
 export const APP_STATES = Object.freeze([
-  ".column-pane-on", ".mobile-detail", ".phone-column-off", ".sidebar-off", ".sidebar-tight", ".app-drawer", ".app-holding",
+  ".mobile-detail", ".phone-column-off", ".sidebar-off", ".sidebar-tight", ".app-drawer", ".app-holding", ".drawer-one-row", ".nav-away", ".nav-sliding",
 ]);
 
 /** Names the app's chrome and the view both draw: the glyph button, generic states and labels, and
@@ -361,9 +360,10 @@ export const ROOT_CLASSES = Object.freeze([
  *  - what the view appends to `viewRoot.layer()`, the page's `body`: only the copy field and a
  *    download's link, which carry no class (the task card and its dim are drawn in the view's element
  *    since #s431 stage 4);
- *  - the outline's Turns, Tasks and Agents lists, which a wide phone's column borrows into the app's
- *    `#columnPane` (`PHONE_PANES`), with their rows. Read off the page in each of those states, plus
- *    the rows the hermetic page cannot draw (stage 5a's shared list).
+ *  - the outline's Turns, Tasks and Agents lists, which a wide phone's column borrowed into the app's
+ *    sidebar (`PHONE_PANES`) until #s703, with their rows; nothing draws them outside the view now,
+ *    and #s704 takes them out of this list. Read off the page in each of those states, plus the rows
+ *    the hermetic page cannot draw (stage 5a's shared list).
  *  A name that is one of these, or starts with one and a hyphen. */
 export const OUTSIDE = Object.freeze([
   "#navigatorTurns", "#navigatorWork", "#navigatorAgents", ".navigator-list",
@@ -722,7 +722,7 @@ const APP_QUERIES = new Map([
  *  tracks; the outline's token on the page's root, which the view's element redeclares; and a wide
  *  phone held sideways, whose column is the phone's own. */
 export const APP_KEPT_QUERIES = Object.freeze(["@media(max-width:1180px)", "@media(max-width:900px)", "@media(pointer:coarse)and(max-height:500px)and(min-width:900px)"]);
-const DRAWER_PART = /(?:\.sidebar|\.side-head|\.tree-row|\.tree|\.drawer-scrim|\.drawer-handle|\.sidebar-mini|\.sidebar-resizer|#sidebarCollapse|\.section-view-scrim|\.section-view-menu|\.session-filter-options)(?![\w-])/;
+const DRAWER_PART = /(?:\.sidebar|\.side-head|\.side-list-head|#machinesHead|#machinesBtn|\.tree-row|\.tree|\.drawer-scrim|\.drawer-handle|\.sidebar-mini|\.sidebar-resizer|#sidebarCollapse|\.section-view-scrim|\.section-view-menu|\.session-filter-options)(?![\w-])/;
 const APP_GRID = /^(?:\.app|#app)(?:\.preview-off)?$/;
 const PHONE_VIEW_PART = /(?:\.phone-pane-body|\.phone-pane-jump|\.navigator-options|\.toast|\.activity-empty)(?![\w-])|^(?:input|textarea|select)(?![\w-])|\s(?:button)$/;
 export const APP_ARRANGED = Object.freeze({ drawer: "#app.app-drawer", listed: "#app:not(.app-drawer)", phone: "#sessionView.pl-phone" });
