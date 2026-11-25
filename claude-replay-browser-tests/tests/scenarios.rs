@@ -21578,6 +21578,126 @@ fn app_shell_shows_a_relayed_message_as_his_card_and_a_copy_as_text() {
     scenario_a_relayed_message_is_his_card_and_a_copy_is_text(&page.tab, Surface::AppShell, &fx);
 }
 
+/// Twelve turns, a thirteenth whose agent says what it is doing at some length before it calls a
+/// tool (a Progress row, #s697), then a long message from another session, a long prompt of the
+/// person's own and a long relay of Hong's signed with the format's test key, each answered —
+/// #s696.
+fn message_sides_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    stores.aries_key();
+    let long = |who: &str| {
+        format!(
+            "{who}: the tern colony on the north cliff counted two hundred and twelve nests this \
+             morning, the late chicks are ringed, the skua pair has moved to the south ledge, and \
+             the count goes to the survey sheet before the tide turns this afternoon"
+        )
+    };
+    let line = |v: serde_json::Value| format!("{v}\n");
+    let mut transcript = long_session(12, Shape::default());
+    transcript += &user_at("count the nests", &now_minus(120));
+    // Progress: a completed reply that stopped to call a tool (`stop_reason: tool_use`), as in
+    // the_app_shell_ranks_progress_above_thinking_and_activity.
+    transcript += &line(serde_json::json!({
+        "type": "assistant", "timestamp": now_minus(110),
+        "message": {"role": "assistant", "stop_reason": "tool_use", "content": [{"type": "text", "text": long("Progress")}]}
+    }));
+    transcript += &harness::tool_open_at("t-sides", &now_minus(105));
+    transcript += &harness::tool_result_at("t-sides", &now_minus(100));
+    transcript += &assistant_at("two hundred and twelve", &now_minus(95));
+    let body = long("skua-HD");
+    transcript += &line(serde_json::json!({
+        "type": "user", "cwd": "/r", "timestamp": now_minus(90), "isMeta": true,
+        "promptSource": "system", "turnOrigin": "peer",
+        "origin": {"kind": "peer", "from": "uds:/tmp/s.sock", "verifiedPeerPid": 1, "msg_id": "m-sides",
+                   "name": "skua-HD", "fromMode": "bypass", "body": body},
+        "message": {"role": "user", "content": format!("Another Claude session sent a message:\n<cross-session-message from=\"uds:/tmp/s.sock\" from-name=\"skua-HD\" from-mode=\"bypass\">\n{body}\n</cross-session-message>\n\nThis came from another Claude session — not typed by your user.")}
+    }));
+    transcript += &assistant_at("noted the count", &now_minus(85));
+    transcript += &user_at(&long("the person"), &now_minus(70));
+    transcript += &assistant_at("ringed", &now_minus(65));
+    let element = claude_replay_core::claude_inbox::sign_for_test(
+        &[0; 32],
+        &format!(
+            "<aries-inbox v=\"1\" from=\"Hong\" via=\"dingtalk\" kind=\"relay\" at=\"{}\" id=\"ding-1-sides\" to=\"skua-HD\" sig=\"-\">\n\
+             {}\n\
+             </aries-inbox>",
+            now_minus(51),
+            long("Hong")
+        ),
+    );
+    transcript += &line(serde_json::json!({
+        "type": "user", "cwd": "/r", "timestamp": now_minus(50), "origin": {"kind": "human"},
+        "message": {"role": "user", "content": format!("\n\n<pasted_content id=\"5d1e\">\n{element}\n</pasted_content id=\"5d1e\">\n")}
+    }));
+    transcript += &assistant_at("relayed to skua-HD", &now_minus(45));
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 16,
+    }
+}
+
+/// #s696, Hong: "I'd like to have user messages to not take the full width of the phone screen,
+/// and leave a small margin on the left side (right aligned). I'd also like messages from other
+/// agents to leave a small margin on the right side (left aligned). For Aries session, it also has
+/// special messages from me via Dashboard or dingtalk channel, they should also be right
+/// aligned". On a phone, upright and held sideways, a long prompt's bubble and a long relayed
+/// message of his end at the column's right edge with about 40px free on their left, and a long
+/// message from another session starts at the column's left edge with about 40px free on its
+/// right. Each filled the column's whole width.
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn app_shell_a_phone_keeps_each_message_to_its_own_side() {
+    let _serial = serial();
+    let fx = message_sides_fixture("scenario-message-sides-app");
+    let page = open_with(Surface::AppShell, &fx, 3208, "mountall=1");
+    let tab = &page.tab;
+    jump_to_end(tab, Surface::AppShell);
+    await_tail(tab, Surface::AppShell, "a fresh open to land at the tail");
+    settle();
+    let read = "(function () { var v = document.getElementById('sessionView'), \
+        inner = document.querySelector('#sessionView .transcript-inner').getBoundingClientRect(); \
+        function box(sel) { var e = [...document.querySelectorAll(sel)].pop(); if (!e) return null; var r = e.getBoundingClientRect(); \
+          return { left: Math.round(r.left - inner.left), right: Math.round(inner.right - r.right) }; } \
+        return JSON.stringify({ phone: v.classList.contains('pl-phone'), column: Math.round(inner.width), \
+          prompt: box('#sessionView .turn.user:not(.inbox) .user-prompt'), \
+          inbox: box('#sessionView .turn.user.inbox .user-prompt'), \
+          peer: box('#sessionView .turn.peer .peer-card') }); })()";
+    let sides = |v: &serde_json::Value| -> bool {
+        let at = |k: &str, side: &str| v[k][side].as_i64().unwrap_or(i64::MIN);
+        let margin = |n: i64| (36..=44).contains(&n);
+        let edge = |n: i64| (-1..=1).contains(&n);
+        edge(at("prompt", "right"))
+            && margin(at("prompt", "left"))
+            && edge(at("inbox", "right"))
+            && margin(at("inbox", "left"))
+            && edge(at("peer", "left"))
+            && margin(at("peer", "right"))
+    };
+    let mut seen = Vec::new();
+    for (w, h, held) in [(390, 844, "upright"), (874, 402, "sideways")] {
+        harness::phone(tab, w, h);
+        let mut last = serde_json::Value::Null;
+        for _ in 0..40 {
+            last = serde_json::from_str(eval(tab, read).as_str().unwrap_or("null"))
+                .unwrap_or(serde_json::Value::Null);
+            if last["phone"] == true && sides(&last) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+        seen.push((held, last));
+    }
+    for (held, v) in &seen {
+        assert!(
+            v["phone"] == true && sides(v),
+            "a phone held {held}: the person's prompt and his relayed message end at the column's right edge with about 40px free on their left, and another session's message starts at its left edge with about 40px free on its right (distances from the column's edges): {seen:?}"
+        );
+    }
+}
+
 /// #s83: a message the agent SENT to another session shows the message on its card, with the
 /// client's delivery receipt beneath it as a sentence. The owner found the card showing only the
 /// receipt's JSON (`{"success":true,"message":"…"}`), with the message itself nowhere. Written

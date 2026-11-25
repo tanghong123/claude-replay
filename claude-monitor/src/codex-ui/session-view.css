@@ -2121,7 +2121,8 @@
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .sv-session-main .transcript-inner{width:calc(100% - 48px);padding-top:16px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500).wide .sv-session-main .transcript-inner{width:calc(100% - 26px)}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .turn-stickybar{margin:0 8px}
-#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .turn.user .user-prompt{max-width:100%}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .turn.user .user-prompt{max-width:calc(100% - 40px)}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .turn.peer .peer-card{max-width:calc(100% - 40px)}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .turn.user .turn-time{margin:4px 2px 0 8px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .spot-link,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .renderer>.renderer-spot{display:none!important}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .jump-to-bottom{right:auto;left:50%;translate:-50% 0;min-width:44px;height:44px;bottom:calc(var(--phone-dock-h) + 10px)}

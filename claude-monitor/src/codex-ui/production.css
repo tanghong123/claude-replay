@@ -1812,7 +1812,14 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #sessionView .sv-session-main .transcript-inner{width:calc(100% - 48px);padding-top:16px}
   #sessionView.wide .sv-session-main .transcript-inner{width:calc(100% - 26px)}
   #sessionView .turn-stickybar{margin:0 8px}
-  #sessionView .turn.user .user-prompt{max-width:100%}
+  /* #s696, Hong: "I'd like to have user messages to not take the full width of the phone screen,
+     and leave a small margin on the left side (right aligned). I'd also like messages from other
+     agents to leave a small margin on the right side (left aligned)." The person's bubble, his
+     relayed message in the Aries session included (the inbox card is a prompt's bubble), keeps
+     40px free on its left; another session's card keeps 40px free on its right. They took the
+     column's whole width, so a long one read as neither side's. */
+  #sessionView .turn.user .user-prompt{max-width:calc(100% - 40px)}
+  #sessionView .turn.peer .peer-card{max-width:calc(100% - 40px)}
   #sessionView .turn.user .turn-time{margin:4px 2px 0 8px}
   #sessionView .spot-link,#sessionView .renderer>.renderer-spot{display:none!important}
 
