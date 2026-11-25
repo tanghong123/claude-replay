@@ -549,40 +549,33 @@ fn a_urls_origin_drops_its_path_query_and_fragment() {
     }
 }
 
-/// #s710: a case's page has its whole window, on whatever Chrome the suite runs. Chrome draws an
-/// "is being controlled by automated test software" bar in a headless window for
-/// `--enable-automation`, and the bar takes 56px of a 1400x900 window's page: measured on branded
-/// Google Chrome 158 and Chrome for Testing 159 on a Mac, and on CI's Google Chrome 157 on Linux
-/// (813px without the flag, 757px with it), while Chrome for Testing 151 draws none. So the Mac's
-/// cases had run at 813px and CI's at 757px, and Chrome 159 on the Mac moved them to 757px. A
-/// case's Chrome now goes without the flag ([`harness::IGNORED_DEFAULTS`]), and this case holds it:
-/// its page is as tall as that of a Chrome given `--test-type`, which keeps every startup bar away.
+/// #s710: a case's Chrome runs without `--enable-automation`, so its page has its whole window.
+/// For that flag Chrome draws an "is being controlled by automated test software" bar in a headless
+/// window, which takes 56px of a 1400x900 window's page: measured on branded Google Chrome 158 and
+/// Chrome for Testing 159 on a Mac, and on CI's Google Chrome 157 on Linux (813px without the flag,
+/// 757px with it), while Chrome for Testing 151 draws none. So the Mac's cases had run at 813px and
+/// CI's at 757px, and Chrome 159 on the Mac moved them to 757px. The harness drops the flag
+/// ([`harness::IGNORED_DEFAULTS`]), and this case reads the case browser's own command line: the
+/// flag is not there, whatever Chrome runs, where a page's height could not tell on a Chrome that
+/// draws no bar. It also checks it read the right process: the keychain flags every launch carries.
 #[test]
 #[ignore = "needs a local Chrome"]
-fn a_case_s_page_has_its_whole_window() {
+fn a_case_s_chrome_runs_without_the_automation_flag() {
     let _serial = harness::serial();
-    let height = |extra: &[&str]| -> (i64, String) {
-        let (browser, tab) = harness::chrome_with_tab(extra);
-        tab.navigate_to("data:text/html,<p>height</p>").unwrap();
-        tab.wait_until_navigated().unwrap();
-        // Two readings a second apart that agree: a startup bar comes in after the first page.
-        let mut last = -1;
-        for _ in 0..10 {
-            std::thread::sleep(std::time::Duration::from_millis(1000));
-            let now = harness::eval(&tab, "innerHeight").as_i64().unwrap_or(-1);
-            if now == last {
-                break;
-            }
-            last = now;
-        }
-        let version = browser.get_version().map(|v| v.product).unwrap_or_default();
-        (last, version)
-    };
-    let (case, version) = height(&[]);
-    let (bare, _) = height(&["--test-type"]);
-    assert_eq!(
-        case, bare,
-        "{version}, a 1400x900 window: a case's page is {case}px tall, and {bare}px with no \
-         startup bar (--test-type): something the harness passes draws a bar over the page"
+    let (browser, _tab) = harness::chrome_with_tab(&[]);
+    let pid = browser.get_process_id().expect("the case browser's pid");
+    let out = Command::new("ps")
+        .args(["-ww", "-o", "command=", "-p", &pid.to_string()])
+        .output()
+        .expect("ps");
+    let argv = String::from_utf8_lossy(&out.stdout).to_string();
+    let flags: Vec<&str> = argv.split_whitespace().collect();
+    assert!(
+        flags.contains(&"--use-mock-keychain") && flags.contains(&"--password-store=basic"),
+        "ps read the case browser (pid {pid}), which carries the keychain flags: {argv}"
+    );
+    assert!(
+        !flags.contains(&"--enable-automation"),
+        "a case's Chrome runs without --enable-automation, whose bar takes 56px of the page: {argv}"
     );
 }

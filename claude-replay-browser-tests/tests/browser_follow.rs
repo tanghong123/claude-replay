@@ -10265,7 +10265,8 @@ fn the_app_shell_a_push_with_nothing_below_to_reveal_moves_nothing() {
     // overflows by its own bottom padding alone. 1400x820 gave it on the Mac and beneath CI's
     // automation bar; with the page its whole window (#s710) CI's Linux Chrome left the column 16px
     // of overflow. So the window takes the height where the overflow is about half the padding,
-    // read off the page: a shorter window adds to it pixel for pixel.
+    // read off the page: a shorter window adds to it (by about half of each pixel, measured, since
+    // the open Turns list is capped at 48vh), so each step closes some of the distance.
     let mut height = 820.0;
     for _ in 0..4 {
         let overflow = harness::probe(&tab, state)["overflow"]
@@ -10324,10 +10325,11 @@ fn the_app_shell_a_push_with_nothing_below_to_reveal_moves_nothing() {
 
     // The owner's second clause, which holds whatever the first one decides: "regardless whether
     // the last drawer stops or not, there should always be a gap between these two panes". Shorten
-    // the window so the last card IS cut off and the column has somewhere real to go, then push
-    // through the whole range — the drawers close from the top, and only once they are heads does
-    // the remainder scroll. The gap is measured at every step, not only at the end, because an
-    // overlap mid-gesture is exactly what the owner photographed.
+    // the window so the last card IS cut off, then push through the whole range: the drawers close
+    // from the top until the last card shows. The gap is measured at every step, not only at the
+    // end, because an overlap mid-gesture is exactly what the owner photographed. (At this height
+    // the column drops its breathing room, `heads-tight`, so it has no offset to give: the tall
+    // leg above is what holds a push that scrolls.)
     //
     // The short window leaves the column just taller than the SHUT chain, read off the page, so
     // the walk has to shut every pane above the last to show it, whatever the platform's lines. A

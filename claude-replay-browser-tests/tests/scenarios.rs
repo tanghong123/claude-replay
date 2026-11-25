@@ -2314,13 +2314,16 @@ fn scenario_turn_back_from_the_end(tab: &headless_chrome::Tab, surface: Surface,
     // #s710: there, at the end, the fixture's last two turns fill the view and turn N-2's header is
     // above it. With the page its whole window (813px) Linux's lines left turn N-2's header in view
     // too, so `[` to N-1 moved nothing and the turn at the top stayed N-2. The Mac passes at both.
-    harness::resize(tab, 1400.0, 844.0);
+    // The window's frame is whatever the Chrome draws, so the window is sized once, read, and
+    // corrected by what the page lost or gained.
+    let page = eval(tab, "innerHeight").as_f64().unwrap_or(813.0);
+    harness::resize(tab, 1400.0, 900.0 - (page - 757.0));
     until(
         tab,
-        "innerHeight < 800",
-        "the window to take its shorter height",
+        "innerHeight === 757",
+        "the window to give its page 757px",
         Duration::from_secs(5),
-        "innerHeight",
+        "[outerHeight, innerHeight]",
     );
     jump_to_end(tab, surface);
     await_tail(tab, surface, "the jump to the end");
@@ -9094,7 +9097,11 @@ fn fixture_changed_on_disk(name: &str, turns: u32) -> Fixture {
     jsonl += &harness::edited_file_at("/w/notes/crux-on-linux.md", "2026-09-08T04:00:01.000Z");
     jsonl += &assistant_at("Ignored.", "2026-09-08T04:00:05.000Z");
     let path = stores.claude_session(SID, &jsonl);
-    Fixture { base, path, turns }
+    Fixture {
+        base,
+        path,
+        turns: turns + 1,
+    }
 }
 
 /// #s296 (#171 before it): a record must say WHY a file is named there. #171 read `att_kind:
