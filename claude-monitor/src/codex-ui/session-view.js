@@ -5005,7 +5005,10 @@ var phoneDock;
       catchingPointer = event.pointerId;
       stopCatching(4000);
     }
-    if (openPane && taskPopover.hidden && !menu.contains(event.target) && !event.target.closest?.("[data-phone-pane], [data-nav-card-open]")) closePane();
+    // A press on the task card's dim is that card's tap, never one beside the sheet: the dim stays,
+    // catching, after the touch closed the card until the tap's click (#s510), and a press there is
+    // the tap's mouse half, which closed the Tasks sheet under the card (#s703).
+    if (openPane && taskPopover.hidden && event.target !== taskScrim && !menu.contains(event.target) && !event.target.closest?.("[data-phone-pane], [data-nav-card-open]")) closePane();
   }, { capture: true, signal });
   const lifted = event => {
     if (event.pointerId !== catchingPointer) return;

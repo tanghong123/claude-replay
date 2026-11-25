@@ -21922,7 +21922,9 @@ fn a_wide_phone_s_task_card_dim_spends_its_tap_on_closing_the_card() {
         serde_json::Value::String("taskScrim".into()),
         "the card's dim lies over the handle"
     );
-    harness::finger_tap(&tab, handle[0], handle[1]);
+    // The tap's click comes late, its mouse half pressing the dim again after the card has closed,
+    // as Linux's tap does: that press must neither reach the handle nor close the sheet (#s703).
+    harness::finger_tap_late_click(&tab, handle[0], handle[1], Duration::from_millis(500));
     closed("a tap on the dim over the handle to close the card and lift the dim");
     std::thread::sleep(Duration::from_millis(300));
     let after = column();
@@ -21931,10 +21933,15 @@ fn a_wide_phone_s_task_card_dim_spends_its_tap_on_closing_the_card() {
         (serde_json::Value::Bool(false), serde_json::Value::Null),
         "the tap closed the card and nothing else: the column is still shown: {after}"
     );
+    assert_eq!(
+        harness::eval(&tab, "document.getElementById('phonePaneMenu').hidden"),
+        false,
+        "…and the Tasks sheet under the card is still open"
+    );
     // A tap on the dim elsewhere still closes the card.
     open_card();
     let elsewhere = page_point(&tab, "a point on the dim away from the card and the handle", "(function(){ var s = document.getElementById('taskScrim'), h = document.getElementById('drawerHandle').getBoundingClientRect(); var p = [[innerWidth - 90, 50], [innerWidth / 2, 50], [innerWidth - 90, innerHeight / 3]].find(function (q) { return document.elementFromPoint(q[0], q[1]) === s && (q[0] > h.right + 40 || q[1] > h.bottom + 40); }); return p ? JSON.stringify(p) : 'none'; })()");
-    harness::finger_tap(&tab, elsewhere[0], elsewhere[1]);
+    harness::finger_tap_late_click(&tab, elsewhere[0], elsewhere[1], Duration::from_millis(500));
     closed("a tap on the dim elsewhere to close the card and lift the dim");
     assert_eq!(
         column()["off"],
