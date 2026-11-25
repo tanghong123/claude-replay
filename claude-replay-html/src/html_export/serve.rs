@@ -8962,33 +8962,35 @@ mod tests {
 
     /// #s632: a stop that finds its loop already ended says nothing and waits for nothing. The loop
     /// ends on its own when an accept returns after the flag is set; here a connection of the
-    /// test's own brings it, and the loop closes the port. The stop's wake is then refused, which
-    /// is stopped: no retry pause, and not the "could not wake it" line, which is said only for
-    /// `Wake::CouldNot`. A connect that fails another way (the open-file ceiling) is still tried
-    /// four times.
+    /// test's own brings it, and the loop closes the port, then drops its handler. The stop's wake
+    /// is then refused, which is stopped: no retry pause, and not the "could not wake it" line,
+    /// which is said only for `Wake::CouldNot`. A connect that fails another way (the open-file
+    /// ceiling) is still tried four times.
+    ///
+    /// #s722: the loop's end is read from the loop itself, its handler gone, never from the port.
+    /// Tests in this process start listeners on port 0 that live as long as it does, and one can
+    /// be given the number the loop freed: on CI every connect then went through for 30 s, which
+    /// the test read as the loop still running. A wake that goes through once the loop has ended
+    /// reached such a listener, so the refusal is read again on a port freed the same way.
     #[test]
     fn a_refused_wake_means_the_loop_already_stopped() {
         use std::sync::atomic::Ordering;
         let handler: StreamingRouteHandler = std::sync::Arc::new(|_request: &Request| {
             HttpResponse::ok("text/plain", b"ok".to_vec()).into()
         });
+        // Once the listener runs, its loop holds the only copy, and drops it after its port.
+        let copies = std::sync::Arc::downgrade(&handler);
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let port = spawn_listener_until(0, handler, AuthGate::same_user(), Some(stop.clone()))
             .expect("the listener starts");
         stop.store(true, Ordering::SeqCst);
-        let _ = std::net::TcpStream::connect(("127.0.0.1", port));
-        // Until the port refuses: any other error (a parallel test at the open-file ceiling) is not
-        // a closed port, and is said as itself rather than read as a stopped loop. A reset is the
-        // port closing under the connect, as Linux answers a handshake that reached the backlog of
-        // a socket then closed (CI saw it, #s642), so it is polled on through, as a connect that
-        // went through is.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            match std::net::TcpStream::connect(("127.0.0.1", port)) {
-                Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => break,
-                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
-                Err(error) => panic!("waiting for the port to close: {error}"),
-                Ok(_) => {}
+        // Connect until one goes through, the accept after the stop: one that fails (a parallel
+        // test at the open-file ceiling) brings no accept. Then wait for the handler to go.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut woken = false;
+        while copies.strong_count() > 0 {
+            if !woken {
+                woken = std::net::TcpStream::connect(("127.0.0.1", port)).is_ok();
             }
             assert!(
                 std::time::Instant::now() < deadline,
@@ -8996,21 +8998,35 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let to = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-        let mut pauses = 0;
-        let woke = wake_listener(
-            || {
-                std::net::TcpStream::connect_timeout(&to, std::time::Duration::from_secs(1))
-                    .map(drop)
-            },
-            |_| pauses += 1,
-        );
-        assert_eq!(
-            woke,
-            Wake::AlreadyStopped,
-            "a closed port is a stopped loop"
-        );
-        assert_eq!(pauses, 0, "and nothing is retried");
+        let mut port = port;
+        let mut freed = 0;
+        loop {
+            let to = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+            let mut pauses = 0;
+            let woke = wake_listener(
+                || {
+                    std::net::TcpStream::connect_timeout(&to, std::time::Duration::from_secs(1))
+                        .map(drop)
+                },
+                |_| pauses += 1,
+            );
+            if woke != Wake::Woke {
+                assert_eq!(
+                    woke,
+                    Wake::AlreadyStopped,
+                    "a closed port is a stopped loop"
+                );
+                assert_eq!(pauses, 0, "and nothing is retried");
+                break;
+            }
+            // Another listener holds the number now: free one the same way and read that.
+            freed += 1;
+            assert!(freed < 20, "a freed port refuses a connect");
+            port = std::net::TcpListener::bind(("127.0.0.1", 0))
+                .and_then(|listener| listener.local_addr())
+                .expect("bind a loopback port to free")
+                .port();
+        }
 
         let mut tries = 0;
         let mut pauses = Vec::new();
