@@ -543,7 +543,7 @@ html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
 @media(pointer:coarse) and (max-height:500px) and (min-width:900px){
 #app.phone-column-off .phone-dock:has(.header-searchbox:is(.phone-open,.has-query)){left:calc(12px + env(safe-area-inset-left,0px))}
 #app:not(.phone-column-off) .phone-dock:not(:has(.header-searchbox:is(.phone-open,.has-query))){left:auto}
-#app:not(.phone-column-off) #sessionView .jump-to-bottom{bottom:calc(var(--phone-dock-h) + 10px)}
+body:not([data-shared-codex]) #app:not(.phone-column-off) #sessionView .jump-to-bottom{bottom:calc(var(--phone-dock-h) + 10px)}
 #app:not(.phone-column-off) #sessionView .reading-cluster>.reading-options,#app:not(.phone-column-off) .phone-pane-menu:not([hidden]){left:auto;right:calc(12px + env(safe-area-inset-right,0px))}
 }
 :where(#app.app-drawer) .drawer-handle{left:calc(4px + env(safe-area-inset-left,0px))}
