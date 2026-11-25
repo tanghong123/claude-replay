@@ -406,8 +406,8 @@ fn roots(surface: Surface) -> (&'static str, &'static str) {
 /// been quantifying over a DOM with fourteen renderings hidden inside it. The coverage assertion
 /// below is what caught it, which is the whole argument for having one.
 ///
-/// A head's click is also a FOUR-STEP cycle (#129) on both pages — folded → output → output and
-/// the whole command → output → folded — so only a CLOSED head is ever clicked. `|| !f.open` is
+/// A head's click is also a THREE-STEP cycle (#129, #s698) on both pages — folded → output →
+/// output and the whole command → folded — so only a CLOSED head is ever clicked. `|| !f.open` is
 /// the tempting guard on the classic page and it is always true there, because a `.fold` is a
 /// div and not a `<details>`: it cycles every head instead of opening it, which shows up as
 /// `.tool-target` and `.anim` moving under a control that never touched them.

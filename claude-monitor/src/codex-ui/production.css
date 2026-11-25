@@ -1812,7 +1812,23 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #sessionView .sv-session-main .transcript-inner{width:calc(100% - 48px);padding-top:16px}
   #sessionView.wide .sv-session-main .transcript-inner{width:calc(100% - 26px)}
   #sessionView .turn-stickybar{margin:0 8px}
-  #sessionView .turn.user .user-prompt{max-width:100%}
+  /* #s696, Hong: "I'd like to have user messages to not take the full width of the phone screen,
+     and leave a small margin on the left side (right aligned). I'd also like messages from other
+     agents to leave a small margin on the right side (left aligned)." The person's bubble, his
+     relayed message in the Aries session included (the inbox card is a prompt's bubble), keeps
+     40px free on its left; another session's card keeps 40px free on its right. They took the
+     column's whole width, so a long one read as neither side's. */
+  #sessionView .turn.user .user-prompt{max-width:calc(100% - 40px)}
+  #sessionView .turn.peer .peer-card{max-width:calc(100% - 40px)}
+  /* #s697, Hong: "the progresses on mobile seems to waste too much precious screen real estate",
+     then "I wonder if it may be easier simply remove the progress heading, and just display the
+     block text?". A Progress row was three columns, its dot, the label and the text, so on a phone
+     the text had a column of about 60 percent of the width and a short note took five lines. Here
+     the heading is gone from sight (a screen reader still reads it), the dot keeps its place in the
+     gutter, and the text, Markdown lists and code included, takes the row from the dot to its edge. */
+  #sessionView .process-commentary,#sessionView .process-surface .process-commentary{display:block;position:relative;padding-left:22px}
+  #sessionView .process-commentary-mark{position:absolute;left:8px;top:14px;margin:0}
+  #sessionView .process-commentary-label{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap}
   #sessionView .turn.user .turn-time{margin:4px 2px 0 8px}
   #sessionView .spot-link,#sessionView .renderer>.renderer-spot{display:none!important}
 

@@ -893,7 +893,7 @@ page. So a fix written at the re-render seam covers the control nobody complaine
 the one they did. Both seams need arming, and a scenario that clicks a fold head cannot tell you so.
 
 **A second thing the case had to learn the hard way.** A fold head is the wrong instrument for this
-measurement twice over: its click is a four-step cycle, so clicking a head the page had already
+measurement twice over: its click is a cycle (four steps then, three since #s698), so clicking a head the page had already
 opened CLOSES it (measured: the classic page shrank 76px and the case reported itself vacuous), and
 a capped output can sit several folds deep inside a parent whose body is `display: none`, so opening
 the innermost fold leaves the expander with no box at all. The case now opens the whole ancestor
