@@ -20194,7 +20194,7 @@ fn a_phone_session_list_is_a_drawer_over_part_of_the_view() {
         Duration::from_secs(5),
         DRAWER_STATE,
     );
-    let open = harness::eval(&tab, &format!("(function(){{ var ok = {PHONE_HITTABLE}; var s = document.querySelector('#app > .sidebar').getBoundingClientRect(); var edge = document.elementFromPoint(innerWidth - 16, innerHeight / 2); return JSON.stringify({{ right: Math.round(s.right), width: innerWidth, scrim: !!edge && edge.id === 'drawerScrim', rows: [].slice.call(document.querySelectorAll('.tree-row.session, .side-head .iconbtn')).filter(function(e){{ return e.offsetWidth; }}).every(ok) }}); }})()"));
+    let open = harness::eval(&tab, &format!("(function(){{ var ok = {PHONE_HITTABLE}; var s = document.querySelector('#app > .sidebar').getBoundingClientRect(); var edge = document.elementFromPoint(innerWidth - 16, innerHeight / 2); return JSON.stringify({{ right: Math.round(s.right), width: innerWidth, scrim: !!edge && edge.id === 'drawerScrim', rows: [].slice.call(document.querySelectorAll('.tree-row.session, .side-head .iconbtn, .side-list-head .iconbtn')).filter(function(e){{ return e.offsetWidth; }}).every(ok) }}); }})()"));
     let open: serde_json::Value = serde_json::from_str(open.as_str().unwrap()).unwrap();
     let (right, width) = (
         open["right"].as_f64().unwrap(),
@@ -21273,7 +21273,10 @@ fn a_phones_controls_are_finger_sized() {
             "VIEW",
             "'#drawerHandle, .topbar .iconbtn, .topbar .header-searchbox, .phone-dock .iconbtn, .phone-dock .header-searchbox'",
         );
-        let list = measure.replace("VIEW", "'.side-head .iconbtn, .tree-row.session'");
+        let list = measure.replace(
+            "VIEW",
+            "'.side-head .iconbtn, .side-list-head .iconbtn, .tree-row.session'",
+        );
         let check = |what: &str| {
             let probe: serde_json::Value =
                 serde_json::from_str(harness::eval(&tab, harness::PHONE_PROBE).as_str().unwrap())
@@ -32884,7 +32887,8 @@ fn find_controls_hold(seen: &serde_json::Value, what: &str, place: &str) {
 /// #s649, the drawer's head: on a phone the theme, Collapse all, Expand all and the session filter sat
 /// 40 points wide, side by side. Each now takes a finger's 44 points, upright and
 /// on a phone held sideways that keeps the drawer, without overlapping, every point of the 44-point
-/// disc around a control's centre hitting it, its glyph drawn at 18 points as before.
+/// disc around a control's centre hitting it, its glyph drawn at 18 points as before. Since #s705 the
+/// theme is in the head's one row beside the brand and the other three in the row over the list.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_s_drawer_head_glyphs_take_a_finger_s_44_points() {
@@ -32912,7 +32916,7 @@ fn drawer_head_targets_hold(tab: &headless_chrome::Tab, what: &str) {
     );
     assert!(
         !seen["controls"]["#themeBtn"].is_null() && !seen["controls"]["#filterBtn"].is_null(),
-        "{what}: the theme and the session filter are in the drawer's head: {seen}"
+        "{what}: the theme and the session filter are drawn in the drawer: {seen}"
     );
     // Collapse all and Expand all are drawn only over a tree (a flat list has nothing to fold).
     for (sel, c) in seen["controls"].as_object().unwrap() {
