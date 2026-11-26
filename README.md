@@ -121,9 +121,12 @@ agent-monitor --set-passcode   # optional: require a passcode before write mode 
 ```
 
 The address carrying the token is printed only to a terminal; logs and pipes get the bare
-address. If an unpaired monitor is already running, stop it in its terminal and start it
-again with `--pair`. On Linux a local request verified as the same OS user passes without the
-token; macOS cannot verify one, so there every request needs it.
+address. `--pair` against a monitor already running unpaired pairs it at once, with no restart:
+the running monitor takes the new token and requires it from its next request on, and its log
+says it is now paired. A browser on the monitor's own machine can pair from the page instead
+(`/pair`, then Show a code): on a monitor not yet paired that pairs the monitor too, and the
+page says so before it asks. On Linux a local request verified as the same OS user passes
+without the token; macOS cannot verify one, so there every request needs it.
 
 Pair the monitor before serving it with `tailscale serve`. While `tailscale serve` relays
 anything to its port, an unpaired monitor on macOS refuses every request it cannot verify,
