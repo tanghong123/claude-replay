@@ -463,11 +463,15 @@ pub const COMPACT_AFTER: usize = 256;
 /// in that notice is his `UserInbox`, where a v98 stream holds it as the session's `PeerText`; and
 /// a `PeerText` whose notice has words after it keeps them, where v98 left them out.
 ///
+/// v100: #s726 — the notice is matched as the client writes it, the tag on a line of its own, so a
+/// real `PeerText` leaves it out and a real signed message ending in it is his `UserInbox`, where a
+/// v99 stream kept the notice and held that message as the session's `PeerText`.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 99;
+pub const FOLD_VERSION: u16 = 100;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
