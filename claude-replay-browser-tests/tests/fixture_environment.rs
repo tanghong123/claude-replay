@@ -211,6 +211,14 @@ fn a_dropped_browser_takes_its_singleton_folder_with_it() {
 /// keeps it, so the reaper reads the folder from the browser's own profile before the signal and
 /// removes it once the process has gone. The browser is a real Chrome, launched here under a
 /// profile named for this runner, as a case's is.
+///
+/// #s724: the reaper reads a process as gone once `ps` shows it a zombie, and on Linux a
+/// multithreaded one shows that while its other threads are still going, so its parent cannot
+/// collect it yet (a browser still running past [`harness::GENTLE_END`] is SIGKILLed, and that
+/// too lands a moment after the reap returns). So the case waits, bounded, for its own child to
+/// exit after the reap, instead of one look as the reap returns (CI read the browser as still
+/// running once). A reaper that ends nothing still fails it, and the message says how long the
+/// reap took.
 #[test]
 #[ignore]
 fn a_reaped_browser_takes_its_singleton_folder_with_it() {
@@ -254,11 +262,25 @@ fn a_reaped_browser_takes_its_singleton_folder_with_it() {
         folder.exists(),
         "the folder is there while the browser runs"
     );
+    let reaping = std::time::Instant::now();
     harness::reap_own_browsers();
-    let exited = chrome.try_wait().unwrap().is_some();
+    let reaped_in = reaping.elapsed();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let exited = loop {
+        if chrome.try_wait().unwrap().is_some() {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
     let _ = chrome.kill();
     let _ = chrome.wait();
-    assert!(exited, "the reaper ended the browser");
+    assert!(
+        exited,
+        "the reaper ended the browser: it still ran 10 s after a reap that took {reaped_in:?}"
+    );
     let _ = std::fs::remove_dir_all(&profile);
     // On Linux a folder Chrome keeps is in the workspace's scratch, which the sweep clears; the
     // reaper takes it there too, so only the Mac's rule is strict.
