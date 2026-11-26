@@ -465,7 +465,9 @@ pub const COMPACT_AFTER: usize = 256;
 ///
 /// v100: #s726 — the notice is matched as the client writes it, the tag on a line of its own, so a
 /// real `PeerText` leaves it out and a real signed message ending in it is his `UserInbox`, where a
-/// v99 stream kept the notice and held that message as the session's `PeerText`.
+/// v99 stream kept the notice and held that message as the session's `PeerText`; and a
+/// `Compaction`'s summary leaves out the notice the client puts at its head, which a v99 one opens
+/// with.
 ///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
