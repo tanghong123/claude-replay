@@ -444,6 +444,9 @@
 .mdrev-host .switcher-wrap:hover .file-copy, .mdrev-host .file-copy:focus-visible, .mdrev-host .file-copy.copied {opacity:1}
 .mdrev-host .file-copy:hover {color:var(--ink)}
 .mdrev-host .file-copy.copied {color:var(--ins-fg)}
+@media (hover:none) {
+.mdrev-host .file-copy {opacity:1}
+}
 .mdrev-host .doc-star {height:22px;color:var(--ink-faint);cursor:pointer;background:0 0;border:none;border-radius:5px;flex:none;align-self:center;align-items:center;margin-left:1px;padding:0 3px;line-height:0;transition:color .12s;display:inline-flex}
 .mdrev-host .doc-star svg {fill:none}
 .mdrev-host .doc-star:hover {color:var(--ink)}

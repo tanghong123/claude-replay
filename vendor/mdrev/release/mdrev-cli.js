@@ -34152,6 +34152,16 @@ function keepWhereThereIsRoom(table2, rows, cellsOf) {
 function escapeHtml(s2) {
   return s2.replace(/&/g, "&#x26;").replace(/</g, "&#x3C;");
 }
+var ITEM_MARK = (() => {
+  const bytes = new Uint8Array(8);
+  const random = globalThis.crypto;
+  if (random)
+    random.getRandomValues(bytes);
+  else
+    for (let i = 0; i < bytes.length; i++)
+      bytes[i] = Math.floor(Math.random() * 256);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+})();
 function makeHandlers(opts, policy2, cleaned) {
   const inline = (tagName) => (state2, node2) => {
     const el = { type: "element", tagName, properties: {}, children: state2.all(node2) };
@@ -34192,6 +34202,23 @@ function makeHandlers(opts, policy2, cleaned) {
       const el = handlers.table(state2, node2);
       floorColumns(el);
       return el;
+    },
+    /*
+     * A LIST ITEM THE MARKDOWN MAKES SAYS SO (data-mdv-item, #s2587), on a page drawn for its source. Raw HTML in a
+     * block draws <li> of its own, which are no item of the source's, and the editor lines a block's drawn items up
+     * with its source's: it used to tell the two apart by predicting, from the raw HTML's text, which `<li>` tags the
+     * browser's parser draws, and each new malformed input found it wrong (#s2556). Every <li> this handler makes is a
+     * Markdown item, since raw HTML is never parsed into this tree; the footnotes' own list at the end is built
+     * without it and is no item either. The mark's value is ITEM_MARK, made at random as this module loads, and the
+     * editor matches that value alone: under `filter` the filter keeps no data-* attribute on an li (html.ts), and
+     * under `trust`, which keeps the author's HTML as written, an author's own data-mdv-item was written before the
+     * page was drawn and cannot carry it (#s2840 D2).
+     */
+    listItem(state2, node2, parent) {
+      const li2 = handlers.listItem(state2, node2, parent);
+      if (opts.sourceMap)
+        li2.properties["data-mdv-item"] = ITEM_MARK;
+      return li2;
     },
     mdvDefList: inline("dl"),
     mdvDt: inline("dt"),
