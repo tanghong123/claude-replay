@@ -176,25 +176,32 @@ export class ControlStore {
     this.attachButton.hidden = !allowed;
     byId("composer").classList.toggle("attachable", allowed);
     const items = allowed ? this.imagesFor() : [];
-    this.imageStrip.replaceChildren(...items.map(item => {
-      const tile = document.createElement("div");
-      tile.className = "compose-image";
-      tile.title = item.name;
-      if (item.url) { const img = document.createElement("img"); img.src = item.url; img.alt = item.name; tile.append(img); }
-      else { const wait = document.createElement("span"); wait.className = "compose-image-loading"; wait.textContent = "Loading…"; tile.append(wait); }
-      const remove = document.createElement("button");
-      remove.type = "button";
-      remove.className = "compose-image-remove";
-      remove.textContent = "×";
-      remove.setAttribute("aria-label", `Remove ${item.name}`);
-      const target = this.compose.row?.id;
-      remove.onclick = () => this.removeImage(target, item.id);
-      tile.append(remove);
-      return tile;
-    }));
+    // Every poll paints the box again: the same tiles for the same session are not drawn again (#s731),
+    // since a redraw beside a large guest in the pane cost a restyle of the whole page.
+    const target = this.compose.row?.id;
+    const strip = `${target}|${items.map(item => `${item.id}:${item.url ? 1 : 0}`).join(",")}`;
+    if (strip !== this.stripDrawn || this.imageStrip.childElementCount !== items.length) {
+      this.stripDrawn = strip;
+      this.imageStrip.replaceChildren(...items.map(item => this.imageTile(target, item)));
+    }
     // The dock's draft dot counts images too, for the session the dock writes to.
     byId("composer").dataset.imageDraft = this.imagesFor(this.actions.selectedRow()?.id).length ? "1" : "";
     byId("composer").dispatchEvent(new Event("compose-images"));
+  }
+  imageTile(target, item) {
+    const tile = document.createElement("div");
+    tile.className = "compose-image";
+    tile.title = item.name;
+    if (item.url) { const img = document.createElement("img"); img.src = item.url; img.alt = item.name; tile.append(img); }
+    else { const wait = document.createElement("span"); wait.className = "compose-image-loading"; wait.textContent = "Loading…"; tile.append(wait); }
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "compose-image-remove";
+    remove.textContent = "×";
+    remove.setAttribute("aria-label", `Remove ${item.name}`);
+    remove.onclick = () => this.removeImage(target, item.id);
+    tile.append(remove);
+    return tile;
   }
   paint() {
     if (this.ended) return;

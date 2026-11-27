@@ -1044,6 +1044,17 @@ collaboration app styles in its own page** (#s438, where the view sits in a pane
 `sv-task-card-*` family, `sv-pinned` and `sv-primary` (the app's confirm button keeps `.primary`),
 and it draws no `.hint` (the app's ⌘K hint keeps it) and no `.crumbs`; `ui.rs` refuses the six bare
 names in `session-view.css`, and the contract refuses them in the view's modules.
+**Beside a large guest, one text change can restyle the whole page** (#s731, measured with mdrev's
+view of a 1,500-line file, 54,000 elements: about 280ms a time). Chrome does it at ANY text change,
+and at any element added, while some `:has()` rules are in the page: mdrev's eight on their own
+(mdviewer #s3149), and ours, `….header-searchbox:has(…) input::placeholder`, together with the
+app's `:root:has(…)` rules, while other `:has()` rules short of their subject cost nothing. Which
+ones do it is measured, never read off the selector: `a_text_change_beside_a_large_page_restyles_only_what_it_touched`
+holds the page's own stylesheets to it (ours is a sibling selector now). And a poll that changes
+nothing writes nothing (the header through `setText` and `setMarkup`; the filter's counts, the
+compose box's line and its image strip each compare first), held by
+`a_session_list_poll_that_changes_nothing_writes_nothing_to_the_page` and, for the strip,
+`a_herdr_session_takes_images_from_the_compose_box`.
 
 **Shared frontend modules live in `claude-replay-html/src/html/shared/`** (seam 0 of
 `design/monitor-shell-duplication.md`, v1.140.0): ONE source, consumed two ways — the monitor

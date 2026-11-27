@@ -28492,6 +28492,23 @@ fn a_herdr_session_takes_images_from_the_compose_box() {
         Duration::from_secs(5),
         &strip,
     );
+    // #s731: a poll paints the box again, and the same tiles are not drawn again (beside a large
+    // guest in the pane a redraw restyled the whole page).
+    harness::eval(&tab, "(function(){ var s = document.getElementById('composeImages'); window.__tile = s.firstElementChild; window.__redrawn = 0; window.__polls = 0; new MutationObserver(function(r){ window.__redrawn += r.length; }).observe(s, {childList: true}); new PerformanceObserver(function(l){ l.getEntries().forEach(function(e){ if (e.name.indexOf('/api/sessions') >= 0) window.__polls++; }); }).observe({type: 'resource'}); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "window.__polls >= 2",
+        "two polls of the session list with the images attached",
+        Duration::from_secs(20),
+        "String(window.__polls)",
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    let kept = harness::eval(&tab, "window.__redrawn + '|' + (document.getElementById('composeImages').firstElementChild === window.__tile)");
+    assert_eq!(
+        kept.as_str(),
+        Some("0|true"),
+        "two polls drew the image strip again (redraws|same tile)"
+    );
     // ✕ takes one away; the other is sent with the text.
     phone_tap(&tab, "#composeImages .compose-image-remove");
     harness::until(
@@ -34346,5 +34363,153 @@ fn app_shell_a_session_opened_mid_wheel_lands_at_its_end_at_once() {
         after.iter().skip(short).all(landed),
         "and stays there:\n{}",
         after.iter().map(row).collect::<Vec<_>>().join("\n")
+    );
+}
+
+/// What a page with a 54,000-element guest in its pane pays for one text change, #s731: Chrome
+/// restyles the WHOLE page at a text change anywhere while one rule holds a `:has()` short of a
+/// pseudo-element subject, so a write that changed nothing cost about 280ms beside mdrev's view of a
+/// 1,500-line file. The page's own share of that is its writes: a poll of the session list (every
+/// 5s) wrote the title, the crumb, the status chip, the copy menu's values and the filter's counts
+/// again, each the same, and froze a phone's pane twice per poll. A poll that changes nothing now
+/// writes nothing: no text replaced by equal text, no node replaced by an equal node, anywhere.
+#[test]
+#[ignore = "browser: requires a local Chrome"]
+fn a_session_list_poll_that_changes_nothing_writes_nothing_to_the_page() {
+    let _serial = harness::serial();
+    let base = harness::base("s731-idle-poll");
+    let stores = harness::Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000733";
+    // Active a minute ago, so the list draws its row under the default filter as well as the header.
+    let jsonl = [
+        harness::user_at("hello", &harness::rfc3339_secs_ago(90)),
+        harness::assistant_at("hi there", &harness::rfc3339_secs_ago(80)),
+    ]
+    .concat();
+    stores.claude_session(sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3733, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        &format!("!!document.querySelector('.tree-row.session[data-session=\"{sid}\"]') && document.getElementById('sessionTitle').textContent !== 'Agent Monitor' && !!document.querySelector('#statusChip .state-dot')"),
+        "the session's row and its header",
+        Duration::from_secs(30),
+        "JSON.stringify({title: (document.getElementById('sessionTitle')||{}).textContent, rows: document.querySelectorAll('.tree-row.session').length})",
+    );
+    // With the compose box open, each poll paints it twice more (its images and its dialog), and
+    // its one line once said again what it said.
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composeFab').classList.contains('show')",
+        "write mode to offer the compose button",
+        Duration::from_secs(10),
+        "document.getElementById('composeFab').className",
+    );
+    harness::eval(&tab, "document.getElementById('composeFab').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composer').classList.contains('production-show') && document.querySelector('#composer .compose-note').textContent === 'Resumes this session'",
+        "the compose box open, its line saying where a message goes",
+        Duration::from_secs(10),
+        "document.getElementById('composer').className + ' ' + (document.querySelector('#composer .compose-note') || {}).textContent",
+    );
+    // From here, every write that puts back what was there is a needless one.
+    harness::eval(
+        &tab,
+        r#"(function(){
+  window.__needless = []; window.__polls = 0;
+  function where(n){ var e = n.nodeType === 1 ? n : n.parentElement, out = []; for (var i = 0; e && i < 4; i++, e = e.parentElement) out.push(e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + (e.classList.length ? '.' + Array.prototype.slice.call(e.classList, 0, 2).join('.') : '')); return out.join(' < '); }
+  function serial(list){ return Array.prototype.map.call(list, function(n){ return n.nodeType === 1 ? n.outerHTML : n.nodeType + ':' + n.data; }).join(''); }
+  new MutationObserver(function(records){ records.forEach(function(m){
+    if (m.type === 'characterData' && m.oldValue === m.target.data) window.__needless.push('text ' + where(m.target));
+    if (m.type === 'childList' && m.removedNodes.length && m.addedNodes.length && serial(m.removedNodes) === serial(m.addedNodes)) window.__needless.push('children ' + where(m.target));
+  }); }).observe(document.documentElement, {subtree: true, childList: true, characterData: true, characterDataOldValue: true});
+  new PerformanceObserver(function(list){ list.getEntries().forEach(function(e){ if (e.name.indexOf('/api/sessions') >= 0) window.__polls++; }); }).observe({type: 'resource'});
+  return 'ok';
+})()"#,
+    );
+    harness::until(
+        &tab,
+        "window.__polls >= 2",
+        "two polls of the session list",
+        Duration::from_secs(20),
+        "String(window.__polls)",
+    );
+    // Each poll paints in the task its reply arrives in, and the heading fits at the next frame.
+    std::thread::sleep(Duration::from_millis(800));
+    let needless = harness::eval(&tab, "JSON.stringify(window.__needless)");
+    assert_eq!(
+        needless.as_str(),
+        Some("[]"),
+        "a poll that changed nothing wrote again what was there: {needless}"
+    );
+}
+
+/// The other half of #s731: a text change restyles what it touched, not the whole page, whatever
+/// else the page holds. Measured beside 120,000 plain elements, against a restyle of all of them
+/// (a custom property on the root, which every element inherits). The search box's
+/// `.header-searchbox:has(.search-chips.has-chips) input::placeholder`, beside the app's own
+/// `:root:has(…)` rules, made the text change cost as much as the whole restyle; written as a
+/// sibling (`.search-chips.has-chips~input::placeholder`) it costs next to nothing.
+#[test]
+#[ignore = "browser: requires a local Chrome"]
+fn a_text_change_beside_a_large_page_restyles_only_what_it_touched() {
+    let _serial = harness::serial();
+    let base = harness::base("s731-restyle");
+    let stores = harness::Stores::new(&base);
+    let sid = "cccccccc-0000-4000-8000-000000000734";
+    let jsonl = [
+        harness::user_at("hello", &harness::rfc3339_secs_ago(90)),
+        harness::assistant_at("hi there", &harness::rfc3339_secs_ago(80)),
+    ]
+    .concat();
+    stores.claude_session(sid, &jsonl);
+    let monitor = Monitor::spawn(Kind::V1, 3734, &base, Some(&stores), true);
+    let (_browser, tab) = harness::chrome_tab();
+    monitor.pair(&tab);
+    monitor.open(&tab, &format!("?ui=app&session={sid}"));
+    harness::until(
+        &tab,
+        "document.getElementById('sessionTitle').textContent !== 'Agent Monitor' && !!document.getElementById('transcriptSearchInput')",
+        "the session's header and the search box",
+        Duration::from_secs(30),
+        "(document.getElementById('sessionTitle')||{}).textContent",
+    );
+    let measured = harness::eval(
+        &tab,
+        r#"(function(){
+  var bulk = document.createElement('div');
+  bulk.style.cssText = 'position:absolute;left:-99999px;top:0;width:200px';
+  var html = '';
+  for (var i = 0; i < 120000; i++) html += '<span>x</span>';
+  bulk.innerHTML = html;
+  document.body.appendChild(bulk);
+  var stray = document.createElement('div'); stray.textContent = 'a'; document.body.appendChild(stray);
+  document.body.offsetHeight;
+  function least(write){ var best = Infinity; for (var i = 0; i < 5; i++) { document.body.offsetHeight; write(i); var a = performance.now(); getComputedStyle(stray).color; best = Math.min(best, performance.now() - a); } return Math.round(best * 10) / 10; }
+  var text = least(function(i){ stray.textContent = 'b' + i; });
+  var all = least(function(i){ document.documentElement.style.setProperty('--s731-probe', String(i)); });
+  document.documentElement.style.removeProperty('--s731-probe');
+  bulk.remove(); stray.remove();
+  return JSON.stringify({text: text, all: all});
+})()"#,
+    );
+    let measured: serde_json::Value =
+        serde_json::from_str(measured.as_str().unwrap_or("{}")).unwrap_or_default();
+    let (text, all) = (
+        measured["text"].as_f64().unwrap_or(f64::NAN),
+        measured["all"].as_f64().unwrap_or(f64::NAN),
+    );
+    assert!(
+        all >= 10.0,
+        "restyling 120,000 elements took {all}ms, too little to tell a whole restyle from none: {measured}"
+    );
+    eprintln!("one text change: {text}ms; the whole page restyled: {all}ms");
+    assert!(
+        text * 5.0 < all,
+        "one text change cost {text}ms, against {all}ms to restyle the whole page: some rule makes a text change restyle everything"
     );
 }
