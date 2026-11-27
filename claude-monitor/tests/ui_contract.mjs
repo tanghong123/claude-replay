@@ -6000,7 +6000,9 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   for (const reviewSheet of [undefined, true, false]) assert.doesNotThrow(() => check({ reviewSheet }), "none, or a boolean");
   assert.match(viewSource, /detach: shows\("detach"\), frame: options\.frame, reviewSheet: options\.reviewSheet === true, /, "the view hands it to the pane");
   const previewSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
-  assert.match(previewSource, /^      this\.reviewBtn\.hidden = !\(this\.actions\.phone\(\) \|\| this\.actions\.reviewSheet\) \|\| handle\.held \|\| !isMarkdownName\(item\.name\);$/m, "the pane offers Review on a phone, or at every width with it, for a file's Markdown alone");
+  assert.match(previewSource, /^      if \(\(this\.actions\.phone\(\) \|\| this\.actions\.reviewSheet\) && !handle\.held && isMarkdownName\(item\.name\)\) \{$/m, "the pane offers Review on a phone, or at every width with it, for a file's Markdown alone");
+  // #s733: and only once the server says shared review is set up there.
+  assert.match(previewSource, /^        handle\.reviewOffered\(\)\.then\(offered => \{ if \(offered && this\.markdown === handle\) this\.reviewBtn\.hidden = false; \}\);$/m, "the pane draws Review only once the server offers shared review");
   assert.equal((previewSource.match(/this\.actions\.reviewSheet/g) || []).length, 1, "and reads it nowhere else");
   console.log("#s596 review sheet cases passed");
 }

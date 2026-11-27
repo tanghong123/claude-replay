@@ -191,8 +191,8 @@ export class Preview {
     // full-screen REVIEW SHEET over the app, opened from here, closed back to exactly where the reader
     // was. Only for Markdown from a FILE (held text has no store), and only on a phone: the desktop
     // has its detached tab (#s10). The pane itself stays review-free.
-    this.reviewBtn = Object.assign(document.createElement("button"), { type: "button", className: "smallbtn preview-review", textContent: "Review", title: "Review with the other reviewers", hidden: true });
-    this.reviewBtn.setAttribute("aria-label", "Review this document with the other reviewers");
+    this.reviewBtn = Object.assign(document.createElement("button"), { type: "button", className: "smallbtn preview-review", textContent: "Review with others", title: "Review with others", hidden: true });
+    this.reviewBtn.setAttribute("aria-label", "Review with others");
     this.reviewBtn.onclick = () => this.openReviewSheet(this.markdownItem);
     // #s30, the owner: "for markdown, in mdrev, I actually think print still makes sense". mdrev's
     // own toolbar prints (on a phone from its Aa menu, since 1.1.24); a held reader has no toolbar
@@ -572,7 +572,12 @@ export class Preview {
       this.newTab.setAttribute("aria-label", `Open this ${isMarkdownName(item.name) ? "document" : "file"} in a new tab`);
       // #s13: shared review is threads on a document's notes, and mdrev files no notes on code. A
       // phone's alone, unless the host offers the sheet at every width (#s596, `reviewSheet`).
-      this.reviewBtn.hidden = !(this.actions.phone() || this.actions.reviewSheet) || handle.held || !isMarkdownName(item.name);
+      // #s733, Hong on #s732: "Keep it, labelled Review with others, hidden where shared review is not
+      // set up": shown only once the server says its review prefix offers shared review.
+      this.reviewBtn.hidden = true;
+      if ((this.actions.phone() || this.actions.reviewSheet) && !handle.held && isMarkdownName(item.name)) {
+        handle.reviewOffered().then(offered => { if (offered && this.markdown === handle) this.reviewBtn.hidden = false; });
+      }
       // #s30: where mdrev's toolbar offers no print of its own — a held reader (mdrev 1.1.24 prints
       // from its own Aa menu on a phone, #s31).
       this.printBtn.hidden = !isMarkdownName(item.name) || !handle.held;

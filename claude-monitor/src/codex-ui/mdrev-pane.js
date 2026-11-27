@@ -240,6 +240,8 @@ export async function mountMarkdown(el, item, { review = false } = {}) {
      *  was upgraded while the page was open; "" otherwise, and on every later mount. */
     updated: takeUpdate(),
     print,
+    /** Whether this server offers shared review (#s733): see `reviewOffered`. */
+    reviewOffered: () => reviewOffered(handle, place),
     /** The address a tab of its own finds this document by (`standaloneQuery`), for whichever page
      *  the host opens tabs at (#s433); for held text, first leave the tab its own copy (`window.open`
      *  copies this page's sessionStorage into the tab it makes), so a monitor restart that empties
@@ -249,6 +251,22 @@ export async function mountMarkdown(el, item, { review = false } = {}) {
       return standaloneQuery(place);
     },
   };
+}
+
+/** Whether `handle`'s server offers shared review (#s733, Hong on #s732: the phone's Review control
+ *  is "hidden where shared review is not set up"): its review prefix answers a document's review
+ *  state, where a monitor with no mdrev viewer key answers 404, its prefix then being the pane's own
+ *  (#s6, #s10). Asked once per server, with the document the reader opened; anything but a 404
+ *  counts as offered, so the sheet itself says what went wrong, and a request that fails is asked
+ *  again next time. */
+const reviewAnswers = new WeakMap();
+function reviewOffered(handle, place) {
+  if (!reviewAnswers.has(handle)) {
+    const query = new URLSearchParams({ root: place.root || "", path: place.path || "", cap: place.cap || "" });
+    reviewAnswers.set(handle, handle.mdrevFetch(`${REVIEW_CONTRACT}/review?${query}`, { cache: "no-store" })
+      .then(response => response.status !== 404, () => { reviewAnswers.delete(handle); return false; }));
+  }
+  return reviewAnswers.get(handle);
 }
 
 // ------------------------------------------------------------------------ a tab of its own (#271)

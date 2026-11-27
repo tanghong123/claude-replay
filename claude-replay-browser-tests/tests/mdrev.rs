@@ -2005,6 +2005,72 @@ fn host_review_sheet_keeps_a_note_above_the_keyboard(case: HostSheet) {
     );
 }
 
+/// #s733, Hong on #s732: "Keep it, labelled Review with others, hidden where shared review is not set
+/// up". A phone's pane offers Review with others over a monitor whose mdrev has its viewer key, and no
+/// Review over one without: there the review prefix is the pane's own (#s6), so the sheet would only
+/// repeat the pane.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
+fn a_phone_offers_review_with_others_only_where_shared_review_is_set_up() {
+    let _serial = serial();
+    {
+        let (base, stores, repo, state) = shared_review_world("mdrev-review-words");
+        let m = Monitor::spawn_with(
+            Kind::V1,
+            2796,
+            &base,
+            Some(&stores),
+            true,
+            &[("MDREV_STATE_DIR", &state.display().to_string())],
+        );
+        let (_browser, tab) = chrome_tab();
+        harness::phone(&tab, 440, 956);
+        open_shell(&m, &tab);
+        open_guide(&tab, &repo);
+        until(
+            &tab,
+            "!!document.querySelector('#previewBody .mdrev-host h1') && (function(){ var b = document.querySelector('.preview-review'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+            "the guide in the pane, with its Review control",
+            Duration::from_secs(30),
+            PANE,
+        );
+        assert_eq!(
+            eval(
+                &tab,
+                "(function(){ var b = document.querySelector('.preview-review'); return JSON.stringify([b.textContent, b.title, b.getAttribute('aria-label')]); })()"
+            ),
+            r#"["Review with others","Review with others","Review with others"]"#,
+            "the control says what it is for, in its words, its title and its name"
+        );
+    }
+    {
+        // No viewer key: the monitor's mdrev state is the case's own, empty.
+        let (base, stores, repo) = fixture("mdrev-review-off");
+        let m = Monitor::spawn(Kind::V1, 2797, &base, Some(&stores), true);
+        let (_browser, tab) = chrome_tab();
+        harness::phone(&tab, 440, 956);
+        open_shell(&m, &tab);
+        open_guide(&tab, &repo);
+        until(
+            &tab,
+            "!!document.querySelector('#previewBody .mdrev-host h1')",
+            "the guide in the pane",
+            Duration::from_secs(30),
+            PANE,
+        );
+        // The prefix, asked as the page asks it, refuses; well after that answer the control is still
+        // not drawn.
+        assert_eq!(
+            eval(
+                &tab,
+                "(async function(){ var d = document.querySelector('.mdrev-pane').dataset; var q = 'root=' + encodeURIComponent(d.root) + '&path=' + encodeURIComponent(d.path) + '&cap=' + encodeURIComponent(d.cap); var r = await fetch('/api/mdrev-review/review?' + q, { cache: 'no-store' }); await new Promise(function (done) { setTimeout(done, 500); }); var b = document.querySelector('.preview-review'); return r.status + ' ' + (!b || b.hidden); })()"
+            ),
+            "404 true",
+            "no Review where shared review is not set up"
+        );
+    }
+}
+
 /// #s12, the owner chose it: on a phone, where a tab of its own has no way back (#335), shared review
 /// is a FULL-SCREEN SHEET over the app. The pane's Markdown shows a Review control there; the sheet
 /// mounts the document on the review prefix (#s10), its guest asking for and fetching the store, and

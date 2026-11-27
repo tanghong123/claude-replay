@@ -1012,7 +1012,10 @@ monitor's launchd PATH has `/opt/homebrew/bin`, where mdrev-plugin-alibaba puts 
 a fake channel on that PATH.
 **On a phone the review prefix is a full-screen SHEET** (#s12, the owner's choice: a tab has no way
 back there): the pane's Markdown from a FILE shows a Review control on a phone only (held sideways in
-the head's More menu, #s663); `openReviewSheet`
+the head's More menu, #s663), labelled Review with others and drawn only once the server's review
+prefix answers the document's review state (#s733, Hong's choice on #s732: "hidden where shared
+review is not set up"; a monitor with no viewer key answers 404 there, and `reviewOffered` in
+`mdrev-pane.js` asks once per server, `a_phone_offers_review_with_others_only_where_shared_review_is_set_up`); `openReviewSheet`
 (`preview.js`) mounts the document with `mountMarkdown(…, {review: true})` in `.review-sheet` over the
 whole app (z 95: above the drawer, below the toasts), and its 44px close control unmounts it — no
 navigation, so the transcript's offset is unchanged (`a_phone_reviews_in_a_full_screen_sheet_and_…`).
