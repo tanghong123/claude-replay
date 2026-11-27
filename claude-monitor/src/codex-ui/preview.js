@@ -452,7 +452,7 @@ export class Preview {
     const beside = item ? besideAction(item, backend().local) : null;
     this.revealBtn.hidden = beside !== "reveal";
     this.downloadBtn.hidden = beside !== "download";
-    if (beside === "download") this.labelDownload(this.downloadSize?.id === item.id ? this.downloadSize.size : undefined);
+    if (beside === "download") this.labelDownload(this.downloadSize?.item === item ? this.downloadSize.size : undefined);
     // No file tab selected and something was published: the roster is what the pane shows —
     // so it is also what a freshly opened pane lands on, without hunting for a control.
     const roster = !item && this.roster.length > 0;
@@ -547,7 +547,7 @@ export class Preview {
     // #s730: Share where the tap opens the share sheet; a file too large to hold still downloads, and
     // the head's control says the same as the body's.
     const { verb } = handOver(size), share = verb === "Share";
-    this.downloadSize = { id: item.id, size };
+    this.downloadSize = { item, size };
     if (!this.downloadBtn.hidden) this.labelDownload(size);
     const bytes = size >= 1048576 ? `${(size / 1048576).toFixed(1)} MB` : size >= 1024 ? `${Math.round(size / 1024)} KB` : size ? `${size} bytes` : "";
     body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div></div><div class="preview-error preview-download"><strong>No preview for this file</strong><span>${escapeText(item.name)}${bytes ? ` · ${bytes}` : ""} — this pane shows text and images; ${share ? "share it to save it or open it elsewhere" : "this file downloads"}.</span><div class="preview-error-actions"><button class="smallbtn sv-primary" data-preview-download>${verb}</button></div></div>`;

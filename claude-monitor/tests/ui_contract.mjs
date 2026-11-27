@@ -6014,8 +6014,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const componentsSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
   const previewSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
   assert.match(componentsSrc, /\$\{escapeText\(capability\.action === "download" \? handOver\(\)\.verb : capability\.label\)\} →<\/button>/, "an attachment card's download button says Share where its tap shares");
-  assert.match(previewSrc, /if \(beside === "download"\) this\.labelDownload\(this\.downloadSize\?\.id === item\.id \? this\.downloadSize\.size : undefined\);/, "the head's control keeps the size its body was drawn with");
-  assert.match(previewSrc, /this\.downloadSize = \{ id: item\.id, size \};\n    if \(!this\.downloadBtn\.hidden\) this\.labelDownload\(size\);/, "and the body's drawing labels the head with it");
+  assert.match(previewSrc, /if \(beside === "download"\) this\.labelDownload\(this\.downloadSize\?\.item === item \? this\.downloadSize\.size : undefined\);/, "the head's control keeps the size its body was drawn with, for that tab alone (an id can name another session's record)");
+  assert.match(previewSrc, /this\.downloadSize = \{ item, size \};\n    if \(!this\.downloadBtn\.hidden\) this\.labelDownload\(size\);/, "and the body's drawing labels the head with it");
   console.log("#s730 hand-over words cases passed");
 }
 
