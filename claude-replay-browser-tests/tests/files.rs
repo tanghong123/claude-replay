@@ -1802,12 +1802,19 @@ fn a_phone_download_opens_the_share_sheet_and_a_desktop_saves() {
         );
     };
     let download = "document.querySelector('#previewBody [data-preview-download]').click(); 'ok'";
+    // #s730: the control says what its tap does.
+    let button = "document.querySelector('#previewBody [data-preview-download]').textContent";
 
     // A phone: the share sheet, with the film itself — and nothing saved.
     let (_browser, tab) = chrome_tab();
     harness::phone(&tab, 440, 956);
     m.pair(&tab);
     open_film(&tab, "");
+    assert_eq!(
+        eval(&tab, button),
+        "Share",
+        "a phone's control says Share, as its tap opens the sheet"
+    );
     eval(&tab, download);
     until(
         &tab,
@@ -1826,7 +1833,7 @@ fn a_phone_download_opens_the_share_sheet_and_a_desktop_saves() {
     eval(&tab, download);
     until(
         &tab,
-        "document.getElementById('toast').textContent === 'Ready — tap Download again to share it'",
+        "document.getElementById('toast').textContent === 'Ready — tap Share again to share it'",
         "the sheet refused for an expired tap, the film kept ready",
         Duration::from_secs(20),
         "document.getElementById('toast').textContent",
@@ -1841,6 +1848,11 @@ fn a_phone_download_opens_the_share_sheet_and_a_desktop_saves() {
     );
     // Over the in-memory limit: never read into the phone's memory, streamed to the browser's download.
     open_film(&tab, "&inMemoryMax=1048576");
+    assert_eq!(
+        eval(&tab, button),
+        "Download",
+        "a file too large to hold says Download, as it streams to the browser's download"
+    );
     eval(&tab, download);
     until(
         &tab,
@@ -1860,6 +1872,11 @@ fn a_phone_download_opens_the_share_sheet_and_a_desktop_saves() {
     harness::resize(&desk, 1400.0, 900.0);
     m.pair(&desk);
     open_film(&desk, "");
+    assert_eq!(
+        eval(&desk, button),
+        "Download",
+        "a desktop's control says Download"
+    );
     eval(&desk, download);
     until(
         &desk,
@@ -1875,6 +1892,92 @@ fn a_phone_download_opens_the_share_sheet_and_a_desktop_saves() {
         ),
         serde_json::Value::String("[[],[\"tour.mp4\"]]".into()),
         "a desktop saves the file under its name and opens no sheet"
+    );
+}
+
+/// #s730, Hong on a real iPhone: "the download works but the button shows like a down arrow which is
+/// not ideal". Where a tap hands the file to the share sheet (a touch screen with the Web Share API),
+/// every control that does so says Share and wears the share glyph; a desktop's stays ↓ and
+/// Download. Both readers are elsewhere, so the control beside a file is its download: the prompt
+/// attachment's, and the pane head's once the file is open. The share API is stubbed before the
+/// page loads, in both, so the pointer alone decides (Chrome on Linux has no `navigator.share`).
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn a_phone_shares_where_a_desktop_downloads() {
+    const SID730: &str = "5e5510a1-0000-4000-8000-000000000730";
+    use headless_chrome::protocol::cdp::Page;
+    let _serial = serial();
+    let base = base("files-share-glyph");
+    let stores = Stores::new(&base);
+    let repo = base.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::write(repo.join("notes.md"), "# Notes\n").unwrap();
+    let note = repo.join("notes.md").display().to_string();
+    let mut j = user_at("look at my notes", &at("00:01"));
+    j += &restored_file_at(&note, "notes.md", 1, &at("00:01"));
+    j += &harness::assistant_at("Read them.", &at("00:02"));
+    let j = j.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(SID730, &j);
+    let m = Monitor::spawn_remote(Kind::V1, 2795, &base, Some(&stores));
+    let controls = r#"(function () {
+      var b = document.querySelector('.prompt-attachment-download');
+      var h = document.querySelector('#previewHead .preview-download');
+      var said = function (e) { return [e.getAttribute('title'), e.getAttribute('aria-label'), e.querySelector('svg') ? 'svg' : e.textContent]; };
+      return JSON.stringify({ beside: b ? said(b) : null, head: h && !h.hidden ? said(h) : null });
+    })()"#;
+    let walk = |tab: &headless_chrome::Tab| -> serde_json::Value {
+        tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
+            source: "Navigator.prototype.share = function () { return Promise.resolve(); }; Navigator.prototype.canShare = function () { return true; };".to_string(),
+            world_name: None,
+            include_command_line_api: None,
+            run_immediately: None,
+        })
+        .expect("the share API stub is installed");
+        m.open_remote(tab, &format!("?ui=app&session={SID730}"));
+        until(
+            tab,
+            "!!document.querySelector('.prompt-attachment-download')",
+            "the prompt attachment with its download beside it",
+            Duration::from_secs(30),
+            controls,
+        );
+        eval(
+            tab,
+            "document.querySelector('.prompt-attachment').click(); 'ok'",
+        );
+        until(
+            tab,
+            "(function () { var h = document.querySelector('#previewHead .preview-download'); return !!h && !h.hidden; })()",
+            "the pane's head offering the note",
+            Duration::from_secs(20),
+            controls,
+        );
+        serde_json::from_str(eval(tab, controls).as_str().unwrap()).unwrap()
+    };
+
+    let (_browser, phone) = harness::remote_phone(440, 956);
+    assert_eq!(
+        walk(&phone),
+        serde_json::json!({
+            "beside": ["Share notes.md", "Share notes.md", "svg"],
+            "head": ["Share this file", "Share this file", "svg"],
+        }),
+        "a phone's controls say Share and wear the share glyph"
+    );
+
+    let rule = format!(
+        "--host-resolver-rules=MAP {} 127.0.0.1",
+        harness::REMOTE_HOST
+    );
+    let (_desk_browser, desk) = harness::chrome_with_tab(&[rule.as_str(), "--no-proxy-server"]);
+    harness::resize(&desk, 1400.0, 900.0);
+    assert_eq!(
+        walk(&desk),
+        serde_json::json!({
+            "beside": ["Download notes.md", "Download notes.md", "↓"],
+            "head": ["Download this file", "Download this file", "↓"],
+        }),
+        "a desktop's stay ↓ and Download"
     );
 }
 

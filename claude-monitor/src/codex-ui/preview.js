@@ -4,6 +4,7 @@ import { sandboxDocument } from "./sandbox.js";
 import { createImageView } from "./shared/image-view.js";
 import { isMarkdownName, mdrevVersion, mountMarkdown } from "./mdrev-pane.js";
 import { besideAction, RASTER_FILE } from "./shared/capabilities.js";
+import { handOver } from "./attachment-viewer.js";
 import { svg } from "./icons.js";
 import { page, viewRoot } from "./view-root.js";
 
@@ -451,6 +452,16 @@ export class Preview {
     const beside = item ? besideAction(item, backend().local) : null;
     this.revealBtn.hidden = beside !== "reveal";
     this.downloadBtn.hidden = beside !== "download";
+    // #s730: where the tap opens the share sheet, the control says so (its More row too, which copies
+    // the glyph and the title).
+    if (beside === "download") {
+      const { verb, glyph } = handOver();
+      if (this.downloadBtn.title !== `${verb} this file`) {
+        this.downloadBtn.innerHTML = glyph;
+        this.downloadBtn.title = `${verb} this file`;
+        this.downloadBtn.setAttribute("aria-label", `${verb} this file`);
+      }
+    }
     // No file tab selected and something was published: the roster is what the pane shows —
     // so it is also what a freshly opened pane lands on, without hunting for a control.
     const roster = !item && this.roster.length > 0;
@@ -532,8 +543,10 @@ export class Preview {
    *  reveal beside it (#272). */
   showDownload(item, size) {
     const body = byId("previewBody"); body.classList.remove("production-loading");
+    // #s730: Share where the tap opens the share sheet; a file too large to hold still downloads.
+    const { verb } = handOver(size), share = verb === "Share";
     const bytes = size >= 1048576 ? `${(size / 1048576).toFixed(1)} MB` : size >= 1024 ? `${Math.round(size / 1024)} KB` : size ? `${size} bytes` : "";
-    body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div></div><div class="preview-error preview-download"><strong>No preview for this file</strong><span>${escapeText(item.name)}${bytes ? ` · ${bytes}` : ""} — this pane shows text and images; this file downloads.</span><div class="preview-error-actions"><button class="smallbtn sv-primary" data-preview-download>Download</button></div></div>`;
+    body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div></div><div class="preview-error preview-download"><strong>No preview for this file</strong><span>${escapeText(item.name)}${bytes ? ` · ${bytes}` : ""} — this pane shows text and images; ${share ? "share it to save it or open it elsewhere" : "this file downloads"}.</span><div class="preview-error-actions"><button class="smallbtn sv-primary" data-preview-download>${verb}</button></div></div>`;
     body.querySelector("[data-preview-download]").onclick = () => this.actions.download?.(item);
   }
   /** Text through mdrev's viewer (#270; every text file since #s13): a reader for text the

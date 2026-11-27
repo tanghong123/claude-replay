@@ -10,10 +10,23 @@ const escapeName = value => String(value || "attachment").replace(/[\\/:*?"<>|]/
 // share sheet is not a download) hands the file to the system share sheet through the Web Share API:
 // Save Image (to Photos) for media, Save to Files, AirDrop, every app that takes the type. Elsewhere,
 // or where the sheet cannot take the file, it is saved as before.
-const shareHere = () => typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches && typeof navigator.share === "function";
+export const shareHere = () => typeof matchMedia === "function" && matchMedia("(pointer: coarse)").matches && typeof navigator.share === "function";
 // Above this a file is never read into memory (a film on a phone): it streams from /file to the
 // browser's own download, as /file serves anything over its viewer cap.
 const IN_MEMORY_MAX = Number(new URLSearchParams(typeof location === "object" ? location.search : "").get("inMemoryMax")) || 64 * 1024 * 1024; // `?inMemoryMax=` lets a case use a small file
+
+// iOS's own share glyph, a box open at the top with an arrow rising out of it.
+const SHARE_GLYPH = '<svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M8 7l4-4 4 4"/><path d="M8.5 10H7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7a2 2 0 0 0-2-2h-1.5"/></svg>';
+
+/** What a control that hands the reader a file's bytes shows (#s730, Hong on a real iPhone: "the
+ *  download works but the button shows like a down arrow which is not ideal"): where its tap opens
+ *  the share sheet (`shareHere`, the test the tap itself makes), the share glyph and the word Share;
+ *  elsewhere ↓ and Download. `size`, where the control knows it, keeps ↓ for a file too large to
+ *  hold, which streams to the browser's own download on a phone too; a control drawn before the size
+ *  is known follows the share sheet. Asked as each control is drawn. */
+export const handOver = size => (shareHere() && !(size > IN_MEMORY_MAX)
+  ? { verb: "Share", glyph: SHARE_GLYPH }
+  : { verb: "Download", glyph: "↓" });
 // A file read for the sheet whose tap had expired by the time it arrived (iOS asks for a fresh one
 // after a slow fetch) waits this long for the next tap, which shares it at once.
 const READY_MS = 120 * 1000;
@@ -122,7 +135,7 @@ export class AttachmentViewer {
       if (error?.name === "AbortError") return true;
       if (error?.name === "NotAllowedError" && key) {
         this.ready = { key, file, at: Date.now() };
-        this.actions.toast?.("Ready — tap Download again to share it");
+        this.actions.toast?.("Ready — tap Share again to share it");
         return "ready";
       }
       return false;

@@ -1174,7 +1174,11 @@ file to `navigator.share` on `pointer: coarse` (a phone or a tablet; never a des
 is not a download), keeps it ready for the next tap when iOS says the tap expired during the fetch,
 and streams anything over 64 MB (`?inMemoryMax=` for a case) to the browser's own download from
 `/file`; a desktop saves to Downloads as before
-(`a_phone_download_opens_the_share_sheet_and_a_desktop_saves`). `a_phone_is_never_offered_the_file_manager` is the audit:
+(`a_phone_download_opens_the_share_sheet_and_a_desktop_saves`). Every control whose tap does that
+says so (#s730, Hong on a real iPhone: "the button shows like a down arrow which is not ideal"):
+`handOver` gives it the share glyph and the word Share where `shareHere` holds, ↓ and Download
+elsewhere and for a file it knows is too large to hold
+(`a_phone_shares_where_a_desktop_downloads`). `a_phone_is_never_offered_the_file_manager` is the audit:
 a remote phone clicks every kind of offered path in the app shell and meets no reveal and sends no
 `/__reveal`; a local narrow window keeps its reveal. A case about what a REMOTE reader is offered
 opens the monitor as one (`Monitor::spawn_remote`, `harness::remote_phone`, `open_remote`).
