@@ -1918,7 +1918,7 @@ fn a_phone_shares_where_a_desktop_downloads() {
     j += &harness::assistant_at("Read them.", &at("00:02"));
     let j = j.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
     stores.claude_session(SID730, &j);
-    let m = Monitor::spawn_remote(Kind::V1, 2795, &base, Some(&stores));
+    let m = Monitor::spawn_remote(Kind::V1, 2794, &base, Some(&stores));
     let controls = r#"(function () {
       var b = document.querySelector('.prompt-attachment-download');
       var h = document.querySelector('#previewHead .preview-download');
