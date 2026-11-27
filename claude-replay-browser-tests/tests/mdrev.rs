@@ -2079,25 +2079,37 @@ fn upright_head_readings(case: &str, port: u16) -> Vec<serde_json::Value> {
             );
         }
     }
-    let strip = "(function(){ var s = document.getElementById('previewTabs'), box = s.getBoundingClientRect(), tabs = [].slice.call(s.querySelectorAll('.preview-tab:not(.sv-pinned)')), on = s.querySelector('.preview-tab.on'), label = on && on.querySelector('.preview-tab-label'), r = on ? on.getBoundingClientRect() : {}, b = document.querySelector('.preview-review'), rv = b.getBoundingClientRect(), was = document.createElement('button'); was.className = 'smallbtn'; was.textContent = 'Review'; was.style.position = 'absolute'; was.style.visibility = 'hidden'; b.parentNode.insertBefore(was, b); var w0 = Math.round(was.getBoundingClientRect().width); was.remove(); return JSON.stringify({ n: tabs.length, on: label ? label.textContent : '', whole: !!label && label.scrollWidth <= label.clientWidth + 1, nat: label ? label.scrollWidth : 0, room: label ? label.clientWidth : 0, inView: r.left >= box.left - 1 && r.right <= box.right + 1, onW: Math.round(r.width || 0), stripW: Math.round(box.width), reviewW: Math.round(rv.width), reviewH: Math.round(rv.height), reviewWas: w0, words: [b.textContent, b.title, b.getAttribute('aria-label')], w: innerWidth }); })()";
+    let strip = "(function(){ var s = document.getElementById('previewTabs'), box = s.getBoundingClientRect(), tabs = [].slice.call(s.querySelectorAll('.preview-tab:not(.sv-pinned)')), on = s.querySelector('.preview-tab.on'), label = on && on.querySelector('.preview-tab-label'), r = on ? on.getBoundingClientRect() : {}, b = document.querySelector('.preview-review'), rv = b.getBoundingClientRect(), was = document.createElement('button'); was.className = 'smallbtn'; was.textContent = 'Review'; was.style.position = 'absolute'; was.style.visibility = 'hidden'; b.parentNode.insertBefore(was, b); var w0 = Math.round(was.getBoundingClientRect().width); was.remove(); return JSON.stringify({ n: tabs.length, on: label ? label.textContent : '', whole: !!label && label.scrollWidth <= label.clientWidth + 1, nat: label ? label.scrollWidth : 0, room: label ? label.clientWidth : 0, inView: r.left >= box.left - 1 && r.right <= box.right + 1, onW: Math.round(r.width || 0), stripW: Math.round(box.width), at: [Math.round((r.left || 0) - box.left), Math.round((r.right || 0) - box.left), Math.round(s.scrollLeft), s.scrollWidth, s.clientWidth], steps: !document.querySelector('.preview-tab-step').hidden, reviewW: Math.round(rv.width), reviewH: Math.round(rv.height), reviewWas: w0, words: [b.textContent, b.title, b.getAttribute('aria-label')], w: innerWidth }); })()";
     let settled = || -> serde_json::Value {
         let mut last = String::new();
         for _ in 0..20 {
             let now = eval(&tab, strip).as_str().unwrap_or("{}").to_string();
             if now == last {
-                break;
+                return serde_json::from_str(&last).unwrap();
             }
             last = now;
             std::thread::sleep(Duration::from_millis(300));
         }
-        serde_json::from_str(&last).unwrap()
+        panic!("the pane head never settled over 20 readings 300ms apart: the last {last}");
     };
     let mut readings = vec![settled()];
+    // A tab left of the current one widens after the fit, as one under its cap does when a web font
+    // arrives late (the strip's own box keeps its size): the strip is fitted again, so the current tab
+    // stays in view (#s733: once in five runs it sat 18px past the strip's end).
+    eval(
+        &tab,
+        "var st = document.createElement('style'); st.id = 'wideFirstTab'; st.textContent = '#previewTabs .preview-tab:first-child{min-width:140px}'; document.head.appendChild(st); 'ok'",
+    );
+    readings.push(settled());
+    eval(
+        &tab,
+        "document.getElementById('wideFirstTab').remove(); 'ok'",
+    );
     for want in [names[1], names[0]] {
         eval(&tab, &format!("[].slice.call(document.querySelectorAll('#previewTabs .preview-tab')).find(function (t) {{ var l = t.querySelector('.preview-tab-label'); return l && l.textContent === {want:?}; }}).click(); 'ok'"));
         until(
             &tab,
-            &format!("(document.querySelector('#previewTabs .preview-tab.on .preview-tab-label') || {{}}).textContent === {want:?} && !!document.querySelector('#previewBody .mdrev-host h1') && {review_drawn}"),
+            &format!("(document.querySelector('#previewTabs .preview-tab.on .preview-tab-label') || {{}}).textContent === {want:?} && (document.querySelector('#previewBody .mdrev-host h1') || {{}}).textContent === {want:?} && {review_drawn}"),
             "the doc chosen from its tab, with Review with others",
             Duration::from_secs(20),
             strip,
@@ -2117,10 +2129,11 @@ fn upright_head_readings(case: &str, port: u16) -> Vec<serde_json::Value> {
 }
 
 /// #s733's label in an upright phone's pane head: Hong's "Review with others" (#s732) is drawn on two
-/// lines there, "others" under "Review with", at most 10px wider than "Review" was, and leaves the
-/// strip its room (#337): measured at 390px, on one line it was 131px wide and left the strip 66px of
-/// the 133 it had beside "Review". Its words are one phrase to a reader and a screen reader alike, the
-/// current tab stays in view, and the control takes a finger.
+/// lines there, "others" under "Review with", at most a fifth wider than "Review" was (a ratio, so a
+/// wider fallback font on Linux scales both), and leaves the strip its room (#337): measured at 390px,
+/// on one line it was 131px wide and left the strip 66px of the 133 it had beside "Review", on two 72px
+/// against 64. Its words are one phrase to a reader and a screen reader alike, the current tab stays
+/// in view, and the control takes a finger.
 #[test]
 #[ignore = "needs a local Chrome, a built agent-monitor and node"]
 fn a_phone_upright_draws_review_with_others_in_little_more_room_than_review() {
@@ -2140,8 +2153,8 @@ fn a_phone_upright_draws_review_with_others_in_little_more_room_than_review() {
             s["reviewWas"].as_i64().unwrap_or(0),
         );
         assert!(
-            was > 0 && now <= was + 10,
-            "Review with others takes at most 10px more than Review did: {s}"
+            was > 0 && now * 5 <= was * 6,
+            "Review with others is at most a fifth wider than Review was: {s}"
         );
         assert!(
             s["reviewH"].as_i64().unwrap_or(0) >= 44,

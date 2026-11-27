@@ -191,7 +191,7 @@ export class Preview {
     // full-screen REVIEW SHEET over the app, opened from here, closed back to exactly where the reader
     // was. Only for Markdown from a FILE (held text has no store), and only on a phone: the desktop
     // has its detached tab (#s10). The pane itself stays review-free.
-    this.reviewBtn = Object.assign(document.createElement("button"), { type: "button", className: "smallbtn preview-review", textContent: "Review with others", title: "Review with others", hidden: true });
+    this.reviewBtn = Object.assign(document.createElement("button"), { type: "button", className: "smallbtn preview-review", title: "Review with others", hidden: true });
     this.reviewBtn.setAttribute("aria-label", "Review with others");
     // On a phone "others" goes under "Review with" (production.css, #s733); the words stay one phrase.
     this.reviewBtn.innerHTML = 'Review with <span class="preview-review-rest">others</span>';
@@ -288,7 +288,7 @@ export class Preview {
     this.imageView?.destroy(); this.imageView = null;
     this.listening.abort();
     this.stageObserver?.disconnect(); this.stageObserver = null;
-    this.tabsObserver?.disconnect();
+    this.tabsObserver?.disconnect(); this.tabsObserver = null;
     this.renderGeneration++;
     if (this.objectUrl) { URL.revokeObjectURL(this.objectUrl); this.objectUrl = ""; }
   }
@@ -432,6 +432,16 @@ export class Preview {
   }
   /** #337: the step buttons while the strip overflows, and the current tab in view — moved by the
    *  strip's OWN scroller, never by asking the browser to scroll something into view. */
+  /** The strip is fitted again when its own box changes size and when a tab's does: a label widening
+   *  after the first fit (a web font arriving) moves the current tab without resizing the strip, and
+   *  left it out of view by as much (#s733, measured: 18px past the strip's end at 390). */
+  watchTabs() {
+    const strip = byId("previewTabs");
+    if (!strip || !this.tabsObserver) return;
+    this.tabsObserver.disconnect();
+    this.tabsObserver.observe(strip);
+    for (const tab of strip.querySelectorAll(".preview-tab")) this.tabsObserver.observe(tab);
+  }
   fitTabs() {
     const strip = byId("previewTabs");
     if (!strip || !this.prevTabBtn) return;
@@ -460,6 +470,7 @@ export class Preview {
     const roster = !item && this.roster.length > 0;
     const pinned = this.roster.length ? `<button class="preview-tab sv-pinned ${roster ? "on" : ""}" data-preview-tab="${ROSTER_ID}" title="What this session published"><span class="preview-tab-label">Artifacts (${this.roster.length})</span></button>` : "";
     byId("previewTabs").innerHTML = pinned + this.uiState.previewTabs.map(tab => `<button class="preview-tab ${tab.id === this.uiState.previewId ? "on" : ""}" data-preview-tab="${escapeText(tab.id)}"><span class="preview-tab-label">${escapeText(tab.name)}</span><span class="preview-tab-close" data-preview-tab-close="${escapeText(tab.id)}">×</span></button>`).join("");
+    this.watchTabs();
     this.fitTabs();
     // A Markdown tab mdrev is already showing stays as it is: the tab strip and the roster re-render
     // around it, and a remount would throw away the reader's place, range and open notes. The tab
