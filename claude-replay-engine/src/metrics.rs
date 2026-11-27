@@ -2137,6 +2137,8 @@ mod price_tests {
             "gpt-5.6-sol-20260230",
             "gpt-5.6-sol-2026-13-01",
             "us.anthropic.claude-opus-6-20260901-v1:0",
+            "gemini-4-argon-low",
+            "gemini-4-carbon-xhigh",
         ] {
             assert_eq!(resolve(&PriceTable::new(), model), None, "{model}");
         }

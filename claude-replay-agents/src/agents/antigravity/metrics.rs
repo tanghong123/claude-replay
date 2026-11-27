@@ -107,6 +107,7 @@ mod tests {
             "cost {cost}, expected {expected}"
         );
     }
+
     #[test]
     fn neon_high_prices_existing_trajectory_counts() {
         let mut acc = MetricsAcc::default();
