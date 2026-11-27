@@ -34375,6 +34375,24 @@ fn a_session_list_poll_that_changes_nothing_writes_nothing_to_the_page() {
         Duration::from_secs(30),
         "JSON.stringify({title: (document.getElementById('sessionTitle')||{}).textContent, rows: document.querySelectorAll('.tree-row.session').length})",
     );
+    // With the compose box open, each poll paints it twice more (its images and its dialog), and
+    // its one line once said again what it said.
+    harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composeFab').classList.contains('show')",
+        "write mode to offer the compose button",
+        Duration::from_secs(10),
+        "document.getElementById('composeFab').className",
+    );
+    harness::eval(&tab, "document.getElementById('composeFab').click(); 'ok'");
+    harness::until(
+        &tab,
+        "document.getElementById('composer').classList.contains('production-show') && document.querySelector('#composer .compose-note').textContent === 'Resumes this session'",
+        "the compose box open, its line saying where a message goes",
+        Duration::from_secs(10),
+        "document.getElementById('composer').className + ' ' + (document.querySelector('#composer .compose-note') || {}).textContent",
+    );
     // From here, every write that puts back what was there is a needless one.
     harness::eval(
         &tab,
@@ -34409,10 +34427,10 @@ fn a_session_list_poll_that_changes_nothing_writes_nothing_to_the_page() {
 
 /// The other half of #s731: a text change restyles what it touched, not the whole page, whatever
 /// else the page holds. Measured beside 120,000 plain elements, against a restyle of all of them
-/// (a custom property on the root, which every element inherits): a rule like the search box's
-/// `.header-searchbox:has(.search-chips.has-chips) input::placeholder` made the text change cost
-/// as much as the whole restyle; written as a sibling (`.search-chips.has-chips~input::placeholder`)
-/// it costs next to nothing.
+/// (a custom property on the root, which every element inherits). The search box's
+/// `.header-searchbox:has(.search-chips.has-chips) input::placeholder`, beside the app's own
+/// `:root:has(…)` rules, made the text change cost as much as the whole restyle; written as a
+/// sibling (`.search-chips.has-chips~input::placeholder`) it costs next to nothing.
 #[test]
 #[ignore = "browser: requires a local Chrome"]
 fn a_text_change_beside_a_large_page_restyles_only_what_it_touched() {

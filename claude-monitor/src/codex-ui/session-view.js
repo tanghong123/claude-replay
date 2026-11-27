@@ -1003,7 +1003,7 @@ function fitHeadingSoon() {
  *  write cost a restyle of the whole page, about 280ms, at every poll of the session list. */
 function setText(node, text) { if (node && node.textContent !== text) node.textContent = text; }
 /** The same for markup: kept as written and as the browser serialized it, so a node another write
- *  changed since is written again. `var`: a header can be drawn during module evaluation. */
+ *  changed since is written again. `var`: a header can be drawn before the mount reaches this line. */
 var markupOf = null;
 function setMarkup(node, html) {
   if (!node) return;
@@ -4890,7 +4890,9 @@ var phoneDock;
     sessionView.classList.toggle("composing", PHONE.matches && composer.classList.contains("production-show") && (!controls.nativeActive || sharedFocus));
     if (controls.nativeActive) { controls.fitComposer(); placeDeskCompose(); return; }
     // #s236: the phone's note is the same one line the desktop's caption shows (`composeTargetLine`).
-    composeNote.textContent = byId("composeTarget").textContent;
+    // Every poll comes here twice (the images, the dialog), so an equal note is not written (#s731).
+    const note = byId("composeTarget").textContent;
+    if (composeNote.textContent !== note) composeNote.textContent = note;
     fitCompose();
     placeDeskCompose();
   };
