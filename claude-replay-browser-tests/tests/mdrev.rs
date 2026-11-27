@@ -1601,13 +1601,22 @@ const PRESS_REVIEW: &str = "(function(){ var b = document.querySelector('.previe
 /// `--mdrev-edge-*`): in each place the pane can be held sideways (beside a wide phone's column, as
 /// the second column, at the whole screen, and the Review sheet over everything) the bar runs from
 /// the pane's edge to its edge, painted, every control in it and the document's heading are inside
-/// the safe area, and mdrev reaches the pane's foot. Red on 3e5e27c5, where the bar ended at 870.
+/// the safe area, and mdrev reaches the pane's foot. Red on 3e5e27c5, where the bar ended at 870. The
+/// monitor holds mdrev's viewer key, since the pane offers Review only where shared review is set up
+/// (#s733).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_sideways_phone_runs_mdrevs_toolbar_to_the_screen_s_edge() {
     let _serial = serial();
-    let (base, stores, repo) = fixture("mdrev-toolbar-edge");
-    let m = Monitor::spawn(Kind::V1, 3381, &base, Some(&stores), true);
+    let (base, stores, repo, state) = shared_review_world("mdrev-toolbar-edge");
+    let m = Monitor::spawn_with(
+        Kind::V1,
+        3381,
+        &base,
+        Some(&stores),
+        true,
+        &[("MDREV_STATE_DIR", &state.display().to_string())],
+    );
     let (_browser, tab) = chrome_tab();
     harness::phone(&tab, 932, 430);
     harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
@@ -2080,17 +2089,27 @@ fn upright_head_readings(case: &str, port: u16) -> Vec<serde_json::Value> {
         }
     }
     let strip = "(function(){ var s = document.getElementById('previewTabs'), box = s.getBoundingClientRect(), tabs = [].slice.call(s.querySelectorAll('.preview-tab:not(.sv-pinned)')), on = s.querySelector('.preview-tab.on'), label = on && on.querySelector('.preview-tab-label'), r = on ? on.getBoundingClientRect() : {}, b = document.querySelector('.preview-review'), rv = b.getBoundingClientRect(), was = document.createElement('button'); was.className = 'smallbtn'; was.textContent = 'Review'; was.style.position = 'absolute'; was.style.visibility = 'hidden'; b.parentNode.insertBefore(was, b); var w0 = Math.round(was.getBoundingClientRect().width); was.remove(); return JSON.stringify({ n: tabs.length, on: label ? label.textContent : '', whole: !!label && label.scrollWidth <= label.clientWidth + 1, nat: label ? label.scrollWidth : 0, room: label ? label.clientWidth : 0, inView: r.left >= box.left - 1 && r.right <= box.right + 1, onW: Math.round(r.width || 0), stripW: Math.round(box.width), at: [Math.round((r.left || 0) - box.left), Math.round((r.right || 0) - box.left), Math.round(s.scrollLeft), s.scrollWidth, s.clientWidth], steps: !document.querySelector('.preview-tab-step').hidden, reviewW: Math.round(rv.width), reviewH: Math.round(rv.height), reviewWas: w0, words: [b.textContent, b.title, b.getAttribute('aria-label')], w: innerWidth }); })()";
+    // Two equal readings 300ms apart with the current tab in view, or the last two equal ones once 20
+    // are spent: the strip's observers run in a frame, and a loaded headless tab may give none in
+    // 300ms, so a reading from before the refit can repeat. A strip never fitted again still fails.
     let settled = || -> serde_json::Value {
         let mut last = String::new();
+        let mut stable = None;
         for _ in 0..20 {
             let now = eval(&tab, strip).as_str().unwrap_or("{}").to_string();
             if now == last {
-                return serde_json::from_str(&last).unwrap();
+                let reading: serde_json::Value = serde_json::from_str(&now).unwrap();
+                if reading["inView"] == true {
+                    return reading;
+                }
+                stable = Some(reading);
             }
             last = now;
             std::thread::sleep(Duration::from_millis(300));
         }
-        panic!("the pane head never settled over 20 readings 300ms apart: the last {last}");
+        stable.unwrap_or_else(|| {
+            panic!("the pane head never settled over 20 readings 300ms apart: the last {last}")
+        })
     };
     let mut readings = vec![settled()];
     // A tab left of the current one widens after the fit, as one under its cap does when a web font
