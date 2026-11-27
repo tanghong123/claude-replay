@@ -23512,6 +23512,12 @@ fn a_phone_held_sideways_keeps_each_open_file_s_name_whole_in_its_pane_head() {
         Duration::from_secs(20),
         "document.querySelectorAll('[data-reference-path]').length + ' file links'",
     );
+    // A phone's share sheet, as iOS has (Chrome on Linux has none), before any file opens: the head's
+    // download then says Share (#s730).
+    harness::eval(
+        &tab,
+        "Navigator.prototype.share = function () { return Promise.resolve(); }; 'ok'",
+    );
     for (i, path) in paths.iter().enumerate() {
         harness::eval(
             &tab,
@@ -23612,7 +23618,7 @@ fn a_phone_held_sideways_keeps_each_open_file_s_name_whole_in_its_pane_head() {
     );
     assert_eq!(
         mv["words"],
-        serde_json::json!(["Download this file", "Take the whole screen"]),
+        serde_json::json!(["Share this file", "Take the whole screen"]),
         "each row in its control's own words: {mv}"
     );
     assert!(
