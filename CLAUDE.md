@@ -1016,7 +1016,10 @@ the head's More menu, #s663), labelled Review with others and drawn only once th
 prefix answers the document's review state (#s733, Hong's choice on #s732: "hidden where shared
 review is not set up"; a monitor with no viewer key answers 404 there, and `reviewOffered` in
 `mdrev-pane.js` keeps a yes once per server and asks again after a 404, which may be one document's own
-or come before shared review is set up, `a_phone_offers_review_with_others_only_where_shared_review_is_set_up`); `openReviewSheet`
+or come before shared review is set up, `a_phone_offers_review_with_others_only_where_shared_review_is_set_up`;
+upright the head draws it on two lines, "others" under "Review with", a point smaller, in about the room
+"Review" took on one (on one line it took the tab strip from 133px to 66 at 390),
+`a_phone_upright_draws_review_with_others_in_little_more_room_than_review`); `openReviewSheet`
 (`preview.js`) mounts the document with `mountMarkdown(…, {review: true})` in `.review-sheet` over the
 whole app (z 95: above the drawer, below the toasts), and its 44px close control unmounts it — no
 navigation, so the transcript's offset is unchanged (`a_phone_reviews_in_a_full_screen_sheet_and_…`).

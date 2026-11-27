@@ -2005,6 +2005,165 @@ fn host_review_sheet_keeps_a_note_above_the_keyboard(case: HostSheet) {
     );
 }
 
+/// An upright phone's pane head with three Markdown files of ordinary names open and Review with
+/// others shown, read once settled for each file in turn (the last opened, then the others chosen by
+/// their tabs): the strip, the current tab and its title, and the Review control beside a stand-in
+/// drawn as it was before #s733 (a plain small button reading "Review") in the same place, so a width
+/// is compared on the fonts of the machine that runs it. The strip is fitted again when Review appears
+/// after the mount (it waits for the server's answer), so a reading counts once two taken 300ms
+/// apart agree.
+fn upright_head_readings(case: &str, port: u16) -> Vec<serde_json::Value> {
+    const SID733: &str = "5e5510a1-0000-4000-8000-000000000733";
+    let (base, stores, repo, state) = shared_review_world(case);
+    let names = [
+        "answer-speed.md",
+        "phone-landscape.md",
+        "release-checklist.md",
+    ];
+    let mut jsonl = user_at("read the three docs", &at("00:01"));
+    let mut paths = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        let path = repo.join("docs").join(name);
+        std::fs::write(&path, format!("# {name}\n\nA paragraph.\n")).unwrap();
+        let path = path.display().to_string();
+        jsonl += &read_tool_at(&format!("t{i}"), &path, &at("00:02"));
+        jsonl += &tool_result_at(&format!("t{i}"), &at("00:03"));
+        paths.push(path);
+    }
+    let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(SID733, &jsonl);
+    let m = Monitor::spawn_with(
+        Kind::V1,
+        port,
+        &base,
+        Some(&stores),
+        true,
+        &[("MDREV_STATE_DIR", &state.display().to_string())],
+    );
+    let (_browser, tab) = chrome_tab();
+    harness::phone(&tab, 390, 844);
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={SID733}"));
+    let review_drawn = "(function(){ var b = document.querySelector('.preview-review'); if (!b || b.hidden) return false; var r = b.getBoundingClientRect(); if (!r.width) return false; var at = document.elementFromPoint((r.left + r.right) / 2, (r.top + r.bottom) / 2); return !!at && (at === b || b.contains(at)); })()";
+    for path in &paths {
+        let link = format!("[data-reference-path={path:?}]");
+        until(
+            &tab,
+            &format!("!!document.querySelector({link:?})"),
+            "the session's link to the doc",
+            Duration::from_secs(30),
+            "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+        );
+        eval(
+            &tab,
+            &format!("document.querySelector({link:?}).click(); 'ok'"),
+        );
+        until(
+            &tab,
+            &format!("!!document.querySelector('#previewBody .mdrev-host h1') && {review_drawn}"),
+            "the doc in the pane, with Review with others taking a finger",
+            Duration::from_secs(30),
+            PANE,
+        );
+        if path != paths.last().unwrap() {
+            eval(
+                &tab,
+                "document.getElementById('closePreview').click(); 'ok'",
+            );
+            until(
+                &tab,
+                "document.getElementById('sessionView').classList.contains('preview-off')",
+                "the pane put away",
+                Duration::from_secs(10),
+                "document.getElementById('sessionView').className",
+            );
+        }
+    }
+    let strip = "(function(){ var s = document.getElementById('previewTabs'), box = s.getBoundingClientRect(), tabs = [].slice.call(s.querySelectorAll('.preview-tab:not(.sv-pinned)')), on = s.querySelector('.preview-tab.on'), label = on && on.querySelector('.preview-tab-label'), r = on ? on.getBoundingClientRect() : {}, b = document.querySelector('.preview-review'), rv = b.getBoundingClientRect(), was = document.createElement('button'); was.className = 'smallbtn'; was.textContent = 'Review'; was.style.position = 'absolute'; was.style.visibility = 'hidden'; b.parentNode.insertBefore(was, b); var w0 = Math.round(was.getBoundingClientRect().width); was.remove(); return JSON.stringify({ n: tabs.length, on: label ? label.textContent : '', whole: !!label && label.scrollWidth <= label.clientWidth + 1, nat: label ? label.scrollWidth : 0, room: label ? label.clientWidth : 0, inView: r.left >= box.left - 1 && r.right <= box.right + 1, onW: Math.round(r.width || 0), stripW: Math.round(box.width), reviewW: Math.round(rv.width), reviewH: Math.round(rv.height), reviewWas: w0, words: [b.textContent, b.title, b.getAttribute('aria-label')], w: innerWidth }); })()";
+    let settled = || -> serde_json::Value {
+        let mut last = String::new();
+        for _ in 0..20 {
+            let now = eval(&tab, strip).as_str().unwrap_or("{}").to_string();
+            if now == last {
+                break;
+            }
+            last = now;
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        serde_json::from_str(&last).unwrap()
+    };
+    let mut readings = vec![settled()];
+    for want in [names[1], names[0]] {
+        eval(&tab, &format!("[].slice.call(document.querySelectorAll('#previewTabs .preview-tab')).find(function (t) {{ var l = t.querySelector('.preview-tab-label'); return l && l.textContent === {want:?}; }}).click(); 'ok'"));
+        until(
+            &tab,
+            &format!("(document.querySelector('#previewTabs .preview-tab.on .preview-tab-label') || {{}}).textContent === {want:?} && !!document.querySelector('#previewBody .mdrev-host h1') && {review_drawn}"),
+            "the doc chosen from its tab, with Review with others",
+            Duration::from_secs(20),
+            strip,
+        );
+        readings.push(settled());
+    }
+    for s in &readings {
+        eprintln!("upright head: {s}");
+    }
+    assert_eq!(readings[0]["n"], 3, "a tab per open doc: {}", readings[0]);
+    assert_eq!(
+        readings[0]["on"], names[2],
+        "the last opened is current: {}",
+        readings[0]
+    );
+    readings
+}
+
+/// #s733's label in an upright phone's pane head: Hong's "Review with others" (#s732) is drawn on two
+/// lines there, "others" under "Review with", at most 10px wider than "Review" was, and leaves the
+/// strip its room (#337): measured at 390px, on one line it was 131px wide and left the strip 66px of
+/// the 133 it had beside "Review". Its words are one phrase to a reader and a screen reader alike, the
+/// current tab stays in view, and the control takes a finger.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
+fn a_phone_upright_draws_review_with_others_in_little_more_room_than_review() {
+    let _serial = serial();
+    for s in upright_head_readings("mdrev-review-head", 2798) {
+        assert_eq!(
+            s["words"],
+            serde_json::json!([
+                "Review with others",
+                "Review with others",
+                "Review with others"
+            ]),
+            "the control's words, title and name: {s}"
+        );
+        let (now, was) = (
+            s["reviewW"].as_i64().unwrap_or(0),
+            s["reviewWas"].as_i64().unwrap_or(0),
+        );
+        assert!(
+            was > 0 && now <= was + 10,
+            "Review with others takes at most 10px more than Review did: {s}"
+        );
+        assert!(
+            s["reviewH"].as_i64().unwrap_or(0) >= 44,
+            "and a finger's 44 points: {s}"
+        );
+        assert_eq!(s["inView"], true, "the current tab is in view: {s}");
+    }
+}
+
+/// #s735 (Hong's #337 rule, upright): beside the head's file control, Review and close, three
+/// Markdown files of ordinary names leave the current title too little room at 390px, on main as on
+/// #s733 (measured: 67px of room on main against 98-116px of title). How to make the room is Hong's
+/// (#s736).
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
+fn known_red_s735_a_phone_upright_keeps_each_markdown_title_whole_beside_review() {
+    let _serial = serial();
+    for s in upright_head_readings("mdrev-review-head-whole", 2799) {
+        assert_eq!(s["whole"], true, "the current title is whole: {s}");
+    }
+}
+
 /// #s733, Hong on #s732: "Keep it, labelled Review with others, hidden where shared review is not set
 /// up". A phone's pane offers Review with others over a monitor whose mdrev has its viewer key, and no
 /// Review over one without: there the review prefix is the pane's own (#s6), so the sheet would only

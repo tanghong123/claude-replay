@@ -2156,6 +2156,8 @@
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-tab{height:44px}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-head{gap:0}
 #sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-head .preview-print,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-head .preview-download,#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-head .preview-reveal{width:44px;height:44px}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-head .preview-review{padding:0 4px;font-size:11px;line-height:1.15}
+#sessionView:where(.pl-max-w-760,.pl-coarse.pl-max-h-500) .preview-head .preview-review-rest{display:block}
 :where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) input:not([type=checkbox]):not([type=radio]):not([type=range]),:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) textarea,:where(#sessionView:is(.pl-max-w-760,.pl-coarse.pl-max-h-500)) select{font-size:16px!important}
 #sessionView:where(.pl-coarse.pl-max-h-500) .sv-session-main .transcript-inner{width:min(500px,calc(100% - 26px))}
 #sessionView:where(.pl-coarse.pl-max-h-500).wide .sv-session-main .transcript-inner{width:calc(100% - 26px)}

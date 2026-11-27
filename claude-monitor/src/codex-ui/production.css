@@ -1914,6 +1914,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
   #sessionView .preview-head{gap:0}
   /* #s30: the head's file controls are a finger's target on a phone too. */
   #sessionView .preview-head .preview-print,#sessionView .preview-head .preview-download,#sessionView .preview-head .preview-reveal{width:44px;height:44px}
+  /* #s733: Hong's "Review with others" (#s732) in two lines inside its 44 points, "others" under "Review
+     with", a point smaller and closer to its edges, so it takes about the room "Review" took on one and the
+     strip keeps the current title's (#337); on one line it took the strip from 133px to 66 at 390. */
+  #sessionView .preview-head .preview-review{padding:0 4px;font-size:11px;line-height:1.15}
+  #sessionView .preview-head .preview-review-rest{display:block}
 
   input:not([type=checkbox]):not([type=radio]):not([type=range]),textarea,select{font-size:16px!important}
 }

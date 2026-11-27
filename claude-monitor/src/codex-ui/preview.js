@@ -193,6 +193,8 @@ export class Preview {
     // has its detached tab (#s10). The pane itself stays review-free.
     this.reviewBtn = Object.assign(document.createElement("button"), { type: "button", className: "smallbtn preview-review", textContent: "Review with others", title: "Review with others", hidden: true });
     this.reviewBtn.setAttribute("aria-label", "Review with others");
+    // On a phone "others" goes under "Review with" (production.css, #s733); the words stay one phrase.
+    this.reviewBtn.innerHTML = 'Review with <span class="preview-review-rest">others</span>';
     this.reviewBtn.onclick = () => this.openReviewSheet(this.markdownItem);
     // #s30, the owner: "for markdown, in mdrev, I actually think print still makes sense". mdrev's
     // own toolbar prints (on a phone from its Aa menu, since 1.1.24); a held reader has no toolbar
