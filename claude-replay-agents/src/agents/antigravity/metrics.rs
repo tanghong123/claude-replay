@@ -107,4 +107,27 @@ mod tests {
             "cost {cost}, expected {expected}"
         );
     }
+    #[test]
+    fn neon_high_prices_existing_trajectory_counts() {
+        let mut acc = MetricsAcc::default();
+        acc.push(&json!({
+            "type": "PLANNER_RESPONSE", "step_index": 1, "model": "gemini-4-neon-high",
+            "input_tokens": 1000000, "cache_read_tokens": 1000000, "output_tokens": 100000,
+        }));
+        let metrics = acc.finish();
+        let cost = metrics
+            .cost_usd
+            .expect("Neon High has a published base rate");
+        assert!((cost - 4.65).abs() < 1e-12);
+        assert!(!metrics.cost_partial);
+        assert_eq!(metrics.cache_read_tokens, 1000000);
+
+        acc.push(&json!({
+            "type": "PLANNER_RESPONSE", "step_index": 2, "model": "gemini-4-neon-unknown",
+            "input_tokens": 1000000,
+        }));
+        let mixed = acc.finish();
+        assert_eq!(mixed.cost_usd, metrics.cost_usd);
+        assert!(mixed.cost_partial);
+    }
 }
