@@ -2153,8 +2153,8 @@ mod price_tests {
             // #s739, unpriced by decision. Gemini 3.7 Flash has no published price (Google's
             // pricing page and model list name no 3.7 model). Orchestrator pairs a planner with
             // an executor inside one response (Antigravity's models page), so no single rate is
-            // right, and no transcript yet shows what a step under it records. The two -low
-            // levels are in the CLI's binary only, as Argon's -low is.
+            // right, and no transcript yet shows what a step under it records. The two -low ids
+            // are in the CLI's binary, not in `agy models`, as Argon's -low is.
             "gemini-3.7-flash-high",
             "gemini-3.7-flash-medium",
             "gemini-pro-orchestrator",

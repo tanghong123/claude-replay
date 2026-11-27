@@ -40,9 +40,10 @@ impl MetricsAcc {
         // Some projections omit the model but retain usage. Keep the tokens in the
         // unassigned bucket, without attributing them to a previous response's model.
         let model = field(value, "model").unwrap_or_default();
-        // A step is one request, so a model the catalog prices by prompt length (Gemini 3.1 Pro
-        // over 200,000 tokens, #s739) bills this step's tokens at its long rate when its prompt is
-        // over the threshold, as the Claude fold does for Haiku 5.5 (#s47).
+        // A model the catalog prices by prompt length (Gemini 3.1 Pro over 200,000 tokens, #s739)
+        // bills this step's tokens at its long rate when its prompt is over the threshold, as the
+        // Claude fold does for Haiku 5.5 (#s47). That a step is one request is assumed, like the
+        // readings of its counts (#s715).
         if long_prompt_over(model).is_some_and(|over| counts.prompt() > over) {
             counts.long_prompt = counts.into();
         }

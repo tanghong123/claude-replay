@@ -469,11 +469,16 @@ pub const COMPACT_AFTER: usize = 256;
 /// `Compaction`'s summary leaves out the notice the client puts at its head, which a v99 one opens
 /// with.
 ///
+/// v101: #s739 — an Antigravity step on a model priced by prompt length (Gemini 3.1 Pro, over
+/// 200,000 tokens) carries its tokens in `TokenCounts::long_prompt`, as v49 did for Claude Haiku
+/// 5.5. A v100 stream holds them only in the totals, and would price them at the standard rates as
+/// if exact.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 100;
+pub const FOLD_VERSION: u16 = 101;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
