@@ -1,6 +1,6 @@
 use super::model::field;
 use claude_replay_engine::seam::{
-    parse_ts, total_cost, Metrics, MetricsTotals, TimeSpan, TokenCounts,
+    long_prompt_over, parse_ts, total_cost, Metrics, MetricsTotals, TimeSpan, TokenCounts,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -27,7 +27,7 @@ impl MetricsAcc {
             self.model = model.into();
         }
         let count = |key| value[key].as_u64().unwrap_or(0);
-        let counts = TokenCounts {
+        let mut counts = TokenCounts {
             input: count("input_tokens"),
             cache_creation: count("cache_write_tokens"),
             cache_read: count("cache_read_tokens"),
@@ -40,6 +40,12 @@ impl MetricsAcc {
         // Some projections omit the model but retain usage. Keep the tokens in the
         // unassigned bucket, without attributing them to a previous response's model.
         let model = field(value, "model").unwrap_or_default();
+        // A step is one request, so a model the catalog prices by prompt length (Gemini 3.1 Pro
+        // over 200,000 tokens, #s739) bills this step's tokens at its long rate when its prompt is
+        // over the threshold, as the Claude fold does for Haiku 5.5 (#s47).
+        if long_prompt_over(model).is_some_and(|over| counts.prompt() > over) {
+            counts.long_prompt = counts.into();
+        }
         *self.totals.entry(model.into()).or_default() += counts;
         self.step = value["step_index"].as_u64();
     }
@@ -106,6 +112,48 @@ mod tests {
             (cost - expected).abs() < 1e-12,
             "cost {cost}, expected {expected}"
         );
+    }
+
+    /// #s739: Gemini 3.1 Pro bills a request whose prompt (new input plus cache reads and writes)
+    /// is strictly over 200,000 tokens at its long rate, 2x input and cache and 1.5x output, and
+    /// each step is one request, so a long step does not move a short one beside it.
+    #[test]
+    fn a_step_over_gemini_3_1_pro_s_200k_prompt_bills_at_its_long_rate() {
+        let step = |index: u64, input: u64| {
+            json!({
+                "type": "PLANNER_RESPONSE", "step_index": index, "model": "gemini-3.1-pro-high",
+                "input_tokens": input, "cache_read_tokens": 50000, "output_tokens": 1000,
+            })
+        };
+        let at = |input| {
+            let mut acc = MetricsAcc::default();
+            acc.push(&step(1, input));
+            acc.finish()
+        };
+        let short = at(150_000);
+        assert!(short.per_model["gemini-3.1-pro-high"]
+            .long_prompt
+            .is_empty());
+        let want = (150_000.0 * 2.0 + 50_000.0 * 0.2 + 1000.0 * 12.0) / 1e6;
+        let cost = short.cost_usd.expect("Gemini 3.1 Pro (High) is priced");
+        assert!((cost - want).abs() < 1e-12, "{cost}, expected {want}");
+        assert!(!short.cost_partial);
+
+        let long = at(150_001);
+        assert_eq!(
+            long.per_model["gemini-3.1-pro-high"].long_prompt.input,
+            150_001
+        );
+        let want = (150_001.0 * 4.0 + 50_000.0 * 0.4 + 1000.0 * 18.0) / 1e6;
+        let cost = long.cost_usd.expect("priced");
+        assert!((cost - want).abs() < 1e-12, "{cost}, expected {want}");
+
+        let mut acc = MetricsAcc::default();
+        acc.push(&step(1, 150_000));
+        acc.push(&step(2, 150_001));
+        let both = acc.finish().cost_usd.expect("priced");
+        let want = short.cost_usd.unwrap() + long.cost_usd.unwrap();
+        assert!((both - want).abs() < 1e-12, "{both}, expected {want}");
     }
 
     #[test]
