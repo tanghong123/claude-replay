@@ -255,7 +255,15 @@ export class Preview {
     this.nextTabBtn = step(1, "Next file", "›");
     byId("previewTabs").before(this.prevTabBtn);
     byId("previewTabs").after(this.nextTabBtn);
-    this.tabsObserver = new ResizeObserver(() => this.fitTabs());
+    // The strip's own box changing is fitted at once; a tab's alone in a task of its own, since the fit may
+    // show the step buttons, which resizes the strip inside the same delivery and raises the browser's
+    // "ResizeObserver loop" error on the page (#s624 kept the search fit off it). A timer, not a frame:
+    // a tab with no frames due (a headless one, measured) would leave the strip unfitted till the next.
+    this.tabsFitTimer = 0;
+    this.tabsObserver = new ResizeObserver(entries => {
+      if (entries.some(entry => entry.target === byId("previewTabs"))) { this.fitTabs(); return; }
+      if (!this.tabsFitTimer) this.tabsFitTimer = setTimeout(() => { this.tabsFitTimer = 0; this.fitTabs(); }, 0);
+    });
     this.tabsObserver.observe(byId("previewTabs"));
     byId("previewHead").onclick = event => {
       const close = event.target.closest("[data-preview-tab-close]");
@@ -289,6 +297,7 @@ export class Preview {
     this.listening.abort();
     this.stageObserver?.disconnect(); this.stageObserver = null;
     this.tabsObserver?.disconnect(); this.tabsObserver = null;
+    clearTimeout(this.tabsFitTimer); this.tabsFitTimer = 0;
     this.renderGeneration++;
     if (this.objectUrl) { URL.revokeObjectURL(this.objectUrl); this.objectUrl = ""; }
   }
@@ -430,8 +439,6 @@ export class Preview {
     this.uiState.previewId = ids[(at + dir + ids.length) % ids.length];
     this.render();
   }
-  /** #337: the step buttons while the strip overflows, and the current tab in view — moved by the
-   *  strip's OWN scroller, never by asking the browser to scroll something into view. */
   /** The strip is fitted again when its own box changes size and when a tab's does: a label widening
    *  after the first fit (a web font arriving) moves the current tab without resizing the strip, and
    *  left it out of view by as much (#s733, measured: 18px past the strip's end at 390). */
@@ -442,6 +449,8 @@ export class Preview {
     this.tabsObserver.observe(strip);
     for (const tab of strip.querySelectorAll(".preview-tab")) this.tabsObserver.observe(tab);
   }
+  /** #337: the step buttons while the strip overflows, and the current tab in view — moved by the
+   *  strip's OWN scroller, never by asking the browser to scroll something into view. */
   fitTabs() {
     const strip = byId("previewTabs");
     if (!strip || !this.prevTabBtn) return;
