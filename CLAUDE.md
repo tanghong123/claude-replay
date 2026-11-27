@@ -274,13 +274,18 @@ session at half the width, remeasured once through `paneLayoutChanged`; the dock
 and the reply box keep to that half), and ⤢ (`.preview-expand`, sideways only)
 takes the whole screen and back without disturbing the session beneath
 (`a_phone_held_sideways_opens_the_pane_as_a_second_column`). Upright the pane is the whole screen.
-**Held sideways the pane's head is ‹, the tab strip, ›, More and close** (#s663, Hong's choice on #s670):
-the file's actions (reveal or download, print, Review) and ⤢ fold into one More menu
-(`.preview-more-wrap`, `Preview.setMore`: its rows are the head's own controls offered as it opens, each
-pressing its control), so the strip keeps their room and the current tab may take all of it but the 8px
-either side `fitTabs` scrolls it in by; each of six open files' names is whole on an iPhone 17 Pro
-(`a_phone_held_sideways_keeps_each_open_file_s_name_whole_in_its_pane_head`). A case held sideways
-reaches those controls through More, never by waiting for them in the head.
+**On a phone the pane's head is ‹, the tab strip, ›, More and close** (#s663, Hong's choice on #s670,
+held sideways; #s735, upright too, Hong's choice on #s736: "Fold them into More upright too, as
+sideways"): the file's actions (reveal or download, print, Review) and, held sideways, ⤢ fold into one
+More menu (`.preview-more-wrap`, `Preview.setMore`: its rows are the head's own controls offered as it
+opens, each pressing its control; upright the pane is the whole screen, so no ⤢), so the strip keeps
+their room and the current tab may take all of it but the 8px either side `fitTabs` scrolls it in by;
+each of six open files' names is whole on an iPhone 17 Pro held sideways
+(`a_phone_held_sideways_keeps_each_open_file_s_name_whole_in_its_pane_head`), and of three upright at
+390, where Review with others, the file's control and close had left the strip 125px
+(`a_phone_upright_keeps_each_markdown_title_whole_in_its_pane_head`). A case on a phone reaches those
+controls through More, never by waiting for them in the head; an iPad and a desktop keep them there.
+An open More closes as the phone turns, since its rows are the hold's.
 **The shell's phone rules for its own top bar are scoped to `.workspace>.topbar`** (#s49): mdrev's
 toolbar in the pane is a `header.topbar` too, and `#app .topbar` outranked mdrev's own rules there
 (no wrap, the row spread, the shell's padding) — the owner saw the toolbar wrap beside a cut title,
@@ -959,7 +964,7 @@ step in the pane, so a host rule that stood in the way would fail it.
 **The pane prints a Markdown document where mdrev offers no print** (#s30, the owner: "print still
 makes sense"): mdrev's own toolbar prints — on a phone from its Aa menu since 1.1.24 (#s31), which also
 made the print start from the tap in Safari — but a held reader has no toolbar, so there the pane head
-carries a print control (`.preview-print`, hit-tested at 390px) that calls mdrev's own
+carries a print control (`.preview-print`; on a phone a row of the head's More menu, #s735) that calls mdrev's own
 `mounted.print()` — the document alone on the paper; never for code. **mdrev carries every print**
 (#s58, mdrev 1.1.29): its isolation (`#mdrev-print-isolation`, everything outside the mount hidden
 through `:has()`, the page printed white) comes back at each `beforeprint` until the reader next
@@ -1011,15 +1016,13 @@ monitor's launchd PATH has `/opt/homebrew/bin`, where mdrev-plugin-alibaba puts 
 `the_detached_tab_reads_subscribes_and_notifies_through_draft_8` runs mdrev's own check's shape with
 a fake channel on that PATH.
 **On a phone the review prefix is a full-screen SHEET** (#s12, the owner's choice: a tab has no way
-back there): the pane's Markdown from a FILE shows a Review control on a phone only (held sideways in
-the head's More menu, #s663), labelled Review with others and drawn only once the server's review
+back there): the pane's Markdown from a FILE shows a Review control on a phone only (a row of the
+head's More menu, #s663 sideways, #s735 upright), labelled Review with others and offered only once the server's review
 prefix answers the document's review state (#s733, Hong's choice on #s732: "hidden where shared
 review is not set up"; a monitor with no viewer key answers 404 there, and `reviewOffered` in
 `mdrev-pane.js` keeps a yes once per server and asks again after a 404, which may be one document's own
-or come before shared review is set up, `a_phone_offers_review_with_others_only_where_shared_review_is_set_up`;
-upright the head draws it on two lines, "others" under "Review with", a point smaller, in about the room
-"Review" took on one (on one line it took the tab strip from 133px to 66 at 390),
-`a_phone_upright_draws_review_with_others_in_little_more_room_than_review`); `openReviewSheet`
+or come before shared review is set up, `a_phone_offers_review_with_others_only_where_shared_review_is_set_up`,
+`a_phone_upright_offers_review_with_others_from_the_pane_s_more_menu`); `openReviewSheet`
 (`preview.js`) mounts the document with `mountMarkdown(…, {review: true})` in `.review-sheet` over the
 whole app (z 95: above the drawer, below the toasts), and its 44px close control unmounts it — no
 navigation, so the transcript's offset is unchanged (`a_phone_reviews_in_a_full_screen_sheet_and_…`).

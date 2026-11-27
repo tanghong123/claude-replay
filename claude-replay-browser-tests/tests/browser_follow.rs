@@ -23215,7 +23215,8 @@ const PHONE_DRAWN: &str = "function (sel) { return [].slice.call(document.queryS
 /// pane offers the file as a download in its place. A phone opening a text file
 /// and a Markdown document in the pane is offered neither the pane's reveal nor its ↗, and a file
 /// the server would only let it REVEAL is copied rather than sent to `/__reveal` (the case wraps
-/// `fetch`, so a reveal is recorded and never sent).
+/// `fetch`, so a reveal is recorded and never sent). The download is a row of the head's More menu
+/// (#s735).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_is_offered_no_reveal_and_no_new_tab() {
@@ -23255,14 +23256,16 @@ fn a_phone_is_offered_no_reveal_and_no_new_tab() {
             "(document.getElementById('previewBody') || {innerHTML: 'no pane'}).innerHTML.slice(0, 200)",
         );
         std::thread::sleep(Duration::from_millis(600));
+        // Upright the head folds the file's actions into its More menu (#s735): its rows are read, and
+        // the menu closed again.
         let drawn = harness::eval(
             &tab,
-            &format!("JSON.stringify({{ reveal: ({PHONE_DRAWN})('.preview-reveal, [data-preview-reveal]'), newtab: ({PHONE_DRAWN})('.preview-newtab'), download: ({PHONE_DRAWN})('.preview-download') }})"),
+            &format!("(function(){{ var btn = document.querySelector('#preview .preview-more'), rows = []; if (btn && ({PHONE_DRAWN})('#preview .preview-more')) {{ btn.click(); rows = [].slice.call(document.querySelectorAll('#preview .preview-more-menu [data-preview-more]')).map(function (r) {{ return r.dataset.previewMore; }}); btn.click(); }} return JSON.stringify({{ reveal: ({PHONE_DRAWN})('.preview-reveal, [data-preview-reveal]') || rows.indexOf('reveal') >= 0, newtab: ({PHONE_DRAWN})('.preview-newtab'), download: rows.indexOf('download') >= 0 }}); }})()"),
         );
         assert_eq!(
             drawn.as_str(),
             Some("{\"reveal\":false,\"newtab\":false,\"download\":true}"),
-            "a phone over the tailnet is offered neither the reveal nor the new tab for {path}, and the file as a download"
+            "a phone over the tailnet is offered neither the reveal nor the new tab for {path}, and the file as a download from the head's More menu"
         );
     }
     // The desktop keeps both, on the same document.
@@ -23689,7 +23692,8 @@ fn a_phone_held_sideways_keeps_each_open_file_s_name_whole_in_its_pane_head() {
         Duration::from_secs(5),
         "document.getElementById('app').className",
     );
-    // Turned upright with the menu open: it closes, and the head is as it was (the download in it, no More).
+    // Turned upright with the menu open: it closes, since its rows are the hold's (full screen is a
+    // sideways row), and upright the head draws More as well, the download a row of it (#s735).
     phone_tap(&tab, "#preview .preview-more");
     harness::until(
         &tab,
@@ -23711,8 +23715,8 @@ fn a_phone_held_sideways_keeps_each_open_file_s_name_whole_in_its_pane_head() {
     );
     assert_eq!(
         harness::eval(&tab, &upright).as_str(),
-        Some("{\"download\":true,\"more\":false}"),
-        "upright the head keeps the download and draws no More"
+        Some("{\"download\":false,\"more\":true}"),
+        "upright the head folds the download into More too (#s735)"
     );
     harness::phone(&tab, 874, 402);
     harness::until(
