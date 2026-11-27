@@ -394,8 +394,10 @@ the same project"): an agent's projects at the same path, each machine writing i
 fold into one head where the first sat, which names no one machine (its title names them all) and
 is greyed only while every one of them does not answer, its rows the machines' merged in the
 server's row order and each wearing its machine's label; a hide from that head goes to each
-machine it changes, in that machine's key. A desktop agent's sessions, which have no folder, stay a
-group per machine, and a family still never spans machines. There each agent's projects are in the server's own order across
+machine it changes, in that machine's key, and a machine that refuses stops none of the others. A
+folder keeps one fold key whether one machine or several show it. A desktop agent's sessions, which
+have no folder, stay a group per machine, and a family never spans machines (a QoderWork title
+family is one machine's). There each agent's projects are in the server's own order across
 the machines (#s615, Hong: "the sessions are not sorted by the last active time"): those active in
 the last ten minutes first, by name, then the rest newest first, each project dated by its folder's
 newest session of any agent, against the reader's clock; each machine's lists are merged without

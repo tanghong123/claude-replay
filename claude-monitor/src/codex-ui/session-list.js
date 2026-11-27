@@ -154,31 +154,57 @@ export function machineSections(agents = [], machines = [], now = Date.now() / 1
  * folder, stay per machine. The folded project sits where its first part did (the parts are in the
  * calm order across the machines, so that is the busiest), its rows the parts' merged in the server's
  * row order, each part's own order kept. It names no one machine (`machine` empty) but `machines`, and
- * keeps its `parts`, whose keys a hide is sent under; it is hidden only where every part is. Its id
- * leads with `*`, which no machine's key holds, so its fold keys are its own. Ids, families and side
- * sessions stay each machine's: a family never spans machines. Without a `machine` it changes nothing.
+ * keeps its `parts`, whose keys a hide is sent under; it is hidden only where every part is. Every
+ * folder takes one id, a star, a slash and `project:<path>`, on one machine or several (a star is in no
+ * machine's key), so
+ * a head the reader folded stays folded as the filter or a hide takes a machine's part away. Ids,
+ * families and side sessions stay each machine's: a family never spans machines. Without a `machine`
+ * it changes nothing.
  */
 export function oneHeadPerProject(agents = [], now = Date.now() / 1000) {
   return agents.map(agent => {
-    const out = [], at = new Map();
-    for (const project of agent.projects || []) {
-      const key = project.machine && project.kind === "project" && project.path ? project.path : null;
-      if (key === null) { out.push(project); continue; }
-      if (!at.has(key)) { at.set(key, out.length); out.push(project); continue; }
-      const i = at.get(key), parts = (out[i].parts || [out[i]]).concat(project);
-      out[i] = foldedProject(parts, now);
+    const projects = agent.projects || [];
+    if (!projects.some(foldable)) return agent;
+    const out = [], parts = new Map();
+    for (const project of projects) {
+      if (!foldable(project)) { out.push(project); continue; }
+      const id = foldId(project);
+      if (parts.has(id)) { parts.get(id).push(project); continue; }
+      parts.set(id, [project]); out.push(id);
     }
-    return out.length === (agent.projects || []).length ? agent : { ...agent, projects: out };
+    return { ...agent, projects: out.map(item => (typeof item === "string" ? foldedProject(parts.get(item), now) : item)) };
   });
 }
 
-/** Several machines' parts of one project as one (`oneHeadPerProject`). */
+/**
+ * The rows of a project as families (`families`), each machine's alone (#s738): rows of several
+ * machines under one folder's head never join one family, which the QoderWork rule, a family by
+ * title, would otherwise do. In the order their first rows come; a title family's key names its
+ * machine, so opening one machine's opens no other's. Rows of one machine, or of none, are
+ * `families` as it is.
+ */
+export function machineFamilies(rows = []) {
+  const machines = new Set(rows.map(row => row.machine || ""));
+  if (machines.size < 2) return families(rows);
+  const first = new Map(rows.map((row, i) => [row, i]));
+  return [...machines]
+    .flatMap(machine => families(rows.filter(row => (row.machine || "") === machine)).map(fam => (fam.key.startsWith("t:") ? { ...fam, key: `t:${machine}/${fam.key.slice(2)}` } : fam)))
+    .sort((a, b) => first.get(a.members[0]) - first.get(b.members[0]));
+}
+
+/** A machine's folder, which several machines may hold (`oneHeadPerProject`). */
+const foldable = project => !!(project.machine && project.kind === "project" && project.path);
+const foldId = project => `*/${project.kind}:${project.path}`;
+
+/** The machines' parts of one folder as one project (`oneHeadPerProject`): one machine's is itself
+ *  under the folder's id. */
 function foldedProject(parts, now) {
   const first = parts[0];
+  if (parts.length === 1) return { ...first, id: foldId(first) };
   const merge = field => (parts.some(part => Array.isArray(part[field])) ? mergeRows(parts.map(part => part[field] || []), now) : undefined);
   const out = {
     ...first,
-    id: `*/${first.kind}:${first.path}`,
+    id: foldId(first),
     machine: "",
     machines: [...new Set(parts.map(part => part.machine))],
     parts,

@@ -11,7 +11,7 @@ import { SessionIndexStore } from "./session-index-store.js";
 import { SESSION_LIST_MARKUP } from "./session-list-markup.js";
 import { indexState, selectedRow } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
-import { ARRANGE_SOURCES, arrangeSessions, familyHolds, flatFamilies, isDefaultView, machineNote, machineSections, machineShortLabel, nestSideSessions, oneHeadPerProject, paneLookup, rowLookup, sectionView, viewSection } from "./session-list.js";
+import { ARRANGE_SOURCES, arrangeSessions, familyHolds, flatFamilies, isDefaultView, machineFamilies, machineNote, machineSections, machineShortLabel, nestSideSessions, oneHeadPerProject, paneLookup, rowLookup, sectionView, viewSection } from "./session-list.js";
 import { displayState, denoteState, sessionBucket, sessionFilterBuckets, FILTER_BUCKETS, FILTER_LABELS, BLOCKED_SUMMARY } from "./shared/state-labels.js";
 import { agentName, escapeText } from "./view-model.js";
 import { page } from "./view-root.js";
@@ -648,11 +648,11 @@ function agentProjectsHtml(agent) {
     const across = project.machines && project.machines.length > 1 ? [...project.machines].sort((x, y) => listed(x) - listed(y)) : null;
     const stale = across ? across.every(machineStale) : machineStale(project.machine);
     const where = across ? `${across.map(key => machineWords(machineState(key))).join(", ")} · ${project.path}` : project.machine ? `${machineWords(machineState(project.machine))} · ${project.path}` : project.path;
-    html += `<div class="tree-row project ${project.hidden ? "is-hidden" : ""} ${stale ? "machine-stale" : ""}" role="treeitem" tabindex="0" data-toggle="${escapeText(projectKey)}" aria-expanded="${openProject}" title="${escapeText(where)}">${svg("folder")}<span class="tree-title">${escapeText(project.name)}</span>${machineTag(project.machine)}${agent.id === "codex" && options.projectActions?.() ? `<button class="native-project-new" type="button" data-native-project="${escapeText(project.nativeProjectId || "")}" data-native-cwd="${escapeText(project.path)}" aria-label="New session in ${escapeText(project.name)}" title="New session in ${escapeText(project.name)}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>` : ""}${project.ignoreKey || across ? treeAction(project, project.kind) : ""}</div>`;
+    html += `<div class="tree-row project ${project.hidden ? "is-hidden" : ""} ${stale ? "machine-stale" : ""}" role="treeitem" tabindex="0" data-machine="${escapeText(project.machine || "")}" data-toggle="${escapeText(projectKey)}" aria-expanded="${openProject}" title="${escapeText(where)}">${svg("folder")}<span class="tree-title">${escapeText(project.name)}</span>${machineTag(project.machine)}${agent.id === "codex" && options.projectActions?.() ? `<button class="native-project-new" type="button" data-native-project="${escapeText(project.nativeProjectId || "")}" data-native-cwd="${escapeText(project.path)}" aria-label="New session in ${escapeText(project.name)}" title="New session in ${escapeText(project.name)}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>` : ""}${project.ignoreKey || across ? treeAction(project, project.kind) : ""}</div>`;
     if (!openProject) continue;
     const overflowKey = `${agent.id}:${project.id}`;
     const expanded = indexState.expandedProjects.has(overflowKey);
-    const fams = nestSideSessions(families(rows));
+    const fams = nestSideSessions(machineFamilies(rows));
     let shown = expanded ? fams : fams.slice(0, SIDEBAR_SESSION_LIMIT);
     const selectedFam = fams.find(fam => familyHolds(fam, indexState.selected));
     if (!expanded && selectedFam && !shown.includes(selectedFam)) shown = shown.concat(selectedFam);
@@ -1221,16 +1221,22 @@ function renderFilterControl(counts, shown, total) {
   }
 }
 async function applyIgnore(op, keys) {
-  try {
-    // One key, or each machine's own for a project over several (#s738), one after the other.
-    for (const key of [].concat(keys)) {
+  const verb = op === "add" ? "hide" : "restore";
+  // One key, or each machine's own for a project over several (#s738), one after the other: a machine
+  // that refuses stops none of the others, and the list is read again once any of them went.
+  let went = 0, failure = null;
+  for (const key of [].concat(keys)) {
+    try {
       const response = await listBackend().fetch(ignoreQuery({ op, key }), { cache: "no-store" });
       if (unmounted) return;
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    }
-    onToast(op === "add" ? "Hidden — find it under Hidden" : "Restored");
-    await sessionIndex.refresh();
-  } catch (error) { if (!unmounted) onToast(`Could not ${op === "add" ? "hide" : "restore"}: ${error.message}`); }
+      went++;
+    } catch (error) { if (unmounted) return; failure = failure || error; }
+  }
+  if (!failure) onToast(op === "add" ? "Hidden — find it under Hidden" : "Restored");
+  else onToast(went ? `Could not ${verb} it on every machine: ${failure.message}` : `Could not ${verb}: ${failure.message}`);
+  if (!went) return;
+  try { await sessionIndex.refresh(); } catch (error) { if (!unmounted) onToast(`Could not ${verb}: ${error.message}`); }
 }
 
 tree.onclick = event => {
@@ -1287,8 +1293,8 @@ collapseBtn.onclick = () => {
     // #s561: grouped by machine, each machine's head and its agents' heads fold under their own keys.
     for (const project of agent.projects) { indexState.collapsed.add(`p:${project.id}`); if (project.machine) indexState.collapsed.add(`a:${project.machine}/${agent.id}`); }
   }
-  // #s738: and the heads of projects over several machines, which the tree not grouped by machine draws.
-  for (const agent of oneHeadPerProject(groupedSessions())) for (const project of agent.projects) if (project.parts) indexState.collapsed.add(`p:${project.id}`);
+  // #s738: and the folders' heads, which the tree not grouped by machine draws under a folder's id.
+  for (const agent of oneHeadPerProject(groupedSessions())) for (const project of agent.projects) indexState.collapsed.add(`p:${project.id}`);
   if (groupedByMachine()) for (const entry of indexState.machines) indexState.collapsed.add(`m:${entry.machine}`);
   persist(); renderTree();
 };

@@ -2136,7 +2136,7 @@ fn a_list_over_two_machines_puts_its_projects_in_the_order_of_their_last_activit
         "the host mounts the list with the merged source"
     );
     // The tree's heads in order: a machine's (when grouped) and each project's title with its machine.
-    let heads = "JSON.stringify(Array.from(document.querySelectorAll('#tree > .tree-machine-group, #tree > .tree-row.project')).map(function (el) { return el.classList.contains('tree-machine-group') ? 'M:' + el.dataset.machine : el.querySelector('.tree-title').textContent + '@' + el.dataset.toggle.split('/')[0].replace('p:', ''); }))";
+    let heads = "JSON.stringify(Array.from(document.querySelectorAll('#tree > .tree-machine-group, #tree > .tree-row.project')).map(function (el) { return el.classList.contains('tree-machine-group') ? 'M:' + el.dataset.machine : el.querySelector('.tree-title').textContent + '@' + el.dataset.machine; }))";
     let order = serde_json::json!(["auk-now@b", "tern-now@a", "skua-mid@b", "tern-old@a"]);
     until(
         &tab,
