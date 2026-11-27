@@ -1187,11 +1187,16 @@ function renderFilterControl(counts, shown, total) {
     const off = !!known && !known.available && !on;
     option.classList.toggle("disabled", off); option.setAttribute("aria-disabled", String(off));
     const note = filterSheet.querySelector(`[data-arrange-note="${key}"]`);
-    if (note) note.textContent = !known ? "" : !known.available ? known.reason || "Cannot be read" : known.lastError ? `Last read: ${known.lastError}` : "";
+    const why = !known ? "" : !known.available ? known.reason || "Cannot be read" : known.lastError ? `Last read: ${known.lastError}` : "";
+    if (note && note.textContent !== why) note.textContent = why;
   }
+  // Each poll paints this sheet again: a count that has not changed is not written (#s731), since an
+  // equal write still replaces the text, which beside a large guest in the pane cost a restyle of
+  // the whole page.
   for (const el of filterSheet.querySelectorAll("[data-bucket-count]")) {
     const key = el.dataset.bucketCount;
-    el.textContent = String(key === "hidden" ? indexState.ignoredCount : counts[key] || 0);
+    const count = String(key === "hidden" ? indexState.ignoredCount : counts[key] || 0);
+    if (el.textContent !== count) el.textContent = count;
   }
 }
 async function applyIgnore(op, key) {

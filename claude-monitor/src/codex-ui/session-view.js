@@ -998,6 +998,21 @@ function fitHeadingSoon() {
   const headingRoom = new ResizeObserver(fitHeadingSoon);
   for (const node of [viewRoot.$(".workspace>.topbar"), viewRoot.$(".header-search-cluster")]) if (node) headingRoom.observe(node);
 }
+/** A header write that changes nothing writes nothing (#s731). Writing equal text still replaces the
+ *  node's text, and beside a large guest in the pane (mdrev's view of a 1,500-line file) one such
+ *  write cost a restyle of the whole page, about 280ms, at every poll of the session list. */
+function setText(node, text) { if (node && node.textContent !== text) node.textContent = text; }
+/** The same for markup: kept as written and as the browser serialized it, so a node another write
+ *  changed since is written again. `var`: a header can be drawn during module evaluation. */
+var markupOf = null;
+function setMarkup(node, html) {
+  if (!node) return;
+  markupOf ||= new WeakMap();
+  const last = markupOf.get(node);
+  if (last && last.html === html && last.out === node.innerHTML) return;
+  node.innerHTML = html;
+  markupOf.set(node, { html, out: node.innerHTML });
+}
 function paintHeader() {
   if (sessionNewTab) sessionNewTab.hidden = !selectedId();
   renderArtifacts();
@@ -1006,22 +1021,22 @@ function paintHeader() {
   const parent = renderParent(liveMeta);
   if (!row && liveMeta && parent) {
     // A sub-agent child: not a row, so everything the header shows comes from its own meta.
-    byId("sessionTitle").textContent = liveMeta.title || liveMeta.sid || selectedId();
-    byId("sessionCrumb").textContent = `${agentName(liveMeta.agent)} · sub-agent of ${parent.title || parent.id}`;
+    setText(byId("sessionTitle"), liveMeta.title || liveMeta.sid || selectedId());
+    setText(byId("sessionCrumb"), `${agentName(liveMeta.agent)} · sub-agent of ${parent.title || parent.id}`);
     byId("statusChip").className = "status-chip idle";
-    byId("statusChip").textContent = liveMeta.agent_type ? `Sub-agent · ${liveMeta.agent_type}` : "Sub-agent";
+    setText(byId("statusChip"), liveMeta.agent_type ? `Sub-agent · ${liveMeta.agent_type}` : "Sub-agent");
     byId("statusChip").title = "";
     sessionTitle.tabIndex = 0;
     sessionCopyMenu.hidden = false;
-    sessionCopyMenu.querySelector('[data-session-copy-value="id"]').textContent = liveMeta.sid || selectedId();
-    sessionCopyMenu.querySelector('[data-session-copy-value="path"]').textContent = liveMeta.path || "available once the session loads";
+    setText(sessionCopyMenu.querySelector('[data-session-copy-value="id"]'), liveMeta.sid || selectedId());
+    setText(sessionCopyMenu.querySelector('[data-session-copy-value="path"]'), liveMeta.path || "available once the session loads");
     return;
   }
   if (!row) {
-    byId("sessionTitle").textContent = "Agent Monitor";
-    byId("sessionCrumb").textContent = "Scanning sessions";
+    setText(byId("sessionTitle"), "Agent Monitor");
+    setText(byId("sessionCrumb"), "Scanning sessions");
     byId("statusChip").className = "status-chip idle";
-    byId("statusChip").textContent = "None selected";
+    setText(byId("statusChip"), "None selected");
     byId("statusChip").title = "";
     sessionTitle.tabIndex = -1;
     sessionCopyMenu.hidden = true;
@@ -1031,12 +1046,12 @@ function paintHeader() {
   const state = displayState(row);
   // A worker (#s53) is titled by its brief and says whose worker it is: its own title is its project's.
   const starter = row.startedBy ? sessionRow(row.startedBy) : null;
-  byId("sessionTitle").textContent = row.startedBy ? workerName(row) : row.name || row.id;
-  byId("sessionCrumb").textContent = starter
+  setText(byId("sessionTitle"), row.startedBy ? workerName(row) : row.name || row.id);
+  setText(byId("sessionCrumb"), starter
     ? `${agentName(row.agent)} · worker of ${starter.name || starter.id}`
-    : `${agentName(row.agent)} · ${row._group?.label || ""}`;
+    : `${agentName(row.agent)} · ${row._group?.label || ""}`);
   byId("statusChip").className = `status-chip ${state.state} ${state.reason}`;
-  byId("statusChip").innerHTML = `<span class="state-dot ${escapeText(state.state)} ${escapeText(state.reason)}" style="margin:0"></span>${escapeText(state.label)}${row.stateConfidence === "inferred" ? " · inferred" : ""}`;
+  setMarkup(byId("statusChip"), `<span class="state-dot ${escapeText(state.state)} ${escapeText(state.reason)}" style="margin:0"></span>${escapeText(state.label)}${row.stateConfidence === "inferred" ? " · inferred" : ""}`);
   // The chip's words are its title too, for a bar that cuts them short.
   byId("statusChip").title = `${row.stateDetail || state.label}${row.stateConfidence === "inferred" ? " · inferred" : ""}`;
   const meta = recordState.session === row.id ? (recordState.meta || {}) : {};
@@ -1044,8 +1059,8 @@ function paintHeader() {
   const path = meta.path || "";
   sessionTitle.tabIndex = 0;
   sessionCopyMenu.hidden = false;
-  sessionCopyMenu.querySelector('[data-session-copy-value="id"]').textContent = sid;
-  sessionCopyMenu.querySelector('[data-session-copy-value="path"]').textContent = path || "available once the session loads";
+  setText(sessionCopyMenu.querySelector('[data-session-copy-value="id"]'), sid);
+  setText(sessionCopyMenu.querySelector('[data-session-copy-value="path"]'), path || "available once the session loads");
   sessionCopyMenu.querySelector('[data-copy-session="id"]').disabled = !sid;
   sessionCopyMenu.querySelector('[data-copy-session="path"]').disabled = !path;
 }

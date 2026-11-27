@@ -1543,8 +1543,11 @@ pre.turn-raw{margin:0;padding:0;border:0;border-radius:0;background:transparent;
 .search-chip[data-chip="scope"] .search-chip-key{width:0}
 /* #355: with chips in the box its placeholder ("Search this session") is noise — the owner: "no
    need to show the background search… text". Transparent, not removed: rules key on
-   :placeholder-shown. */
-.header-searchbox:has(.search-chips.has-chips) input::placeholder{color:transparent}
+   :placeholder-shown. The chips sit right before the field in its strip, so a sibling reaches it:
+   a `:has()` short of a pseudo-element subject (`….header-searchbox:has(…) input::placeholder`) made
+   Chrome restyle the WHOLE page at any text change anywhere, about 280ms beside mdrev's view of a
+   1,500-line file (#s731). */
+.search-chips.has-chips~input::placeholder{color:transparent}
 /* #356: a choice that cannot combine with what the box holds is greyed (and disabled), with its
    reason in its title and one line under its list; a chip pair that cannot match is marked. */
 /* #367: the session's tools are checkboxes under the Tools scope row, indented beneath it; the Tool
