@@ -180,15 +180,15 @@ export function oneHeadPerProject(agents = [], now = Date.now() / 1000) {
  * The rows of a project as families (`families`), each machine's alone (#s738): rows of several
  * machines under one folder's head never join one family, which the QoderWork rule, a family by
  * title, would otherwise do. In the order their first rows come; a title family's key names its
- * machine, so opening one machine's opens no other's. Rows of one machine, or of none, are
- * `families` as it is.
+ * machine wherever its rows have one, so opening one machine's opens no other's and a family the
+ * reader opened stays open as another machine's rows come and go. Rows of no machine (one
+ * monitor's) are `families` as it is.
  */
 export function machineFamilies(rows = []) {
-  const machines = new Set(rows.map(row => row.machine || ""));
-  if (machines.size < 2) return families(rows);
+  if (!rows.some(row => row.machine)) return families(rows);
   const first = new Map(rows.map((row, i) => [row, i]));
-  return [...machines]
-    .flatMap(machine => families(rows.filter(row => (row.machine || "") === machine)).map(fam => (fam.key.startsWith("t:") ? { ...fam, key: `t:${machine}/${fam.key.slice(2)}` } : fam)))
+  return [...new Set(rows.map(row => row.machine || ""))]
+    .flatMap(machine => families(rows.filter(row => (row.machine || "") === machine)).map(fam => (machine && fam.key.startsWith("t:") ? { ...fam, key: `t:${machine}/${fam.key.slice(2)}` } : fam)))
     .sort((a, b) => first.get(a.members[0]) - first.get(b.members[0]));
 }
 
@@ -261,7 +261,7 @@ export const CALM_SECS = 10 * 60;
 export function flatFamilies(tree = [], now = Date.now() / 1000) {
   const out = [];
   for (const agent of tree) for (const project of agent.projects) {
-    for (const family of families(project.rows || [])) out.push({ ...family, agent, project });
+    for (const family of machineFamilies(project.rows || [])) out.push({ ...family, agent, project });
   }
   const active = family => now - (family.latest || 0) < CALM_SECS;
   const name = family => String(family.rep.name || family.rep.id || "").toLowerCase();

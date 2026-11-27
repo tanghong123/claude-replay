@@ -6365,6 +6365,10 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     assert.deepEqual(machineFamilies(folded.sessions).map(fam => fam.key), families(folded.sessions).map(fam => fam.key), "other families as they are, in the order of their first rows");
     const lone = [{ id: "q1", agent: "qoderwork", name: "Draft" }, { id: "q2", agent: "qoderwork", name: "Draft (Fork)" }];
     assert.deepEqual(machineFamilies(lone), families(lone), "and one monitor's, by title, as before");
+    assert.deepEqual(machineFamilies(drafts.filter(row => row.machine === "a")).map(fam => fam.key), ["t:a/Draft"], "one machine's title family is keyed by its machine too, so an open one stays open as the other's rows come and go");
+    const { flatFamilies } = await import("../../claude-monitor/src/codex-ui/session-list.js");
+    const draftTree = [{ ...one[0], projects: [{ ...folded, rows: drafts }] }];
+    assert.deepEqual(flatFamilies(draftTree, at).map(fam => fam.key).sort(), ["t:a/Draft", "t:b/Draft"], "the list by activity, and the rail's flyout drawing it, groups machine by machine too");
     assert.match(listViewSource, /const fams = nestSideSessions\(machineFamilies\(rows\)\);/, "the tree's projects group by machine");
     const single = groupSessions(index("sa").groups);
     assert.equal(oneHeadPerProject(single, at)[0], single[0], "one monitor's tree is the same tree");
