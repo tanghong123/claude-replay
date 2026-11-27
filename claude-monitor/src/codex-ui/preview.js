@@ -319,12 +319,12 @@ export class Preview {
     else change();
   }
   setOpen(open) { this.uiState.preview = open; this.paneState("preview-off", !open); byId("previewBtn").classList.toggle("active", open); if (!open) { this.setFull(false); this.setMore(false); } if (open) this.render(); this.actions.layoutChanged?.(); }
+  /** Whether the view is a phone held sideways, whose More menu offers full screen (#s663). */
+  sideways() { return !!viewRoot.element()?.matches(".pl-coarse.pl-max-h-500"); }
   /** The head's More menu (#s663, #s735; a phone): opening lists the head's file controls offered
    *  now — reveal or download, print, review, then full screen held sideways (upright the pane is the
    *  whole screen already, so it has none) — each by its own title, with its glyph where it has one.
    *  A choice closes the menu and presses its control, if that control is still offered. */
-  /** Whether the view is a phone held sideways, whose More menu offers full screen (#s663). */
-  sideways() { return !!viewRoot.element()?.matches(".pl-coarse.pl-max-h-500"); }
   setMore(open) {
     if (!this.moreMenu) return;
     if (open) {

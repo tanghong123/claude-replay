@@ -1957,11 +1957,14 @@ fn a_phone_shares_where_a_desktop_downloads() {
     let j = j.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
     stores.claude_session(SID730, &j);
     let m = Monitor::spawn_remote(Kind::V1, 2794, &base, Some(&stores));
+    // The pane's download is the head's control where the head draws it (a desktop), and a row of the
+    // head's More menu on a phone (#s735): its words and glyph are read where the reader finds them.
     let controls = r#"(function () {
       var b = document.querySelector('.prompt-attachment-download');
       var h = document.querySelector('#previewHead .preview-download');
       var said = function (e) { return [e.getAttribute('title'), e.getAttribute('aria-label'), e.querySelector('svg') ? 'svg' : e.textContent]; };
-      return JSON.stringify({ beside: b ? said(b) : null, head: h && !h.hidden ? said(h) : null });
+      var more = function () { var m = document.querySelector('#preview .preview-more'); if (!m || !m.getClientRects().length) return null; m.click(); var r = document.querySelector('#preview .preview-more-menu [data-preview-more="download"]'), out = null; if (r) { var g = r.querySelector('.preview-more-glyph'); out = [r.querySelector('.preview-more-label').textContent, g.querySelector('svg') ? 'svg' : g.textContent]; } m.click(); return out; };
+      return JSON.stringify({ beside: b ? said(b) : null, head: h && !h.hidden && h.getClientRects().length ? said(h) : null, more: more() });
     })()"#;
     let walk = |tab: &headless_chrome::Tab| -> serde_json::Value {
         tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
@@ -1998,9 +2001,10 @@ fn a_phone_shares_where_a_desktop_downloads() {
         walk(&phone),
         serde_json::json!({
             "beside": ["Share notes.md", "Share notes.md", "svg"],
-            "head": ["Share this file", "Share this file", "svg"],
+            "head": null,
+            "more": ["Share this file", "svg"],
         }),
-        "a phone's controls say Share and wear the share glyph"
+        "a phone's controls say Share and wear the share glyph, the pane's as a row of its More menu"
     );
     // The file the pane cannot show: its body and the head both say Share; a file too large to hold
     // (`inMemoryMax` under its size) streams to the browser's download, and both say Download.
@@ -2025,18 +2029,18 @@ fn a_phone_shares_where_a_desktop_downloads() {
             Duration::from_secs(20),
             controls,
         );
-        let read = r#"(function () { var b = document.querySelector('#previewBody [data-preview-download]'), h = document.querySelector('#previewHead .preview-download'); return JSON.stringify({ body: b.textContent, head: [h.getAttribute('title'), h.querySelector('svg') ? 'svg' : h.textContent] }); })()"#;
+        let read = r#"(function () { var b = document.querySelector('#previewBody [data-preview-download]'); var more = function () { var m = document.querySelector('#preview .preview-more'); if (!m || !m.getClientRects().length) return null; m.click(); var r = document.querySelector('#preview .preview-more-menu [data-preview-more="download"]'), out = null; if (r) { var g = r.querySelector('.preview-more-glyph'); out = [r.querySelector('.preview-more-label').textContent, g.querySelector('svg') ? 'svg' : g.textContent]; } m.click(); return out; }; return JSON.stringify({ body: b.textContent, more: more() }); })()"#;
         serde_json::from_str(eval(tab, read).as_str().unwrap()).unwrap()
     };
     assert_eq!(
         binary(&phone, ""),
-        serde_json::json!({ "body": "Share", "head": ["Share this file", "svg"] }),
-        "a file the pane cannot show says Share in its body and its head"
+        serde_json::json!({ "body": "Share", "more": ["Share this file", "svg"] }),
+        "a file the pane cannot show says Share in its body and in the head's More menu"
     );
     assert_eq!(
         binary(&phone, "&inMemoryMax=1024"),
-        serde_json::json!({ "body": "Download", "head": ["Download this file", "↓"] }),
-        "a file too large to hold says Download in its body and its head, as both stream it"
+        serde_json::json!({ "body": "Download", "more": ["Download this file", "↓"] }),
+        "a file too large to hold says Download in its body and in the head's More menu, as both stream it"
     );
 
     let rule = format!(
@@ -2050,8 +2054,9 @@ fn a_phone_shares_where_a_desktop_downloads() {
         serde_json::json!({
             "beside": ["Download notes.md", "Download notes.md", "↓"],
             "head": ["Download this file", "Download this file", "↓"],
+            "more": null,
         }),
-        "a desktop's stay ↓ and Download"
+        "a desktop's stay ↓ and Download, in the head"
     );
 }
 

@@ -284,7 +284,8 @@ each of six open files' names is whole on an iPhone 17 Pro held sideways
 (`a_phone_held_sideways_keeps_each_open_file_s_name_whole_in_its_pane_head`), and of three upright at
 390, where Review with others, the file's control and close had left the strip 125px
 (`a_phone_upright_keeps_each_markdown_title_whole_in_its_pane_head`). A case on a phone reaches those
-controls through More, never by waiting for them in the head; an iPad and a desktop keep them there.
+controls through More, never by waiting for them in the head. A view no phone query takes (an iPad, a
+desktop window or a host's pane 761px wide or more) keeps them there; a narrower one folds them too.
 An open More closes as the phone turns, since its rows are the hold's.
 **The shell's phone rules for its own top bar are scoped to `.workspace>.topbar`** (#s49): mdrev's
 toolbar in the pane is a `header.topbar` too, and `#app .topbar` outranked mdrev's own rules there

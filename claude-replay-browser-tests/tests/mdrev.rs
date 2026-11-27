@@ -3554,12 +3554,12 @@ fn the_pane_hands_mdrev_held_code_and_keeps_its_own_view_of_the_rest() {
     );
 }
 
-/// Whether the pane head's print control is offered, and where a tap at its centre lands — the
-/// control itself, or what covers it. `hidden` when it is not drawn.
 /// On a phone (#s735, upright as sideways): whether the pane head's More menu lists print, and where a
 /// tap at the row's centre lands; `hidden` when More or the row is not drawn. The menu is closed again.
 const PRINT_ROW: &str = "(function(){ var m = document.querySelector('#preview .preview-more'); if (!m || !m.offsetWidth) return 'hidden'; m.click(); var row = document.querySelector('#preview .preview-more-menu [data-preview-more=\"print\"]'), seen = 'hidden'; if (row && row.offsetWidth) { var r = row.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); seen = r.right > innerWidth || r.left < 0 || r.bottom > innerHeight ? 'off-screen' : hit && row.contains(hit) ? 'shown' : 'covered by ' + (hit ? hit.className : 'nothing'); } m.click(); return seen; })()";
 
+/// Whether the pane head's print control is offered, and where a tap at its centre lands — the
+/// control itself, or what covers it. `hidden` when it is not drawn.
 const PRINT_CONTROL: &str = "(function(){ var b = document.querySelector('#previewHead .preview-print, .preview-head .preview-print'); if (!b || b.hidden || !b.offsetWidth) return 'hidden'; var r = b.getBoundingClientRect(); if (r.right > innerWidth || r.left < 0) return 'off-screen'; var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return hit && b.contains(hit) ? 'shown' : 'covered by ' + (hit ? hit.className : 'nothing'); })()";
 
 /// #s30, the owner: "for markdown, in mdrev, I actually think print still makes sense, though we
