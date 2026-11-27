@@ -1601,13 +1601,22 @@ const PRESS_REVIEW: &str = "(function(){ var b = document.querySelector('.previe
 /// `--mdrev-edge-*`): in each place the pane can be held sideways (beside a wide phone's column, as
 /// the second column, at the whole screen, and the Review sheet over everything) the bar runs from
 /// the pane's edge to its edge, painted, every control in it and the document's heading are inside
-/// the safe area, and mdrev reaches the pane's foot. Red on 3e5e27c5, where the bar ended at 870.
+/// the safe area, and mdrev reaches the pane's foot. Red on 3e5e27c5, where the bar ended at 870. The
+/// monitor holds mdrev's viewer key, since the pane offers Review only where shared review is set up
+/// (#s733).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_sideways_phone_runs_mdrevs_toolbar_to_the_screen_s_edge() {
     let _serial = serial();
-    let (base, stores, repo) = fixture("mdrev-toolbar-edge");
-    let m = Monitor::spawn(Kind::V1, 3381, &base, Some(&stores), true);
+    let (base, stores, repo, state) = shared_review_world("mdrev-toolbar-edge");
+    let m = Monitor::spawn_with(
+        Kind::V1,
+        3381,
+        &base,
+        Some(&stores),
+        true,
+        &[("MDREV_STATE_DIR", &state.display().to_string())],
+    );
     let (_browser, tab) = chrome_tab();
     harness::phone(&tab, 932, 430);
     harness::safe_area(&tab, harness::SIDEWAYS_INSETS);

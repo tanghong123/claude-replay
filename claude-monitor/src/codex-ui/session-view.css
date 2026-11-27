@@ -1983,7 +1983,7 @@
 :where(#sessionView) .search-clear .icon{width:14px;height:14px}
 :where(#sessionView) .header-searchbox.has-query .search-clear{display:grid}
 :where(#sessionView) .search-chip[data-chip="scope"] .search-chip-key{width:0}
-:where(#sessionView) .header-searchbox:has(.search-chips.has-chips) input::placeholder{color:transparent}
+:where(#sessionView) .search-chips.has-chips~input::placeholder{color:transparent}
 :where(#sessionView) .tool-types-head-retired{display:none!important}
 :where(#sessionView) .tool-type-list.tool-type-nested{padding-left:18px}
 :where(#sessionView) .tool-type-option .scope-key{font:11px/1.4 var(--mono,ui-monospace,monospace);color:var(--faint);min-width:1ch;text-align:right}

@@ -5135,7 +5135,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const closes = success.split("this.close()").length - 1;
   assert.ok(closes === 1 && success.includes("if (this.compose.row && this.actions.selectedRow()?.id !== this.compose.row.id) this.close();"), "the box closes after a send only for a reader who moved to another session");
   const viewSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-view.js", import.meta.url), "utf8");
-  assert.match(viewSrc, /composeNote\.textContent = byId\("composeTarget"\)\.textContent;/, "the phone's note is the same line");
+  assert.match(viewSrc, /const note = byId\("composeTarget"\)\.textContent;\s*if \(composeNote\.textContent !== note\) composeNote\.textContent = note;/, "the phone's note is the same line, written only when it differs (#s731)");
   assert.doesNotMatch(shellSource, /writes to the live session/, "no second warning on the phone");
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.ok(css.includes("#sessionView .composer>.composer-head>span,#sessionView .composer .risk,#sessionView .composer .compose-foot:before{display:none}"), "the reference's prefix, static tmux warning and inert ＋ are hidden");
