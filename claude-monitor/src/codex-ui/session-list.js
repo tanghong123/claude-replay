@@ -144,6 +144,81 @@ export function machineSections(agents = [], machines = [], now = Date.now() / 1
   }));
 }
 
+/**
+ * One head per project across machines (#s738, Hong on the iOS app: "selected group by agents and
+ * projects, but we did not combine agents working on the same project"): the tree `visibleTree` drew
+ * from `groupAcrossMachines`, each agent's projects of one folder on several machines folded into one,
+ * for the list NOT grouped by machine. A project folds with another of its agent where both are
+ * folders (`kind` project) at the same `path`, the line each machine's server writes with its own
+ * home as `~`, so `~/code/x` on two Macs is one project; a desktop agent's sessions, which have no
+ * folder, stay per machine. The folded project sits where its first part did (the parts are in the
+ * calm order across the machines, so that is the busiest), its rows the parts' merged in the server's
+ * row order, each part's own order kept. It names no one machine (`machine` empty) but `machines`, and
+ * keeps its `parts`, whose keys a hide is sent under; it is hidden only where every part is. Its id
+ * leads with `*`, which no machine's key holds, so its fold keys are its own. Ids, families and side
+ * sessions stay each machine's: a family never spans machines. Without a `machine` it changes nothing.
+ */
+export function oneHeadPerProject(agents = [], now = Date.now() / 1000) {
+  return agents.map(agent => {
+    const out = [], at = new Map();
+    for (const project of agent.projects || []) {
+      const key = project.machine && project.kind === "project" && project.path ? project.path : null;
+      if (key === null) { out.push(project); continue; }
+      if (!at.has(key)) { at.set(key, out.length); out.push(project); continue; }
+      const i = at.get(key), parts = (out[i].parts || [out[i]]).concat(project);
+      out[i] = foldedProject(parts, now);
+    }
+    return out.length === (agent.projects || []).length ? agent : { ...agent, projects: out };
+  });
+}
+
+/** Several machines' parts of one project as one (`oneHeadPerProject`). */
+function foldedProject(parts, now) {
+  const first = parts[0];
+  const merge = field => (parts.some(part => Array.isArray(part[field])) ? mergeRows(parts.map(part => part[field] || []), now) : undefined);
+  const out = {
+    ...first,
+    id: `*/${first.kind}:${first.path}`,
+    machine: "",
+    machines: [...new Set(parts.map(part => part.machine))],
+    parts,
+    ignoreKey: "",
+    hidden: parts.every(part => part.hidden),
+    latest: Math.max(...parts.map(projectLatest))
+  };
+  const sessions = merge("sessions"), rows = merge("rows");
+  if (sessions) out.sessions = sessions;
+  if (rows) out.rows = rows;
+  return out;
+}
+
+/** The server's order for two rows of a group (claude-monitor/src/index.rs, the rows' sort), negative
+ *  when `a` comes first: those active in the last ten minutes first, by name; the rest newest first;
+ *  then the name and the id. */
+function rowOrder(a, b, now) {
+  const ta = Number(a.activityTs) || 0, tb = Number(b.activityTs) || 0;
+  const activeA = now - ta < CALM_SECS, activeB = now - tb < CALM_SECS;
+  if (activeA !== activeB) return activeA ? -1 : 1;
+  if (!activeA && ta !== tb) return tb - ta;
+  const text = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+  return text(String(a.name || "").toLowerCase(), String(b.name || "").toLowerCase()) || text(String(a.id || ""), String(b.id || ""));
+}
+
+/** The parts' rows as one list in `rowOrder`, each part's own order kept, a tie going to the earlier
+ *  part. */
+function mergeRows(lists, now) {
+  const at = lists.map(() => 0);
+  const out = [];
+  for (;;) {
+    let pick = -1;
+    for (let i = 0; i < lists.length; i++) {
+      if (at[i] < lists[i].length && (pick < 0 || rowOrder(lists[i][at[i]], lists[pick][at[pick]], now) < 0)) pick = i;
+    }
+    if (pick < 0) return out;
+    out.push(lists[pick][at[pick]++]);
+  }
+}
+
 /** How long a session counts as active for the list's ORDER — the server's `ACTIVE_WINDOW`
  *  (claude-monitor/src/index.rs, which a test holds to this), not the filter's hour. */
 export const CALM_SECS = 10 * 60;

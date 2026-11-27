@@ -553,7 +553,13 @@ the list holds more than one machine; ticked (remembered, `am-prod-by-machine`),
 per machine (`.tree-machine-group`, its state beside it while it does not answer, folding under
 `m:<machine>`) over that machine's own tree or list by activity (`machineSections`), whose project
 heads and rows do not repeat the machine, and the heads over the list give way to them
-(`a_list_over_two_machines_groups_by_machine_from_the_filter`, and its phone twin).
+(`a_list_over_two_machines_groups_by_machine_from_the_filter`, and its phone twin). Unticked, a
+folder several machines hold is one project (#s738, Hong: "we did not combine agents working on the
+same project"): `oneHeadPerProject` folds an agent's projects at the same `path` (each server writes
+its own home as `~`) into one head, which names no one machine, its rows merged in the server's row
+order and each wearing its machine; its hide sends each machine's own key. A desktop agent's
+sessions (no folder) stay per machine, and ticked, each machine keeps its own
+(`one_list_over_two_machines_labels_routes_and_greys_each_machine`).
 
 **Which process a session is linked to** (#269, `index.rs` `link()`) decides liveness AND whether
 the compose box appears, and Claude Code 2.1.278 changed the shape it has to read: the session's
