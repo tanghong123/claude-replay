@@ -1044,8 +1044,10 @@ and at any element added, while some `:has()` rules are in the page: mdrev's eig
 app's `:root:has(…)` rules, while other `:has()` rules short of their subject cost nothing. Which
 ones do it is measured, never read off the selector: `a_text_change_beside_a_large_page_restyles_only_what_it_touched`
 holds the page's own stylesheets to it (ours is a sibling selector now). And a poll that changes
-nothing writes nothing (the header, the filter's counts, the compose box's line and its images:
-`setText`, `setMarkup`), held by `a_session_list_poll_that_changes_nothing_writes_nothing_to_the_page`.
+nothing writes nothing (the header through `setText` and `setMarkup`; the filter's counts, the
+compose box's line and its image strip each compare first), held by
+`a_session_list_poll_that_changes_nothing_writes_nothing_to_the_page` and, for the strip,
+`a_herdr_session_takes_images_from_the_compose_box`.
 
 **Shared frontend modules live in `claude-replay-html/src/html/shared/`** (seam 0 of
 `design/monitor-shell-duplication.md`, v1.140.0): ONE source, consumed two ways — the monitor

@@ -28486,6 +28486,23 @@ fn a_herdr_session_takes_images_from_the_compose_box() {
         Duration::from_secs(5),
         &strip,
     );
+    // #s731: a poll paints the box again, and the same tiles are not drawn again (beside a large
+    // guest in the pane a redraw restyled the whole page).
+    harness::eval(&tab, "(function(){ var s = document.getElementById('composeImages'); window.__tile = s.firstElementChild; window.__redrawn = 0; window.__polls = 0; new MutationObserver(function(r){ window.__redrawn += r.length; }).observe(s, {childList: true}); new PerformanceObserver(function(l){ l.getEntries().forEach(function(e){ if (e.name.indexOf('/api/sessions') >= 0) window.__polls++; }); }).observe({type: 'resource'}); return 'ok'; })()");
+    harness::until(
+        &tab,
+        "window.__polls >= 2",
+        "two polls of the session list with the images attached",
+        Duration::from_secs(20),
+        "String(window.__polls)",
+    );
+    std::thread::sleep(Duration::from_millis(500));
+    let kept = harness::eval(&tab, "window.__redrawn + '|' + (document.getElementById('composeImages').firstElementChild === window.__tile)");
+    assert_eq!(
+        kept.as_str(),
+        Some("0|true"),
+        "two polls drew the image strip again (redraws|same tile)"
+    );
     // ✕ takes one away; the other is sent with the text.
     phone_tap(&tab, "#composeImages .compose-image-remove");
     harness::until(
