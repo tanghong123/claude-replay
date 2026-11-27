@@ -193,8 +193,9 @@ export class Preview {
     // has its detached tab (#s10). The pane itself stays review-free.
     this.reviewBtn = Object.assign(document.createElement("button"), { type: "button", className: "smallbtn preview-review", title: "Review with others", hidden: true });
     this.reviewBtn.setAttribute("aria-label", "Review with others");
-    // On a phone "others" goes under "Review with" (production.css, #s733); the words stay one phrase.
-    this.reviewBtn.innerHTML = 'Review with <span class="preview-review-rest">others</span>';
+    // On a phone it is a row of the head's More menu (#s735); in the head where a host offers the sheet
+    // at every width (#s596).
+    this.reviewBtn.textContent = "Review with others";
     this.reviewBtn.onclick = () => this.openReviewSheet(this.markdownItem);
     // #s30, the owner: "for markdown, in mdrev, I actually think print still makes sense". mdrev's
     // own toolbar prints (on a phone from its Aa menu, since 1.1.24); a held reader has no toolbar
@@ -212,9 +213,10 @@ export class Preview {
     // #s663, Hong's choice on #s670: held sideways the pane is a column about 450 points wide, and its
     // head held the steps, the strip, the file's actions, full screen and close, each a finger's 44
     // points (#s649), which left the strip 138 points and cut every file's name. There the file's
-    // actions and full screen fold into one More menu (production.css shows it on a phone held
-    // sideways only, and takes them out of the head there); the steps, the strip and close stay, and
-    // the current tab may take the whole strip. The menu lists, as it opens, the controls the head
+    // actions and full screen fold into one More menu; upright too since #s735 (Hong's choice on #s736,
+    // "Fold them into More upright too, as sideways": upright at 390 the strip was 125 points). So on a
+    // phone production.css shows More and takes those controls out of the head; the steps, the strip
+    // and close stay, and the current tab may take the whole strip. The menu lists, as it opens, the controls the head
     // would show, each in its own words, and a choice presses that control: what each does, and when
     // it is offered, stays where it was.
     this.listening = new AbortController();
@@ -317,14 +319,17 @@ export class Preview {
     else change();
   }
   setOpen(open) { this.uiState.preview = open; this.paneState("preview-off", !open); byId("previewBtn").classList.toggle("active", open); if (!open) { this.setFull(false); this.setMore(false); } if (open) this.render(); this.actions.layoutChanged?.(); }
-  /** The head's More menu (#s663; a phone held sideways): opening lists the head's file controls
-   *  offered now — reveal or download, print, review, then full screen — each by its own title, with
-   *  its glyph where it has one. A choice closes the menu and presses its control, if that control is
-   *  still offered. */
+  /** Whether the view is a phone held sideways, whose More menu offers full screen (#s663). */
+  sideways() { return !!viewRoot.element()?.matches(".pl-coarse.pl-max-h-500"); }
+  /** The head's More menu (#s663, #s735; a phone): opening lists the head's file controls offered
+   *  now — reveal or download, print, review, then full screen held sideways (upright the pane is the
+   *  whole screen already, so it has none) — each by its own title, with its glyph where it has one.
+   *  A choice closes the menu and presses its control, if that control is still offered. */
   setMore(open) {
     if (!this.moreMenu) return;
     if (open) {
-      const sources = [["reveal", this.revealBtn], ["download", this.downloadBtn], ["print", this.printBtn], ["review", this.reviewBtn], ["expand", this.expandBtn]];
+      const sideways = this.moreSideways = this.sideways();
+      const sources = [["reveal", this.revealBtn], ["download", this.downloadBtn], ["print", this.printBtn], ["review", this.reviewBtn], ...(sideways ? [["expand", this.expandBtn]] : [])];
       this.moreMenu.replaceChildren(...sources.filter(([, source]) => !source.hidden).map(([name, source]) => {
         const item = Object.assign(document.createElement("button"), { type: "button", className: "preview-more-item" });
         item.setAttribute("role", "menuitem");
@@ -454,9 +459,9 @@ export class Preview {
   fitTabs() {
     const strip = byId("previewTabs");
     if (!strip || !this.prevTabBtn) return;
-    // The strip's width changes as the phone turns: a More menu left open where the head no longer
-    // draws it (upright) closes, rather than coming back open when the phone is turned again.
-    if (this.moreMenu && !this.moreMenu.hidden && !this.moreWrap.getClientRects().length) this.setMore(false);
+    // The strip's width changes as the phone turns: a More menu left open closes, since its rows are the
+    // hold's (full screen is a sideways row, #s735), and so does one where the head no longer draws More.
+    if (this.moreMenu && !this.moreMenu.hidden && (!this.moreWrap.getClientRects().length || this.sideways() !== this.moreSideways)) this.setMore(false);
     const over = strip.scrollWidth > strip.clientWidth + 1;
     this.prevTabBtn.hidden = this.nextTabBtn.hidden = !over;
     const on = strip.querySelector(".preview-tab.on");
@@ -721,7 +726,7 @@ export class Preview {
       state.handle?.unmount();
       sheet.remove();
       // The focus goes back to the control that opened the sheet: Review in the head, or More where the
-      // head folds it there (#s663, a phone held sideways).
+      // head folds it there (#s663, #s735: a phone).
       const back = [this.reviewBtn, this.moreBtn].find(control => control?.isConnected && !control.hidden && control.getClientRects().length);
       if (inside && back) back.focus({ preventScroll: true });
     };

@@ -1386,7 +1386,7 @@ console.log("reveal cases passed");
   assert.equal(families([{ id: "x" }])[0].key, "x", "a row without a family field is a family of one, keyed by its id");
   console.log("family cases passed");
 }
-assert.match(listSource, /families\(rows\)/, "the tree clusters fork families through the tested function");
+assert.match(listSource, /\b(?:families|machineFamilies)\(rows\)/, "the tree clusters fork families through the tested function (machine by machine since #s738, the #s738 cases)");
 
 // #s206: the flat list — every family the tree shows, across agents and projects, in the server's
 // calm order: active families (the last ten minutes) tied and named in turn, then the rest newest
@@ -5648,7 +5648,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listSource, /if \(unmounted \|\| arrangeSource\(\) !== source\) return;\n      const data = JSON\.parse\(text\);/, "another app's list");
   assert.match(listSource, /if \(unmounted \|\| arrangeSource\(\) !== source\) return;\n      const changed = layoutState\.error !== error\.message;/, "and its failure");
   assert.match(listSource, /if \(!data \|\| unmounted\) return;\n      sourceState = /, "the apps that could be followed");
-  assert.match(listSource, /if \(unmounted\) return;\n    if \(!response\.ok\) throw new Error/, "a hide or a restore");
+  assert.match(listSource, /if \(unmounted\) return;\n {4,6}if \(!response\.ok\) throw new Error/, "a hide or a restore (each key's, #s738)");
   assert.match(listSource, /\} catch \(error\) \{ if \(!unmounted\) onToast\(/, "and its failure");
   const indexStore = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-index-store.js", import.meta.url), "utf8");
   assert.match(indexStore, /stop\(\) \{ this\.stopped = true; this\.generation\+\+;/, "the index's stop moves its generation");
@@ -6323,6 +6323,70 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listViewSource, /const GROUP_STATE = Object\.freeze\(\{ stale: " tree-machine-group-stale", failed: " tree-machine-group-failed", waiting: " tree-machine-group-waiting" \}\);/, "a machine's head says its state under a prefixed name too");
   assert.doesNotMatch(listRules, /\.tree-machine-group\.(?:stale|failed|live|waiting)(?![\w-])/, "and no rule styles a bare state name on it");
   console.log("#s561 group by machine cases passed");
+
+  // #s738 (Hong on the iOS app: "selected group by agents and projects, but we did not combine agents
+  // working on the same project"): not grouped by machine, one head per folder across machines, its
+  // rows each machine's, in the server's row order; desktop sessions and other folders stay apart.
+  {
+    const { oneHeadPerProject } = await import("../../claude-monitor/src/codex-ui/session-list.js");
+    const { families, visibleTree } = await import("../../claude-replay-html/src/html/shared/session-visibility.js");
+    const at = clock / 1000;
+    const one = oneHeadPerProject(tree, at);
+    assert.deepEqual(one[0].projects.map(project => [project.id, project.machine, project.machines || null, project.sessions.length, project.hidden]), [
+      ["*/project:~/code/x", "", ["a", "b"], 6, false],
+      ["a/claude:desktop", "a", null, 1, false],
+      ["b/claude:desktop", "b", null, 1, false],
+    ], "~/code/x on two machines is one project where the first part sat; each desktop agent stays its machine's");
+    const folded = one[0].projects[0];
+    assert.deepEqual(folded.sessions.map(row => row.id), ["a/sa", "b/sb", "a/sa-w", "a/sa-side", "b/sb-w", "b/sb-side"], "its rows merged in the server's order (none active: by name, then id), each machine's own order kept");
+    assert.deepEqual(folded.parts.map(part => part.ignoreKey), ["a/p:~/code/x", "b/p:~/code/x"], "it keeps each part, whose key a hide is sent under");
+    assert.equal(folded.ignoreKey, "", "and has no one key of its own");
+    assert.equal(families(folded.sessions).length, 6, "no family spans machines");
+    assert.equal(tree[0].projects.length, 4, "the tree it was handed is left as it was");
+    const shownTree = visibleTree(tree);
+    assert.deepEqual(oneHeadPerProject(shownTree, at)[0].projects[0].rows.map(row => row.id), ["a/sa", "b/sb", "a/sa-w", "a/sa-side", "b/sb-w", "b/sb-side"], "the drawn tree's rows fold the same way");
+    const withHidden = hide => tree.map(agent => ({ ...agent, projects: agent.projects.map(project => (project.kind === "project" && hide.includes(project.machine) ? { ...project, hidden: true } : project)) }));
+    assert.equal(oneHeadPerProject(withHidden(["b"]), at)[0].projects[0].hidden, false, "hidden only where every part is");
+    assert.equal(oneHeadPerProject(withHidden(["a", "b"]), at)[0].projects[0].hidden, true);
+    const apart = tree.map(agent => ({ ...agent, projects: agent.projects.map(project => (project.machine === "b" && project.kind === "project" ? { ...project, path: "~/code/y" } : project)) }));
+    assert.deepEqual(oneHeadPerProject(apart, at)[0].projects.map(project => [project.id, project.machine, project.ignoreKey, !!project.parts]), [
+      ["*/project:~/code/x", "a", "a/p:~/code/x", false],
+      ["a/claude:desktop", "a", "a/a:Claude", false],
+      ["*/project:~/code/y", "b", "b/p:~/code/x", false],
+      ["b/claude:desktop", "b", "b/a:Claude", false],
+    ], "another folder stays apart, each folder on one machine under the folder's id, its machine and key its own");
+    const { machineFamilies } = await import("../../claude-monitor/src/codex-ui/session-list.js");
+    const drafts = folded.sessions.map(row => ({ ...row, agent: "qoderwork", name: "Draft" }));
+    assert.equal(families(drafts).length, 1, "the shared rule groups a QoderWork title across machines");
+    assert.deepEqual(machineFamilies(drafts).map(fam => [fam.key, fam.members.map(row => row.id)]), [
+      ["t:a/Draft", ["a/sa", "a/sa-w", "a/sa-side"]],
+      ["t:b/Draft", ["b/sb", "b/sb-w", "b/sb-side"]],
+    ], "under a folder's head, one machine's chats alone, keyed by their machine");
+    assert.deepEqual(machineFamilies(folded.sessions).map(fam => fam.key), families(folded.sessions).map(fam => fam.key), "other families as they are, in the order of their first rows");
+    const lone = [{ id: "q1", agent: "qoderwork", name: "Draft" }, { id: "q2", agent: "qoderwork", name: "Draft (Fork)" }];
+    assert.deepEqual(machineFamilies(lone), families(lone), "and one monitor's, by title, as before");
+    assert.deepEqual(machineFamilies(drafts.filter(row => row.machine === "a")).map(fam => fam.key), ["t:a/Draft"], "one machine's title family is keyed by its machine too, so an open one stays open as the other's rows come and go");
+    const { flatFamilies } = await import("../../claude-monitor/src/codex-ui/session-list.js");
+    const draftTree = [{ ...one[0], projects: [{ ...folded, rows: drafts }] }];
+    assert.deepEqual(flatFamilies(draftTree, at).map(fam => fam.key).sort(), ["t:a/Draft", "t:b/Draft"], "the list by activity, and the rail's flyout drawing it, groups machine by machine too");
+    assert.match(listViewSource, /const fams = nestSideSessions\(machineFamilies\(rows\)\);/, "the tree's projects group by machine");
+    const single = groupSessions(index("sa").groups);
+    assert.equal(oneHeadPerProject(single, at)[0], single[0], "one monitor's tree is the same tree");
+    // Busy rows first, by name; then the newest: a machine's busy row before the other's idle one.
+    const timed = tree.map(agent => ({ ...agent, projects: agent.projects.map(project => ({ ...project, sessions: project.sessions.map((row, i) => ({ ...row, activityTs: project.machine === "b" && i === 0 ? at - 60 : at - 3600 * (i + 1) })) })) }));
+    assert.deepEqual(oneHeadPerProject(timed, at)[0].projects[0].sessions.map(row => row.id).slice(0, 3), ["b/sb", "a/sa", "a/sa-w"], "a row active in the last ten minutes first, then the newest");
+    // The view: the tree not grouped by machine and the rail's flyout draw it; each row under such a head
+    // wears its machine; its hide goes to every part it changes; Collapse all folds its head.
+    assert.match(listViewSource, /const oneTree = groupedByMachine\(\) \? shownAgents : oneHeadPerProject\(shownAgents, now\);\n  lastShownAgents = oneTree;/, "the flyout and the tree not grouped by machine fold");
+    assert.match(listViewSource, /else if \(flat\) html = flatSessionsHtml\(shownAgents\);\n  else for \(const agent of oneTree\) \{/, "the list by activity keeps each row's own project");
+    assert.match(listViewSource, /<span class="tree-title">\$\{escapeText\(name \|\| row\.name \|\| row\.id\)\}<\/span>\$\{taggingRows \? machineTag\(row\.machine\) : ""\}`;/, "a row under a head over several machines wears its machine");
+    assert.match(listViewSource, /const keys = target\.parts\.filter\(part => !!part\.hidden === !!target\.hidden\)\.map\(part => part\.ignoreKey\)\.filter\(Boolean\);/, "a hide sends each part's key it changes");
+    assert.match(listViewSource, /applyIgnore\(action\.dataset\.ignoreOp, action\.dataset\.ignoreKeys \? JSON\.parse\(action\.dataset\.ignoreKeys\) : action\.dataset\.ignoreKey\)/);
+    assert.match(listViewSource, /\} catch \(error\) \{ if \(unmounted\) return; failure = failure \|\| error; \}\n  \}\n/, "a machine that refuses stops none of the others");
+    assert.match(listViewSource, /  if \(!went\) return;\n  try \{ await sessionIndex\.refresh\(\); \}/, "and the list is read again once any went");
+    assert.match(listViewSource, /for \(const agent of oneHeadPerProject\(groupedSessions\(\)\)\) for \(const project of agent\.projects\) indexState\.collapsed\.add\(`p:\$\{project\.id\}`\);/, "Collapse all folds each folder's head");
+    console.log("#s738 one head per project cases passed");
+  }
 
   // #s603 (ab-replay's review of #s595): over several machines, ⌘K draws the rows of a machine that is
   // not answering as the list draws them: greyed, saying how it answers, in the list's own words.

@@ -1128,7 +1128,7 @@ try {
 /// #s541 — one list over two machines. Two hermetic monitors, the page on the first, the second
 /// relayed under `/machine-b` (as a host relays another machine's server, the guide's section 2),
 /// each holding sessions in the same directory. The list shows both machines' sessions, the shared
-/// path as two projects each labelled with its machine; a session opened from the list is read from
+/// path as one project whose rows each wear their machine (#s738); a session opened from the list is read from
 /// its own machine, the view mounted again with that machine's handle when the reader moves to the
 /// other machine, and no request for one machine's session goes to the other; a hide from the list
 /// reaches only the row's machine; and once the second monitor stops, its rows stay listed, greyed,
@@ -1217,12 +1217,17 @@ fn one_list_over_two_machines_labels_routes_and_greys_each_machine() {
     );
     let listed = harness::probe(
         &tab,
-        "(function () { var heads = Array.from(document.querySelectorAll('#sessionList .tree-row.project')); return { titles: heads.map(function (h) { return h.querySelector('.tree-title').textContent; }), tags: heads.map(function (h) { var t = h.querySelector('.tree-machine'); return t ? t.textContent : null; }).sort(), machines: window.__merged.machines().map(function (m) { return m.machine + ':' + m.state; }), banner: !!document.querySelector('#sessionList .tree-machines'), stale: document.querySelectorAll('#sessionList .machine-stale').length, errors: window.__host.errors }; })()",
+        "(function () { var heads = Array.from(document.querySelectorAll('#sessionList .tree-row.project')); return { titles: heads.map(function (h) { return h.querySelector('.tree-title').textContent; }), headTags: heads.map(function (h) { var t = h.querySelector('.tree-machine'); return t ? t.textContent : null; }), headTitle: heads.length ? heads[0].title : null, tags: Array.from(document.querySelectorAll('#sessionList .tree-row.session')).map(function (r) { var t = r.querySelector('.tree-machine'); return r.dataset.session.split('/')[0] + ':' + (t ? t.textContent : ''); }).sort(), machines: window.__merged.machines().map(function (m) { return m.machine + ':' + m.state; }), banner: !!document.querySelector('#sessionList .tree-machines'), stale: document.querySelectorAll('#sessionList .machine-stale').length, errors: window.__host.errors }; })()",
     );
     let titles = listed["titles"].as_array().cloned().unwrap_or_default();
-    assert!(
-        titles.len() == 2 && titles[0] == titles[1],
-        "the same path on two machines is two projects: {listed}"
+    assert_eq!(
+        (titles.len(), &listed["headTags"], &listed["headTitle"]),
+        (
+            1,
+            &serde_json::json!([null]),
+            &serde_json::json!("tern-mini, skua-book · /r")
+        ),
+        "the same path on two machines is one project, whose head names no one machine and says both in its title (#s738): {listed}"
     );
     assert_eq!(
         (
@@ -1233,13 +1238,13 @@ fn one_list_over_two_machines_labels_routes_and_greys_each_machine() {
             &listed["errors"]
         ),
         (
-            &serde_json::json!(["skua-book", "tern-mini"]),
+            &serde_json::json!(["a:tern-mini", "b:skua-book", "b:skua-book"]),
             &serde_json::json!(["a:live", "b:live"]),
             &serde_json::json!(false),
             &serde_json::json!(0),
             &serde_json::json!([])
         ),
-        "each project's head names its machine, both machines answer, and nothing is greyed: {listed}"
+        "each row under it names its machine, both machines answer, and nothing is greyed: {listed}"
     );
 
     // Open the other machine's session, then the page's own: each read from its own machine.
@@ -1399,7 +1404,7 @@ fn one_list_over_two_machines_labels_routes_and_greys_each_machine() {
             "session": SID_HERE,
             "errors": [],
         }),
-        "the stopped machine's rows stay listed and greyed by the kit's stylesheet, its project's label marked, the page's machine untouched: {stale}"
+        "the stopped machine's rows stay listed and greyed by the kit's stylesheet, their machine's label marked, the page's machine untouched: {stale}"
     );
 }
 
@@ -1775,10 +1780,10 @@ fn groups_by_machine_from_the_filter(phone: bool, here_port: u16, there_port: u1
         harness::probe(&tab, layout)
     };
 
-    // The box off: the arrangement of #s541, each project's head naming its machine by the first
-    // label of its host name.
+    // The box off: the arrangement of #s541, one head for the folder both machines hold (#s738),
+    // each row under it naming its machine by the first label of its host name.
     let off = until_seq(
-        serde_json::json!(["A", "P", "S", "P", "S"]),
+        serde_json::json!(["A", "P", "S", "S"]),
         "the list by agent and project",
     );
     assert_eq!(
@@ -1789,7 +1794,7 @@ fn groups_by_machine_from_the_filter(phone: bool, here_port: u16, there_port: u1
             &serde_json::json!("false"),
             &serde_json::json!([])
         ),
-        "each project's head names its machine by its host name's first label: {off}"
+        "each row names its machine by its host name's first label: {off}"
     );
     // The filter's sheet: the box between Idle and Include hidden.
     click("#filterBtn");
@@ -1985,7 +1990,7 @@ fn groups_by_machine_from_the_filter(phone: bool, here_port: u16, there_port: u1
     click("#filterBtn");
     click("#sessionFilter [data-by-machine]");
     let back = until_seq(
-        serde_json::json!(["A", "P", "S", "P", "S"]),
+        serde_json::json!(["A", "P", "S", "S"]),
         "the list by agent and project again",
     );
     assert_eq!(
@@ -1995,7 +2000,7 @@ fn groups_by_machine_from_the_filter(phone: bool, here_port: u16, there_port: u1
             &serde_json::json!("false"),
             &serde_json::json!(true)
         ),
-        "the labels back on the projects' heads, and the stopped machine's head over the list: {back}"
+        "the labels back on the rows, and the stopped machine's head over the list: {back}"
     );
 
     // A list of one machine offers no box, even with Group by machine chosen.
@@ -2131,7 +2136,7 @@ fn a_list_over_two_machines_puts_its_projects_in_the_order_of_their_last_activit
         "the host mounts the list with the merged source"
     );
     // The tree's heads in order: a machine's (when grouped) and each project's title with its machine.
-    let heads = "JSON.stringify(Array.from(document.querySelectorAll('#tree > .tree-machine-group, #tree > .tree-row.project')).map(function (el) { return el.classList.contains('tree-machine-group') ? 'M:' + el.dataset.machine : el.querySelector('.tree-title').textContent + '@' + el.dataset.toggle.split('/')[0].replace('p:', ''); }))";
+    let heads = "JSON.stringify(Array.from(document.querySelectorAll('#tree > .tree-machine-group, #tree > .tree-row.project')).map(function (el) { return el.classList.contains('tree-machine-group') ? 'M:' + el.dataset.machine : el.querySelector('.tree-title').textContent + '@' + el.dataset.machine; }))";
     let order = serde_json::json!(["auk-now@b", "tern-now@a", "skua-mid@b", "tern-old@a"]);
     until(
         &tab,

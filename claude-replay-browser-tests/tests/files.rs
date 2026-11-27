@@ -821,8 +821,8 @@ fn the_app_shell_preview_pinch_zooms_an_image_on_a_phone() {
 /// targets are (#313). With an image in the pane each is a finger's 44 points, side by side without
 /// overlapping, and every point of the 44-point disc around a control's centre hits it (21 points out
 /// along each axis, 15 along each diagonal: a round control is a disc). The reader here is at this
-/// machine, so the head offers the reveal; Download, offered to a reader elsewhere, and print take the
-/// same rule.
+/// machine, so the head's More menu offers the reveal (#s735: upright as sideways, the file's actions
+/// are its rows); More, each row, Download (offered to a reader elsewhere) and print take the same rule.
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_s_pane_controls_take_a_finger_s_44_points() {
@@ -842,53 +842,72 @@ fn a_phone_s_pane_controls_take_a_finger_s_44_points() {
         PANE,
     );
     std::thread::sleep(Duration::from_millis(400));
-    let sels = [
+    // Measured by the same rule wherever a control is: each in `sels` drawn, a finger's 44 points, the
+    // disc round its centre hitting it, and no overlap with the control beside it.
+    let measure = |sels: &[&str]| -> serde_json::Value {
+        let list = serde_json::to_string(sels).unwrap();
+        let raw = eval(
+            &tab,
+            &format!("(function(){{ var out = {{}}, boxes = {{}}; {list}.forEach(function (sel) {{ var e = document.querySelector(sel); if (!e || e.hidden || !e.getClientRects().length) {{ out[sel] = null; return; }} var r = e.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2; var missed = []; [[0, 0], [-21, 0], [21, 0], [0, -21], [0, 21], [-15, -15], [-15, 15], [15, -15], [15, 15]].forEach(function (d) {{ var dx = d[0], dy = d[1]; var h = document.elementFromPoint(cx + dx, cy + dy); if (!h || (h !== e && !e.contains(h))) missed.push([dx, dy, h ? (h.id || String(h.className) || h.tagName) : null]); }}); boxes[sel] = r; out[sel] = {{ w: Math.round(r.width), h: Math.round(r.height), missed: missed, gap: null }}; }}); Object.keys(boxes).forEach(function (a) {{ var r = boxes[a]; Object.keys(boxes).forEach(function (b) {{ var o = boxes[b]; if (a === b || o.left >= r.left || o.bottom <= r.top || o.top >= r.bottom) return; var g = Math.round(r.left - o.right); if (out[a].gap === null || g < out[a].gap) out[a].gap = g; }}); }}); return JSON.stringify(out); }})()"),
+        );
+        serde_json::from_str(raw.as_str().unwrap_or("null"))
+            .unwrap_or_else(|_| panic!("the pane's controls: unreadable: {raw}"))
+    };
+    let check = |seen: &serde_json::Value, drawn: &[&str]| {
+        for sel in drawn {
+            assert!(!seen[sel].is_null(), "{sel} is drawn: {seen}");
+        }
+        for (sel, c) in seen.as_object().unwrap() {
+            if c.is_null() {
+                continue;
+            }
+            assert!(
+                c["h"].as_i64().unwrap_or(0) >= 44 && c["w"].as_i64().unwrap_or(0) >= 44,
+                "{sel} is a finger's 44 points: {seen}"
+            );
+            assert_eq!(
+                c["missed"].as_array().map(Vec::len),
+                Some(0),
+                "a finger anywhere in the 44 points around {sel}'s centre takes it: {seen}"
+            );
+            if let Some(gap) = c["gap"].as_i64() {
+                assert!(
+                    gap >= 0,
+                    "{sel} does not overlap the control beside it: {seen}"
+                );
+            }
+        }
+    };
+    let head = measure(&[
         "#previewTabs .preview-tab.on",
-        "#previewHead .preview-download",
-        "#previewHead .preview-reveal",
+        "#previewHead .preview-more",
         "#previewHead #closePreview",
         "#previewBody [data-zoom=\"out\"]",
         "#previewBody [data-zoom=\"fit\"]",
         "#previewBody [data-zoom=\"in\"]",
         "#previewBody [data-zoom=\"actual\"]",
-    ];
-    let list = serde_json::to_string(&sels).unwrap();
-    let raw = eval(
-        &tab,
-        &format!("(function(){{ var out = {{}}, boxes = {{}}; {list}.forEach(function (sel) {{ var e = document.querySelector(sel); if (!e || e.hidden || !e.getClientRects().length) {{ out[sel] = null; return; }} var r = e.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2; var missed = []; [[0, 0], [-21, 0], [21, 0], [0, -21], [0, 21], [-15, -15], [-15, 15], [15, -15], [15, 15]].forEach(function (d) {{ var dx = d[0], dy = d[1]; var h = document.elementFromPoint(cx + dx, cy + dy); if (!h || (h !== e && !e.contains(h))) missed.push([dx, dy, h ? (h.id || String(h.className) || h.tagName) : null]); }}); boxes[sel] = r; out[sel] = {{ w: Math.round(r.width), h: Math.round(r.height), missed: missed, gap: null }}; }}); Object.keys(boxes).forEach(function (a) {{ var r = boxes[a]; Object.keys(boxes).forEach(function (b) {{ var o = boxes[b]; if (a === b || o.left >= r.left || o.bottom <= r.top || o.top >= r.bottom) return; var g = Math.round(r.left - o.right); if (out[a].gap === null || g < out[a].gap) out[a].gap = g; }}); }}); return JSON.stringify(out); }})()"),
+    ]);
+    check(
+        &head,
+        &[
+            "#previewTabs .preview-tab.on",
+            "#previewHead .preview-more",
+            "#previewBody [data-zoom=\"out\"]",
+            "#previewBody [data-zoom=\"in\"]",
+        ],
     );
-    let seen: serde_json::Value = serde_json::from_str(raw.as_str().unwrap_or("null"))
-        .unwrap_or_else(|_| panic!("the pane's controls: unreadable: {raw}"));
-    // A reader at this machine is offered the reveal beside the file; one elsewhere the Download, which
-    // takes the same rule.
-    for sel in [
-        "#previewTabs .preview-tab.on",
-        "#previewHead .preview-reveal",
-        "#previewBody [data-zoom=\"out\"]",
-        "#previewBody [data-zoom=\"in\"]",
-    ] {
-        assert!(!seen[sel].is_null(), "{sel} is drawn: {seen}");
-    }
-    for (sel, c) in seen.as_object().unwrap() {
-        if c.is_null() {
-            continue;
-        }
-        assert!(
-            c["h"].as_i64().unwrap_or(0) >= 44 && c["w"].as_i64().unwrap_or(0) >= 44,
-            "{sel} is a finger's 44 points: {seen}"
-        );
-        assert_eq!(
-            c["missed"].as_array().map(Vec::len),
-            Some(0),
-            "a finger anywhere in the 44 points around {sel}'s centre takes it: {seen}"
-        );
-        if let Some(gap) = c["gap"].as_i64() {
-            assert!(
-                gap >= 0,
-                "{sel} does not overlap the control beside it: {seen}"
-            );
-        }
-    }
+    // Upright the file's actions are rows of the head's More menu (#s735): a reader at this machine is
+    // offered the reveal there, one elsewhere the Download, and a row takes the same rule.
+    eval(
+        &tab,
+        "document.querySelector('#previewHead .preview-more').click(); 'ok'",
+    );
+    let reveal = "#previewHead .preview-more-menu [data-preview-more=\"reveal\"]";
+    check(&measure(&[reveal]), &[reveal]);
+    eval(
+        &tab,
+        "document.querySelector('#previewHead .preview-more').click(); 'ok'",
+    );
 }
 
 /// #374: what a session HANDS to the reader is downloadable wherever it lives, on a phone too. The
@@ -1734,9 +1753,10 @@ fn a_phone_is_never_offered_the_file_manager() {
             p("src/lib.rs")
         ),
     );
+    // A narrow window lays the pane's head out as a phone's, the reveal a row of its More menu (#s735).
     until(
         &here,
-        "(function(){ var b = document.querySelector('.preview-reveal'); return !!b && !b.hidden && !!b.offsetWidth; })()",
+        "(function(){ var b = document.querySelector('.preview-reveal'); if (!b || b.hidden) return false; if (b.offsetWidth) return true; var m = document.querySelector('#preview .preview-more'); if (!m || !m.offsetWidth) return false; m.click(); var row = document.querySelector('#preview .preview-more-menu [data-preview-more=\"reveal\"]'), seen = !!row && !!row.offsetWidth; m.click(); return seen; })()",
         "the pane's reveal, offered to a reader at this machine",
         Duration::from_secs(20),
         PANE,
@@ -1937,11 +1957,14 @@ fn a_phone_shares_where_a_desktop_downloads() {
     let j = j.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
     stores.claude_session(SID730, &j);
     let m = Monitor::spawn_remote(Kind::V1, 2794, &base, Some(&stores));
+    // The pane's download is the head's control where the head draws it (a desktop), and a row of the
+    // head's More menu on a phone (#s735): its words and glyph are read where the reader finds them.
     let controls = r#"(function () {
       var b = document.querySelector('.prompt-attachment-download');
       var h = document.querySelector('#previewHead .preview-download');
       var said = function (e) { return [e.getAttribute('title'), e.getAttribute('aria-label'), e.querySelector('svg') ? 'svg' : e.textContent]; };
-      return JSON.stringify({ beside: b ? said(b) : null, head: h && !h.hidden ? said(h) : null });
+      var more = function () { var m = document.querySelector('#preview .preview-more'); if (!m || !m.getClientRects().length) return null; m.click(); var r = document.querySelector('#preview .preview-more-menu [data-preview-more="download"]'), out = null; if (r) { var g = r.querySelector('.preview-more-glyph'); out = [r.querySelector('.preview-more-label').textContent, g.querySelector('svg') ? 'svg' : g.textContent]; } m.click(); return out; };
+      return JSON.stringify({ beside: b ? said(b) : null, head: h && !h.hidden && h.getClientRects().length ? said(h) : null, more: more() });
     })()"#;
     let walk = |tab: &headless_chrome::Tab| -> serde_json::Value {
         tab.call_method(Page::AddScriptToEvaluateOnNewDocument {
@@ -1978,9 +2001,10 @@ fn a_phone_shares_where_a_desktop_downloads() {
         walk(&phone),
         serde_json::json!({
             "beside": ["Share notes.md", "Share notes.md", "svg"],
-            "head": ["Share this file", "Share this file", "svg"],
+            "head": null,
+            "more": ["Share this file", "svg"],
         }),
-        "a phone's controls say Share and wear the share glyph"
+        "a phone's controls say Share and wear the share glyph, the pane's as a row of its More menu"
     );
     // The file the pane cannot show: its body and the head both say Share; a file too large to hold
     // (`inMemoryMax` under its size) streams to the browser's download, and both say Download.
@@ -2005,18 +2029,18 @@ fn a_phone_shares_where_a_desktop_downloads() {
             Duration::from_secs(20),
             controls,
         );
-        let read = r#"(function () { var b = document.querySelector('#previewBody [data-preview-download]'), h = document.querySelector('#previewHead .preview-download'); return JSON.stringify({ body: b.textContent, head: [h.getAttribute('title'), h.querySelector('svg') ? 'svg' : h.textContent] }); })()"#;
+        let read = r#"(function () { var b = document.querySelector('#previewBody [data-preview-download]'); var more = function () { var m = document.querySelector('#preview .preview-more'); if (!m || !m.getClientRects().length) return null; m.click(); var r = document.querySelector('#preview .preview-more-menu [data-preview-more="download"]'), out = null; if (r) { var g = r.querySelector('.preview-more-glyph'); out = [r.querySelector('.preview-more-label').textContent, g.querySelector('svg') ? 'svg' : g.textContent]; } m.click(); return out; }; return JSON.stringify({ body: b.textContent, more: more() }); })()"#;
         serde_json::from_str(eval(tab, read).as_str().unwrap()).unwrap()
     };
     assert_eq!(
         binary(&phone, ""),
-        serde_json::json!({ "body": "Share", "head": ["Share this file", "svg"] }),
-        "a file the pane cannot show says Share in its body and its head"
+        serde_json::json!({ "body": "Share", "more": ["Share this file", "svg"] }),
+        "a file the pane cannot show says Share in its body and in the head's More menu"
     );
     assert_eq!(
         binary(&phone, "&inMemoryMax=1024"),
-        serde_json::json!({ "body": "Download", "head": ["Download this file", "↓"] }),
-        "a file too large to hold says Download in its body and its head, as both stream it"
+        serde_json::json!({ "body": "Download", "more": ["Download this file", "↓"] }),
+        "a file too large to hold says Download in its body and in the head's More menu, as both stream it"
     );
 
     let rule = format!(
@@ -2030,8 +2054,9 @@ fn a_phone_shares_where_a_desktop_downloads() {
         serde_json::json!({
             "beside": ["Download notes.md", "Download notes.md", "↓"],
             "head": ["Download this file", "Download this file", "↓"],
+            "more": null,
         }),
-        "a desktop's stay ↓ and Download"
+        "a desktop's stay ↓ and Download, in the head"
     );
 }
 

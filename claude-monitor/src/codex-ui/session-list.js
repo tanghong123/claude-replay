@@ -144,6 +144,107 @@ export function machineSections(agents = [], machines = [], now = Date.now() / 1
   }));
 }
 
+/**
+ * One head per project across machines (#s738, Hong on the iOS app: "selected group by agents and
+ * projects, but we did not combine agents working on the same project"): the tree `visibleTree` drew
+ * from `groupAcrossMachines`, each agent's projects of one folder on several machines folded into one,
+ * for the list NOT grouped by machine. A project folds with another of its agent where both are
+ * folders (`kind` project) at the same `path`, the line each machine's server writes with its own
+ * home as `~`, so `~/code/x` on two Macs is one project; a desktop agent's sessions, which have no
+ * folder, stay per machine. The folded project sits where its first part did (the parts are in the
+ * calm order across the machines, so that is the busiest), its rows the parts' merged in the server's
+ * row order, each part's own order kept. It names no one machine (`machine` empty) but `machines`, and
+ * keeps its `parts`, whose keys a hide is sent under; it is hidden only where every part is. Every
+ * folder takes one id, a star, a slash and `project:<path>`, on one machine or several (a star is in no
+ * machine's key), so
+ * a head the reader folded stays folded as the filter or a hide takes a machine's part away. Ids,
+ * families and side sessions stay each machine's: a family never spans machines. Without a `machine`
+ * it changes nothing.
+ */
+export function oneHeadPerProject(agents = [], now = Date.now() / 1000) {
+  return agents.map(agent => {
+    const projects = agent.projects || [];
+    if (!projects.some(foldable)) return agent;
+    const out = [], parts = new Map();
+    for (const project of projects) {
+      if (!foldable(project)) { out.push(project); continue; }
+      const id = foldId(project);
+      if (parts.has(id)) { parts.get(id).push(project); continue; }
+      parts.set(id, [project]); out.push(id);
+    }
+    return { ...agent, projects: out.map(item => (typeof item === "string" ? foldedProject(parts.get(item), now) : item)) };
+  });
+}
+
+/**
+ * The rows of a project as families (`families`), each machine's alone (#s738): rows of several
+ * machines under one folder's head never join one family, which the QoderWork rule, a family by
+ * title, would otherwise do. In the order their first rows come; a title family's key names its
+ * machine wherever its rows have one, so opening one machine's opens no other's and a family the
+ * reader opened stays open as another machine's rows come and go. Rows of no machine (one
+ * monitor's) are `families` as it is.
+ */
+export function machineFamilies(rows = []) {
+  if (!rows.some(row => row.machine)) return families(rows);
+  const first = new Map(rows.map((row, i) => [row, i]));
+  return [...new Set(rows.map(row => row.machine || ""))]
+    .flatMap(machine => families(rows.filter(row => (row.machine || "") === machine)).map(fam => (machine && fam.key.startsWith("t:") ? { ...fam, key: `t:${machine}/${fam.key.slice(2)}` } : fam)))
+    .sort((a, b) => first.get(a.members[0]) - first.get(b.members[0]));
+}
+
+/** A machine's folder, which several machines may hold (`oneHeadPerProject`). */
+const foldable = project => !!(project.machine && project.kind === "project" && project.path);
+const foldId = project => `*/${project.kind}:${project.path}`;
+
+/** The machines' parts of one folder as one project (`oneHeadPerProject`): one machine's is itself
+ *  under the folder's id. */
+function foldedProject(parts, now) {
+  const first = parts[0];
+  if (parts.length === 1) return { ...first, id: foldId(first) };
+  const merge = field => (parts.some(part => Array.isArray(part[field])) ? mergeRows(parts.map(part => part[field] || []), now) : undefined);
+  const out = {
+    ...first,
+    id: foldId(first),
+    machine: "",
+    machines: [...new Set(parts.map(part => part.machine))],
+    parts,
+    ignoreKey: "",
+    hidden: parts.every(part => part.hidden),
+    latest: Math.max(...parts.map(projectLatest))
+  };
+  const sessions = merge("sessions"), rows = merge("rows");
+  if (sessions) out.sessions = sessions;
+  if (rows) out.rows = rows;
+  return out;
+}
+
+/** The server's order for two rows of a group (claude-monitor/src/index.rs, the rows' sort), negative
+ *  when `a` comes first: those active in the last ten minutes first, by name; the rest newest first;
+ *  then the name and the id. */
+function rowOrder(a, b, now) {
+  const ta = Number(a.activityTs) || 0, tb = Number(b.activityTs) || 0;
+  const activeA = now - ta < CALM_SECS, activeB = now - tb < CALM_SECS;
+  if (activeA !== activeB) return activeA ? -1 : 1;
+  if (!activeA && ta !== tb) return tb - ta;
+  const text = (x, y) => (x < y ? -1 : x > y ? 1 : 0);
+  return text(String(a.name || "").toLowerCase(), String(b.name || "").toLowerCase()) || text(String(a.id || ""), String(b.id || ""));
+}
+
+/** The parts' rows as one list in `rowOrder`, each part's own order kept, a tie going to the earlier
+ *  part. */
+function mergeRows(lists, now) {
+  const at = lists.map(() => 0);
+  const out = [];
+  for (;;) {
+    let pick = -1;
+    for (let i = 0; i < lists.length; i++) {
+      if (at[i] < lists[i].length && (pick < 0 || rowOrder(lists[i][at[i]], lists[pick][at[pick]], now) < 0)) pick = i;
+    }
+    if (pick < 0) return out;
+    out.push(lists[pick][at[pick]++]);
+  }
+}
+
 /** How long a session counts as active for the list's ORDER — the server's `ACTIVE_WINDOW`
  *  (claude-monitor/src/index.rs, which a test holds to this), not the filter's hour. */
 export const CALM_SECS = 10 * 60;
@@ -160,7 +261,7 @@ export const CALM_SECS = 10 * 60;
 export function flatFamilies(tree = [], now = Date.now() / 1000) {
   const out = [];
   for (const agent of tree) for (const project of agent.projects) {
-    for (const family of families(project.rows || [])) out.push({ ...family, agent, project });
+    for (const family of machineFamilies(project.rows || [])) out.push({ ...family, agent, project });
   }
   const active = family => now - (family.latest || 0) < CALM_SECS;
   const name = family => String(family.rep.name || family.rep.id || "").toLowerCase();
