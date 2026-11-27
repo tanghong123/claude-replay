@@ -256,15 +256,18 @@ export async function mountMarkdown(el, item, { review = false } = {}) {
 /** Whether `handle`'s server offers shared review (#s733, Hong on #s732: the phone's Review control
  *  is "hidden where shared review is not set up"): its review prefix answers a document's review
  *  state, where a monitor with no mdrev viewer key answers 404, its prefix then being the pane's own
- *  (#s6, #s10). Asked once per server, with the document the reader opened; anything but a 404
- *  counts as offered, so the sheet itself says what went wrong, and a request that fails is asked
- *  again next time. */
+ *  (#s6, #s10). Anything but a 404 counts as offered, so the sheet itself says what went wrong. Only
+ *  that yes is kept, once per server: a 404 (which costs the server no mdrev-cli run) is asked again
+ *  with the next document, since shared review may be set up while the page stays open, and a 404 can
+ *  be that one document's own (gone since it opened); so is a request that fails. */
 const reviewAnswers = new WeakMap();
 function reviewOffered(handle, place) {
   if (!reviewAnswers.has(handle)) {
     const query = new URLSearchParams({ root: place.root || "", path: place.path || "", cap: place.cap || "" });
-    reviewAnswers.set(handle, handle.mdrevFetch(`${REVIEW_CONTRACT}/review?${query}`, { cache: "no-store" })
-      .then(response => response.status !== 404, () => { reviewAnswers.delete(handle); return false; }));
+    const asked = handle.mdrevFetch(`${REVIEW_CONTRACT}/review?${query}`, { cache: "no-store" })
+      .then(response => response.status !== 404, () => false);
+    reviewAnswers.set(handle, asked);
+    asked.then(offered => { if (!offered && reviewAnswers.get(handle) === asked) reviewAnswers.delete(handle); });
   }
   return reviewAnswers.get(handle);
 }

@@ -1899,8 +1899,10 @@ fn a_phone_download_opens_the_share_sheet_and_a_desktop_saves() {
 /// not ideal". Where a tap hands the file to the share sheet (a touch screen with the Web Share API),
 /// every control that does so says Share and wears the share glyph; a desktop's stays ↓ and
 /// Download. Both readers are elsewhere, so the control beside a file is its download: the prompt
-/// attachment's, and the pane head's once the file is open. The share API is stubbed before the
-/// page loads, in both, so the pointer alone decides (Chrome on Linux has no `navigator.share`).
+/// attachment's, and the pane head's once the file is open. A file the pane cannot show says Share
+/// in its body and its head alike, and Download in both when it is too large to hold, which streams
+/// it. The share API is stubbed before the page loads, in both, so the pointer alone decides
+/// (Chrome on Linux has no `navigator.share`).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_phone_shares_where_a_desktop_downloads() {
@@ -1913,9 +1915,25 @@ fn a_phone_shares_where_a_desktop_downloads() {
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::write(repo.join("notes.md"), "# Notes\n").unwrap();
     let note = repo.join("notes.md").display().to_string();
+    // A file the pane cannot show, which the session hands over: the pane's body offers it, and the head
+    // says the same as the body.
+    let bin = repo.join("data.bin");
+    std::fs::write(
+        &bin,
+        (0..4096u32)
+            .map(|i| (i * 37 + 11) as u8)
+            .collect::<Vec<u8>>(),
+    )
+    .unwrap();
+    let bin = bin.display().to_string();
     let mut j = user_at("look at my notes", &at("00:01"));
     j += &restored_file_at(&note, "notes.md", 1, &at("00:01"));
     j += &harness::assistant_at("Read them.", &at("00:02"));
+    j += &format!(
+        "{{\"type\":\"assistant\",\"message\":{{\"role\":\"assistant\",\"content\":[{{\"type\":\"tool_use\",\"id\":\"s1\",\"name\":\"SendUserFile\",\"input\":{{\"files\":[{bin:?}],\"caption\":\"the data\",\"status\":\"normal\"}}}}]}},\"timestamp\":\"{}\"}}\n",
+        at("00:03")
+    );
+    j += &tool_result_at("s1", &at("00:04"));
     let j = j.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
     stores.claude_session(SID730, &j);
     let m = Monitor::spawn_remote(Kind::V1, 2794, &base, Some(&stores));
@@ -1963,6 +1981,42 @@ fn a_phone_shares_where_a_desktop_downloads() {
             "head": ["Share this file", "Share this file", "svg"],
         }),
         "a phone's controls say Share and wear the share glyph"
+    );
+    // The file the pane cannot show: its body and the head both say Share; a file too large to hold
+    // (`inMemoryMax` under its size) streams to the browser's download, and both say Download.
+    let binary = |tab: &headless_chrome::Tab, query: &str| -> serde_json::Value {
+        m.open_remote(tab, &format!("?ui=app&session={SID730}{query}"));
+        let link = format!("[data-reference-path={bin:?}]");
+        until(
+            tab,
+            &format!("!!document.querySelector({link:?})"),
+            "the delivered data.bin",
+            Duration::from_secs(30),
+            "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 200) : 'no transcript'",
+        );
+        eval(
+            tab,
+            &format!("document.querySelector({link:?}).click(); 'ok'"),
+        );
+        until(
+            tab,
+            "!!document.querySelector('#previewBody [data-preview-download]') && (function () { var h = document.querySelector('#previewHead .preview-download'); return !!h && !h.hidden; })()",
+            "the pane offering data.bin in its body and its head",
+            Duration::from_secs(20),
+            controls,
+        );
+        let read = r#"(function () { var b = document.querySelector('#previewBody [data-preview-download]'), h = document.querySelector('#previewHead .preview-download'); return JSON.stringify({ body: b.textContent, head: [h.getAttribute('title'), h.querySelector('svg') ? 'svg' : h.textContent] }); })()"#;
+        serde_json::from_str(eval(tab, read).as_str().unwrap()).unwrap()
+    };
+    assert_eq!(
+        binary(&phone, ""),
+        serde_json::json!({ "body": "Share", "head": ["Share this file", "svg"] }),
+        "a file the pane cannot show says Share in its body and its head"
+    );
+    assert_eq!(
+        binary(&phone, "&inMemoryMax=1024"),
+        serde_json::json!({ "body": "Download", "head": ["Download this file", "↓"] }),
+        "a file too large to hold says Download in its body and its head, as both stream it"
     );
 
     let rule = format!(

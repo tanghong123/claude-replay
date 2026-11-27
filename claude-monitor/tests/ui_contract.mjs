@@ -6006,6 +6006,18 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.equal((previewSource.match(/this\.actions\.reviewSheet/g) || []).length, 1, "and reads it nowhere else");
   console.log("#s596 review sheet cases passed");
 }
+// #s730: every control whose tap hands the reader a file says what the tap does, asked of `handOver`:
+// an attachment card's own button (whose tap is the download, and which no control beside it
+// repeats for a remote reader), the pane head's, and its body's, the head given the size the body
+// knows, so a file too large to hold reads Download in both.
+{
+  const componentsSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  const previewSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
+  assert.match(componentsSrc, /\$\{escapeText\(capability\.action === "download" \? handOver\(\)\.verb : capability\.label\)\} →<\/button>/, "an attachment card's download button says Share where its tap shares");
+  assert.match(previewSrc, /if \(beside === "download"\) this\.labelDownload\(this\.downloadSize\?\.id === item\.id \? this\.downloadSize\.size : undefined\);/, "the head's control keeps the size its body was drawn with");
+  assert.match(previewSrc, /this\.downloadSize = \{ id: item\.id, size \};\n    if \(!this\.downloadBtn\.hidden\) this\.labelDownload\(size\);/, "and the body's drawing labels the head with it");
+  console.log("#s730 hand-over words cases passed");
+}
 
 // #s429 stage 7: the unmount. Every listener the view binds on the page carries its signal, the
 // timers, frames and observers its code starts are made through the names it keeps, the modules

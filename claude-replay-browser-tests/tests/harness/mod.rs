@@ -1622,6 +1622,10 @@ pub fn configure_monitor_environment(
         // then admits no browser at all: none may leak in from the shell that runs the suite.
         // A case that wants one sets it (`Monitor::spawn_remote`).
         .env_remove("AGENT_MONITOR_TRUSTED_HOSTS")
+        // mdrev's state and viewer key are the case's own: a case that offers shared review sets
+        // them (#s733), and none comes from the shell that runs the suite.
+        .env_remove("MDREV_STATE_DIR")
+        .env_remove("MDREV_VIEWER_KEY")
         .env("XDG_CONFIG_HOME", base.join("config"))
         .env("XDG_DATA_HOME", base.join("data"))
         .env("XDG_STATE_HOME", base.join("xdg-state"))

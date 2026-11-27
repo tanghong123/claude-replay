@@ -152,7 +152,7 @@ function rendererBody(view, state) {
     // renderer is `noninteractive` (see above) and draws as ONE head line — the kind, the
     // path, and the path itself clickable through `targetHtml`. A pointer looks like a pointer.
     if (isPointerAttachment(h)) return "";
-    return `<div class="renderer-note"><strong>${escapeText(h.att_kind || "file")} · ${escapeText(h.att_name || "attachment")}</strong><p>${capability.action === "copy" ? "This session kept only the original file path." : ""}</p><button class="artifact-link" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}">${escapeText(capability.label)} →</button>${besideHtml(view, h, capability)}</div>`;
+    return `<div class="renderer-note"><strong>${escapeText(h.att_kind || "file")} · ${escapeText(h.att_name || "attachment")}</strong><p>${capability.action === "copy" ? "This session kept only the original file path." : ""}</p><button class="artifact-link" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}">${escapeText(capability.action === "download" ? handOver().verb : capability.label)} →</button>${besideHtml(view, h, capability)}</div>`;
   }
   if (view.renderer === "bash") return `<div class="renderer-terminal ${view.error ? "error" : ""}"><span class="output">${bodyHtml(view, state) || "No output recorded"}</span></div>`;
   // #168: a record with nothing to show renders NOTHING. A card whose only content is a sentence

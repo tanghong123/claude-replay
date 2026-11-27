@@ -452,16 +452,7 @@ export class Preview {
     const beside = item ? besideAction(item, backend().local) : null;
     this.revealBtn.hidden = beside !== "reveal";
     this.downloadBtn.hidden = beside !== "download";
-    // #s730: where the tap opens the share sheet, the control says so (its More row too, which copies
-    // the glyph and the title).
-    if (beside === "download") {
-      const { verb, glyph } = handOver();
-      if (this.downloadBtn.title !== `${verb} this file`) {
-        this.downloadBtn.innerHTML = glyph;
-        this.downloadBtn.title = `${verb} this file`;
-        this.downloadBtn.setAttribute("aria-label", `${verb} this file`);
-      }
-    }
+    if (beside === "download") this.labelDownload(this.downloadSize?.id === item.id ? this.downloadSize.size : undefined);
     // No file tab selected and something was published: the roster is what the pane shows —
     // so it is also what a freshly opened pane lands on, without hunting for a control.
     const roster = !item && this.roster.length > 0;
@@ -539,12 +530,25 @@ export class Preview {
     };
     body.querySelector("[data-close-preview]").onclick = () => this.closeTab(item.id);
   }
+  /** #s730: where the head's hand-over control opens the share sheet it says so, and a file known to
+   *  be too large to hold, which streams to the browser's download, says Download (its More row too,
+   *  which copies the glyph and the title). */
+  labelDownload(size) {
+    const { verb, glyph } = handOver(size);
+    if (this.downloadBtn.title === `${verb} this file`) return;
+    this.downloadBtn.innerHTML = glyph;
+    this.downloadBtn.title = `${verb} this file`;
+    this.downloadBtn.setAttribute("aria-label", `${verb} this file`);
+  }
   /** A file the page does not show: a download, with the file's place above it — and the head's
    *  reveal beside it (#272). */
   showDownload(item, size) {
     const body = byId("previewBody"); body.classList.remove("production-loading");
-    // #s730: Share where the tap opens the share sheet; a file too large to hold still downloads.
+    // #s730: Share where the tap opens the share sheet; a file too large to hold still downloads, and
+    // the head's control says the same as the body's.
     const { verb } = handOver(size), share = verb === "Share";
+    this.downloadSize = { id: item.id, size };
+    if (!this.downloadBtn.hidden) this.labelDownload(size);
     const bytes = size >= 1048576 ? `${(size / 1048576).toFixed(1)} MB` : size >= 1024 ? `${Math.round(size / 1024)} KB` : size ? `${size} bytes` : "";
     body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div></div><div class="preview-error preview-download"><strong>No preview for this file</strong><span>${escapeText(item.name)}${bytes ? ` · ${bytes}` : ""} — this pane shows text and images; ${share ? "share it to save it or open it elsewhere" : "this file downloads"}.</span><div class="preview-error-actions"><button class="smallbtn sv-primary" data-preview-download>${verb}</button></div></div>`;
     body.querySelector("[data-preview-download]").onclick = () => this.actions.download?.(item);
