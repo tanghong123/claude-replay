@@ -406,6 +406,7 @@ mod tests {
             provisional: vec![],
             user_times: vec![],
             turn_durations: vec![],
+            answer_readings: Default::default(),
             metrics: Default::default(),
             index: Default::default(),
             sub_agents: Default::default(),

@@ -1489,8 +1489,9 @@ class VirtualWindow {
    *  here by `placeAfter`'s own rule and no second converge follows; a count of zero empties the
    *  window. A page never names the WINDOW (it may name the run it rewrote), and never changes its records from inside an engine
    *  callback: the transaction would be queued and the page would read a model that has not
-   *  changed yet. */
-  recordsChanged(mutate) {
+   *  changed yet. The optional `after` runs after the mount and placement, even if the transaction
+   *  was queued; use it for DOM updates that depend on the new records. */
+  recordsChanged(mutate, after) {
     // #314 (design/tail-first-open.md): a page that put `shift` more items where ONE stood at
     // `from` — a tail-first open's pending head replaced by the records it stood for — returns
     // `{ from, shift }` instead of a bare index. Every item after it keeps its identity and moves
@@ -1523,6 +1524,7 @@ class VirtualWindow {
       translate: p0 => (moved ? this.shiftPosition(p0, moved.from, moved.shift, moved.renamed) : p0),
       dirtyFrom: from => bounded || from,
       range: p0 => this.count ? this.rangeFor(p0) : { lo: 0, hi: 0 },
+      after,
     });
   }
 

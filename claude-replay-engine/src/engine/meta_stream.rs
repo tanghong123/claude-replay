@@ -18,7 +18,7 @@
 //! their sum. A checkpoint is simply one of these written down, which is why adopting one and
 //! folding from the start must agree.
 
-use crate::engine::session::{ChildMeta, SessionMeta};
+use crate::engine::session::{AnswerSpeed, AnswerTotals, ChildMeta, LastAnswer, SessionMeta};
 use crate::engine::tasks::{TaskFold, TaskOp};
 use crate::metrics::TokenCounts;
 use crate::model::{AgentId, AgentStatus, Block, ByteOffset, EpochSeconds};
@@ -478,7 +478,8 @@ pub const COMPACT_AFTER: usize = 256;
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 101;
+/// v102: per-turn and per-model answer speed requires refolding older cached prefixes.
+pub const FOLD_VERSION: u16 = 102;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).
@@ -541,6 +542,12 @@ pub struct MetaRecord {
     /// durations recorded, which is also what 19% of turns genuinely have.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub turn_durations: Vec<Option<u64>>,
+    /// Frozen readings for the turns committed by this drain.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub turn_answers: Vec<Option<AnswerSpeed>>,
+    /// Monotone answer counters between successive resume boundaries.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub answer_totals: BTreeMap<Model, AnswerTotals>,
     /// Per-model token increments (#104). Summed per key on fold.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub tokens: BTreeMap<Model, TokenCounts>,
@@ -566,6 +573,12 @@ pub struct MetaRecord {
     pub cwd: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub span: Option<(EpochSeconds, EpochSeconds)>,
+    /// Latest valid closed answer at the resume boundary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_answer: Option<LastAnswer>,
+    /// Whether the open answer at this boundary started before the first turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excluded_open_answer: Option<bool>,
     /// The transcript ran with the agent's Bash sandbox on, as of this resume point (#s381);
     /// written when it changes. A stream from before it reads as off.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -657,6 +670,14 @@ pub struct MaterializedMeta {
     pub agent_ids: HashMap<String, (AgentId, String)>,
     pub user_times: Vec<Option<EpochSeconds>>,
     pub turn_durations: Vec<Option<u64>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub turn_answers: Vec<Option<AnswerSpeed>>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub answer_totals: BTreeMap<Model, AnswerTotals>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_answer: Option<LastAnswer>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub excluded_open_answer: bool,
     pub tokens: BTreeMap<Model, TokenCounts>,
     pub extra: BTreeMap<String, u64>,
     /// Ops **applied** as they arrive — carries the list and the unjoined creates, so
@@ -737,6 +758,14 @@ impl MaterializedMeta {
         // An older record carries no durations at all; keep the two the same length so the
         // renderer can index either by turn ordinal.
         self.turn_durations.resize(self.user_times.len(), None);
+        self.turn_answers.extend(r.turn_answers.iter().cloned());
+        self.turn_answers.resize(self.user_times.len(), None);
+        for (model, totals) in &r.answer_totals {
+            self.answer_totals
+                .entry(model.clone())
+                .or_default()
+                .add(*totals);
+        }
         for (m, c) in &r.tokens {
             *self.tokens.entry(m.clone()).or_default() += *c;
         }
@@ -756,6 +785,12 @@ impl MaterializedMeta {
         }
         if let Some(s) = r.span {
             self.span = Some(s);
+        }
+        if let Some(last) = &r.last_answer {
+            self.last_answer = Some(last.clone());
+        }
+        if let Some(excluded) = r.excluded_open_answer {
+            self.excluded_open_answer = excluded;
         }
         if let Some(on) = r.sandbox_on {
             self.sandbox_on = on;

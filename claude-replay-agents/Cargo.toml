@@ -28,3 +28,4 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 
 [dev-dependencies]
 claude-replay-core = { path = "../claude-replay-core" }
+claude-replay-present = { path = "../claude-replay-present" }

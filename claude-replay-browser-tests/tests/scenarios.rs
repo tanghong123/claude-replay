@@ -22742,3 +22742,445 @@ fn app_shell_a_far_scroll_beside_a_size_report_raises_no_loop_notice() {
     let page = open_with(Surface::AppShell, &fx, 3149, "trace=viewport");
     scenario_a_far_scroll_beside_a_size_report_raises_no_loop_notice(&page.tab, Surface::AppShell);
 }
+
+/// Synthetic, timed answers for both pages and a later live answer.
+fn answer_speed_fixture(name: &str) -> Fixture {
+    let base = base(name);
+    let stores = Stores::new(&base);
+    let mut transcript = long_session(12, Shape::default());
+    let answer = |id: &str, model: &str, tokens: u64, timestamp: &str| {
+        format!(
+            "{}\n",
+            serde_json::json!({"type":"assistant", "timestamp":timestamp,
+            "message":{"role":"assistant", "id":id, "model":model,
+                "usage":{"input_tokens":10,"output_tokens":tokens},
+                "content":[{"type":"text","text":"Synthetic measured answer."}]}})
+        )
+    };
+    transcript += &user_at("Measured answer with duration", "2025-10-30T10:00:00Z");
+    transcript += &answer("speed-a", "claude-opus-4-8", 64, "2025-10-30T10:00:02Z");
+    transcript += &harness::turn_duration_at(46_000, "2025-10-30T10:00:03Z");
+    transcript += &user_at("Second model", "2025-10-30T10:01:00Z");
+    transcript += &answer("speed-b", "gpt-example", 60, "2025-10-30T10:01:03Z");
+    transcript += &user_at("Live answer without duration", "2025-10-30T10:02:00Z");
+    let path = stores.claude_session(SID, &transcript);
+    Fixture {
+        base,
+        path,
+        turns: 15,
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn answer_speed_on_both_pages_and_live_updates() {
+    let _serial = serial();
+    for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 3291)] {
+        let fx = answer_speed_fixture(match surface {
+            Surface::Classic => "answer-speed-classic",
+            _ => "answer-speed-app",
+        });
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(
+            &page.tab,
+            surface,
+            "the answer speed fixture to reach its tail",
+        );
+        let first = match surface {
+            Surface::Classic => "document.querySelector('[data-turn=\"13\"] [data-turn-reading]')",
+            _ => "document.querySelector('.turn[data-turn=\"13\"] [data-turn-reading]')",
+        };
+        until(
+            &page.tab,
+            &format!("!!{first} && {first}.textContent.includes('worked 46s · 32 tok/s')"),
+            "the measured answer and duration",
+            Duration::from_secs(15),
+            &format!("({first} || {{textContent:'missing'}}).textContent"),
+        );
+        let title = eval(&page.tab, &format!("{first}.title"));
+        assert!(title
+            .as_str()
+            .unwrap_or("")
+            .contains("64 output tokens in 2.0 s of generation"));
+        let info = match surface {
+            Surface::Classic => "document.getElementById('usage').textContent",
+            _ => "document.getElementById('navigatorSession').textContent",
+        };
+        until(&page.tab, &format!("{info}.includes('Answer speed') && {info}.includes('opus4.8') && {info}.includes('gpt-example') && {info}.includes('last answer')"),
+            "the per-model and last-answer rows", Duration::from_secs(10), info);
+        let last = match surface {
+            Surface::Classic => "document.querySelector('[data-turn=\"15\"] [data-turn-reading]')",
+            _ => "document.querySelector('.turn[data-turn=\"15\"] [data-turn-reading]')",
+        };
+        assert_eq!(
+            eval(&page.tab, &format!("!!{last}")),
+            false,
+            "no answer must not show zero"
+        );
+        let line = format!(
+            "{}\n",
+            serde_json::json!({"type":"assistant","timestamp":"2025-10-30T10:02:02Z",
+            "message":{"role":"assistant","id":"speed-live","model":"gpt-example",
+                "usage":{"input_tokens":10,"output_tokens":32},"content":[{"type":"text","text":"Live result."}]}})
+        );
+        harness::append(&fx.path, &line);
+        until(
+            &page.tab,
+            &format!("!!{last} && {last}.textContent === '16 tok/s'"),
+            "the live no-duration answer to update",
+            Duration::from_secs(20),
+            &format!("({last} || {{textContent:'missing'}}).textContent"),
+        );
+        if surface == Surface::AppShell {
+            harness::phone(&page.tab, 390, 844);
+            until(&page.tab, "innerWidth === 390 && document.getElementById('sessionView').classList.contains('pl-phone')", "phone layout", Duration::from_secs(10), "innerWidth");
+            for _ in 0..2 {
+                let probe = eval(&page.tab, &format!("(function(){{ var e={first}; var p=e.parentElement, t=[...p.querySelectorAll(':scope > .turn-time')]; return JSON.stringify({{font:getComputedStyle(e).fontSize, top:t.map(x=>Math.round(x.getBoundingClientRect().top)), width:e.getBoundingClientRect().width, scroll:e.scrollWidth}}); }})()"));
+                let values: serde_json::Value =
+                    serde_json::from_str(probe.as_str().unwrap()).unwrap();
+                assert_eq!(values["font"], "11px");
+                assert_eq!(
+                    values["top"][0], values["top"][1],
+                    "phone turn remains on one line: {values}"
+                );
+                assert!(
+                    values["width"].as_f64().unwrap() + 1.0 >= values["scroll"].as_f64().unwrap()
+                );
+                eval(
+                    &page.tab,
+                    "document.querySelector('.transcript').focus(); 'ok'",
+                );
+                for _ in 0..12 {
+                    key(&page.tab, "+", false);
+                }
+                assert_eq!(
+                    eval(&page.tab, "document.getElementById('sessionView').style.getPropertyValue('--code-size')"),
+                    "16px",
+                    "the maximum reading size was actually selected"
+                );
+            }
+            eval(
+                &page.tab,
+                "document.getElementById('phoneInfo').click(); 'ok'",
+            );
+            until(&page.tab, "document.querySelector('#navigatorSession [data-info-group=\"answer speed\"]') && document.getElementById('navigatorSession').textContent.includes('last answer')", "phone Info answer speed", Duration::from_secs(10), info);
+        }
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn answer_speed_on_all_five_turn_openers() {
+    let _serial = serial();
+    // The classic server runs inside the test process, so it needs the same inbox key source as
+    // the standalone replay binary. The fixture supplies its own key through ARIES_STATE_DIR.
+    claude_replay_core::claude_inbox::install_key_source(
+        claude_replay_core::claude_inbox::key_from_state_dir,
+    );
+    for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 3292)] {
+        let base = base(match surface {
+            Surface::Classic => "answer-openers-classic",
+            _ => "answer-openers-app",
+        });
+        let stores = Stores::new(&base);
+        stores.aries_key();
+        let line = |v: serde_json::Value| format!("{v}\n");
+        let stamp = |age: u64| format!("2025-10-30T10:00:{:02}Z", 100 - age);
+        let mut transcript = long_session(12, Shape::default());
+        let answer = |id: &str, age: u64| {
+            line(
+                serde_json::json!({"type":"assistant","timestamp":stamp(age),
+            "message":{"role":"assistant","id":id,"model":"gpt-example","usage":{"output_tokens":64},
+                "content":[{"type":"text","text":"Synthetic answer."}]}}),
+            )
+        };
+        transcript += &user_at("ordinary prompt", &stamp(100));
+        transcript += &answer("open-a", 98);
+        transcript += &line(
+            serde_json::json!({"type":"user","timestamp":stamp(90),"message":{"role":"user","content":"<!-- reply 1 -->\n> selected words\n\nA reply"}}),
+        );
+        transcript += &answer("open-b", 88);
+        let inbox = claude_replay_core::claude_inbox::sign_for_test(&[0;32], &format!("<aries-inbox v=\"1\" from=\"Reader\" via=\"dashboard\" kind=\"relay\" at=\"{}\" id=\"speed-inbox\" sig=\"-\">\nRelayed words\n</aries-inbox>", stamp(80)));
+        transcript += &line(
+            serde_json::json!({"type":"user","timestamp":stamp(80),"origin":{"kind":"human"},"message":{"role":"user","content":format!("\n\n<pasted_content id=\"a1\">\n{inbox}\n</pasted_content id=\"a1\">\n")}}),
+        );
+        transcript += &answer("open-c", 78);
+        transcript += &harness::command_at("review", "sample", "", &stamp(70));
+        transcript += &answer("open-d", 68);
+        let peer = "Synthetic peer message";
+        transcript += &line(
+            serde_json::json!({"type":"user","timestamp":stamp(60),"isMeta":true,"promptSource":"system","turnOrigin":"peer",
+            "origin":{"kind":"peer","from":"uds:/tmp/peer.sock","verifiedPeerPid":1,"msg_id":"speed-peer","name":"peer","body":peer},"message":{"role":"user","content":format!("Another Claude session sent a message:\n<cross-session-message from=\"uds:/tmp/peer.sock\" from-name=\"peer\">\n{peer}\n</cross-session-message>")}}),
+        );
+        transcript += &answer("open-e", 58);
+        let path = stores.claude_session(SID, &transcript);
+        let fx = Fixture {
+            base,
+            path,
+            turns: 17,
+        };
+        let page = open_with(surface, &fx, port, "mountall=1");
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "all turn openers");
+        let prefix = if surface == Surface::Classic {
+            "#stream"
+        } else {
+            ".virtual-window"
+        };
+        for turn in 13..=17 {
+            let selector = format!("{prefix} [data-turn=\"{turn}\"] [data-turn-reading]");
+            let expr = format!("document.querySelector({selector:?})");
+            until(
+                &page.tab,
+                &format!("!!{expr} && {expr}.textContent.includes('32 tok/s')"),
+                &format!("turn opener {turn}"),
+                Duration::from_secs(12),
+                &format!("({expr} || {{textContent:'missing'}}).textContent"),
+            );
+        }
+        let kinds = harness::probe(
+            &page.tab,
+            if surface == Surface::Classic {
+                "[!!document.querySelector('#stream .uturn.inbox'), !!document.querySelector('#stream .fold.uturn'), !!document.querySelector('#stream .pturn')]"
+            } else {
+                "[!!document.querySelector('.turn .quoted-reply'), !!document.querySelector('.turn.inbox'), !!document.querySelector('.turn.command'), !!document.querySelector('.turn.peer')]"
+            },
+        );
+        assert!(kinds.as_array().unwrap().iter().all(|kind| kind == true),
+            "{surface:?}: the reply, relayed, command, and peer openers were actually rendered: {kinds}");
+    }
+}
+
+/// Capture the actual pull payloads while leaving the page's own fetch/response untouched.
+fn watch_answer_pulls(tab: &headless_chrome::Tab) {
+    eval(
+        tab,
+        r#"(function() {
+      window.__answerPulls = []; window.__answerErrors = [];
+      window.addEventListener('error', e => window.__answerErrors.push(e.message));
+      window.addEventListener('unhandledrejection', e => window.__answerErrors.push(String(e.reason)));
+      var original = window.fetch;
+      window.fetch = function() {
+        var args = arguments;
+        return original.apply(this, args).then(function(response) {
+          if (String(args[0]).includes('pull?')) response.clone().json().then(function(body) { window.__answerPulls.push(body); }).catch(function() {});
+          return response;
+        });
+      };
+      return 'ok';
+    })()"#,
+    );
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn answer_speed_codex_metadata_only_and_virtual_remount() {
+    let _serial = serial();
+    for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 3293)] {
+        let base = base(if surface == Surface::Classic {
+            "speed-meta-classic"
+        } else {
+            "speed-meta-app"
+        });
+        let stores = Stores::new(&base);
+        let mut transcript = codex_tool_session("speed-meta", 40);
+        transcript += concat!(
+            "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-example\"}}\n",
+            "{\"timestamp\":\"2026-10-30T10:00:00Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"Measured prompt\"}]}}\n",
+            "{\"timestamp\":\"2026-10-30T10:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"Measured reply\"}]}}\n",
+            "{\"timestamp\":\"2026-10-30T10:00:02Z\",\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"r\"}}\n"
+        );
+        let path = stores.codex_session("speed-meta", &transcript);
+        let fx = Fixture {
+            base,
+            path,
+            turns: 41,
+        };
+        let page = open(surface, &fx, port);
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "Codex answer tail");
+        let card = if surface == Surface::Classic {
+            "#stream [data-turn=\"41\"]"
+        } else {
+            ".virtual-window .turn[data-turn=\"41\"]"
+        };
+        let reading = format!("{card} [data-turn-reading]");
+        watch_answer_pulls(&page.tab);
+        until(
+            &page.tab,
+            "window.__answerPulls.length > 0",
+            "initial idle pull",
+            Duration::from_secs(15),
+            "window.__answerPulls.length",
+        );
+        eval(&page.tab, &format!("window.__baseGen = window.__answerPulls.at(-1).meta_gen; window.__baseProv = window.__answerPulls.at(-1).provisional_gen; window.__answerPulls = []; window.__speedCard = document.querySelector({card:?}); 'ok'"));
+        harness::append(&fx.path, "{\"timestamp\":\"2026-10-30T10:00:03Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":10,\"output_tokens\":100},\"total_token_usage\":{\"input_tokens\":10,\"output_tokens\":100}}}}\n");
+        let expr = format!("document.querySelector({reading:?})");
+        until(
+            &page.tab,
+            &format!("!!{expr} && {expr}.textContent === '50 tok/s'"),
+            "metadata-only Codex speed",
+            Duration::from_secs(20),
+            &format!("({expr} || {{textContent:'missing'}}).textContent"),
+        );
+        assert_eq!(
+            eval(
+                &page.tab,
+                &format!("window.__speedCard === document.querySelector({card:?})")
+            ),
+            true,
+            "metadata updates the mounted card in place"
+        );
+        until(&page.tab, "window.__answerPulls.some(r => r.meta && r.meta_gen !== window.__baseGen && r.provisional_gen === window.__baseProv && r.provisional.length === 0 && !r.committed_ext)", "metadata-only pull without blocks", Duration::from_secs(10), "JSON.stringify(window.__answerPulls)");
+        scroll_by(&page.tab, surface, -1_000_000);
+        until(
+            &page.tab,
+            &format!("!document.querySelector({card:?})"),
+            "the open turn to unmount",
+            Duration::from_secs(15),
+            &format!("!!document.querySelector({card:?})"),
+        );
+        jump_to_end(&page.tab, surface);
+        until(
+            &page.tab,
+            &format!("!!{expr} && {expr}.textContent === '50 tok/s'"),
+            "remounted Codex answer retains its speed",
+            Duration::from_secs(20),
+            &format!("({expr} || {{textContent:'missing'}}).textContent"),
+        );
+        assert_eq!(eval(&page.tab, "window.__answerErrors.length"), 0);
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn answer_speed_preserves_worked_label_during_in_place_update() {
+    let _serial = serial();
+    for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 3294)] {
+        let base = base(if surface == Surface::Classic {
+            "speed-worked-classic"
+        } else {
+            "speed-worked-app"
+        });
+        let stores = Stores::new(&base);
+        let mut transcript = long_session(40, Shape::default());
+        transcript += &user_at("Answer with a duration", "2026-10-30T10:00:00Z");
+        transcript += &harness::turn_duration_at(46_000, "2026-10-30T10:00:01Z");
+        let path = stores.claude_session(SID, &transcript);
+        let fx = Fixture {
+            base,
+            path,
+            turns: 41,
+        };
+        let page = open(surface, &fx, port);
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "worked turn tail");
+        let card = if surface == Surface::Classic {
+            "#stream [data-turn=\"41\"]"
+        } else {
+            ".virtual-window .turn[data-turn=\"41\"]"
+        };
+        let expr = format!(
+            "document.querySelector({:?})",
+            format!("{card} [data-turn-reading]")
+        );
+        until(
+            &page.tab,
+            &format!("!!{expr} && {expr}.textContent === 'worked 46s'"),
+            "existing worked duration",
+            Duration::from_secs(15),
+            &format!("({expr} || {{textContent:'missing'}}).textContent"),
+        );
+        eval(
+            &page.tab,
+            &format!("window.__speedCard = document.querySelector({card:?}); 'ok'"),
+        );
+        harness::append(&fx.path, "{\"type\":\"assistant\",\"timestamp\":\"2026-10-30T10:00:02Z\",\"message\":{\"role\":\"assistant\",\"id\":\"speed-worked\",\"model\":\"m\",\"usage\":{\"output_tokens\":64},\"content\":[]}}\n");
+        until(
+            &page.tab,
+            &format!("!!{expr} && {expr}.textContent === 'worked 46s · 32 tok/s'"),
+            "worked duration with updated answer speed",
+            Duration::from_secs(20),
+            &format!("({expr} || {{textContent:'missing'}}).textContent"),
+        );
+        assert_eq!(
+            eval(
+                &page.tab,
+                &format!("window.__speedCard === document.querySelector({card:?})")
+            ),
+            true
+        );
+        scroll_by(&page.tab, surface, -1_000_000);
+        until(
+            &page.tab,
+            &format!("!document.querySelector({card:?})"),
+            "worked turn to unmount",
+            Duration::from_secs(15),
+            &format!("!!document.querySelector({card:?})"),
+        );
+        jump_to_end(&page.tab, surface);
+        until(
+            &page.tab,
+            &format!("!!{expr} && {expr}.textContent === 'worked 46s · 32 tok/s'"),
+            "worked label and speed after remount",
+            Duration::from_secs(20),
+            &format!("({expr} || {{textContent:'missing'}}).textContent"),
+        );
+    }
+}
+
+#[test]
+#[ignore = "needs a local Chrome and a built agent-monitor"]
+fn answer_speed_queue_dequeue_replaces_stale_card() {
+    let _serial = serial();
+    for (surface, port) in [(Surface::Classic, 0), (Surface::AppShell, 3295)] {
+        let base = base(if surface == Surface::Classic {
+            "speed-queue-classic"
+        } else {
+            "speed-queue-app"
+        });
+        let stores = Stores::new(&base);
+        let mut transcript = long_session(12, Shape::default());
+        transcript += &user_at("Turn before queued command", "2026-10-30T10:00:00Z");
+        transcript += &queued_at("pending input", "2026-10-30T10:00:01Z");
+        transcript += &command_at("review", "check", "", "2026-10-30T10:00:02Z");
+        transcript += "{\"type\":\"assistant\",\"timestamp\":\"2026-10-30T10:00:04Z\",\"message\":{\"role\":\"assistant\",\"id\":\"queued-answer\",\"model\":\"m\",\"usage\":{\"output_tokens\":64},\"content\":[]}}\n";
+        let path = stores.claude_session(SID, &transcript);
+        let fx = Fixture {
+            base,
+            path,
+            turns: 14,
+        };
+        let page = open(surface, &fx, port);
+        jump_to_end(&page.tab, surface);
+        await_tail(&page.tab, surface, "queued command tail");
+        let queue = if surface == Surface::Classic {
+            "#vwin .qmarker"
+        } else {
+            ".virtual-window .renderer-queue"
+        };
+        let card = if surface == Surface::Classic {
+            "#vwin [data-turn=\"14\"]"
+        } else {
+            ".virtual-window .turn[data-turn=\"14\"]"
+        };
+        let expr = format!(
+            "document.querySelector({:?})",
+            format!("{card} [data-turn-reading]")
+        );
+        until(&page.tab, &format!("!!document.querySelector({queue:?}) && !!{expr} && {expr}.textContent.includes('32 tok/s')"), "queued marker and command answer", Duration::from_secs(15), &format!("({expr} || {{textContent:'missing'}}).textContent"));
+        if surface == Surface::Classic {
+            assert_eq!(probe(&page.tab, "[...document.querySelectorAll('#vwin > [data-idx]')].slice(-3).map(e => e.dataset.kind)"), serde_json::json!(["user", "queue", "command"]));
+        }
+        watch_answer_pulls(&page.tab);
+        harness::append(&fx.path, "{\"type\":\"queue-operation\",\"operation\":\"dequeue\",\"content\":\"pending input\",\"timestamp\":\"2026-10-30T10:00:05Z\"}\n");
+        until(&page.tab, &format!("!document.querySelector({queue:?}) && !!{expr} && {expr}.textContent.includes('32 tok/s')"), "dequeued command after replacement", Duration::from_secs(20), &format!("JSON.stringify({{queue:!!document.querySelector({queue:?}),reading:({expr} || {{textContent:'missing'}}).textContent,errors:window.__answerErrors}})"));
+        until(&page.tab, "window.__answerPulls.some(r => r.committed_ext && r.provisional.length === 1 && r.provisional[0].kind === 'command' && r.meta && r.meta.open_turn_ans && r.meta.open_turn_ans.length)", "commit user plus provisional command with answer override", Duration::from_secs(15), "JSON.stringify(window.__answerPulls)");
+        assert_eq!(
+            eval(&page.tab, "window.__answerErrors.length"),
+            0,
+            "no stale-card exception or resync loop"
+        );
+    }
+}

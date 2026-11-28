@@ -64,6 +64,8 @@ pub struct PullDelta {
     pub user_times: Vec<Option<EpochSeconds>>,
     /// Its #257 companion: how long each turn took, same length, same cursor.
     pub turn_durations: Vec<Option<u64>>,
+    pub answer_readings: crate::engine::session::AnswerReadings,
+    pub meta_gen: u64,
     pub metrics: Metrics,
     /// The maintained live header (turns / tools / children) — matches `committed ++ provisional`.
     pub meta: SessionMeta,
@@ -137,6 +139,8 @@ struct Inner<S: BlockStore> {
     epoch: u64,
     /// The current open-turn generation — see the module docs / `super::stream`.
     provisional_gen: u64,
+    /// Opaque, JavaScript-safe fingerprint of the currently exposed answer readings.
+    meta_gen: u64,
     /// The finalized open-turn length, refreshed on each advancing tick — so [`counters`](SharedSession::counters)
     /// (SharedSession::counters), the per-poll idle check, stays O(1) instead of re-finalizing
     /// the open window on every quiet poll.
@@ -164,7 +168,78 @@ struct Inner<S: BlockStore> {
     frozen: bool,
 }
 
+const MAX_SAFE_META_GEN: u64 = (1u64 << 53) - 1;
+
+/// A stable FNV-1a encoding, with field tags and byte lengths to frame every value.
+/// This deliberately avoids Rust's randomized hashers and platform-dependent encoding.
+struct AnswerFingerprint(u64);
+
+impl AnswerFingerprint {
+    fn new() -> Self {
+        Self(0xcbf29ce484222325)
+    }
+
+    fn field(&mut self, tag: u8, bytes: &[u8]) {
+        for byte in std::iter::once(tag)
+            .chain((bytes.len() as u64).to_le_bytes())
+            .chain(bytes.iter().copied())
+        {
+            self.0 = (self.0 ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+        }
+    }
+
+    fn finish(self) -> u64 {
+        (self.0 & MAX_SAFE_META_GEN).max(1)
+    }
+}
+
+/// Hash exactly the answer-speed fields served in `meta`, in their canonical order.
+/// Empty readings have revision zero; all other revisions are safe JSON integers.
+fn answer_meta_gen(readings: &crate::engine::session::AnswerReadings) -> u64 {
+    let turns = readings
+        .turns
+        .iter()
+        .enumerate()
+        .skip(readings.committed_turns)
+        .filter_map(|(turn, speed)| speed.as_ref().map(|speed| (turn, speed)));
+    let turn_count = turns.clone().count();
+    let speeds = readings.speeds(); // merged and sorted by displayed model name
+    if turn_count == 0 && speeds.is_empty() && readings.last.is_none() {
+        return 0;
+    }
+
+    let mut hash = AnswerFingerprint::new();
+    hash.field(0x00, b"answer-speed-v1");
+    hash.field(0x01, &(turn_count as u64).to_le_bytes());
+    for (turn, speed) in turns {
+        hash.field(0x02, &[]);
+        hash.field(0x03, &(turn as u64).to_le_bytes());
+        hash.field(0x04, &speed.tok.to_le_bytes());
+        hash.field(0x05, &speed.ms.to_le_bytes());
+        hash.field(0x06, &speed.n.to_le_bytes());
+        hash.field(0x07, speed.model.as_bytes());
+    }
+    hash.field(0x10, &(speeds.len() as u64).to_le_bytes());
+    for speed in &speeds {
+        hash.field(0x11, &[]);
+        hash.field(0x12, speed.model.as_bytes());
+        hash.field(0x13, &speed.tok.to_le_bytes());
+        hash.field(0x14, &speed.ms.to_le_bytes());
+        hash.field(0x15, &speed.n.to_le_bytes());
+    }
+    hash.field(0x20, &[u8::from(readings.last.is_some())]);
+    if let Some(last) = &readings.last {
+        hash.field(0x21, crate::metrics::short_model(&last.model).as_bytes());
+        hash.field(0x22, &last.tok.to_le_bytes());
+        hash.field(0x23, &last.ms.to_le_bytes());
+    }
+    hash.finish()
+}
+
 impl<S: BlockStore> Inner<S> {
+    fn update_answer_meta(&mut self, readings: &crate::engine::session::AnswerReadings) {
+        self.meta_gen = answer_meta_gen(readings);
+    }
     /// Append whatever the fold just authored. Errors are swallowed: a stream that cannot be
     /// written costs a longer resume next time, never a wrong session.
     fn record(&mut self, reset: bool) {
@@ -208,15 +283,22 @@ impl<S: BlockStore> SharedSession<S> {
     /// [`TierBStore::file`](crate::engine::tier_b::TierBStore::file) so the committed content of a
     /// followed session never sits in RAM.
     pub fn with_store(agent: Agent, path: &Path, store: S) -> Self {
+        Self::from_follower(FollowParser::with_store(
+            claude_replay_core::adapter(agent),
+            path,
+            store,
+        ))
+    }
+
+    /// Initialize from the follower's current state, including a restored durable prefix.
+    fn from_follower(follower: FollowParser<S>) -> Self {
+        let meta_gen = answer_meta_gen(&follower.answer_readings());
         Self {
             inner: Mutex::new(Inner {
-                follower: Box::new(FollowParser::with_store(
-                    claude_replay_core::adapter(agent),
-                    path,
-                    store,
-                )),
+                follower: Box::new(follower),
                 epoch: 1,
                 provisional_gen: 0,
+                meta_gen,
                 n_provisional: 0,
                 prev_provisional: Vec::new(),
                 meta: None,
@@ -249,6 +331,8 @@ impl<S: BlockStore> SharedSession<S> {
         // `patch_floor` — a raw-buffer signal — never sees. So diff the finalized view against
         // last tick's: any changed/shrunk prefix forces a gen bump (whole-provisional resend).
         let (provisional, _times) = follower.open_finalized();
+        let readings = follower.answer_readings();
+        g.update_answer_meta(&readings);
         let prefix_intact = g.prev_provisional.len() <= provisional.len()
             && g.prev_provisional
                 .iter()
@@ -291,6 +375,7 @@ impl<S: BlockStore> SharedSession<S> {
         let r = follower.open_read();
         let committed_delta: Vec<std::sync::Arc<Block>> =
             follower.committed()[prev_committed.min(committed_len)..].to_vec();
+        g.update_answer_meta(&r.answer_readings);
         // Same reshape/gen accounting as [`advance`](Self::advance) — see its comments.
         let prefix_intact = g.prev_provisional.len() <= r.provisional.len()
             && g.prev_provisional
@@ -377,6 +462,7 @@ impl<S: BlockStore> SharedSession<S> {
             committed_from,
             committed: g.follower.committed_tail(committed_from),
             provisional_gen: g.provisional_gen,
+            meta_gen: g.meta_gen,
             provisional_from,
             provisional: provisional[provisional_from..].to_vec(),
         }
@@ -409,6 +495,8 @@ impl<S: BlockStore> SharedSession<S> {
             provisional: r.provisional,
             user_times: r.user_times,
             turn_durations: r.turn_durations,
+            answer_readings: r.answer_readings,
+            meta_gen: g.meta_gen,
             metrics: r.metrics,
             meta: r.meta,
             tasks: r.tasks,
@@ -436,6 +524,8 @@ impl<S: BlockStore> SharedSession<S> {
             provisional: r.provisional,
             user_times: r.user_times,
             turn_durations: r.turn_durations,
+            answer_readings: r.answer_readings,
+            meta_gen: g.meta_gen,
             metrics: r.metrics,
             meta: r.meta,
             tasks: r.tasks,
@@ -456,6 +546,23 @@ impl<S: BlockStore> SharedSession<S> {
             g.follower.committed_len(),
             g.n_provisional,
         )
+    }
+
+    /// Block counters and the independent answer-reading revision from one snapshot.
+    pub fn counters_with_meta(&self) -> (u64, u64, usize, usize, u64) {
+        let g = super::lock_recover(&self.inner);
+        (
+            g.epoch,
+            g.provisional_gen,
+            g.follower.committed_len(),
+            g.n_provisional,
+            g.meta_gen,
+        )
+    }
+
+    /// Opaque, JS-safe answer-reading revision; it never changes the four-part block cursor.
+    pub fn meta_gen(&self) -> u64 {
+        super::lock_recover(&self.inner).meta_gen
     }
 
     /// The maintained live header (turns / tools / children) for the current tail — O(turn) to
@@ -628,24 +735,14 @@ impl<S: DurableStore> SharedSession<S> {
         mm: crate::engine::meta_stream::MaterializedMeta,
         resume: &crate::engine::meta_stream::Resume,
     ) -> Self {
-        Self {
-            inner: Mutex::new(Inner {
-                follower: Box::new(FollowParser::resume(
-                    claude_replay_core::adapter(agent),
-                    path,
-                    store,
-                    committed,
-                    mm,
-                    resume,
-                )),
-                epoch: 1,
-                provisional_gen: 0,
-                n_provisional: 0,
-                prev_provisional: Vec::new(),
-                meta: None,
-                frozen: false,
-            }),
-        }
+        Self::from_follower(FollowParser::resume(
+            claude_replay_core::adapter(agent),
+            path,
+            store,
+            committed,
+            mm,
+            resume,
+        ))
     }
 }
 
@@ -655,6 +752,193 @@ mod tests {
     use std::io::Write;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn answer_revision_covers_exposed_fields_and_is_js_safe() {
+        use crate::engine::session::{AnswerReadings, AnswerSpeed, AnswerTotals, LastAnswer};
+
+        assert_eq!(answer_meta_gen(&AnswerReadings::default()), 0);
+        let readings = AnswerReadings {
+            turns: vec![
+                None,
+                Some(AnswerSpeed {
+                    tok: 100,
+                    ms: 2000,
+                    n: 1,
+                    model: "model-a".into(),
+                }),
+            ],
+            committed_turns: 1,
+            totals: [(
+                "model-a".into(),
+                AnswerTotals {
+                    tok: 100,
+                    ms: 2000,
+                    n: 1,
+                },
+            )]
+            .into(),
+            last: Some(LastAnswer {
+                model: "model-a".into(),
+                tok: 100,
+                ms: 2000,
+                last: 10.0,
+            }),
+        };
+        let baseline = answer_meta_gen(&readings);
+        assert!((1..=MAX_SAFE_META_GEN).contains(&baseline));
+        assert_eq!(baseline, answer_meta_gen(&readings.clone()));
+
+        // One changed exposed field at a time, including the turn index and each list's model.
+        for field in 0..12 {
+            let mut changed = readings.clone();
+            match field {
+                0 => {
+                    let speed = changed.turns[1].take();
+                    changed.turns.push(speed);
+                }
+                1 => changed.turns[1].as_mut().unwrap().tok += 1,
+                2 => changed.turns[1].as_mut().unwrap().ms += 1,
+                3 => changed.turns[1].as_mut().unwrap().n += 1,
+                4 => changed.turns[1].as_mut().unwrap().model.push('b'),
+                5 => {
+                    let value = changed.totals.remove("model-a").unwrap();
+                    changed.totals.insert("model-b".into(), value);
+                }
+                6 => changed.totals.get_mut("model-a").unwrap().tok += 1,
+                7 => changed.totals.get_mut("model-a").unwrap().ms += 1,
+                8 => changed.totals.get_mut("model-a").unwrap().n += 1,
+                9 => changed.last.as_mut().unwrap().model.push('b'),
+                10 => changed.last.as_mut().unwrap().tok += 1,
+                11 => changed.last.as_mut().unwrap().ms += 1,
+                _ => unreachable!(),
+            }
+            let revision = answer_meta_gen(&changed);
+            assert_ne!(revision, baseline, "field {field}");
+            assert!((1..=MAX_SAFE_META_GEN).contains(&revision));
+        }
+
+        let mut unexposed = readings.clone();
+        unexposed.turns[0] = readings.turns[1].clone(); // committed turns are not in meta
+        unexposed.last.as_mut().unwrap().last = 11.0; // timestamp is not exposed
+        unexposed
+            .totals
+            .insert("ignored".into(), AnswerTotals::default());
+        assert_eq!(answer_meta_gen(&unexposed), baseline);
+
+        // Adjacent variable-length strings cannot be confused with a different split.
+        let mut a = AnswerReadings::default();
+        let speed = |model: &str| {
+            Some(AnswerSpeed {
+                tok: 1,
+                ms: 1,
+                n: 1,
+                model: model.into(),
+            })
+        };
+        a.turns = vec![speed("ab"), speed("c")];
+        let mut b = a.clone();
+        b.turns = vec![speed("a"), speed("bc")];
+        assert_ne!(answer_meta_gen(&a), answer_meta_gen(&b));
+    }
+
+    // This store's durable backing is unnecessary for testing a restored follower's initial state.
+    impl DurableStore for InMemoryStore {
+        fn load_from(&mut self, _at: u64) -> std::io::Result<Vec<Block>> {
+            Ok(Vec::new())
+        }
+        fn backing_len(&self) -> u64 {
+            0
+        }
+        fn adopt(&mut self, _n: usize, _meta: &SessionMeta) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn restored_session_starts_with_its_current_answer_revision() {
+        use crate::engine::meta_stream::{MaterializedMeta, Resume};
+        use crate::engine::session::{AnswerReadings, AnswerTotals, LastAnswer};
+
+        let path = tmp();
+        std::fs::write(&path, "").unwrap();
+        let totals = [(
+            "model-a".into(),
+            AnswerTotals {
+                tok: 100,
+                ms: 2000,
+                n: 1,
+            },
+        )]
+        .into();
+        let last = Some(LastAnswer {
+            model: "model-a".into(),
+            tok: 100,
+            ms: 2000,
+            last: 10.0,
+        });
+        let mm = MaterializedMeta {
+            answer_totals: totals,
+            last_answer: last,
+            ..Default::default()
+        };
+        let expected = answer_meta_gen(&AnswerReadings {
+            totals: mm.answer_totals.clone(),
+            last: mm.last_answer.clone(),
+            ..Default::default()
+        });
+        let resume = Resume {
+            id: 0,
+            replay_from: 0,
+            prev_ts: None,
+            pending_ts: None,
+            pre: serde_json::Value::Null,
+            metrics_state: serde_json::Value::Null,
+        };
+        let ss = SharedSession::resume(Agent::CODEX, &path, InMemoryStore, Vec::new(), mm, &resume);
+        assert_ne!(expected, 0);
+        assert_eq!(ss.counters_with_meta().4, expected, "before the first fold");
+        assert!(!ss.advance().unwrap());
+        assert_eq!(
+            ss.meta_gen(),
+            expected,
+            "an idle advance retains the restored revision"
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn answer_revision_tracks_poll_view_advance_and_reset() {
+        use crate::engine::session::ArcStore;
+        let path = tmp();
+        append(&path, concat!(
+            "{\"type\":\"turn_context\",\"payload\":{\"model\":\"gpt-example\"}}\n",
+            "{\"timestamp\":\"2026-10-30T10:00:00Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"user\",\"content\":[{\"type\":\"input_text\",\"text\":\"go\"}]}}\n",
+            "{\"timestamp\":\"2026-10-30T10:00:01Z\",\"type\":\"response_item\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}}\n",
+            "{\"timestamp\":\"2026-10-30T10:00:02Z\",\"type\":\"token_usage_record\",\"payload\":{\"response_id\":\"r\"}}\n",
+            "{\"timestamp\":\"2026-10-30T10:00:03Z\",\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{\"last_token_usage\":{\"input_tokens\":10,\"output_tokens\":100},\"total_token_usage\":{\"input_tokens\":10,\"output_tokens\":100}}}}\n",
+        ));
+        let view = SharedSession::with_store(Agent::CODEX, &path, ArcStore);
+        assert_eq!(view.meta_gen(), 0);
+        assert!(view.poll_view().unwrap().is_some());
+        let first = view.meta_gen();
+        assert_ne!(first, 0);
+        let cold = SharedSession::open(Agent::CODEX, &path);
+        cold.advance().unwrap();
+        assert_eq!(
+            cold.meta_gen(),
+            first,
+            "poll_view and advance expose the same readings"
+        );
+        std::fs::write(&path, "").unwrap();
+        assert!(view.poll_view().unwrap().is_some());
+        assert_eq!(
+            view.meta_gen(),
+            0,
+            "a reset to empty readings clears the revision"
+        );
+        let _ = std::fs::remove_file(path);
+    }
 
     fn tmp() -> PathBuf {
         static N: AtomicUsize = AtomicUsize::new(0);

@@ -904,6 +904,7 @@ impl SessionService {
         id: &str,
         cursor: Cursor,
         tail: Option<u64>,
+        client_meta: Option<u64>,
     ) -> Result<String, Unserved> {
         let unknown = || Unserved::Nowhere(format!("session {id}: no such transcript"));
         let (src, title) = self.resolve_id(id).ok_or_else(unknown)?;
@@ -941,14 +942,19 @@ impl SessionService {
         // cursor has anything to receive. The baseline `/stream` tailer skips all work on an idle
         // session; without this, an attached client polling a large quiet session would pay an
         // O(N) clone + render every tick — the opposite of the pull version's whole point.
-        let (epoch, gen, nc, np) = shared.counters();
+        let (epoch, gen, nc, np, meta_gen) = shared.counters_with_meta();
         let (cf, pf) = pull_indices(epoch, nc, np, gen, cursor);
-        if cursor.epoch == epoch && cf == nc && pf == np {
+        if cursor.epoch == epoch
+            && cf == nc
+            && pf == np
+            && client_meta.is_none_or(|m| m == meta_gen)
+        {
             // Nothing to send: empty zones, no `meta` (the client ignores an idle reply's meta).
             return Ok(json!({
                 "t": "pull", "epoch": epoch,
                 "committed_from": cf, "committed_ext": Value::Null,
                 "provisional_gen": gen,
+                "meta_gen": meta_gen,
                 "provisional_from": pf, "provisional": [],
                 "meta": Value::Null,
             })
@@ -1002,6 +1008,7 @@ impl SessionService {
                 &d.provisional,
                 &d.user_times,
                 &d.turn_durations,
+                &d.answer_readings.turns,
                 &self.fold,
                 &cwd,
                 true,
@@ -1043,6 +1050,24 @@ impl SessionService {
         let mut header = d.meta.clone();
         header.children = crate::engine::session::merged_children(&d.meta, &runs);
         let mut meta = assemble_meta(agent, &cwd, &info, &header, &d.metrics, &tasks);
+        super::add_answer_usage(&mut meta, &d.answer_readings);
+        let open_turn_ans: Vec<Value> = d
+            .answer_readings
+            .turns
+            .iter()
+            .enumerate()
+            .skip(d.answer_readings.committed_turns)
+            .filter_map(|(turn, answer)| {
+                answer.as_ref().map(|a| {
+                    json!({
+                        "turn": turn, "tok": a.tok, "ms": a.ms, "n": a.n, "model": a.model,
+                    })
+                })
+            })
+            .collect();
+        if !open_turn_ans.is_empty() {
+            meta["open_turn_ans"] = json!(open_turn_ans);
+        }
         // …and the same roster GROUPED by run, so the page can hang each fleet under the call
         // that launched it. `children` is the flat menu; this is the inline attachment.
         if !runs.is_empty() {
@@ -1070,6 +1095,7 @@ impl SessionService {
         Ok(pull_reply_json(
             d.epoch,
             d.provisional_gen,
+            d.meta_gen,
             cf,
             committed_ext,
             pf,
@@ -1092,7 +1118,18 @@ impl SessionService {
     /// [`pull_response`](Self::pull_response), for a client that asks for the TAIL of a fresh
     /// open first (#314): `tail` bytes of the committed log, when the log is over twice that.
     pub fn pull_response_tail(&self, id: &str, cursor: Cursor, tail: Option<u64>) -> HttpResponse {
-        match self.pull_response_for(id, cursor, tail) {
+        self.pull_response_meta(id, cursor, tail, None)
+    }
+
+    /// Pull with an optional, independently tracked answer metadata generation.
+    pub fn pull_response_meta(
+        &self,
+        id: &str,
+        cursor: Cursor,
+        tail: Option<u64>,
+        meta: Option<u64>,
+    ) -> HttpResponse {
+        match self.pull_response_for(id, cursor, tail, meta) {
             Ok(body) => {
                 // A session that recovers may fail again later, and THAT one deserves a line too.
                 self.cache.aux_with(id, |a| a.unserved = false);
@@ -1212,9 +1249,11 @@ impl SessionService {
 /// range-reads via `/records` (`null` when there is nothing new). The content-blind client
 /// materializes the committed records from the range read, then applies "truncate to `from`,
 /// then extend" per zone (see `export.js`).
+#[allow(clippy::too_many_arguments)]
 fn pull_reply_json(
     epoch: u64,
     provisional_gen: u64,
+    meta_gen: u64,
     committed_from: usize,
     committed_ext: Option<(u64, u64)>,
     provisional_from: usize,
@@ -1227,7 +1266,7 @@ fn pull_reply_json(
         _ => "null".into(),
     };
     format!(
-        "{{\"t\":\"pull\",\"epoch\":{epoch},\"committed_from\":{committed_from},\"committed_ext\":{ext},\"provisional_gen\":{provisional_gen},\"provisional_from\":{provisional_from},\"provisional\":{provisional},\"meta\":{meta}}}"
+        "{{\"t\":\"pull\",\"epoch\":{epoch},\"committed_from\":{committed_from},\"committed_ext\":{ext},\"provisional_gen\":{provisional_gen},\"meta_gen\":{meta_gen},\"provisional_from\":{provisional_from},\"provisional\":{provisional},\"meta\":{meta}}}"
     )
 }
 
@@ -4181,7 +4220,8 @@ pub fn service_routes(
             return HttpResponse::not_found("no such agent");
         }
         let tail = query_get(query, "tail").and_then(|t| t.parse::<u64>().ok());
-        return live.pull_response_tail(id, cursor, tail);
+        let meta = query_get(query, "meta").and_then(|m| m.parse::<u64>().ok());
+        return live.pull_response_meta(id, cursor, tail, meta);
     }
     // `/records?session=<id>&from=<off>&len=<n>&epoch=<e>` — the committed range read backing a
     // pull reply's `committed_ext` pointer. 409 on a stale epoch (the log was recreated by a
@@ -7413,7 +7453,7 @@ mod tests {
     #[test]
     fn pull_reply_json_carries_pointer_and_spliced_provisional() {
         let meta = json!({ "t": "meta" });
-        let s = pull_reply_json(5, 3, 2, Some((128, 4096)), 1, &[r#"{"id":"p"}"#], &meta);
+        let s = pull_reply_json(5, 3, 0, 2, Some((128, 4096)), 1, &[r#"{"id":"p"}"#], &meta);
         let v: Value = serde_json::from_str(&s).unwrap();
         assert_eq!(v["epoch"], 5);
         assert_eq!(v["committed_from"], 2);
@@ -7427,11 +7467,12 @@ mod tests {
 
         // No committed delta (None or zero-length) ⇒ a null pointer, valid empty provisional.
         let v: Value =
-            serde_json::from_str(&pull_reply_json(1, 0, 0, None, 0, &[], &meta)).unwrap();
+            serde_json::from_str(&pull_reply_json(1, 0, 0, 0, None, 0, &[], &meta)).unwrap();
         assert!(v["committed_ext"].is_null());
         assert_eq!(v["provisional"].as_array().unwrap().len(), 0);
         let v: Value =
-            serde_json::from_str(&pull_reply_json(1, 0, 3, Some((9, 0)), 0, &[], &meta)).unwrap();
+            serde_json::from_str(&pull_reply_json(1, 0, 0, 3, Some((9, 0)), 0, &[], &meta))
+                .unwrap();
         assert!(v["committed_ext"].is_null(), "zero-length ⇒ null pointer");
     }
 
@@ -10298,5 +10339,272 @@ mod tests {
             1,
             "{head}"
         );
+    }
+
+    #[test]
+    fn answer_meta_survives_server_restart_and_refreshes_metadata_only_changes() {
+        use std::io::Write;
+
+        let base = std::env::temp_dir().join(format!("cr-answer-restart-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let path = base.join("sid.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"type":"session_meta","payload":{"id":"s","model_provider":"openai"}}"#,
+                "\n",
+                r#"{"type":"turn_context","payload":{"model":"gpt-example"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-10-30T10:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"go"}]}}"#,
+                "\n",
+                r#"{"timestamp":"2026-10-30T10:00:01Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}"#,
+                "\n",
+                r#"{"timestamp":"2026-10-30T10:00:02Z","type":"token_usage_record","payload":{"response_id":"r"}}"#,
+                "\n",
+                r#"{"timestamp":"2026-10-30T10:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":100},"total_token_usage":{"input_tokens":10,"output_tokens":100}}}}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        let make_server = || {
+            let live = SessionService {
+                fold: FoldPolicy::default(),
+                roots: std::sync::Mutex::new(vec![Root {
+                    id: "sid".into(),
+                    agent: Agent::CODEX,
+                    path: path.clone(),
+                    cwd: "/r".into(),
+                }]),
+                cache: test_cache(&base),
+                port: std::sync::Arc::new(std::sync::OnceLock::new()),
+            };
+            live.cache
+                .register("sid", Transcript::open(Agent::CODEX, path.clone()));
+            live
+        };
+        let live = make_server();
+        let first: Value =
+            serde_json::from_str(&body(live.pull_response("sid", Cursor::default()))).unwrap();
+        let cursor = Cursor {
+            epoch: first["epoch"].as_u64().unwrap(),
+            committed_id: first["committed_from"].as_u64().unwrap() as usize,
+            provisional_gen: first["provisional_gen"].as_u64().unwrap(),
+            provisional_index: first["provisional"].as_array().unwrap().len(),
+        };
+        assert_eq!(
+            (
+                cursor.epoch,
+                cursor.committed_id,
+                cursor.provisional_gen,
+                cursor.provisional_index
+            ),
+            (1, 0, 0, 2)
+        );
+        let old_meta = first["meta_gen"].as_u64().unwrap();
+        assert!((1..=(1u64 << 53) - 1).contains(&old_meta));
+        assert!(
+            old_meta > u64::from(u32::MAX),
+            "exercise the full query integer"
+        );
+        assert_eq!(first["meta"]["usage"]["ans_last"]["tok"], 100);
+        let query = format!(
+            "session=sid&cursor={}.{}.{}.{}&meta={old_meta}",
+            cursor.epoch, cursor.committed_id, cursor.provisional_gen, cursor.provisional_index
+        );
+        drop(live);
+
+        // Reopening the same readings keeps the token stable across cache reconstruction.
+        let reopened = make_server();
+        let unchanged: Value = serde_json::from_str(&body(service_routes(
+            Some(&reopened),
+            &base,
+            &get_request("pull", &query, true),
+        )))
+        .unwrap();
+        assert!(unchanged["meta"].is_null(), "{unchanged}");
+        assert_eq!(unchanged["meta_gen"], old_meta);
+        drop(reopened);
+
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap();
+        writeln!(file, "{}", concat!(
+            r#"{"timestamp":"2026-10-30T10:00:04Z","type":"response_item","payload":{"type":"reasoning","summary":[]}}"#, "\n",
+            r#"{"timestamp":"2026-10-30T10:00:05Z","type":"token_usage_record","payload":{"response_id":"r2"}}"#, "\n",
+            r#"{"timestamp":"2026-10-30T10:00:06Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":5,"output_tokens":20},"total_token_usage":{"input_tokens":15,"output_tokens":120}}}}"#,
+        )).unwrap();
+        drop(file);
+
+        // Both answers now fold in one advance, but the caught-up block cursor has not changed.
+        let restarted = make_server();
+        let reply: Value = serde_json::from_str(&body(service_routes(
+            Some(&restarted),
+            &base,
+            &get_request("pull", &query, true),
+        )))
+        .unwrap();
+        assert!(!reply["meta"].is_null(), "{reply}");
+        assert_ne!(reply["meta_gen"], old_meta, "{reply}");
+        assert_eq!(reply["epoch"], cursor.epoch);
+        assert_eq!(reply["provisional_gen"], cursor.provisional_gen);
+        assert_eq!(reply["provisional_from"], cursor.provisional_index);
+        assert_eq!(reply["provisional"], json!([]));
+        assert!(reply["committed_ext"].is_null());
+        assert_eq!(
+            reply["meta"]["open_turn_ans"],
+            json!([{"turn":0,"tok":120,"ms":4000,"n":2,"model":"gpt-example"}])
+        );
+        assert_eq!(
+            reply["meta"]["usage"]["ans_speed"],
+            json!([{"model":"gpt-example","tok":120,"ms":4000,"n":2}])
+        );
+        assert_eq!(
+            reply["meta"]["usage"]["ans_last"],
+            json!({"model":"gpt-example","tok":20,"ms":2000})
+        );
+        drop(restarted);
+        let _ = std::fs::remove_dir_all(base);
+    }
+
+    #[test]
+    fn answer_meta_generation_wakes_each_reader_without_resending_codex_blocks() {
+        use std::io::Write;
+        let base = std::env::temp_dir().join(format!("cr-answer-meta-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let path = base.join("sid.jsonl");
+        let initial = concat!(
+            r#"{"type":"session_meta","payload":{"id":"s","model_provider":"openai"}}"#,
+            "\n",
+            r#"{"type":"turn_context","payload":{"model":"gpt-example"}}"#,
+            "\n",
+            r#"{"timestamp":"2026-10-30T10:00:00Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"go"}]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-10-30T10:00:01Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}}"#,
+            "\n",
+            r#"{"timestamp":"2026-10-30T10:00:02Z","type":"token_usage_record","payload":{"response_id":"r"}}"#,
+            "\n",
+        );
+        std::fs::write(&path, initial).unwrap();
+        let live = SessionService {
+            fold: FoldPolicy::default(),
+            roots: std::sync::Mutex::new(vec![Root {
+                id: "sid".into(),
+                agent: Agent::CODEX,
+                path: path.clone(),
+                cwd: "/r".into(),
+            }]),
+            cache: test_cache(&base),
+            port: std::sync::Arc::new(std::sync::OnceLock::new()),
+        };
+        live.cache
+            .register("sid", Transcript::open(Agent::CODEX, path.clone()));
+        let first: Value =
+            serde_json::from_str(&body(live.pull_response("sid", Cursor::default()))).unwrap();
+        let cursor = Cursor {
+            epoch: first["epoch"].as_u64().unwrap(),
+            committed_id: first["committed_from"].as_u64().unwrap() as usize,
+            provisional_gen: first["provisional_gen"].as_u64().unwrap(),
+            provisional_index: first["provisional"].as_array().unwrap().len(),
+        };
+        let old_meta = first["meta_gen"].as_u64().unwrap();
+        assert_eq!(old_meta, 0);
+        let first_count = r#"{"timestamp":"2026-10-30T10:00:03Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":10,"output_tokens":100},"total_token_usage":{"input_tokens":10,"output_tokens":100}}}}"#;
+        let append = |line: &str| {
+            writeln!(
+                std::fs::OpenOptions::new()
+                    .append(true)
+                    .open(&path)
+                    .unwrap(),
+                "{line}"
+            )
+            .unwrap();
+        };
+        append(first_count);
+        let reader_b: Value = serde_json::from_str(&body(live.pull_response_meta(
+            "sid",
+            cursor,
+            None,
+            Some(old_meta),
+        )))
+        .unwrap();
+        let reader_b_meta = reader_b["meta_gen"].as_u64().unwrap();
+        assert_ne!(reader_b_meta, old_meta);
+        assert_eq!(reader_b["provisional_gen"], first["provisional_gen"]);
+        assert_eq!(reader_b["provisional"], json!([]));
+        assert_eq!(reader_b["meta"]["usage"]["ans_last"]["tok"], 100);
+        // An empty reasoning item and response end set up a second answer without producing a
+        // block; the following token_count alone changes the answer reading.
+        append(
+            r#"{"timestamp":"2026-10-30T10:00:04Z","type":"response_item","payload":{"type":"reasoning","summary":[]}}"#,
+        );
+        append(
+            r#"{"timestamp":"2026-10-30T10:00:05Z","type":"token_usage_record","payload":{"response_id":"r2"}}"#,
+        );
+        append(
+            r#"{"timestamp":"2026-10-30T10:00:06Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":5,"output_tokens":20},"total_token_usage":{"input_tokens":15,"output_tokens":120}}}}"#,
+        );
+        // A and B hold different revisions; neither reader consumes the other's update.
+        let mut latest_meta = None;
+        for revision in [old_meta, reader_b_meta] {
+            let reply: Value = serde_json::from_str(&body(live.pull_response_meta(
+                "sid",
+                cursor,
+                None,
+                Some(revision),
+            )))
+            .unwrap();
+            let current = reply["meta_gen"].as_u64().unwrap();
+            assert_ne!(current, old_meta, "reader at {revision}: {reply}");
+            assert_ne!(current, reader_b_meta, "reader at {revision}: {reply}");
+            if let Some(previous) = latest_meta {
+                assert_eq!(current, previous);
+            }
+            latest_meta = Some(current);
+            assert_eq!(reply["provisional_gen"], first["provisional_gen"]);
+            assert!(reply["committed_ext"].is_null());
+            assert_eq!(reply["provisional"], json!([]));
+            assert_eq!(reply["meta"]["usage"]["ans_last"]["tok"], 20);
+            assert_eq!(reply["meta"]["open_turn_ans"][0]["turn"], 0);
+        }
+        let latest_meta = latest_meta.unwrap();
+        let idle: Value = serde_json::from_str(&body(live.pull_response_meta(
+            "sid",
+            cursor,
+            None,
+            Some(latest_meta),
+        )))
+        .unwrap();
+        assert!(idle["meta"].is_null());
+        assert_eq!(idle["provisional_gen"], first["provisional_gen"]);
+        let lagged: Value = serde_json::from_str(&body(live.pull_response_meta(
+            "sid",
+            cursor,
+            None,
+            Some(reader_b_meta),
+        )))
+        .unwrap();
+        assert_eq!(lagged["meta_gen"], latest_meta);
+        assert!(!lagged["meta"].is_null());
+        assert_eq!(lagged["provisional"], json!([]));
+        let old: Value = serde_json::from_str(&body(live.pull_response("sid", cursor))).unwrap();
+        assert!(old["meta"].is_null(), "old client remains idle: {old}");
+        assert_eq!(old["meta_gen"], latest_meta);
+        assert_eq!(old["provisional_gen"], first["provisional_gen"]);
+        // A duplicate counter does not wake anyone or change the metadata revision.
+        append(first_count);
+        let unchanged: Value = serde_json::from_str(&body(live.pull_response_meta(
+            "sid",
+            cursor,
+            None,
+            Some(latest_meta),
+        )))
+        .unwrap();
+        assert!(unchanged["meta"].is_null());
+        assert_eq!(unchanged["meta_gen"], latest_meta);
+        live.cache.release_all();
+        let _ = std::fs::remove_dir_all(base);
     }
 }

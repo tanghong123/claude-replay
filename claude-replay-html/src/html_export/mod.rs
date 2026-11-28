@@ -2179,6 +2179,7 @@ fn build_jsonl(
     blocks: &[Block],
     user_times: &[Option<f64>],
     turn_durations: &[Option<u64>],
+    turn_answers: &[Option<crate::engine::session::AnswerSpeed>],
     fold: &FoldPolicy,
     cwd: &str,
     reveal: bool,
@@ -2190,6 +2191,7 @@ fn build_jsonl(
         blocks,
         user_times,
         turn_durations,
+        turn_answers,
         fold,
         cwd,
         reveal,
@@ -2256,6 +2258,7 @@ pub(super) fn render_blocks(
     blocks: &[Block],
     user_times: &[Option<f64>],
     turn_durations: &[Option<u64>],
+    turn_answers: &[Option<crate::engine::session::AnswerSpeed>],
     fold: &FoldPolicy,
     cwd: &str,
     reveal: bool,
@@ -2288,17 +2291,22 @@ pub(super) fn render_blocks(
             _ => 0,
         };
         // `user_times[i]` is the ith user turn's timestamp (see `model::parse_main`).
-        let (ts, dur) = if b.opens_turn() {
+        let (ts, dur, ans) = if b.opens_turn() {
             let t = user_times.get(st.seen_turns).copied().flatten();
             // The same cursor: `turn_durations` is the whole session's, aligned one-for-one
             // with `user_times` (#257).
             let d = turn_durations.get(st.seen_turns).copied().flatten();
+            let a = turn_answers.get(st.seen_turns).and_then(Option::as_ref);
             st.seen_turns += 1;
-            (t, d)
+            (t, d, a)
         } else {
-            (None, None)
+            (None, None, None)
         };
-        lines.push(em.block(b, ts, dur).to_string());
+        let mut record = em.block(b, ts, dur);
+        if let Some(answer) = ans {
+            record["ans"] = json!(answer);
+        }
+        lines.push(record.to_string());
     }
     st.next_block = em.next_block;
     st.turn = em.turn;
@@ -2312,6 +2320,7 @@ fn build_jsonl_inner(
     blocks: &[Block],
     user_times: &[Option<f64>],
     turn_durations: &[Option<u64>],
+    turn_answers: &[Option<crate::engine::session::AnswerSpeed>],
     fold: &FoldPolicy,
     cwd: &str,
     reveal: bool,
@@ -2325,6 +2334,7 @@ fn build_jsonl_inner(
         blocks,
         user_times,
         turn_durations,
+        turn_answers,
         fold,
         cwd,
         reveal,
@@ -2612,6 +2622,7 @@ pub(super) fn render_snapshot(
     blocks: &[Block],
     user_times: &[Option<f64>],
     turn_durations: &[Option<u64>],
+    answers: &crate::engine::session::AnswerReadings,
     m: &crate::metrics::Metrics,
     cwd: &str,
     fold: &FoldPolicy,
@@ -2622,7 +2633,7 @@ pub(super) fn render_snapshot(
     // Prefer the repo/dir name as the display title; fall back to the session id
     // when the transcript records no cwd.
     let display = repo_name(cwd).unwrap_or_else(|| session_id.clone());
-    let meta = meta_json(
+    let mut meta = meta_json(
         agent,
         &display,
         &session_id,
@@ -2633,6 +2644,7 @@ pub(super) fn render_snapshot(
         tasks,
         json!({ "path": path.display().to_string(), "duration_secs": m.duration_secs }),
     );
+    add_answer_usage(&mut meta, answers);
     // The blocks hold only attachment locators; the served/bundle paths load their bytes on
     // demand from this transcript. (A portable `--dump-html` never loads — it shows the name.)
     let transcript = Transcript::open(agent, path);
@@ -2640,6 +2652,7 @@ pub(super) fn render_snapshot(
         blocks,
         user_times,
         turn_durations,
+        &answers.turns,
         fold,
         cwd,
         reveal,
@@ -2785,17 +2798,20 @@ pub(super) fn render_agent_stream(
     blocks: &[Block],
     user_times: &[Option<f64>],
     turn_durations: &[Option<u64>],
+    answers: &crate::engine::session::AnswerReadings,
     m: &crate::metrics::Metrics,
     tasks: &crate::engine::TaskList,
     assets: Option<&mut AssetSink>,
 ) -> (String, Vec<ChildRef>) {
-    let (meta, child_refs) = agent_meta(agent, cwd, info, blocks, m, tasks);
+    let (mut meta, child_refs) = agent_meta(agent, cwd, info, blocks, m, tasks);
+    add_answer_usage(&mut meta, answers);
     // Each agent's attachment locators point into its OWN source transcript; load from there.
     let transcript = Transcript::open(agent, &info.source);
     let (jsonl, _) = build_jsonl_inner(
         blocks,
         user_times,
         turn_durations,
+        &answers.turns,
         fold,
         cwd,
         reveal,
@@ -2843,6 +2859,18 @@ fn meta_json(
 
 /// The shared usage sub-object; `with_duration` matches the stream/pull shape
 /// (duration inside usage) vs the snapshot shape (top-level duration).
+fn add_answer_usage(meta: &mut Value, readings: &crate::engine::session::AnswerReadings) {
+    let speeds = readings.speeds();
+    if !speeds.is_empty() {
+        meta["usage"]["ans_speed"] = json!(speeds);
+    }
+    if let Some(last) = &readings.last {
+        meta["usage"]["ans_last"] = json!({
+            "model": crate::metrics::short_model(&last.model), "tok": last.tok, "ms": last.ms,
+        });
+    }
+}
+
 fn usage_json(m: &crate::metrics::Metrics, with_duration: bool) -> Value {
     let mut u = json!({
         "input": human_tokens(m.input_tokens), "output": human_tokens(m.output_tokens),
@@ -3349,6 +3377,7 @@ mod tests {
             &blocks,
             &[],
             &[],
+            &[],
             &FoldPolicy::default(),
             "/repo",
             true,
@@ -3496,6 +3525,7 @@ mod tests {
             &blocks,
             &[Some(1.0)],
             &[],
+            &[],
             &FoldPolicy::default(),
             "",
             false,
@@ -3533,6 +3563,7 @@ mod tests {
             let lines = render_blocks(
                 &[block],
                 &[Some(1.0)],
+                &[],
                 &[],
                 &FoldPolicy::default(),
                 "",
@@ -3604,6 +3635,7 @@ mod tests {
             let lines = render_blocks(
                 &[block],
                 &[Some(1.0)],
+                &[],
                 &[],
                 &FoldPolicy::default(),
                 "",
@@ -3809,7 +3841,19 @@ mod tests {
         let times = vec![Some(1.0), Some(2.0)];
         let fold = FoldPolicy::default();
         let r = |bs: &[Block], st: &mut EmitState| {
-            render_blocks(bs, &times, &[], &fold, "", false, false, None, None, st)
+            render_blocks(
+                bs,
+                &times,
+                &[],
+                &[],
+                &fold,
+                "",
+                false,
+                false,
+                None,
+                None,
+                st,
+            )
         };
 
         let mut whole_st = EmitState::default();
@@ -3849,6 +3893,7 @@ mod tests {
         let (jsonl, _turns) = build_jsonl(
             blocks,
             &times,
+            &[],
             &[],
             fold,
             "/repo",
@@ -4048,6 +4093,7 @@ mod tests {
             &blocks,
             &times,
             &[],
+            &[],
             &FoldPolicy::none(),
             "/r",
             false,
@@ -4064,6 +4110,7 @@ mod tests {
         let (j2, _) = build_jsonl(
             &blocks,
             &times,
+            &[],
             &[],
             &FoldPolicy::none(),
             "/r",
@@ -5510,6 +5557,7 @@ mod tests {
             std::slice::from_ref(&file),
             &times,
             &[],
+            &[],
             &FoldPolicy::none(),
             "/w",
             false,
@@ -5873,6 +5921,7 @@ mod tests {
             &[bash],
             &[],
             &[],
+            &[],
             &FoldPolicy::none(),
             "/repo",
             false,
@@ -5947,6 +5996,7 @@ mod tests {
         // A portable export (`--dump-html`, `reveal: false`).
         let (jsonl, _) = build_jsonl(
             &[bash(Some("/w/tool-results/b1.txt"))],
+            &[],
             &[],
             &[],
             &FoldPolicy::none(),
@@ -6192,6 +6242,7 @@ mod tests {
             &blocks,
             &times,
             &[],
+            &[],
             &FoldPolicy::none(),
             "/repo",
             true,
@@ -6232,6 +6283,7 @@ mod tests {
         let (jsonl, turns) = build_jsonl(
             &blocks,
             &[Some(1000.0), Some(2000.0)],
+            &[],
             &[],
             &FoldPolicy::default(),
             "/repo",
@@ -6444,6 +6496,7 @@ mod tests {
         let mut sink = AssetSink::new(&base).unwrap();
         let (jsonl, _) = build_jsonl_inner(
             std::slice::from_ref(&img),
+            &[],
             &[],
             &[],
             &FoldPolicy::none(),
@@ -6946,6 +6999,7 @@ mod tests {
             std::slice::from_ref(&edit),
             &times,
             &[],
+            &[],
             &FoldPolicy::none(),
             "/repo",
             false,
@@ -7120,5 +7174,84 @@ mod tests {
             "a sidecar-less store session must be titled from the SQLite store in the \
              default build — 'mchat42' here means it fell back to the workspace leaf"
         );
+    }
+
+    #[test]
+    fn every_turn_opener_emits_its_answer_and_untimed_records_omit_it() {
+        use crate::engine::session::AnswerSpeed;
+        use crate::model::{Inbox, ReplyContext};
+        let inbox = Inbox {
+            from: "sender".into(),
+            id: "id".into(),
+            via: None,
+            kind: None,
+            at: None,
+            about: vec![],
+            to: None,
+            task: None,
+            guess: None,
+            reply_to: None,
+            instructions: String::new(),
+        };
+        let blocks = vec![
+            Block::UserText("user".into()),
+            Block::UserReply {
+                text: "reply".into(),
+                context: ReplyContext {
+                    version: 1,
+                    items: vec![],
+                    request: None,
+                    context: String::new(),
+                },
+            },
+            Block::UserInbox {
+                text: "inbox".into(),
+                inbox,
+            },
+            Block::Command {
+                name: "/test".into(),
+                args: String::new(),
+                output: vec![],
+            },
+            Block::PeerText {
+                from: "peer".into(),
+                mode: None,
+                text: "hello".into(),
+                addr: None,
+            },
+            Block::UserText("untimed".into()),
+        ];
+        let speed = AnswerSpeed {
+            tok: 64,
+            ms: 2000,
+            n: 1,
+            model: "opus4.8".into(),
+        };
+        let mut answers = vec![Some(speed); 5];
+        answers.push(None);
+        let lines = render_blocks(
+            &blocks,
+            &[Some(1.0); 6],
+            &[],
+            &answers,
+            &FoldPolicy::none(),
+            "",
+            false,
+            false,
+            None,
+            None,
+            &mut EmitState::default(),
+        );
+        for (i, line) in lines.iter().enumerate() {
+            let v: Value = serde_json::from_str(line).unwrap();
+            if i < 5 {
+                assert_eq!(
+                    v["ans"],
+                    json!({"tok":64,"ms":2000,"n":1,"model":"opus4.8"})
+                );
+            } else {
+                assert!(v.get("ans").is_none());
+            }
+        }
     }
 }

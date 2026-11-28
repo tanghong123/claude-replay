@@ -35,4 +35,25 @@ function fmtDur(s) {
   return h ? h + "h " + m + "m" : m + "m";
 }
 
-export { fmtTime, fmtDur };
+/** A measured output rate, or no reading for invalid/empty measurements. */
+function answerRate(a) {
+  if (!a || !Number.isFinite(a.tok) || !Number.isFinite(a.ms) || a.tok <= 0 || a.ms <= 0) return "";
+  const rounded = Math.round(a.tok * 1000 / a.ms);
+  return rounded ? `${rounded} tok/s` : "<1 tok/s";
+}
+
+/** The one line under a turn and its explanation. */
+function turnReading(secs, answer) {
+  const worked = typeof secs === "number" && secs > 0 ? `worked ${fmtDur(secs)}` : "";
+  const speed = answerRate(answer);
+  const text = [worked, speed].filter(Boolean).join(" · ");
+  if (!text) return null;
+  const n = answer?.n || 0;
+  const duration = speed && answer.ms < 50 ? "<0.1" : speed ? (answer.ms / 1000).toFixed(1) : "";
+  const title = speed
+    ? `${Number(answer.tok).toLocaleString("en-US")} output tokens in ${duration} s of generation (${n} ${n === 1 ? "answer" : "answers"}, ${answer.model}; includes first-token wait, excludes tool time between answers)`
+    : "How long the agent worked on this turn";
+  return { text, title };
+}
+
+export { fmtTime, fmtDur, answerRate, turnReading };

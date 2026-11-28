@@ -16,6 +16,106 @@ use crate::metrics::Metrics;
 use crate::model::{AgentId, Block, BlockIndex, EpochSeconds, SubAgentMeta};
 use crate::Agent;
 
+/// Integer counters for valid model answers, kept by the raw model name.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AnswerTotals {
+    pub tok: u64,
+    pub ms: u64,
+    pub n: u32,
+}
+
+impl AnswerTotals {
+    pub fn add(&mut self, other: Self) {
+        self.tok = self.tok.saturating_add(other.tok);
+        self.ms = self.ms.saturating_add(other.ms);
+        self.n = self.n.saturating_add(other.n);
+    }
+
+    pub fn delta(self, previous: Self) -> Self {
+        Self {
+            tok: self.tok.saturating_sub(previous.tok),
+            ms: self.ms.saturating_sub(previous.ms),
+            n: self.n.saturating_sub(previous.n),
+        }
+    }
+}
+
+/// A valid answer, with its timestamp retained for choosing the most recent one.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct LastAnswer {
+    pub model: String,
+    pub tok: u64,
+    pub ms: u64,
+    pub last: f64,
+}
+
+impl LastAnswer {
+    pub fn from_timing(answer: &crate::metrics::AnswerTiming) -> Option<Self> {
+        let (sent, last) = (answer.sent?, answer.last?);
+        let tok = answer.output_tokens?;
+        if !sent.is_finite() || !last.is_finite() || last <= sent || tok == 0 {
+            return None;
+        }
+        let ms = ((last - sent) * 1000.0).round().max(1.0) as u64;
+        Some(Self {
+            model: answer.model.clone(),
+            tok,
+            ms,
+            last,
+        })
+    }
+
+    pub fn totals(&self) -> AnswerTotals {
+        AnswerTotals {
+            tok: self.tok,
+            ms: self.ms,
+            n: 1,
+        }
+    }
+}
+
+/// One display-model reading, also used on a turn-opening record.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AnswerSpeed {
+    pub tok: u64,
+    pub ms: u64,
+    pub n: u32,
+    pub model: String,
+}
+
+/// The point-in-time answer readings exposed to presentation, never part of `Metrics`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AnswerReadings {
+    pub turns: Vec<Option<AnswerSpeed>>,
+    pub committed_turns: usize,
+    pub totals: BTreeMap<String, AnswerTotals>,
+    pub last: Option<LastAnswer>,
+}
+
+impl AnswerReadings {
+    /// Merge raw names that share a display name before rendering model rows.
+    pub fn speeds(&self) -> Vec<AnswerSpeed> {
+        let mut merged = BTreeMap::<String, AnswerTotals>::new();
+        for (model, total) in &self.totals {
+            if total.n > 0 && total.tok > 0 && total.ms > 0 {
+                merged
+                    .entry(crate::metrics::short_model(model))
+                    .or_default()
+                    .add(*total);
+            }
+        }
+        merged
+            .into_iter()
+            .map(|(model, t)| AnswerSpeed {
+                model,
+                tok: t.tok,
+                ms: t.ms,
+                n: t.n,
+            })
+            .collect()
+    }
+}
+
 /// The per-block storage policy — the seam between the fold and where a block's content lives.
 /// **The presentation layer decides what `Bv` is**: the `Block` itself, auxiliary in-memory
 /// per-block state the presentation needs, an explicit pointer into a file the presentation
@@ -57,6 +157,18 @@ pub trait BlockStore {
         _next: &[Block],
     ) -> Self::Bv {
         self.put(b, at, user_times, turn_durations)
+    }
+    /// Store a block with per-turn answer readings. Lossless stores need no extra data.
+    fn put_with_answers(
+        &mut self,
+        b: Block,
+        at: BlockIndex,
+        user_times: &[Option<crate::model::EpochSeconds>],
+        turn_durations: &[Option<u64>],
+        _turn_answers: &[Option<AnswerSpeed>],
+        next: &[Block],
+    ) -> Self::Bv {
+        self.put_with_next(b, at, user_times, turn_durations, next)
     }
     /// Discard everything stored — called when the accumulator rebuilds from scratch (a source
     /// truncation/rewrite), so an append-only backing doesn't accrete dead content across resets.
@@ -176,6 +288,8 @@ pub struct Session<BV = Block> {
     /// recorded nothing — measured at 19% of turns, so a reader of this must degrade to showing
     /// nothing rather than a zero.
     pub turn_durations: Vec<Option<u64>>,
+    /// Answer speeds for the turn openers and the session, independent of public metrics.
+    pub answer_readings: AnswerReadings,
     /// Token / cost tally for the session.
     pub metrics: Metrics,
     /// Derived within-session indices — turns / tools / attachments (§7).

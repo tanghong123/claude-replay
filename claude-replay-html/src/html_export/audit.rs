@@ -750,6 +750,7 @@ pub fn audit_records(blocks: &[Block]) -> Vec<Value> {
         blocks,
         &[],
         &[],
+        &[],
         &FoldPolicy::default(),
         "",
         false,

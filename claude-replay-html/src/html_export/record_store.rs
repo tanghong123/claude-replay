@@ -216,6 +216,19 @@ impl BlockStore for RecordStore {
         self.put(b, at, user_times, turn_durations)
     }
 
+    fn put_with_answers(
+        &mut self,
+        b: Block,
+        _at: BlockIndex,
+        user_times: &[Option<EpochSeconds>],
+        turn_durations: &[Option<u64>],
+        turn_answers: &[Option<crate::engine::session::AnswerSpeed>],
+        next: &[Block],
+    ) -> RecordLocator {
+        self.emit.images_next = super::images_following(next);
+        self.put_record(b, user_times, turn_durations, turn_answers)
+    }
+
     /// Render-once TO DISK: one wire record per committed block, appended with its framing
     /// newline; the locator is the `Bv` the `Session` holds. `user_times` is the session's
     /// per-turn clock — `EmitState::seen_turns` indexes into it exactly as the whole-session
@@ -227,11 +240,32 @@ impl BlockStore for RecordStore {
         user_times: &[Option<EpochSeconds>],
         turn_durations: &[Option<u64>],
     ) -> RecordLocator {
+        self.put_record(b, user_times, turn_durations, &[])
+    }
+
+    /// A source truncation rebuilt the session: restart the log (truncate + rewind) and the
+    /// render continuation. The epoch bump that accompanies the reset resyncs every client, so
+    /// no outstanding pointer can reference the discarded bytes.
+    fn reset(&mut self) {
+        let _ = self.cut_to(0);
+        self.emit = EmitState::default();
+    }
+}
+
+impl RecordStore {
+    fn put_record(
+        &mut self,
+        b: Block,
+        user_times: &[Option<EpochSeconds>],
+        turn_durations: &[Option<u64>],
+        turn_answers: &[Option<crate::engine::session::AnswerSpeed>],
+    ) -> RecordLocator {
         let cx = &self.cx;
         let lines = render_blocks(
             &[b],
             user_times,
             turn_durations,
+            turn_answers,
             &cx.fold,
             &cx.cwd,
             true,
@@ -258,14 +292,6 @@ impl BlockStore for RecordStore {
         }
         drop(index);
         locator
-    }
-
-    /// A source truncation rebuilt the session: restart the log (truncate + rewind) and the
-    /// render continuation. The epoch bump that accompanies the reset resyncs every client, so
-    /// no outstanding pointer can reference the discarded bytes.
-    fn reset(&mut self) {
-        let _ = self.cut_to(0);
-        self.emit = EmitState::default();
     }
 }
 
