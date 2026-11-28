@@ -34,8 +34,11 @@ the international (Singapore) and US deployments carry different rates, and the 
 has no per-region rows, so every request on the model prices at the Beijing / global
 tier. Its cache write and hit rates are the values the international page printed on
 2026-11-23; the page removed those sub-tables afterwards, so they are held provisionally
-at the read-time values, the write corroborated by the explicit-cache (Qwen4) page's
-creation ratios (about 125% of input for TTL 5m, about 200% for TTL 1h).
+at the read-time values as agreed in review, corroborated by the console's live CNY
+cache table (12.5 / 20 / 0.5 yuan per million tokens for the 5m creation, the 1h
+creation and a hit, explicit or implicit) at the published 10-yuan-to-$1.413 input
+ratio, and by the explicit-cache (Qwen4) page's creation ratios (about 125% of input
+for TTL 5m, about 200% for TTL 1h).
 
 The returned incomplete-evidence flag also covers unsupported tiers and GPT
 models without verified request rules. These estimates are not necessarily lower
