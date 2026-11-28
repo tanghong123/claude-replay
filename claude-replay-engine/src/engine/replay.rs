@@ -331,7 +331,6 @@ impl<'a> Replayer<'a> {
                     let mut ws = self.window_stamped();
                     stamp_user_turns(&self.out, &mut ws, self.pending_ts, &mut self.user_times);
                     self.turn_durations.resize(self.user_times.len(), None);
-                    self.turn_durations.resize(self.user_times.len(), None);
                     self.stamped = self.base + ws;
                     // The outgoing `pending_ts` is the previous line's — the thinking clock's zero.
                     if self.pending_ts.is_some() {
@@ -864,6 +863,12 @@ impl<'a> Replayer<'a> {
             }
         }
         self.finalize_completed();
+        // Stamp the remaining records once per batch, including a turn opened on its last line.
+        // This keeps the turn count available in O(1) without cloning/finalizing the open window.
+        let mut ws = self.window_stamped();
+        stamp_user_turns(&self.out, &mut ws, self.pending_ts, &mut self.user_times);
+        self.turn_durations.resize(self.user_times.len(), None);
+        self.stamped = self.base + ws;
         patch_floor
     }
 
@@ -1150,6 +1155,11 @@ impl<'a> Replayer<'a> {
 
     pub(crate) fn user_times(&self) -> &[Option<EpochSeconds>] {
         &self.user_times
+    }
+
+    /// Number of turns seen, including open turns; `apply` stamps each batch before returning.
+    pub(crate) fn turn_count(&self) -> usize {
+        self.user_times.len()
     }
 
     pub(crate) fn turn_durations(&self) -> &[Option<u64>] {

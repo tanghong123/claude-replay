@@ -65,6 +65,7 @@ export class RecordStore {
     this.records = [];
     this.meta = null;
     this.cursor = freshCursor();
+    this.metaGen = null;
     this.generation = 0;
     this.timer = 0;
     // Whether this session's first reply has been applied — `handlers.opened` fires once per open.
@@ -77,6 +78,7 @@ export class RecordStore {
     this.records = [];
     this.meta = null;
     this.cursor = freshCursor();
+    this.metaGen = null;
     this.shown = false; this.confirmedEmpty = false; this.missingSince = null;
     this.head = null; this.index = null; this.fills = [];
     const generation = ++this.generation;
@@ -90,6 +92,7 @@ export class RecordStore {
     this.records = [];
     this.meta = null;
     this.cursor = freshCursor();
+    this.metaGen = null;
     this.head = null; this.index = null; this.fills = [];
     this.handlers.reset?.();
   }
@@ -137,7 +140,7 @@ export class RecordStore {
     try {
       // Only a store that holds nothing asks for the tail: a fresh open, or one that recovered.
       const tail = this.tailBudget && !this.records.length ? `&tail=${this.tailBudget}` : "";
-      const response = await backend().fetch(`/pull?${pullQuery(this.session, this.cursor)}${tail}`, { cache: "no-store" });
+      const response = await backend().fetch(`/pull?${pullQuery(this.session, this.cursor, this.metaGen)}${tail}`, { cache: "no-store" });
       if (stale()) return;
       if (response.status === 404) {
         if (this.refreshEmpty()) return;
@@ -547,6 +550,17 @@ export class RecordStore {
     // leaves that many empty slots: they are the head, still to come.
     for (let i = 0; i < headCount; i++) this.records[i] = PENDING;
     this.cursor = plan.cursor;
+    if (Number.isSafeInteger(reply.meta_gen) && reply.meta_gen >= 0) this.metaGen = reply.meta_gen;
+    if (reply.meta && Number.isSafeInteger(reply.meta_gen)) {
+      const answers = new Map((reply.meta.open_turn_ans || []).map(a => [a.turn, a]));
+      for (let i = this.cursor.committed; i < this.records.length; i++) {
+        const record = this.records[i];
+        if (record && Number.isInteger(record.turn) && ["user", "command", "peer"].includes(record.kind)) {
+          // Wire records number turns from one; the metadata array indexes them from zero.
+          record.ans = answers.get(record.turn - 1);
+        }
+      }
+    }
     if (reply.meta) this.meta = reply.meta;
     // The update gate is what the store must REPAINT (changedFrom), not the classic page's
     // idle rule (both zones empty): a shorter provisional zone with nothing to append is idle

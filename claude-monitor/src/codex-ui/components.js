@@ -9,7 +9,7 @@ import { escapeText, literalText, partsHtml, peerHue, placeholderUnit } from "./
 import { rememberCap, resultBodyHtml } from "./shared/parts.js";
 import { interactionHtml } from "./shared/interaction.js";
 import { headStepOf, headStepState, nextHeadStep } from "./shared/tool-head.js";
-import { fmtTime, fmtDur } from "./shared/time.js";
+import { fmtTime, turnReading } from "./shared/time.js";
 import { inboxChips, INBOX_DO_LABEL } from "./shared/inbox.js";
 
 const element = html => {
@@ -346,8 +346,8 @@ function turnTime(unit) {
   // needs no rule in the GENERATED stylesheet. #s706: it says what it is, "worked 45s" as Claude
   // Code's own "Worked for 45s", since a bare "45s" under a message meant nothing on a phone, where
   // no title shows.
-  const secs = unit.view?.source?.dur;
-  const took = typeof secs === "number" && secs > 0 ? `<span class="turn-time" title="How long the agent worked on this turn">worked ${escapeText(fmtDur(secs))}</span>` : "";
+  const reading = turnReading(unit.view?.source?.dur, unit.view?.source?.ans);
+  const took = reading ? `<span class="turn-time" data-turn-reading title="${escapeText(reading.title)}">${escapeText(reading.text)}</span>` : "";
   return when + took;
 }
 

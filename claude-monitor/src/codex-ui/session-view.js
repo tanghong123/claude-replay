@@ -27,6 +27,7 @@ import { createRecordState, createViewState, persistView } from "./view-state.js
 import { displayState } from "./shared/state-labels.js";
 import { DEFAULT_READING, SIZE_STEP, clampSize, readingVars } from "./shared/reading.js";
 import { RUNTIME_ALWAYS, runtimeRows, runtimeText } from "./shared/runtime.js";
+import { answerRate, turnReading } from "./shared/time.js";
 import { hintFor, inGuest, resolveKey } from "./shared/keymap.js";
 import { CLASS_BIT, LIVE_SEARCH_LIMIT, directMask, activeLetters, countOcc, querySpans, recordTextParts, recordTextSize, scopeLetters, scopeMask, stripTags, splitQuery, zeroCounts, countRecord, countLabel, writePrefix, prefixOf, CLASS_ORDER, wholeAt, toolMatches, recordHasTool, toolLetters as sessionToolLetters, resolveTools as resolveToolSpec } from "./shared/search.js";
 import { agentName, agentRecordTargets, currentTurnIndex, escapeText, peerHue, peerLabelRest, plainText, recordForSearch, Projection, taskRecordTargets, taskStatus, taskGroups, taskCenterTarget, taskDetails, artifactRoster, compactionTick, replyContext } from "./view-model.js";
@@ -598,6 +599,7 @@ sessionCopyMenu.addEventListener("click", async event => {
   if (copied) setSessionCopyMenu(false);
 });
 
+let pendingAnswerRefresh = false;
 const viewport = new Viewport(transcript, byId("transcriptInner"), recordState, {
   afterRender: () => { applyFilters(); markSearch(); paintCodeBars(); updateStickyHeaders(); updateOutlineFocus(); updateTurnBar(); },
   // The window is where it will stay (#209): repaint the bar from the engine's OWN belief of where
@@ -607,7 +609,10 @@ const viewport = new Viewport(transcript, byId("transcriptInner"), recordState, 
   // that forced flush, made while a smooth write travelled, moved the reader (the smooth-step
   // case's record went 190px). The engine no longer calls this mid-travel, and the one position
   // read off the window is a command's placed below the landing (`keyAtSpyLine`, #s454).
-  afterTransaction: () => { const p = viewport.position; if (p && p.key) queueTurn(updateTurnBar(p.key)); wantWindow(); },
+  afterTransaction: () => {
+    if (pendingAnswerRefresh) { pendingAnswerRefresh = false; refreshOpenTurnReadings(recordState.records); }
+    const p = viewport.position; if (p && p.key) queueTurn(updateTurnBar(p.key)); wantWindow();
+  },
   afterScroll: () => {
     updateStickyHeaders(); updateOutlineFocus(); queueTurn(updateTurnBar());
     // The reader moved themselves: wherever a jump last landed them is no longer where they
@@ -1116,6 +1121,7 @@ function applyRecords({ records, meta, changedFrom, prepended }) {
   const now = after ? unitAt(after.from) : -1;
   const shift = now >= 0 ? Math.max(0, now - was) : 0;
   const renamed = now >= 0 && recordState.units[now].key !== after.key ? { [after.key]: recordState.units[now].key } : null;
+  if (metaArrived) pendingAnswerRefresh = true;
   viewport.setUnits(recordState.units, changedUnit, shift, renamed);
   // The head landed whole (stage 1), or a pull replaced it: the index answers for nothing now. A
   // stage-2 prepend (the placeholders laid out) leaves the head out and the index with it.
@@ -1158,6 +1164,29 @@ function applyRecords({ records, meta, changedFrom, prepended }) {
   paintJump(); renderHeader(); renderNavigator(); refreshFilterHits(); updateSearch(false);
   // #s277: pieces of the head that waited on a held prepend go in now, if the view lets them.
   takeFills();
+}
+
+/** Update already-mounted open turns without replacing their cards or their timestamps. */
+function refreshOpenTurnReadings(records) {
+  for (const card of viewport.window.querySelectorAll(".turn[data-block-index][data-turn]")) {
+    const index = Number(card.dataset.blockIndex);
+    if (index < recordStore.cursor.committed) continue;
+    const record = records[index];
+    if (!record || !["user", "command", "peer"].includes(record.kind) ||
+        card.dataset.recordKind !== record.kind || card.dataset.recordId !== (record.id || "") ||
+        card.dataset.turn !== String(record.turn)) continue;
+    const reading = turnReading(record.dur, record.ans);
+    let label = card.querySelector(":scope > [data-turn-reading]");
+    if (!reading) { label?.remove(); continue; }
+    if (!label) {
+      label = viewRoot.root().createElement("span");
+      label.className = "turn-time";
+      label.dataset.turnReading = "";
+      card.appendChild(label);
+    }
+    label.textContent = reading.text;
+    label.title = reading.title;
+  }
 }
 
 /** #s277 (design/slow-links.md §6.2): what a record not fetched yet stands as — its kind, id and
@@ -2170,7 +2199,10 @@ function renderSessionInfo(turns, agents) {
   // within 40px of here — status is the topbar `#statusChip` (with its dot and "inferred"
   // detail) and the sidebar row chip, turns is `#navigatorTurnCount` on the Turns head,
   // children is `#navigatorAgentCount` on the Agents head. Info's copy was duplication.
-  byId("navigatorSession").innerHTML = `<div class="session-info">${group("Usage", [["model", usage.model], ["input", usage.input || usage.input_tokens], ["output", usage.output || usage.output_tokens], ["cache read", usage.cache_read], ...(usage.compacted ? [["compacted", usage.compacted]] : []), ["est. cost", usageCostLabel(usage) || "—"], ...reportedCostRow(usage.reported)])}${group("Runtime", [["cwd", meta.cwd || row._group?.secondary], ...runtimeRows(usage.runtime).filter(r => r.state !== "absent" || RUNTIME_ALWAYS.includes(r.key)).map(r => [r.label, runtimeText(r, agentName(row.agent))])])}</div>`;
+  const speeds = (usage.ans_speed || []).map(a => [a.model, answerRate(a)]).filter(row => row[1]);
+  const lastSpeed = answerRate(usage.ans_last);
+  if (lastSpeed) speeds.push(["last answer", lastSpeed]);
+  byId("navigatorSession").innerHTML = `<div class="session-info">${group("Usage", [["model", usage.model], ["input", usage.input || usage.input_tokens], ["output", usage.output || usage.output_tokens], ["cache read", usage.cache_read], ...(usage.compacted ? [["compacted", usage.compacted]] : []), ["est. cost", usageCostLabel(usage) || "—"], ...reportedCostRow(usage.reported)])}${speeds.length ? group("Answer speed", speeds) : ""}${group("Runtime", [["cwd", meta.cwd || row._group?.secondary], ...runtimeRows(usage.runtime).filter(r => r.state !== "absent" || RUNTIME_ALWAYS.includes(r.key)).map(r => [r.label, runtimeText(r, agentName(row.agent))])])}</div>`;
 }
 
 // #170: the info content MOVED out of this column into the footer popover, so the delegation

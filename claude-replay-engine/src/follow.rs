@@ -512,6 +512,11 @@ impl<S: BlockStore> FollowParser<S> {
         self.builder.open_read()
     }
 
+    /// Point-in-time answer speeds without assembling a session.
+    pub fn answer_readings(&self) -> crate::engine::session::AnswerReadings {
+        self.builder.answer_readings()
+    }
+
     /// `committed[from..]` as owned blocks — O(delta), never the whole committed prefix.
     pub fn committed_tail(&self, from: usize) -> Vec<Block>
     where

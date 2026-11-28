@@ -82,6 +82,9 @@ pub struct PullReply {
     /// The generation of the provisional blocks in this reply — the client adopts it as its
     /// `provisional_gen`. A change from the request cursor's means the provisional was resent whole.
     pub provisional_gen: u64,
+    /// Opaque, JS-safe answer-reading revision, returned outside the four-part cursor.
+    /// Compare it for equality, not order; identical readings retain it across reopenings.
+    pub meta_gen: u64,
     /// Index of the first block in `provisional`: the request `provisional_index` on an append
     /// within the same gen; `0` on a gen change, a commit, or a resync.
     pub provisional_from: usize,
@@ -174,6 +177,7 @@ pub struct Applied {
 #[derive(Debug, Default, Clone)]
 pub struct PullClient {
     cursor: Cursor,
+    meta_gen: Option<u64>,
     committed: Vec<Block>,
     provisional: Vec<Block>,
 }
@@ -188,6 +192,11 @@ impl PullClient {
     /// The cursor to send with the next pull request.
     pub fn cursor(&self) -> Cursor {
         self.cursor
+    }
+
+    /// The optional `meta` parameter to send alongside the cursor on the next pull.
+    pub fn meta_gen(&self) -> Option<u64> {
+        self.meta_gen
     }
 
     /// The committed zone (append-only from the client's perspective).
@@ -219,6 +228,7 @@ impl PullClient {
     /// rebuild from scratch. Adopts the reply's cursor ([`PullReply::next_cursor`]) so the
     /// next request continues from here.
     pub fn apply(&mut self, r: &PullReply) -> Applied {
+        self.meta_gen = Some(r.meta_gen);
         let resync = r.epoch != self.cursor.epoch;
         // Idle tick (same epoch, both zones empty): nothing to do, cursor unchanged.
         if !resync && r.is_idle() {
@@ -278,6 +288,7 @@ pub fn pull(
         committed_from,
         committed: committed[committed_from..].to_vec(),
         provisional_gen,
+        meta_gen: 0,
         provisional_from,
         provisional: provisional[provisional_from..].to_vec(),
     }

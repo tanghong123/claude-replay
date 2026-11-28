@@ -27,7 +27,7 @@ const freshCursor = () => ({ epoch: 0, committed: 0, gen: 0, index: 0 });
 const cursorText = c => `${c.epoch}.${c.committed}.${c.gen}.${c.index}`;
 
 /** The `/pull` query, minus the route (the classic page fetches relative to its own path). */
-const pullQuery = (session, cursor) => `session=${encodeURIComponent(session)}&cursor=${encodeURIComponent(cursorText(cursor))}`;
+const pullQuery = (session, cursor, meta = null) => `session=${encodeURIComponent(session)}&cursor=${encodeURIComponent(cursorText(cursor))}${Number.isSafeInteger(meta) && meta >= 0 ? `&meta=${meta}` : ""}`;
 
 /** The `/records` range-read query for a reply's committed pointer, bound to its epoch — a
  *  pointer issued before a reset must not read a recreated log (the server answers 409). */

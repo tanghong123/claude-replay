@@ -2516,7 +2516,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(engineSource209, /if \(!this\.queued\.length && !this\.inFlight\(\)\) this\.afterTransaction\(\);/, "…called once the transaction is complete, not between queued ones, and never while a smooth write travels");
   assert.match(engineSource209, /this\.trace\("arrived"[\s\S]{0,400}?this\.afterTransaction\(\);/, "…and the arrival of that write calls it instead");
   assert.match(viewportSource, /afterTransaction\(\) \{ this\.actions\.afterTransaction\?\.\(\); \}/, "the shell's viewport forwards it");
-  assert.match(viewSource, /afterTransaction: \(\) => \{ const p = viewport\.position; if \(p && p\.key\) queueTurn\(updateTurnBar\(p\.key\)\); wantWindow\(\); \}/, "…and the shell repaints the bar from the ENGINE's belief, the turn its host hears too (#s429 stage 6; and, #s277, asks the store for what the window shows)");
+  assert.match(viewSource, /afterTransaction: \(\) => \{[\s\S]{0,250}?const p = viewport\.position; if \(p && p\.key\) queueTurn\(updateTurnBar\(p\.key\)\); wantWindow\(\);\s*\}/, "…and the shell repaints the bar from the ENGINE's belief, the turn its host hears too (#s429 stage 6; and, #s277, asks the store for what the window shows)");
   assert.match(viewSource, /return currentTurnIndex\(units, atKey === undefined \? unitAtTop\(\) : keyAtSpyLine\(atKey\)\);/, "…which is what the key argument is for: no layout read at the boundary");
   // #s450 reads the key at the spy's line from the engine's own heights: no rect, no offset.
   const spyLine450 = viewSource.match(/function keyAtSpyLine\(key\) \{[\s\S]*?\n\}/)?.[0] || "";
@@ -2941,12 +2941,12 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // rule rounded a 19-second turn to "0m" — a number that says nothing while claiming to.
   assert.equal(fmtDur(19), "19s"); assert.equal(fmtDur(59), "59s"); assert.equal(fmtDur(60), "1m");
   const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
-  assert.match(comp, /import \{ fmtTime, fmtDur \} from "\.\/shared\/time\.js";/, "the app shell imports the rule");
+  assert.match(comp, /import \{ fmtTime, turnReading \} from "\.\/shared\/time\.js";/, "the app shell imports the rule");
   assert.match(comp, /\$\{turnTime\(unit\)\}\$\{spot\}\$\{rawToggle\}/, "…and shows it beside the user bubble");
   // …and the turn's own duration rides the same chip, from the same shared formatter, so the
   // two pages cannot word it differently (#257).
   assert.match(comp, /source\?\.dur/, "the app shell reads the turn's duration off the record");
-  assert.match(comp, /How long the agent worked on this turn">worked \$\{escapeText\(fmtDur\(secs\)\)\}/, "…and says which of the two chips it is, in its words as well as its title (#s706)");
+  assert.match(comp, /turnReading\(unit\.view\?\.source\?\.dur, unit\.view\?\.source\?\.ans\)/, "the duration and answer speed share one reading");
   console.log("#112 time cases passed");
 }
 
@@ -4501,7 +4501,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const app = shellSource; // both modules of the app shell (#s429)
   const pages = classic + shell + app;
   assert.doesNotMatch(pages, /\b(reconcile|rangeAround|rangeForScroll|mountRange|clearWindow|applyWindow|replaceMounted|setWindow)\(/, "no page names a window: the range is the engine's, from P0 (framework I11)");
-  assert.match(engine, /recordsChanged\(mutate\) \{\n(?:\s*\/\/.*\n)*\s*let moved = null;\n\s*let bounded = null;\n\s*return this\.transact\("records", \{\n\s*mutate: \(\) => \{\n(?:\s*\/\/.*\n)*\s*const count0 = this\.count;\n\s*const tail0 = this\.tailSnapshot\(\);\n\s*const result = mutate \? mutate\(\) : undefined;\n(?:.*\n){0,3}?\s*const first = from == null \? Infinity : from;\n(?:.*\n){0,2}?\s*this\.pendingDelta = \{ count0, count1: this\.count, from: Math\.min\(first, count0\), tail0 \};\n(?:.*\n){0,2}?\s*return first;\n\s*\},\n\s*translate: p0 => \(moved \? this\.shiftPosition\(p0, moved\.from, moved\.shift, moved\.renamed\) : p0\),\n\s*dirtyFrom: from => bounded \|\| from,\n\s*range: p0 => this\.count \? this\.rangeFor\(p0\) : \{ lo: 0, hi: 0 \},/, "the records transaction: the page's mutation, its return as dirtyFrom, the window from P0, an empty count empties the window — and the delta's shape taken around the mutation (#197), a prepend's shift in it (#314), and a bounded rewrite redraws only its run (#s277)");
+  assert.match(engine, /recordsChanged\(mutate, after\) \{\n(?:\s*\/\/.*\n)*\s*let moved = null;\n\s*let bounded = null;\n\s*return this\.transact\("records", \{\n\s*mutate: \(\) => \{\n(?:\s*\/\/.*\n)*\s*const count0 = this\.count;\n\s*const tail0 = this\.tailSnapshot\(\);\n\s*const result = mutate \? mutate\(\) : undefined;\n(?:.*\n){0,3}?\s*const first = from == null \? Infinity : from;\n(?:.*\n){0,2}?\s*this\.pendingDelta = \{ count0, count1: this\.count, from: Math\.min\(first, count0\), tail0 \};\n(?:.*\n){0,2}?\s*return first;\n\s*\},\n\s*translate: p0 => \(moved \? this\.shiftPosition\(p0, moved\.from, moved\.shift, moved\.renamed\) : p0\),\n\s*dirtyFrom: from => bounded \|\| from,\n\s*range: p0 => this\.count \? this\.rangeFor\(p0\) : \{ lo: 0, hi: 0 \},/, "the records transaction: the page's mutation, its return as dirtyFrom, the window from P0, an empty count empties the window — and the delta's shape taken around the mutation (#197), a prepend's shift in it (#314), and a bounded rewrite redraws only its run (#s277)");
   // #s277 (design/slow-links.md §6.2–6.3): a placeholder is SIZED — never measured, never learned —
   // and follows the applied estimate wherever it moves; a bounded rewrite redraws its run alone.
   assert.match(engine, /measureMounted\(\) \{[\s\S]*?if \(this\.placeholderAt\(index\)\) continue;[\s\S]*?this\.learn\(index, height\);/, "a placeholder is skipped by the measure, so it never teaches the estimator (#s277)");
@@ -5337,7 +5337,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(viewSource, /^queueMicrotask\(\(\) => \{\n  const held = mountingEvents;\n  mountingEvents = null;\n  for \(const \[handler, data\] of held\) say\(handler, data\);\n\}\);\n\nreturn fenced\(\{$/m, "the held events go out a microtask after mountSessionView returns");
   // The turn is said from where the engine placed the reader, once per task, and as none until the
   // session's own units arrive.
-  assert.match(viewSource, /afterTransaction: \(\) => \{ const p = viewport\.position; if \(p && p\.key\) queueTurn\(updateTurnBar\(p\.key\)\); wantWindow\(\); \}/, "after a transaction");
+  assert.match(viewSource, /afterTransaction: \(\) => \{[\s\S]{0,250}?const p = viewport\.position; if \(p && p\.key\) queueTurn\(updateTurnBar\(p\.key\)\); wantWindow\(\);\s*\}/, "after a transaction");
   assert.match(viewSource, /updateStickyHeaders\(\); updateOutlineFocus\(\); queueTurn\(updateTurnBar\(\)\);/, "after a scroll");
   assert.match(viewSource, /stepLanded = \{ session: recordState\.session, key: unit\.key, top: [^\n]*\n(?:  \/\/[^\n]*\n)*  queueTurn\(updateTurnBar\(\)\);/, "after a turn step or a click on a turn has landed, which a landing the bottom clamped never scrolls to say (#s487)");
   assert.equal((viewSource.match(/queueTurn\(/g) || []).length, 6, "and nowhere else but open and close, which say none (with the definition)");

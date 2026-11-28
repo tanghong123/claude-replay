@@ -231,9 +231,12 @@
   // #257: how long the turn took, beside when it was sent. Same chip class as the time, so it
   // needs no stylesheet of its own. #s706: its words say what it is ("worked 45s"), not only its
   // title, which a phone never shows.
-  function turnDur(secs) {
-    var s = el("span", "ts", "worked " + fmtDur(secs));
-    s.title = "How long the agent worked on this turn";
+  function turnDur(secs, answer) {
+    var reading = shared.turnReading(secs, answer);
+    if (!reading) return null;
+    var s = el("span", "ts", reading.text);
+    s.dataset.turnReading = "";
+    s.title = reading.title;
     return s;
   }
 
@@ -616,7 +619,8 @@
       if (inbox && typeof inbox.do === "string" && inbox.do) ub.appendChild(inboxDo(inbox.do));
       card.appendChild(ub);
       if (b.ts) card.appendChild(el("span", "ts", fmtTime(b.ts)));
-      if (b.dur) card.appendChild(turnDur(b.dur));
+      var turnTime = turnDur(b.dur, b.ans);
+      if (turnTime) card.appendChild(turnTime);
       if (typeof b.src === "string" && !imagesAlone) card.appendChild(rawToggle(b));
       card.appendChild(anchor(b.id));
       return card;
@@ -679,6 +683,8 @@
       body.forEach(function (p) { renderPart(p, pb); });
       pc.appendChild(pb);
       if (b.ts) pc.appendChild(el("span", "ts", fmtTime(b.ts)));
+      var peerTime = turnDur(b.dur, b.ans);
+      if (peerTime) pc.appendChild(peerTime);
       pc.appendChild(anchor(b.id));
       return pc;
     }
@@ -851,7 +857,8 @@
       h.appendChild(el("span", "cmd-preview", head.preview || ""));
       chips(head, h);
       if (b.ts) h.appendChild(el("span", "ts", fmtTime(b.ts)));
-      if (b.dur) h.appendChild(turnDur(b.dur));
+      var commandTime = turnDur(b.dur, b.ans);
+      if (commandTime) h.appendChild(commandTime);
     } else if (head.summary) {
       h.appendChild(el("span", "summary", head.summary));
       chips(head, h);
@@ -1170,6 +1177,24 @@
       }
       // Credits-billed agents (Qoder): zero tokens, no USD — credits are the cost figure.
       if (u.credits) row("credits", u.credits, "total");
+    }
+
+    var speeds = (u.ans_speed || []).filter(function (a) { return shared.answerRate(a); });
+    var lastSpeed = shared.answerRate(u.ans_last);
+    if (speeds.length || lastSpeed) {
+      box.appendChild(el("div", "side-head", "Answer speed"));
+      speeds.forEach(function (a) {
+        var r = el("div", "urow");
+        r.appendChild(el("span", null, a.model));
+        r.appendChild(el("span", null, shared.answerRate(a)));
+        box.appendChild(r);
+      });
+      if (lastSpeed) {
+        var last = el("div", "urow");
+        last.appendChild(el("span", null, "last answer"));
+        last.appendChild(el("span", null, lastSpeed));
+        box.appendChild(last);
+      }
     }
 
     // Latest persisted runtime snapshot. These facts come from transcript records (not the
@@ -1658,6 +1683,7 @@
   // #49: the cursor, the queries and the two-zone REDUCER are the shared module's
   // (html/shared/record-stream.js); this page applies the plan to its own store below.
   var pc = shared.freshCursor();
+  var pullMetaGen = null;
   function cursorStr() {
     return shared.cursorText(pc);
   }
@@ -1666,8 +1692,9 @@
   }
   function consumePull(r) {
     var plan = shared.reducePull(pc, records.length, r);
+    if (Number.isSafeInteger(r.meta_gen) && r.meta_gen >= 0) pullMetaGen = r.meta_gen;
     // Idle tick (same epoch, both zones empty): nothing to do — an idle reply's meta is null.
-    if (plan.idle) return false;
+    if (plan.idle && !r.meta) return false;
     if (r.meta) renderMeta(r.meta);
     // The plan, in order: a resync truncates to 0; a commit truncates at committed_from and
     // appends the permanent blocks; the provisional zone truncates to the committed prefix +
@@ -1678,10 +1705,39 @@
         if (step.op === "truncate") { resetFrom(step.to); continue; }
         for (var j = 0; j < step.records.length; j++) putBlock(step.records[j]);
       }
+      if (r.meta && Number.isSafeInteger(r.meta_gen)) {
+        applyOpenAnswers(r.meta, plan.cursor.committed);
+      }
       return postRender();
+    }, function () {
+      if (r.meta && Number.isSafeInteger(r.meta_gen)) refreshOpenAnswers(plan.cursor.committed);
     });
     pc = plan.cursor;
     return true;
+  }
+
+  function applyOpenAnswers(meta, committed) {
+    var answers = new Map((meta.open_turn_ans || []).map(function (a) { return [a.turn, a]; }));
+    for (var i = committed; i < records.length; i++) {
+      var record = records[i];
+      if (isTurnKind(record) && Number.isInteger(record.turn)) record.ans = answers.get(record.turn - 1);
+    }
+  }
+
+  // Called only after the virtual window has replaced any cards from the old record shape.
+  function refreshOpenAnswers(committed) {
+    matEls().forEach(function (card) {
+      var index = +card.dataset.idx, record = records[index];
+      if (index < committed || !record || !isTurnKind(record) || card.dataset.kind !== record.kind ||
+          (record.id && card.id !== record.id) || card.dataset.turn !== String(record.turn)) return;
+      var host = record.kind === "command" ? card.querySelector(".fold-h") : card;
+      if (!host) return;
+      var old = host.querySelector("[data-turn-reading]");
+      var next = turnDur(record.dur, record.ans);
+      if (old && next) old.replaceWith(next);
+      else if (old) old.remove();
+      else if (next) host.appendChild(next);
+    });
   }
 
   // ── type / tool filter ────────────────────────────────────────────────
@@ -2350,7 +2406,7 @@
       var pullTick = function () {
         if (inflightP) return;
         inflightP = true;
-        fetch("pull?" + shared.pullQuery(sess, pc), { cache: "no-store" })
+        fetch("pull?" + shared.pullQuery(sess, pc, pullMetaGen), { cache: "no-store" })
           .then(function (r) { return r.json(); })
           .then(function (reply) {
             // Not a feed: this session lives on another server, or cannot be served at all.
@@ -2384,6 +2440,7 @@
               console.error("pull apply failed; resyncing", err);
               resetFrom(0);
               pc = shared.freshCursor();
+              pullMetaGen = null;
               return;
             }
             if (changed) settleAfterApply(records.length - before);

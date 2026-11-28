@@ -219,13 +219,26 @@ RECORDS. The turn index gives each turn both: its first record's index and its b
 that answers these routes itself needs a log it can address by byte with one record per line, or
 offsets of its own that agree across all four routes.
 
-### `GET /pull?session=<id>&cursor=<epoch>.<committed>.<gen>.<index>[&tail=<bytes>]`
+### `GET /pull?session=<id>&cursor=<epoch>.<committed>.<gen>.<index>[&meta=<n>][&tail=<bytes>]`
 
 What changed since the reader's cursor. The page asks every second.
 
 **The cursor is the reader's.** It holds the log's epoch, how many committed records the reader
 has, and the generation and index of the open turn. A fresh reader sends epoch 0, which never
 matches, so its first pull gets everything.
+
+The cursor always has exactly four parts. The optional, separate `meta` parameter is the last
+`meta_gen` the reader received. Omit it on the first pull and when talking to an older server;
+an omitted parameter is treated as matching, preserving old readers' idle behavior. `meta_gen`
+is an opaque revision token derived from the currently exposed `open_turn_ans`, `ans_speed`, and
+`ans_last` readings: a deterministic 53-bit FNV-1a fingerprint from 0 to
+9,007,199,254,740,991, with 0 for empty readings. The same readings retain the same token across
+server restarts and cache eviction; different readings normally produce a different token (as with
+any finite fingerprint, collisions are possible). Compare tokens only for equality
+(`===`/`!==` or `==`/`!=`), never by ordering. When the block cursor is caught up but `meta`
+differs, the reply carries current `meta`, `committed_ext: null`
+and `provisional: []`; it does not bump `provisional_gen` or resend blocks. Each reader keeps its
+own revision, so one reader's pull never consumes another's update.
 
 **Two zones.** Records the transcript will not rewrite are **committed**; the turn still being
 written is **provisional**. A reply is one of:
@@ -238,6 +251,7 @@ written is **provisional**. A reply is one of:
   | `committed_from` | record index | where the committed records this reply points at begin |
   | `committed_ext` | `{offset, len}` in bytes, or null | where they are in the log; the reader reads them with `/records` |
   | `provisional_gen` | number | the open turn's generation |
+  | `meta_gen` | number | opaque, JavaScript-safe answer-speed revision; returned on idle replies too |
   | `provisional_from` | number | where the provisional records below begin, within that zone |
   | `provisional` | record[] | the open turn's records, inline |
   | `meta` | object or null | the session's facts ("The session's facts"); null when nothing changed |
@@ -441,6 +455,7 @@ A pull's `meta` is `{t: "meta", ...}`:
 | `turns`, `tools` | counts |
 | `version` | the server build's version, not the contract's |
 | `usage` | `{input, output, cache_read}` as strings for a person, `cost` (a label or null), `model`, `duration_secs`, and optionally `cost_partial`, `compacted`, `credits`, `reported`, `runtime` (below) |
+| `open_turn_ans` | optional `[{turn, tok, ms, n, model}]`, the current readings for uncommitted turn openers, indexed by zero-based `turn` (the opener's existing one-based `turn` minus one); it overrides their initial `ans`, including clearing a reading absent from the array |
 | `tasks` | the session's tasks: `{id, subject, description, active_form, status, blocks, blocked_by}`, optionally with `owner`, `created`, `claimed`, `completed`, `updated`, `outcome`, `accept`, `checks`, `deferred`, `deferred_reason`, and `log: [{ts, by, msg}]`. `status` is `"Pending"`, `"InProgress"` or `"Completed"` |
 | `agent_type` | a sub-agent's type |
 | `ancestors` | `[{id, title}]`, a sub-agent's parents |
@@ -450,6 +465,10 @@ A pull's `meta` is `{t: "meta", ...}`:
 
 Inside `usage`:
 
+- `ans_speed`, when nonempty, is `[{model, tok, ms, n}]`: valid answer totals merged by displayed
+  model name. `ans_last`, when present, is `{model, tok, ms}` for the most recent valid answer.
+  Rates are `tok * 1000 / ms`; each answer's elapsed time includes first-token wait and excludes
+  tool time between answers. Tool execution between lines of the same answer remains included.
 - `reported` is the cost the agent itself reported: `{cost, complete, epochs, from, through,
   unknown_model}`;
 - `runtime` is what the agent's client said about its session, each field optional: `context_left`,
@@ -467,6 +486,7 @@ Inside `usage`:
 | `id` | `t<n>` for a record that opens turn `n`, `b<n>` otherwise; nested records have their own |
 | `turn`, `label` | the turn number and a label of 80 characters at most, on a record that opens a turn |
 | `ts`, `dur` | epoch seconds and duration in seconds, on a record that opens a turn |
+| `ans` | optional `{tok, ms, n, model}` answer totals on any turn-opening record; absent when no answer can be timed |
 | `src` | the source as written, on a person's prompt and on another session's message |
 | `reply_context` | `{version: 1, items: [{quote, response?: {kind: "comment" or "following_text", text}}], request?, context?}` on a prompt that replies to quoted text. The page drops the quoted view for any other `version` |
 | `inbox` | a relayed message's facts: `{from, via?, kind?, at?, to?, task?, guess?, about?, reply_to?, do?}` with `from` never empty |

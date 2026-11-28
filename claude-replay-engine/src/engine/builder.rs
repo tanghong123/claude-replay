@@ -14,12 +14,16 @@
 use crate::adapter::{LinePreprocessor, MetricsAccumulator, PreprocessedLine, TranscriptAdapter};
 use crate::engine::message::Message;
 use crate::engine::replay::Replayer;
-use crate::engine::session::{BlockRead, BlockStore, InMemoryStore, Session, SessionMeta};
+use crate::engine::session::{
+    AnswerReadings, AnswerSpeed, AnswerTotals, BlockRead, BlockStore, InMemoryStore, LastAnswer,
+    Session, SessionMeta,
+};
 use crate::engine::SessionIndex;
 use crate::metrics::Metrics;
 use crate::model::{AttachmentContent, Block, ByteOffset, EpochSeconds};
 use crate::Agent;
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::io;
 
 /// Folds a transcript incrementally into a [`Session`], threading its blocks through a
@@ -41,6 +45,14 @@ pub struct SessionAccumulator<S: BlockStore = InMemoryStore> {
     /// it to exclude a child rollout's cloned parent bootstrap from content and metrics.
     preprocessor: Box<dyn LinePreprocessor>,
     metrics: Box<dyn MetricsAccumulator>,
+    live_answer_totals: BTreeMap<String, AnswerTotals>,
+    live_last_answer: Option<LastAnswer>,
+    /// Frozen committed turns and closed answers owned by still-uncommitted turns.
+    turn_answers: Vec<Option<AnswerSpeed>>,
+    turn_answer_totals: BTreeMap<usize, BTreeMap<String, AnswerTotals>>,
+    /// The id and owner of the answer currently held open by the adapter. A missing turn
+    /// means it started before the first turn, or belongs to the committed prefix on resume.
+    open_answer_owner: Option<(String, Option<usize>, bool)>,
     /// The per-block storage policy — where each committed block's content goes.
     store: S,
     /// The **committed** blocks, `put` through the store exactly once as each turn crosses the
@@ -108,6 +120,9 @@ struct Boundary {
     /// resume accumulators such as Codex's cumulative counter: it also needs the last raw total
     /// and model in force to attribute only the appended delta.
     metrics_state: Value,
+    answer_totals: BTreeMap<String, AnswerTotals>,
+    last_answer: Option<LastAnswer>,
+    excluded_open_answer: bool,
 }
 
 /// The delta-sized read a live streaming consumer (the pull protocol) needs each poll — WITHOUT
@@ -123,6 +138,7 @@ pub struct StreamRead {
     pub user_times: Vec<Option<EpochSeconds>>,
     /// Its #257 companion: how long each of those turns took, same length, same cursor.
     pub turn_durations: Vec<Option<u64>>,
+    pub answer_readings: AnswerReadings,
     /// The current folded metrics.
     pub metrics: Metrics,
     /// The full live header — committed meta + the open turn folded on top (matches the tail).
@@ -182,6 +198,11 @@ impl<S: BlockStore> SessionAccumulator<S> {
             cwd: String::new(),
             preprocessor: adapter.line_preprocessor(),
             metrics: adapter.metrics_acc(),
+            live_answer_totals: BTreeMap::new(),
+            live_last_answer: None,
+            turn_answers: Vec::new(),
+            turn_answer_totals: BTreeMap::new(),
+            open_answer_owner: None,
             store,
             committed: Vec::new(),
             committed_meta: SessionMeta::default(),
@@ -234,6 +255,13 @@ impl<S: BlockStore> SessionAccumulator<S> {
         acc.metrics
             .reseed(mm.tokens.clone(), mm.extra.clone(), mm.span);
         acc.metrics.restore(&resume.metrics_state);
+        acc.open_answer_owner = acc
+            .metrics
+            .open_answer()
+            .map(|a| (a.id, None, !mm.excluded_open_answer));
+        acc.live_answer_totals = mm.answer_totals.clone();
+        acc.live_last_answer = mm.last_answer.clone();
+        acc.turn_answers = mm.turn_answers.clone();
         // `user_times` has length `committed_meta.turns` — its value at `replay_from`, since by
         // the §3 partition every uncommitted `UserText` lies at or above that offset and none
         // has been stamped.
@@ -254,6 +282,9 @@ impl<S: BlockStore> SessionAccumulator<S> {
             refused: mm.refused,
             pre: resume.pre.clone(),
             metrics_state: resume.metrics_state.clone(),
+            answer_totals: mm.answer_totals,
+            last_answer: mm.last_answer,
+            excluded_open_answer: mm.excluded_open_answer,
         };
         acc
     }
@@ -308,6 +339,20 @@ impl<S: BlockStore> SessionAccumulator<S> {
                 .take(self.committed_meta.turns)
                 .copied()
                 .collect(),
+            turn_answers: self
+                .turn_answers
+                .iter()
+                .take(self.committed_meta.turns)
+                .cloned()
+                .collect(),
+            answer_totals: e
+                .answer_totals
+                .iter()
+                .filter(|(_, v)| **v != AnswerTotals::default())
+                .map(|(k, v)| (k.clone(), *v))
+                .collect(),
+            last_answer: e.last_answer.clone(),
+            excluded_open_answer: e.excluded_open_answer,
             user_times: self
                 .replayer
                 .user_times()
@@ -338,6 +383,135 @@ impl<S: BlockStore> SessionAccumulator<S> {
             sandbox_on: e.sandbox_on,
             refused: e.refused.clone(),
         }
+    }
+
+    /// Credit each closed answer once, retaining the owner of an open answer across turns.
+    fn fold_answers(&mut self) {
+        let closed = self.metrics.answer();
+        let open = self.metrics.open_answer();
+        let previous = self.open_answer_owner.take();
+        if closed.is_none() && open.as_ref().map(|a| &a.id) == previous.as_ref().map(|p| &p.0) {
+            self.open_answer_owner = previous;
+            return;
+        }
+        let current_turn = self.replayer.turn_count().checked_sub(1);
+        if let Some(answer) = closed {
+            let (owner, include) = previous
+                .as_ref()
+                .filter(|p| p.0 == answer.id)
+                .map(|p| (p.1, p.2))
+                .unwrap_or((current_turn, current_turn.is_some()));
+            if let Some(valid) = LastAnswer::from_timing(&answer).filter(|_| include) {
+                self.live_answer_totals
+                    .entry(valid.model.clone())
+                    .or_default()
+                    .add(valid.totals());
+                if self
+                    .live_last_answer
+                    .as_ref()
+                    .is_none_or(|last| valid.last > last.last)
+                {
+                    self.live_last_answer = Some(valid.clone());
+                }
+                if let Some(turn) = owner.filter(|turn| *turn >= self.committed_meta.turns) {
+                    self.turn_answer_totals
+                        .entry(turn)
+                        .or_default()
+                        .entry(valid.model.clone())
+                        .or_default()
+                        .add(valid.totals());
+                }
+            }
+        }
+        self.open_answer_owner = open.map(|answer| {
+            previous.filter(|p| p.0 == answer.id).unwrap_or((
+                answer.id,
+                current_turn,
+                current_turn.is_some(),
+            ))
+        });
+    }
+
+    fn turn_answer(&self, turn: usize) -> Option<AnswerSpeed> {
+        let mut totals = self
+            .turn_answer_totals
+            .get(&turn)
+            .cloned()
+            .unwrap_or_default();
+        if self
+            .open_answer_owner
+            .as_ref()
+            .is_some_and(|owner| owner.1 == Some(turn) && owner.2)
+        {
+            if let Some(answer) = self
+                .metrics
+                .open_answer()
+                .and_then(|a| LastAnswer::from_timing(&a))
+            {
+                totals
+                    .entry(answer.model.clone())
+                    .or_default()
+                    .add(answer.totals());
+            }
+        }
+        let readings = AnswerReadings {
+            totals,
+            ..AnswerReadings::default()
+        };
+        let models = readings.speeds();
+        let model = models
+            .iter()
+            .max_by(|a, b| a.tok.cmp(&b.tok).then_with(|| b.model.cmp(&a.model)))?
+            .model
+            .clone();
+        let mut all = AnswerTotals::default();
+        for speed in models {
+            all.add(AnswerTotals {
+                tok: speed.tok,
+                ms: speed.ms,
+                n: speed.n,
+            });
+        }
+        Some(AnswerSpeed {
+            tok: all.tok,
+            ms: all.ms,
+            n: all.n,
+            model,
+        })
+    }
+
+    /// The live session reading overlays the open answer without mutating persisted counters.
+    pub fn answer_readings(&self) -> AnswerReadings {
+        let count = self.replayer.turn_count();
+        let mut turns = self.turn_answers.clone();
+        turns.extend((turns.len()..count).map(|turn| self.turn_answer(turn)));
+        let mut readings = AnswerReadings {
+            turns,
+            committed_turns: self.committed_meta.turns,
+            totals: self.live_answer_totals.clone(),
+            last: self.live_last_answer.clone(),
+        };
+        if self.open_answer_owner.as_ref().is_some_and(|owner| owner.2) {
+            if let Some(answer) = self
+                .metrics
+                .open_answer()
+                .and_then(|a| LastAnswer::from_timing(&a))
+            {
+                readings
+                    .totals
+                    .entry(answer.model.clone())
+                    .or_default()
+                    .add(answer.totals());
+                if readings
+                    .last
+                    .as_ref()
+                    .is_none_or(|last| answer.last > last.last)
+                {
+                    readings.last = Some(answer);
+                }
+            }
+        }
+        readings
     }
 
     /// Fold ONE line into the running state, knowing its **start byte offset** in the transcript:
@@ -399,6 +573,12 @@ impl<S: BlockStore> SessionAccumulator<S> {
                 refused: self.replayer.refused().clone(),
                 pre,
                 metrics_state,
+                answer_totals: self.live_answer_totals.clone(),
+                last_answer: self.live_last_answer.clone(),
+                excluded_open_answer: self
+                    .open_answer_owner
+                    .as_ref()
+                    .is_some_and(|owner| !owner.2),
             }
         });
         // The task op-log (#15) folds HERE, at the accumulator — task state is
@@ -465,6 +645,13 @@ impl<S: BlockStore> SessionAccumulator<S> {
             }
             let times = self.replayer.user_times().to_vec();
             let durs = self.replayer.turn_durations().to_vec();
+            let turns_end = turns0 + drained.iter().filter(|b| b.opens_turn()).count();
+            for turn in turns0..turns_end {
+                let answer = self.turn_answer(turn);
+                self.turn_answers.push(answer);
+                self.turn_answer_totals.remove(&turn);
+            }
+            rec.turn_answers = self.turn_answers[turns0..turns_end].to_vec();
             let durs_for_put: &[Option<u64>] = &durs;
             // Each block goes in told the blocks after it in this drain (`put_with_next`, #s617),
             // taken out of the drain in turn so none is copied.
@@ -472,9 +659,14 @@ impl<S: BlockStore> SessionAccumulator<S> {
                 let b = std::mem::replace(&mut drained[i], Block::UserText(String::new()));
                 self.committed_meta.push(&b);
                 let at = self.committed.len();
-                let bv = self
-                    .store
-                    .put_with_next(b, at, &times, durs_for_put, &drained[i + 1..]);
+                let bv = self.store.put_with_answers(
+                    b,
+                    at,
+                    &times,
+                    durs_for_put,
+                    &self.turn_answers,
+                    &drained[i + 1..],
+                );
                 self.committed.push(bv);
             }
             // `user_times` cannot come from the blocks: the stamps live in the replayer,
@@ -494,7 +686,10 @@ impl<S: BlockStore> SessionAccumulator<S> {
             self.meta_out.push(rec);
         }
         match serde_json::from_str::<Value>(line) {
-            Ok(v) => self.metrics.push(&v),
+            Ok(v) => {
+                self.metrics.push(&v);
+                self.fold_answers();
+            }
             // The reader hands this path complete lines only, so unlike `parse_reader` there
             // is no torn tail to excuse — but a blank line is still nothing, not drift.
             Err(_) if !line.trim().is_empty() => self.metrics.malformed_line(),
@@ -531,6 +726,24 @@ impl<S: BlockStore> SessionAccumulator<S> {
             if d > 0 {
                 rec.extra.insert(k.clone(), d);
             }
+        }
+        for (model, total) in &e.answer_totals {
+            let delta = total.delta(
+                self.emitted
+                    .answer_totals
+                    .get(model)
+                    .copied()
+                    .unwrap_or_default(),
+            );
+            if delta != AnswerTotals::default() {
+                rec.answer_totals.insert(model.clone(), delta);
+            }
+        }
+        if e.last_answer != self.emitted.last_answer {
+            rec.last_answer = e.last_answer.clone();
+        }
+        if e.excluded_open_answer != self.emitted.excluded_open_answer {
+            rec.excluded_open_answer = Some(e.excluded_open_answer);
         }
         // Gauges: written only when changed (R7).
         if e.span != self.emitted.span {
@@ -629,6 +842,11 @@ impl<S: BlockStore> SessionAccumulator<S> {
         self.cwd.clear();
         self.preprocessor = self.adapter.line_preprocessor();
         self.metrics = self.adapter.metrics_acc();
+        self.live_answer_totals.clear();
+        self.live_last_answer = None;
+        self.turn_answers.clear();
+        self.turn_answer_totals.clear();
+        self.open_answer_owner = None;
         self.committed.clear();
         self.committed_meta = SessionMeta::default();
         self.committed_agents.clear();
@@ -742,6 +960,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             provisional,
             user_times,
             turn_durations,
+            answer_readings: self.answer_readings(),
             metrics: self.metrics.finish(),
             meta,
             n_committed: self.committed.len(),
@@ -835,6 +1054,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
         // padded to match rather than assumed equal (#257).
         let mut turn_durations = self.replayer.turn_durations().to_vec();
         turn_durations.resize(user_times.len(), None);
+        let answer_readings = self.answer_readings();
         Session {
             agent: self.agent,
             cwd: None,
@@ -842,6 +1062,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             provisional: open,
             user_times,
             turn_durations,
+            answer_readings,
             metrics: self.metrics.finish(),
             index,
             sub_agents,
@@ -875,6 +1096,7 @@ impl<S: BlockStore> SessionAccumulator<S> {
             provisional,
             user_times,
             turn_durations,
+            answer_readings: self.answer_readings(),
             metrics,
             index,
             sub_agents,

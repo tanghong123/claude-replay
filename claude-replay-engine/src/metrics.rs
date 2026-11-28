@@ -1717,7 +1717,20 @@ fn human_dur(secs: i64) -> String {
 
 /// "claude-opus-4-8" -> "opus4.8". Non-Claude models (e.g. Codex "gpt-5.6") are
 /// shown verbatim.
-fn short_model(model: &str) -> String {
+pub fn short_model(model: &str) -> String {
+    if !model.starts_with("claude-") {
+        return model.to_string();
+    }
+    let model = model.split('[').next().unwrap_or(model);
+    let model = match model.rsplit_once('-') {
+        Some((base, date)) if date.len() == 8 && date.bytes().all(|c| c.is_ascii_digit()) => base,
+        _ => model,
+    };
+    footer_short_model(model)
+}
+
+// Preserve the TUI footer's established text while answer-speed rows merge model variants.
+fn footer_short_model(model: &str) -> String {
     if !model.starts_with("claude-") {
         return model.to_string();
     }
@@ -1871,7 +1884,7 @@ impl Metrics {
     }
 
     pub fn model_label(&self) -> String {
-        let short = short_model(&self.model).to_string();
+        let short = footer_short_model(&self.model);
         match self.per_model.len() {
             0 | 1 => short,
             n => format!("{short}+{}", n - 1),
@@ -2577,6 +2590,9 @@ mod tests {
     fn short_model_formats() {
         assert_eq!(short_model("claude-opus-4-8"), "opus4.8");
         assert_eq!(short_model("claude-sonnet-4-6"), "sonnet4.6");
+        assert_eq!(short_model("claude-opus-4-8[1m]"), "opus4.8");
+        assert_eq!(short_model("claude-opus-4-8-20261001"), "opus4.8");
+        assert_eq!(short_model("gpt-example[1m]"), "gpt-example[1m]");
     }
 }
 
