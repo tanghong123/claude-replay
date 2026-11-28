@@ -1,7 +1,7 @@
 # agent-monitor
 
 Every coding-agent session on this machine on one web page. Sessions from Claude Code,
-Codex, Qoder, QoderWork and Qwenwork sit in one tree, so you see at a glance **who is
+Codex, Qoder, QoderWork, Qwenwork and Antigravity CLI sit in one tree, so you see at a glance **who is
 running, who is waiting for you and why it stopped**; open one to see what that agent is
 doing, and from a paired phone follow them all and reply to the one that is waiting.
 
@@ -25,6 +25,10 @@ macOS and Linux, x86_64 and arm64. `--agents claude,codex` narrows the tree, `--
 another port, and `--no-open` prints the address instead of opening a browser. The page lists
 this machine's sessions by agent, then by project. By default it shows the recently active
 and the blocked ones.
+
+Antigravity CLI (`agy`) sessions are available for read-only viewing. Use
+`agent-monitor --agents antigravity` to filter the monitor, or
+`agent-replay --agent antigravity <conversation-id>` to open one session.
 
 ## Why it exists
 
@@ -117,9 +121,12 @@ agent-monitor --set-passcode   # optional: require a passcode before write mode 
 ```
 
 The address carrying the token is printed only to a terminal; logs and pipes get the bare
-address. If an unpaired monitor is already running, stop it in its terminal and start it
-again with `--pair`. On Linux a local request verified as the same OS user passes without the
-token; macOS cannot verify one, so there every request needs it.
+address. `--pair` against a monitor already running unpaired pairs it at once, with no restart:
+the running monitor takes the new token and requires it from its next request on, and its log
+says it is now paired. A browser on the monitor's own machine can pair from the page instead
+(`/pair`, then Show a code): on a monitor not yet paired that pairs the monitor too, and the
+page says so before it asks. On Linux a local request verified as the same OS user passes
+without the token; macOS cannot verify one, so there every request needs it.
 
 Pair the monitor before serving it with `tailscale serve`. While `tailscale serve` relays
 anything to its port, an unpaired monitor on macOS refuses every request it cannot verify,

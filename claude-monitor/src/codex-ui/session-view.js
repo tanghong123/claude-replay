@@ -52,7 +52,7 @@ export const MOUNT_OPTIONS = Object.freeze([
   "theme", "grid", "backend", "show", "keyboard", "write", "frame", "assets", "reviewSheet", "detachTo",
   "selectedId", "sessionRow", "sessionWorkers", "selectSession", "renderList", "refreshIndex", "pauseIndex", "resumeIndex",
   "onTitle", "onTurn", "onInfo", "onFile", "onLinkCopied", "onToast", "onOutline",
-  "room", "parentShown", "openList", "openSidebar", "paneLayout", "paneCount",
+  "room", "parentShown", "openList", "openSidebar", "paneLayout",
 ]);
 
 /** Draw the session view in `element` and return its handle. The element becomes `#sessionView`, the
@@ -188,13 +188,11 @@ export const MOUNT_OPTIONS = Object.freeze([
  *  - `paneLayout(name, on)`: the artifact pane opens or shuts, goes full or is being resized; said
  *    before the view wears the state `on` names (#s431 stage 3), so the app lays out its list for the
  *    pane first and the view decides its arrangement at the box that leaves it.
- *  - `paneCount(key, text)`: a phone pane's count changed (a wide phone's column shows it too).
  *
  *  The handle: `select(id)` and `open(id)` (a session chosen: the view takes it, then reads it),
  *  `session()`, `close(title, detail)`, `indexChanged()`, `writeChanged()`, `resized()`,
- *  `setTheme(theme)`, `keys` (the view's key actions), `closePane()`, `paneNode(key)` and
- *  `outlineClick(event)` (the wide phone's column), `persist()` (remember the reader's choices of
- *  the view now), `unmount()`, and, for the monitor's own native mode, `controls` and
+ *  `setTheme(theme)`, `keys` (the view's key actions), `closePane()`, `persist()` (remember the
+ *  reader's choices of the view now), `unmount()`, and, for the monitor's own native mode, `controls` and
  *  `installNativeControls(…)`.
  *
  *  `unmount()` takes the view away: it stops all it started (its listeners on the page, its timers,
@@ -617,7 +615,11 @@ const viewport = new Viewport(transcript, byId("transcriptInner"), recordState, 
     // input LATER than the landing (#s259): the jump stamps intent itself, so its own scroll came
     // inside the window and cleared the landing it had just made.
     if (viewport.lastUserInput > recordState.landedAt && performance.now() - viewport.lastUserInput < viewport.userIntentMs) recordState.landed = null;
+    // #s700: the jump follows what is below as the reader moves, not only a flip of the pin.
+    if (byId("jumpToBottom").classList.contains("show") !== jumpWanted()) paintJump();
   },
+  // A reshape the engine heard of itself (a diagram's source toggle) has grown the page by now (#s700).
+  afterReshape: paintJump,
   followChanged: paintJump
 });
 // Delegate from the stable scroll host: the virtual window may replace all of its children
@@ -657,9 +659,11 @@ bindComponentEvents(transcript, recordState, {
   // reader reshaping the page themselves — a fold, a cap, a prompt expanded, a raw toggle. Parked
   // at the tail that growth would otherwise be read as the tail moving away and converged on,
   // scrolling away the thing the click asked to see. The pin is dropped instead.
-  rerender: () => { viewport.readerReshaped(); viewport.rerender(); viewport.scheduleRemember(); },
+  // The pin dropped at the end paints the jump before the page has grown (#s700): paint it again
+  // once it has, so a fold opened at the end offers the way back at once.
+  rerender: () => { viewport.readerReshaped(); viewport.rerender(); viewport.scheduleRemember(); paintJump(); },
   // …and for the branches that grow the page IN PLACE without a re-render (the cap expander).
-  reshaped: () => viewport.readerReshaped(),
+  reshaped: () => { viewport.readerReshaped(); paintJump(); },
   // What only the page knows reaches the viewport history (#197): a fold, a prompt toggle.
   note: (kind, target) => viewport.noteAction(kind, target),
   codeSize: (key, delta) => setCodeOverride(key, { size: clampSize(effectiveCode(key).size + delta * SIZE_STEP) }),
@@ -994,6 +998,21 @@ function fitHeadingSoon() {
   const headingRoom = new ResizeObserver(fitHeadingSoon);
   for (const node of [viewRoot.$(".workspace>.topbar"), viewRoot.$(".header-search-cluster")]) if (node) headingRoom.observe(node);
 }
+/** A header write that changes nothing writes nothing (#s731). Writing equal text still replaces the
+ *  node's text, and beside a large guest in the pane (mdrev's view of a 1,500-line file) one such
+ *  write cost a restyle of the whole page, about 280ms, at every poll of the session list. */
+function setText(node, text) { if (node && node.textContent !== text) node.textContent = text; }
+/** The same for markup: kept as written and as the browser serialized it, so a node another write
+ *  changed since is written again. `var`: a header can be drawn before the mount reaches this line. */
+var markupOf = null;
+function setMarkup(node, html) {
+  if (!node) return;
+  markupOf ||= new WeakMap();
+  const last = markupOf.get(node);
+  if (last && last.html === html && last.out === node.innerHTML) return;
+  node.innerHTML = html;
+  markupOf.set(node, { html, out: node.innerHTML });
+}
 function paintHeader() {
   if (sessionNewTab) sessionNewTab.hidden = !selectedId();
   renderArtifacts();
@@ -1002,22 +1021,22 @@ function paintHeader() {
   const parent = renderParent(liveMeta);
   if (!row && liveMeta && parent) {
     // A sub-agent child: not a row, so everything the header shows comes from its own meta.
-    byId("sessionTitle").textContent = liveMeta.title || liveMeta.sid || selectedId();
-    byId("sessionCrumb").textContent = `${agentName(liveMeta.agent)} · sub-agent of ${parent.title || parent.id}`;
+    setText(byId("sessionTitle"), liveMeta.title || liveMeta.sid || selectedId());
+    setText(byId("sessionCrumb"), `${agentName(liveMeta.agent)} · sub-agent of ${parent.title || parent.id}`);
     byId("statusChip").className = "status-chip idle";
-    byId("statusChip").textContent = liveMeta.agent_type ? `Sub-agent · ${liveMeta.agent_type}` : "Sub-agent";
+    setText(byId("statusChip"), liveMeta.agent_type ? `Sub-agent · ${liveMeta.agent_type}` : "Sub-agent");
     byId("statusChip").title = "";
     sessionTitle.tabIndex = 0;
     sessionCopyMenu.hidden = false;
-    sessionCopyMenu.querySelector('[data-session-copy-value="id"]').textContent = liveMeta.sid || selectedId();
-    sessionCopyMenu.querySelector('[data-session-copy-value="path"]').textContent = liveMeta.path || "available once the session loads";
+    setText(sessionCopyMenu.querySelector('[data-session-copy-value="id"]'), liveMeta.sid || selectedId());
+    setText(sessionCopyMenu.querySelector('[data-session-copy-value="path"]'), liveMeta.path || "available once the session loads");
     return;
   }
   if (!row) {
-    byId("sessionTitle").textContent = "Agent Monitor";
-    byId("sessionCrumb").textContent = "Scanning sessions";
+    setText(byId("sessionTitle"), "Agent Monitor");
+    setText(byId("sessionCrumb"), "Scanning sessions");
     byId("statusChip").className = "status-chip idle";
-    byId("statusChip").textContent = "None selected";
+    setText(byId("statusChip"), "None selected");
     byId("statusChip").title = "";
     sessionTitle.tabIndex = -1;
     sessionCopyMenu.hidden = true;
@@ -1027,12 +1046,12 @@ function paintHeader() {
   const state = displayState(row);
   // A worker (#s53) is titled by its brief and says whose worker it is: its own title is its project's.
   const starter = row.startedBy ? sessionRow(row.startedBy) : null;
-  byId("sessionTitle").textContent = row.startedBy ? workerName(row) : row.name || row.id;
-  byId("sessionCrumb").textContent = starter
+  setText(byId("sessionTitle"), row.startedBy ? workerName(row) : row.name || row.id);
+  setText(byId("sessionCrumb"), starter
     ? `${agentName(row.agent)} · worker of ${starter.name || starter.id}`
-    : `${agentName(row.agent)} · ${row._group?.label || ""}`;
+    : `${agentName(row.agent)} · ${row._group?.label || ""}`);
   byId("statusChip").className = `status-chip ${state.state} ${state.reason}`;
-  byId("statusChip").innerHTML = `<span class="state-dot ${escapeText(state.state)} ${escapeText(state.reason)}" style="margin:0"></span>${escapeText(state.label)}${row.stateConfidence === "inferred" ? " · inferred" : ""}`;
+  setMarkup(byId("statusChip"), `<span class="state-dot ${escapeText(state.state)} ${escapeText(state.reason)}" style="margin:0"></span>${escapeText(state.label)}${row.stateConfidence === "inferred" ? " · inferred" : ""}`);
   // The chip's words are its title too, for a bar that cuts them short.
   byId("statusChip").title = `${row.stateDetail || state.label}${row.stateConfidence === "inferred" ? " · inferred" : ""}`;
   const meta = recordState.session === row.id ? (recordState.meta || {}) : {};
@@ -1040,8 +1059,8 @@ function paintHeader() {
   const path = meta.path || "";
   sessionTitle.tabIndex = 0;
   sessionCopyMenu.hidden = false;
-  sessionCopyMenu.querySelector('[data-session-copy-value="id"]').textContent = sid;
-  sessionCopyMenu.querySelector('[data-session-copy-value="path"]').textContent = path || "available once the session loads";
+  setText(sessionCopyMenu.querySelector('[data-session-copy-value="id"]'), sid);
+  setText(sessionCopyMenu.querySelector('[data-session-copy-value="path"]'), path || "available once the session loads");
   sessionCopyMenu.querySelector('[data-copy-session="id"]').disabled = !sid;
   sessionCopyMenu.querySelector('[data-copy-session="path"]').disabled = !path;
 }
@@ -2047,7 +2066,7 @@ function showFilteredControl(pane, hidden, label = "Show them") {
 /** A phone's way to Top-level only (#s606), as `phoneAgentsFilter` is to Active only: a row at the
  *  top of the Tasks list, on the same remembered choice, for whichever end applies. Only where some
  *  task follows another up, since otherwise the choice changes nothing. A sheet does not draw the
- *  row; its head mirrors it (#s616, `renderFilter`), and a wide phone's column draws it. */
+ *  row; its head mirrors it (#s616, `renderFilter`). */
 function phoneTasksFilter(topLevelOnly, hidden, followUps) {
   if (!layout.phone()) return "";
   const what = n => `${n} ${n === 1 ? "follow-up" : "follow-ups"}`;
@@ -2479,7 +2498,7 @@ function landedInView(view) {
  *  nothing the reader can do brings it in: there is no scrollbar and nobody writes its
  *  scrollLeft. The owner: "show 4 hits, but one of them I cannot see."
  *
- *  Full is the state the head's own third click step gives the target (#129), so a hit reveals
+ *  Full is the state the head's own cycle gives the target after the output (#129), so a hit reveals
  *  it the way the reader would rather than inventing a fourth state. `headSteps` is left alone
  *  deliberately: the click handler derives its starting step from the CURRENT open/full pair
  *  when the map has no entry, so it stays coherent by itself.
@@ -3717,13 +3736,19 @@ function findRecord(id) { let found = null; const visit = record => { if (!recor
 // the arrow while nothing new arrived; once records arrive with the reader scrolled up, it
 // widens into a pill that SAYS how many, so the count is readable and not a tooltip. The count
 // is records, as the classic page counts them; a jump or a scroll to the tail clears it.
+// Only where there is somewhere to jump (#s41): a fold opened in a session shorter than the screen
+// leaves the reader not following, and the jump offered a way down to nothing below. What is below
+// changes as the reader scrolls and as the page grows, so it is asked again then (#s700: painted only
+// on a flip of the pin or new records, a jump drawn hidden at the end stayed hidden however far up the
+// reader went, a fold opened there being the way in).
+function jumpWanted() {
+  if (recordState.following) return false;
+  return recordState.newRecords > 0 || transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight > 4;
+}
 function paintJump() {
   const button = byId("jumpToBottom");
   const n = recordState.newRecords;
-  // Only where there is somewhere to jump (#s41): a fold opened in a session shorter than the screen
-  // leaves the reader not following, and the jump offered a way down to nothing below.
-  const below = transcript.scrollHeight - transcript.scrollTop - transcript.clientHeight > 4;
-  button.classList.toggle("show", !recordState.following && (below || n > 0));
+  button.classList.toggle("show", jumpWanted());
   button.classList.toggle("has-new", n > 0);
   button.setAttribute("aria-hidden", String(recordState.following));
   let count = button.querySelector(".jump-count");
@@ -4706,7 +4731,6 @@ var infoPopoverToggle, addInfoTrigger;
 var phoneDock;
 {
   const PHONE = layout.query("phone");
-  const WIDE = layout.query("wide");
   const TOUCH = layout.query("touch");
   const topbar = viewRoot.$(".topbar");
 
@@ -4866,7 +4890,9 @@ var phoneDock;
     sessionView.classList.toggle("composing", PHONE.matches && composer.classList.contains("production-show") && (!controls.nativeActive || sharedFocus));
     if (controls.nativeActive) { controls.fitComposer(); placeDeskCompose(); return; }
     // #s236: the phone's note is the same one line the desktop's caption shows (`composeTargetLine`).
-    composeNote.textContent = byId("composeTarget").textContent;
+    // Every poll comes here twice (the images, the dialog), so an equal note is not written (#s731).
+    const note = byId("composeTarget").textContent;
+    if (composeNote.textContent !== note) composeNote.textContent = note;
     fitCompose();
     placeDeskCompose();
   };
@@ -4913,8 +4939,8 @@ var phoneDock;
   // that undoes each) is drawn in the sheet's HEAD, beside its title, where it costs the list nothing.
   // Held sideways the list is about 97px, and the opening scroll to what is still moving took the row
   // at the list's top out of reach; pinned there, the row and a state's head left no task readable.
-  // The list keeps its row (not drawn in the sheet, production.css; a wide phone's column shows it),
-  // and the head's control carries the row's data, so a press goes through `navigatorClick` as the
+  // The list keeps its row (not drawn in the sheet, production.css; a wide phone's column drew it
+  // until #s703), and the head's control carries the row's data, so a press goes through `navigatorClick` as the
   // row's did, and the redraw it makes calls this again (`tasksChanged`).
   const renderFilter = () => {
     const row = openPane ? menuBody.querySelector(".tasks-filter-row, .agents-filter-row") : null;
@@ -5008,7 +5034,10 @@ var phoneDock;
       catchingPointer = event.pointerId;
       stopCatching(4000);
     }
-    if (openPane && taskPopover.hidden && !menu.contains(event.target) && !event.target.closest?.("[data-phone-pane], [data-nav-card-open]")) closePane();
+    // A press on the task card's dim is that card's tap, never one beside the sheet: the dim stays,
+    // catching, after the touch closed the card until the tap's click (#s510), and a press there is
+    // the tap's mouse half, which closed the Tasks sheet under the card (#s703).
+    if (openPane && taskPopover.hidden && event.target !== taskScrim && !menu.contains(event.target) && !event.target.closest?.("[data-phone-pane], [data-nav-card-open]")) closePane();
   }, { capture: true, signal });
   const lifted = event => {
     if (event.pointerId !== catchingPointer) return;
@@ -5246,22 +5275,16 @@ var phoneDock;
   // So does a change of screen (#s511): off a touch screen the page's offset is no keyboard's, and a
   // transform a ride wrote there would stay until the next scroll or viewport event.
   TOUCH.addEventListener("change", () => rideAgain(), { signal });
-  // Into the wide layout the drop-down has no button (the column shows its panes); out of it, the
-  // app sends the column's borrowed list home and the handle speaks of the drawer again.
-  WIDE.addEventListener("change", () => { if (WIDE.matches) closePane(); place(); }, { signal });
   place();
 
   mobileShell = {
     closePane,
-    paneNode: key => { const pane = panes.find(p => p.key === key); return pane ? byId(pane.body) : null; },
     counts(turns, tasks, agents) {
       for (const [pane, n] of [[panes[0], turns], [panes[1], tasks], [panes[2], agents]]) {
         const badge = pane.button.querySelector(".phone-pane-count");
         badge.hidden = !n;
         // #339: a long session's turns and tasks run to hundreds; 99+ hid how many.
         badge.textContent = n > 999 ? "999+" : String(n);
-        // A wide phone's column switch shows the same count on its tab (the app's).
-        options.paneCount?.(pane.key, n ? badge.textContent : "");
       }
     },
     tasksChanged: renderJumps,
@@ -5352,7 +5375,6 @@ return fenced({
     for (const observer of observers) observer.disconnect();
     timers.clear(); frames.clear(); observers.clear();
     taskScrim.remove(); taskPopover.remove();
-    for (const [, , id] of PHONE_PANES) { const node = byId(id); if (node && !element.contains(node)) node.remove(); }
     for (const { node, style, values } of hostStyles) {
       for (const [name, atMount, priorityAtMount] of values) {
         const wrote = viewWrote.get(node)?.get(name);
@@ -5374,11 +5396,8 @@ return fenced({
   setTheme: applyTheme,
   /** The view's key actions, by the keymap's names. */
   keys: keyActions,
-  /** A phone's pane sheet closes; a pane's list, by key, for a wide phone's column to borrow; and a
-   *  click inside a borrowed list, which the outline answers. */
+  /** A phone's pane sheet closes. */
   closePane: () => mobileShell.closePane(),
-  paneNode: key => mobileShell.paneNode(key),
-  outlineClick: event => navigatorClick(event),
   /** The compose box's controls, ordinary or native: native mode hooks the session list too. */
   get controls() { return controls; },
   /** Install native routing (the monitor's own): `index` hooks the app's session index. */

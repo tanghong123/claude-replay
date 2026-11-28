@@ -22,6 +22,7 @@ fn run(root: &Path, args: &[&str]) -> (String, String, bool) {
         .env("QODERWORK_PROJECTS_DIR", root.join("qoderwork"))
         .env("QODERWORK_DB", root.join("qoderwork.db"))
         .env("QWENWORK_PROJECTS_DIR", root.join("qwenwork"))
+        .env("ANTIGRAVITY_CLI_HOME", root.join("antigravity"))
         .env("QWENWORK_DB", root.join("qwenwork.db"))
         .env("CLAUDE_REPLAY_CACHE", root.join("cache"))
         .output()

@@ -390,14 +390,16 @@ let droppedAttention = "";
   // under the phone's window query read what the order decided: the drawer for the list's parts and
   // the app's grid, the phone reader for the view's parts the app's file styles; the desktop's
   // complement stands where the list is not the drawer, and the demo's rail-off rules at 700px go.
+  // The phone reader's rules in the app's file are fewer since #s704, which made the outline's lists
+  // the view's alone.
   {
     const kinds = derived.report.appArranged.reduce((n, { kind }) => ({ ...n, [kind]: (n[kind] || 0) + 1 }), {});
-    assert.ok(kinds.drawer >= 20 && kinds.phone >= 15 && kinds.listed >= 3 && kinds.dropped >= 4, `the app's rules the order decides: ${JSON.stringify(kinds)}`);
+    assert.ok(kinds.drawer >= 20 && kinds.phone >= 6 && kinds.listed >= 3 && kinds.dropped >= 4, `the app's rules the order decides: ${JSON.stringify(kinds)}`);
     for (const { kind, sel } of derived.report.appArranged) {
       if (kind === "dropped") continue;
       assert.ok(sel.includes(kind === "drawer" ? ".app-drawer" : kind === "listed" ? ":not(.app-drawer)" : "#sessionView.pl-phone"), `${kind}: ${sel}`);
       if (/\.(?:drawer-handle|drawer-scrim|sidebar-mini|side-head|tree-row)(?![\w-])/.test(sel)) assert.equal(kind, "drawer", `the list's parts are the drawer's: ${sel}`);
-      if (/\.(?:phone-pane-body|toast)(?![\w-])|#taskPopover/.test(sel)) assert.equal(kind, "phone", `the view's parts are the phone reader's: ${sel}`);
+      if (/\.toast(?![\w-])|#taskPopover/.test(sel)) assert.equal(kind, "phone", `the view's parts are the phone reader's: ${sel}`);
     }
     const widthQueries = [...new Set((derived.app.match(/@media[^{]*/g) || []).filter(q => /width/.test(q)).map(q => q.replace(/\s+/g, "")))];
     assert.deepEqual(widthQueries.filter(q => !styles.APP_KEPT_QUERIES.includes(q)), [], "the app's file keeps a window's width only where the order does not decide (APP_KEPT_QUERIES)");
@@ -438,9 +440,8 @@ let droppedAttention = "";
   const used = new Set();
   const visit = nodes => { for (const node of nodes) { if (node.kind === "group") visit(node.children); else if (node.kind === "rule") for (const n of node.prelude.match(/[.#]-?[A-Za-z_][A-Za-z0-9_-]*/g) || []) used.add(n); } };
   for (const css of [referenceCss, productionCss]) visit(styles.parseCss(styles.stripComments(css)));
-  const isOutside = n => styles.OUTSIDE.some(prefix => n === prefix || n.startsWith(`${prefix}-`));
   const listed = new Set([...styles.APP_CHROME, ...styles.LIST_CHROME, ...styles.LIST_OUTSIDE, ...styles.APP_STATES, ...styles.SHARED, ...styles.COMMON, ...styles.ROOT_CLASSES, "#app", ".app", "#sessionView"]);
-  const unlisted = [...drawn].filter(n => used.has(n) && !listed.has(n) && !isOutside(n)).sort();
+  const unlisted = [...drawn].filter(n => used.has(n) && !listed.has(n)).sort();
   assert.deepEqual(unlisted, [], "every name the app draws that a selector uses is in one of the classifier's lists (scripts/session-view-css.mjs)");
   const stale = [...styles.APP_CHROME, ...styles.LIST_CHROME, ...styles.LIST_OUTSIDE, ...styles.APP_STATES].filter(n => !drawn.has(n) && !new RegExp(`["'\\s.#]${n.slice(1)}(?![\\w-])`).test(appText)).sort();
   assert.deepEqual(stale, [], "every name the app's lists hold is one the app draws");
@@ -1385,7 +1386,7 @@ console.log("reveal cases passed");
   assert.equal(families([{ id: "x" }])[0].key, "x", "a row without a family field is a family of one, keyed by its id");
   console.log("family cases passed");
 }
-assert.match(listSource, /families\(rows\)/, "the tree clusters fork families through the tested function");
+assert.match(listSource, /\b(?:families|machineFamilies)\(rows\)/, "the tree clusters fork families through the tested function (machine by machine since #s738, the #s738 cases)");
 
 // #s206: the flat list — every family the tree shows, across agents and projects, in the server's
 // calm order: active families (the last ten minutes) tied and named in turn, then the rest newest
@@ -1554,16 +1555,14 @@ assert.match(viewSource, /if \(target && turnsFollow\) revealInPane\(target\);/,
 }
 assert.match(productionCss, /\n:is\(#collapseBtn,#expandBtn\)\[data-flat\]\{display:none\}/, "flat, the group controls go: the list marks the two it places, since the head is outside its element (#s430 stage 3)");
 assert.match(listSource, /const noGroups = \(flat && !grouped\) \|\| arranged;\n  for \(const control of \[collapseBtn, expandBtn\]\) control\.toggleAttribute\("data-flat", noGroups\);/, "…with the same verdict as its own sessions-flat, except that grouped by machine (#s561) the machines' heads still fold");
-assert.match(listSource, /filterSheet\.querySelector\("\[data-group-part\]"\)\?\.toggleAttribute\("data-no-groups", noGroups\);/, "#s664: the sheet's fold rows go with the glyphs, under a mark of their own");
 assert.equal((listSource.match(/\sdata-flat[\s>]/g) || []).length, 1, "data-flat is drawn on the One list by activity option alone, and only the two head glyphs outside the sheet are marked with it (#s664's landing: the fold rows wore it, and the cases' #sessionFilter [data-flat] found them first)");
 assert.equal((listSource.match(/toggleAttribute\("data-flat"/g) || []).length, 1, "…and the script sets data-flat in one place, on the two head glyphs: the #s664 landing's red came from a second element marked with it as the list went flat");
-// #s664 (Hong's choice on #s661): the filter sheet's first two rows are Collapse and Expand every group, drawn with any
-// sheet, shown only where the app's wide-phone column takes the two glyphs out of its head, and doing what the glyphs do.
-assert.match(listSource, /data-group-action="collapse"[^\n]*<span>Collapse every group<\/span>/, "#s664: the sheet's Collapse every group row");
-assert.match(listSource, /data-group-action="expand"[^\n]*<span>Expand every group<\/span>/, "#s664: the sheet's Expand every group row");
-assert.match(listSource, /if \(group\) \{ toggleFilterSheet\(false\); \(group\.dataset\.groupAction === "collapse" \? collapseBtn : expandBtn\)\.onclick\(\); return; \}/, "#s664: a fold row closes the sheet and does what its glyph does");
-assert.match(productionCss, /\n\.session-filter-options \[data-group-part\]\{display:none\}/, "#s664: the fold rows are not shown by default (a host, a desktop, the drawer)");
-assert.match(productionCss, /@media\(pointer:coarse\) and \(max-height:500px\) and \(min-width:900px\)\{[^@]*#app \.side-head :is\(#collapseBtn,#expandBtn\)\{display:none\}[^@]*#app \.session-filter-options \[data-group-part\]:not\(\[data-no-groups\]\)\{display:block\}/, "#s664: on a wide phone held sideways the two glyphs leave the column head and the sheet shows its fold rows");
+// #s703 (Hong: "I'd put them to the right bottom, similar to the portrait mode"): held sideways on a wide phone
+// the outline's panes open from the dock's pill, as upright; the column holds the sessions alone, its head the
+// sidebar's own glyphs, Collapse all and Expand all among them.
+assert.doesNotMatch(appSource, /columnSwitch|data-column-tab|columnPane/, "#s703: the wide phone's column has no switcher and borrows no pane");
+assert.doesNotMatch(productionCss, /\.dock-pill \.phone-pane\{display:none\}/, "#s703: nothing takes the panes out of the dock's pill");
+assert.doesNotMatch(productionCss, /#collapseBtn,#expandBtn\)\{display:none\}/, "#s703: nothing takes Collapse all and Expand all out of the column's head");
 assert.match(appSource, /indexState\.selectedWasRow && !selectedRow\(\)\) sessionGone\(\)/, "a sub-agent child, never a list row, is not declared gone by the index poll");
 assert.match(viewSource, /meta\?\.ancestors\?\.at\(-1\)/, "the parent control reads the last ancestor from the session's own meta");
 assert.match(productionCss, /\.session-parent\.is-live\{display:inline-flex;/, "the reference parent control is shown by a production state, not by editing the shell");
@@ -1869,10 +1868,32 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // fragment before the sidebar collapse, the sheet appended to the head.
   assert.match(listSource, /^controls\.append\(collapseBtn, expandBtn\);\nif \(hasSheet\) controls\.append\(filterBtn\);$/m, "the glyph follows Expand every group, which follows Collapse every group (one strip since stage 4)…");
   assert.match(listSource, /^  options\.place\("controls", controls\);$/m, "…placed by the host as one");
-  assert.match(appSource, /^  if \(part === "controls"\) page\.byId\("sidebarCollapse"\)\.before\(node\);$/m, "…before the sidebar collapse");
+  assert.match(appSource, /^  if \(part === "controls"\) page\.byId\("sidebarCollapse"\)\.before\(listControls = node\);$/m, "…before the sidebar collapse");
   assert.match(listSource, /filterBtn\.className = "iconbtn session-filter"/, "…as an iconbtn like its neighbours");
   assert.match(listSource, /^  if \(hasSheet\) options\.place\("sheet", filterSheet\);$/m, "the sheet is placed by the host…");
-  assert.match(appSource, /^  else if \(part === "sheet"\) page\.\$\("#app>\.sidebar>\.side-head"\)\.append\(node\);$/m, "…under the sidebar's head");
+  assert.match(appSource, /^  else if \(part === "sheet"\) page\.\$\("#app>\.sidebar>\.side-head"\)\.append\(listSheet = node\);$/m, "…under the sidebar's head");
+  // #s705: in the drawer the head is one row, and the strip and the sheet move to the row over the
+  // list; anywhere else they go back where the list placed them.
+  assert.match(appSource, /^  const oneRow = app\.classList\.contains\("app-drawer"\) && !wideScreen\.matches;$/m, "#s705: the drawer's head is one row, but on a wide phone's column");
+  assert.match(appSource, /^    if \(listControls && listControls\.parentNode === page\.byId\("sidebarCollapse"\)\.parentNode\) sideListHead\.append\(listControls\);$/m, "#s705: …the strip in the row over the list, from its home");
+  assert.match(appSource, /^    if \(listSheet && listSheet\.parentNode === page\.\$\("#app>\.sidebar>\.side-head"\)\) sideListHead\.append\(listSheet\);$/m, "#s705: …and the sheet, from its home: a sheet the rail's flyout holds is the flyout's");
+  assert.match(appSource, /^  listHandle\.compact\(app\.classList\.contains\("sidebar-off"\)\);\n(?:  \/\/.*\n)*  placeDrawerHead\(\);$/m, "#s705: the head is laid out once the rail's flyout has closed");
+  assert.match(appSource, /^  if \(listControls\?\.parentNode === sideListHead\) page\.byId\("sidebarCollapse"\)\.before\(listControls\);$/m, "#s705: …and back before the sidebar collapse elsewhere");
+  assert.match(appSource, /^page\.byId\("sessionList"\)\.before\(sideListHead\);$/m, "#s705: the row sits right above the session list");
+  // #s701: the nav's rows fold as the list scrolls down and come back on the way up, only in the drawer
+  // and a wide phone's column, never writing the list's offset.
+  assert.match(appSource, /^  if \(!app\.classList\.contains\("app-drawer"\)\) navAway\(false\);$/m, "#s701: the rows come back outside the drawer and the column");
+  assert.match(appSource, /^  if \(navRun >= NAV_AWAY_AFTER && room > sideNav\.offsetHeight \+ NAV_AWAY_AFTER\) navAway\(true\);$/m, "#s701: a fold waits for the scroll to go on, where the list has more to show than the rows' room");
+  assert.match(appSource, /^  if \(!seen \|\| seen\.height !== height \|\| performance\.now\(\) < navQuietUntil\) return;$/m, "#s701: a scroll that comes with a new height of the list's box, or inside the fold's glide, is not the reader's");
+  assert.match(appSource, /^  const top = Math\.min\(Math\.max\(scroller\.scrollTop, 0\), Math\.max\(room, 0\)\), seen = navSeen\.get\(scroller\);$/m, "#s701: iOS's bounce past either end reads as the end");
+  assert.match(appSource, /^    if \(open\) navAway\(false\);$/m, "#s701: the rows come back as the drawer opens");
+  assert.equal((appSource.match(/^    if \(open\) navAway\(false\);$/gm) || []).length, 2, "#s701: …and as a wide phone's column is shown again");
+  const navBlock = appSource.slice(appSource.indexOf("// #s701 (Hong"), appSource.indexOf("}).observe(listSheet, { attributes: true, attributeFilter: [\"hidden\"] });", appSource.indexOf("// #s701 (Hong")));
+  assert.ok(navBlock.includes("function navAway(away, instant = false)") && navBlock.includes("const SHEET_ROOM = 240;"), "#s701: the quick return's block is found, the filter's sheet's part with it");
+  assert.match(appSource, /^  if \(listSheet && !listSheet\.hidden\) return;\n  if \(scroller\.scrollTop <= 0\) return navAway\(false\);$/m, "#s705: while the filter's sheet is open the rows stay as they are, at the list's top too");
+  assert.match(appSource, /^  navAway\(true, true\);$/m, "#s705: where the room below its row is short, the rows step aside at once as the sheet opens");
+  assert.match(appSource, /^  if \(navForSheet \|\| atTop\) navAway\(false\);$/m, "#s705: …and come back as it closes");
+  assert.doesNotMatch(navBlock, /scrollTop\s*=[^=]|scrollTo\(|scrollBy\(/, "#s701: the fold never writes the list's offset");
   assert.doesNotMatch(appShell, /id="attentionBtn"|id="sidebarMiniAttention"/, "the demo's Needs attention button and the rail's bell are gone (cut from the served shell)");
   assert.doesNotMatch(shellSource, /hiddenBtn|"Show Hidden"/, "…and the Show Hidden control with them");
   assert.match(listSource, /visibleTree\(agents, \{ showHidden: includeHidden\(\), buckets: filtered \? indexState\.buckets : null, bucketsOf \}\)/, "the tree is filtered by the shared cover — every bucket chosen is no filter");
@@ -2925,7 +2946,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // …and the turn's own duration rides the same chip, from the same shared formatter, so the
   // two pages cannot word it differently (#257).
   assert.match(comp, /source\?\.dur/, "the app shell reads the turn's duration off the record");
-  assert.match(comp, /How long this turn took/, "…and says which of the two chips it is");
+  assert.match(comp, /How long the agent worked on this turn">worked \$\{escapeText\(fmtDur\(secs\)\)\}/, "…and says which of the two chips it is, in its words as well as its title (#s706)");
   console.log("#112 time cases passed");
 }
 
@@ -3008,8 +3029,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(vp, /if \(this\.pendingView\) \{ applyViewChoices\(this\.state, this\.pendingView\); this\.pendingView = null; \}/, "restored with the first batch, after the store's reset");
   assert.match(vp, /const view = viewChoices\(this\.state\);/, "…and saved with the position");
   const viewSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-view.js", import.meta.url), "utf8");
-  assert.match(viewSrc, /rerender: \(\) => \{ viewport\.readerReshaped\(\); viewport\.rerender\(\); viewport\.scheduleRemember\(\); \}/, "every choice schedules a save — and drops the tail pin first (#185), because everything reaching `rerender` is the reader reshaping the page themselves");
-  assert.match(viewSrc, /reshaped: \(\) => viewport\.readerReshaped\(\),/, "…and the branches that grow the page IN PLACE, without a re-render, have their own way to say so — the cap expander reveals rows and never reaches `rerender`, which is the path #185 was actually reported from");
+  assert.match(viewSrc, /rerender: \(\) => \{ viewport\.readerReshaped\(\); viewport\.rerender\(\); viewport\.scheduleRemember\(\); paintJump\(\); \}/, "every choice schedules a save — and drops the tail pin first (#185), because everything reaching `rerender` is the reader reshaping the page themselves; then paints the jump on the grown page (#s700)");
+  assert.match(viewSrc, /reshaped: \(\) => \{ viewport\.readerReshaped\(\); paintJump\(\); \},/, "…and the branches that grow the page IN PLACE, without a re-render, have their own way to say so — the cap expander reveals rows and never reaches `rerender`, which is the path #185 was actually reported from");
   assert.match(viewSrc, /addEventListener\("pagehide", \(\) => viewport\.remember\(\), \{ signal \}\);/, "…and leaving saves at once");
   console.log("#114 view state cases passed");
 }
@@ -3178,8 +3199,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(vm, /from "\.\/shared\/tool-head\.js"/);
   const comp = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
   assert.match(comp, /\$\{view\.state \? statePillHtml\(view\.pill, view\.word\) : escapeText\(status === "completed" \? "" : status\)\}/, "the pill shows the module's label (its word apart, #s628)");
-  // #129: the head's click cycle. From folded: the output, then the whole command, then the
-  // command folds back, then the output. A target that already fits keeps the plain toggle.
+  // #129, #s698: the head's click cycle. From folded: the output, then the whole command, then
+  // back to the one line. A target that already fits keeps the plain toggle.
   let step = 0;
   const walk = [];
   for (let i = 0; i < 5; i++) {
@@ -3187,7 +3208,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
     walk.push(`${at.open ? "open" : "closed"}/${at.full ? "full" : "clipped"}`);
     step = nextHeadStep(step, true);
   }
-  assert.deepEqual(walk, ["closed/clipped", "open/clipped", "open/full", "open/clipped", "closed/clipped"], "four clicks, and the reader passes through output-only both ways");
+  assert.deepEqual(walk, ["closed/clipped", "open/clipped", "open/full", "closed/clipped", "open/clipped"], "three clicks round: the output, the command, then folded at once (#s698)");
   let short = 0;
   const plain = [];
   for (let i = 0; i < 3; i++) { plain.push(headStepState(short).open); short = nextHeadStep(short, false); }
@@ -3297,7 +3318,32 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const html = interactionHtml({ kind: "request_user_input", resolved: true, answers: [], asked, unanswered: { why: "declined" } }, "", classes);
   assert.match(html, /^<div class="c unanswered"><span class="i" aria-hidden="true">–<\/span><div class="p"><strong>No answer<\/strong>/, "the page styles the state by its class");
   assert.match(html, /<span class="a"><span>Yes<\/span><\/span>/, "the options are still listed, nothing ticked");
+  assert.doesNotMatch(html, /Their words/, "a bare decline carries no words of the reader's");
   console.log("#281 unanswered cases passed");
+}
+
+// #s684: a question the reader chose to discuss says so, with what they answered on its questions;
+// a decline with the reader's own words shows them, captioned as theirs.
+{
+  const classes = { card: "c", icon: "i", copy: "p", meta: "m", answers: "as", answer: "a", question: "q", reply: "r" };
+  const asked = [
+    { header: "Q", question: "Cut it now?", multi: false, options: [{ label: "Yes", description: "", chosen: true }, { label: "No", description: "", chosen: false }] },
+    { header: "Crate", question: "Which crate first?", multi: false, options: [{ label: "engine", description: "", chosen: false }], notes: "after <lunch>" },
+  ];
+  const discussed = { kind: "request_user_input", resolved: true, answers: [], asked, unanswered: { why: "discuss" } };
+  const card = interactionCard(discussed, "Cut it now? +1");
+  assert.deepEqual([card.state, card.icon, card.title], ["unanswered", "↩", "Chose to discuss"], "settled, and not titled as a question with no answer");
+  assert.equal(card.text, "Discussed in the agent client instead of answered; the agent was told to ask what they want to clarify.");
+  assert.doesNotMatch(card.text, /Declined/, "a question the reader chose to discuss is not declined");
+  const html = interactionHtml(discussed, "", classes);
+  assert.match(html, /<span class="a"><span>✓ Yes<\/span><\/span>/, "what they answered before choosing to discuss is ticked");
+  assert.match(html, /<div class="r"><small>Notes<\/small><span>after &lt;lunch&gt;<\/span><\/div>/, "…and their notes are on their question");
+  const declined = interactionHtml({ kind: "request_user_input", resolved: true, answers: [], asked: [asked[0]], unanswered: { why: "declined", said: "Hold it until <Thursday>." } }, "", classes);
+  assert.match(declined, /<strong>No answer<\/strong><p>Declined in the agent client; the agent was told not to proceed\.<\/p>/, "a decline with words is still a decline");
+  assert.match(declined, /<div class="r"><small>Their words<\/small><span>Hold it until &lt;Thursday&gt;\.<\/span><\/div><\/div><\/div>$/, "…with the reader's words after the questions, escaped and captioned as theirs");
+  const stray = interactionCard({ kind: "request_user_input", resolved: true, answers: [], asked, unanswered: { why: "timeout", said: "x" } }, "");
+  assert.equal(stray.said, "", "words ride only on a decline");
+  console.log("#s684 discuss and declined-with-words cases passed");
 }
 
 // #282: an option's preview — the asker's drawing — is on the card, on demand but for the chosen one's.
@@ -5089,7 +5135,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const closes = success.split("this.close()").length - 1;
   assert.ok(closes === 1 && success.includes("if (this.compose.row && this.actions.selectedRow()?.id !== this.compose.row.id) this.close();"), "the box closes after a send only for a reader who moved to another session");
   const viewSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-view.js", import.meta.url), "utf8");
-  assert.match(viewSrc, /composeNote\.textContent = byId\("composeTarget"\)\.textContent;/, "the phone's note is the same line");
+  assert.match(viewSrc, /const note = byId\("composeTarget"\)\.textContent;\s*if \(composeNote\.textContent !== note\) composeNote\.textContent = note;/, "the phone's note is the same line, written only when it differs (#s731)");
   assert.doesNotMatch(shellSource, /writes to the live session/, "no second warning on the phone");
   const css = readFileSync(new URL("../../claude-monitor/src/codex-ui/production.css", import.meta.url), "utf8");
   assert.ok(css.includes("#sessionView .composer>.composer-head>span,#sessionView .composer .risk,#sessionView .composer .compose-foot:before{display:none}"), "the reference's prefix, static tmux warning and inert ＋ are hidden");
@@ -5182,8 +5228,8 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
 }
 
 // #s429 stage 3: the app and the session view call each other by NAME, the view's options and the
-// handle it returns. Most options are optional callbacks (`options.paneCount?.(…)`), so a rename on
-// one side would fail silently: a wide phone's pane counts, or a deep-linked child's Back. So every
+// handle it returns. Most options are optional callbacks (`options.parentShown?.(…)`), so a rename on
+// one side would fail silently: a deep-linked child's Back, or the list laid out for the pane. So every
 // option the view reads is one the app passes or one the doc comment names as optional, every option
 // passed is read, every option read is documented, every handler of what the view tells its host
 // (`on…`) is called, and every member of the handle the app calls is one the view returns.
@@ -5504,7 +5550,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listSource, /const flat = arrangement\(\) === "flat" \|\|/, "the tree reads the arrangement it draws");
   assert.doesNotMatch(listSource.slice(listSource.indexOf("function renderTree(")), /indexState\.flat\b/, "never the reader's own choice past it");
   for (const part of ["filter", "hiding", "arrangements"]) assert.match(listSource, new RegExp(`^if \\(shows\\("${part}"\\)\\) sheetParts\\.push\\(`, "m"), `the filter's sheet draws the ${part} part only while it is shown`);
-  assert.match(listSource, /^filterSheet\.innerHTML = \(sheetParts\.length \? `\$\{groupPart\}\\n` : ""\) \+ sheetParts\.join\(`\\n<div class="scope-menu-divider"><\/div>\\n`\);$/m, "joined as the sheet always was, after the fold rows (#s664), which only a sheet with a part gets");
+  assert.match(listSource, /^filterSheet\.innerHTML = sheetParts\.join\(`\\n<div class="scope-menu-divider"><\/div>\\n`\);$/m, "joined as the sheet always was (#s703 took #s664's fold rows away)");
   assert.match(listSource, /^const hasSheet = sheetParts\.length > 0;$/m, "and with nothing to offer it is neither drawn nor handed over");
   // Keys: engaged, the list's element hears them and answers only on a row; the page's, the app's
   // keymap calls the handle's.
@@ -5549,7 +5595,6 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   // The controls are one strip a host can hold, drawn as no box.
   assert.match(listSource, /^const controls = document\.createElement\("div"\);\ncontrols\.className = "session-list-controls";$/m, "the controls are one element");
   assert.match(productionCss, /\n\.session-list-controls\{display:contents\}\n/, "that draws no box");
-  assert.match(productionCss, /#app\.column-pane-on \.side-head \.head-actions>\.session-list-controls\{display:none\}/, "and goes while the column shows a pane");
   // The unmount. Every listener the list binds on the page carries its signal (read to its closing
   // parenthesis, past strings and nested brackets).
   const body = listSource.slice(listSource.indexOf("export function mountSessionList(element, options = {}) {"));
@@ -5603,7 +5648,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listSource, /if \(unmounted \|\| arrangeSource\(\) !== source\) return;\n      const data = JSON\.parse\(text\);/, "another app's list");
   assert.match(listSource, /if \(unmounted \|\| arrangeSource\(\) !== source\) return;\n      const changed = layoutState\.error !== error\.message;/, "and its failure");
   assert.match(listSource, /if \(!data \|\| unmounted\) return;\n      sourceState = /, "the apps that could be followed");
-  assert.match(listSource, /if \(unmounted\) return;\n    if \(!response\.ok\) throw new Error/, "a hide or a restore");
+  assert.match(listSource, /if \(unmounted\) return;\n {4,6}if \(!response\.ok\) throw new Error/, "a hide or a restore (each key's, #s738)");
   assert.match(listSource, /\} catch \(error\) \{ if \(!unmounted\) onToast\(/, "and its failure");
   const indexStore = readFileSync(new URL("../../claude-monitor/src/codex-ui/session-index-store.js", import.meta.url), "utf8");
   assert.match(indexStore, /stop\(\) \{ this\.stopped = true; this\.generation\+\+;/, "the index's stop moves its generation");
@@ -5716,7 +5761,7 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   const viewCall = /^viewHandle = mountSessionView\(viewRoot\.element\(\), \{\n([\s\S]*?)\n\}\);/m.exec(mountSource)[1];
   for (const line of ["  show: showFor(VIEW_CONTROLS),", "  reviewSheet: options.reviewSheet ?? undefined,", "  frame: options.frame ?? undefined,"]) assert.ok(viewCall.split("\n").includes(line), `the view gets ${line.trim()}`);
   assert.match(mountSource, /^if \(options\.onMachines\) drawMachines\(options\.onMachines\);$/m, "the Machines row and glyph are drawn only for onMachines");
-  assert.match(mountSource, /^  row\.onclick = rail\.onclick = \(\) => onMachines\(\);\n  page\.byId\("searchBtn"\)\.after\(row\);\n  \(railFilter \|\| page\.byId\("sidebarMiniSearch"\)\)\.after\(rail\);$/m, "the row after Search, the glyph after the rail's filter (or Search, with no filter), each calling it");
+  assert.match(mountSource, /^  row\.onclick = head\.onclick = rail\.onclick = \(\) => onMachines\(\);\n  page\.byId\("searchBtn"\)\.after\(row\);\n  page\.byId\("themeBtn"\)\.before\(head\);\n  \(railFilter \|\| page\.byId\("sidebarMiniSearch"\)\)\.after\(rail\);$/m, "the row after Search, the drawer head's glyph before the theme (#s705), the rail's after its filter (or Search, with no filter), each calling it");
   const themeToStart = new Function(`return ${/^export const themeToStart = (.*);$/m.exec(mountSource)[1]}`)();
   for (const [stored, start, opens] of [
     [null, undefined, null], [null, "dark", "dark"], [null, "light", "light"],
@@ -5955,9 +6000,23 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   for (const reviewSheet of [undefined, true, false]) assert.doesNotThrow(() => check({ reviewSheet }), "none, or a boolean");
   assert.match(viewSource, /detach: shows\("detach"\), frame: options\.frame, reviewSheet: options\.reviewSheet === true, /, "the view hands it to the pane");
   const previewSource = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
-  assert.match(previewSource, /^      this\.reviewBtn\.hidden = !\(this\.actions\.phone\(\) \|\| this\.actions\.reviewSheet\) \|\| handle\.held \|\| !isMarkdownName\(item\.name\);$/m, "the pane offers Review on a phone, or at every width with it, for a file's Markdown alone");
+  assert.match(previewSource, /^      if \(\(this\.actions\.phone\(\) \|\| this\.actions\.reviewSheet\) && !handle\.held && isMarkdownName\(item\.name\)\) \{$/m, "the pane offers Review on a phone, or at every width with it, for a file's Markdown alone");
+  // #s733: and only once the server says shared review is set up there.
+  assert.match(previewSource, /^        handle\.reviewOffered\(\)\.then\(offered => \{ if \(offered && this\.markdown === handle\) this\.reviewBtn\.hidden = false; \}\);$/m, "the pane draws Review only once the server offers shared review");
   assert.equal((previewSource.match(/this\.actions\.reviewSheet/g) || []).length, 1, "and reads it nowhere else");
   console.log("#s596 review sheet cases passed");
+}
+// #s730: every control whose tap hands the reader a file says what the tap does, asked of `handOver`:
+// an attachment card's own button (whose tap is the download, and which no control beside it
+// repeats for a remote reader), the pane head's, and its body's, the head given the size the body
+// knows, so a file too large to hold reads Download in both.
+{
+  const componentsSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/components.js", import.meta.url), "utf8");
+  const previewSrc = readFileSync(new URL("../../claude-monitor/src/codex-ui/preview.js", import.meta.url), "utf8");
+  assert.match(componentsSrc, /\$\{escapeText\(capability\.action === "download" \? handOver\(\)\.verb : capability\.label\)\} →<\/button>/, "an attachment card's download button says Share where its tap shares");
+  assert.match(previewSrc, /if \(beside === "download"\) this\.labelDownload\(this\.downloadSize\?\.item === item \? this\.downloadSize\.size : undefined\);/, "the head's control keeps the size its body was drawn with, for that tab alone (an id can name another session's record)");
+  assert.match(previewSrc, /this\.downloadSize = \{ item, size \};\n    if \(!this\.downloadBtn\.hidden\) this\.labelDownload\(size\);/, "and the body's drawing labels the head with it");
+  console.log("#s730 hand-over words cases passed");
 }
 
 // #s429 stage 7: the unmount. Every listener the view binds on the page carries its signal, the
@@ -6264,6 +6323,70 @@ assert.match(appSource, /const first = requested \|\| \[\.\.\.indexState\.rows\.
   assert.match(listViewSource, /const GROUP_STATE = Object\.freeze\(\{ stale: " tree-machine-group-stale", failed: " tree-machine-group-failed", waiting: " tree-machine-group-waiting" \}\);/, "a machine's head says its state under a prefixed name too");
   assert.doesNotMatch(listRules, /\.tree-machine-group\.(?:stale|failed|live|waiting)(?![\w-])/, "and no rule styles a bare state name on it");
   console.log("#s561 group by machine cases passed");
+
+  // #s738 (Hong on the iOS app: "selected group by agents and projects, but we did not combine agents
+  // working on the same project"): not grouped by machine, one head per folder across machines, its
+  // rows each machine's, in the server's row order; desktop sessions and other folders stay apart.
+  {
+    const { oneHeadPerProject } = await import("../../claude-monitor/src/codex-ui/session-list.js");
+    const { families, visibleTree } = await import("../../claude-replay-html/src/html/shared/session-visibility.js");
+    const at = clock / 1000;
+    const one = oneHeadPerProject(tree, at);
+    assert.deepEqual(one[0].projects.map(project => [project.id, project.machine, project.machines || null, project.sessions.length, project.hidden]), [
+      ["*/project:~/code/x", "", ["a", "b"], 6, false],
+      ["a/claude:desktop", "a", null, 1, false],
+      ["b/claude:desktop", "b", null, 1, false],
+    ], "~/code/x on two machines is one project where the first part sat; each desktop agent stays its machine's");
+    const folded = one[0].projects[0];
+    assert.deepEqual(folded.sessions.map(row => row.id), ["a/sa", "b/sb", "a/sa-w", "a/sa-side", "b/sb-w", "b/sb-side"], "its rows merged in the server's order (none active: by name, then id), each machine's own order kept");
+    assert.deepEqual(folded.parts.map(part => part.ignoreKey), ["a/p:~/code/x", "b/p:~/code/x"], "it keeps each part, whose key a hide is sent under");
+    assert.equal(folded.ignoreKey, "", "and has no one key of its own");
+    assert.equal(families(folded.sessions).length, 6, "no family spans machines");
+    assert.equal(tree[0].projects.length, 4, "the tree it was handed is left as it was");
+    const shownTree = visibleTree(tree);
+    assert.deepEqual(oneHeadPerProject(shownTree, at)[0].projects[0].rows.map(row => row.id), ["a/sa", "b/sb", "a/sa-w", "a/sa-side", "b/sb-w", "b/sb-side"], "the drawn tree's rows fold the same way");
+    const withHidden = hide => tree.map(agent => ({ ...agent, projects: agent.projects.map(project => (project.kind === "project" && hide.includes(project.machine) ? { ...project, hidden: true } : project)) }));
+    assert.equal(oneHeadPerProject(withHidden(["b"]), at)[0].projects[0].hidden, false, "hidden only where every part is");
+    assert.equal(oneHeadPerProject(withHidden(["a", "b"]), at)[0].projects[0].hidden, true);
+    const apart = tree.map(agent => ({ ...agent, projects: agent.projects.map(project => (project.machine === "b" && project.kind === "project" ? { ...project, path: "~/code/y" } : project)) }));
+    assert.deepEqual(oneHeadPerProject(apart, at)[0].projects.map(project => [project.id, project.machine, project.ignoreKey, !!project.parts]), [
+      ["*/project:~/code/x", "a", "a/p:~/code/x", false],
+      ["a/claude:desktop", "a", "a/a:Claude", false],
+      ["*/project:~/code/y", "b", "b/p:~/code/x", false],
+      ["b/claude:desktop", "b", "b/a:Claude", false],
+    ], "another folder stays apart, each folder on one machine under the folder's id, its machine and key its own");
+    const { machineFamilies } = await import("../../claude-monitor/src/codex-ui/session-list.js");
+    const drafts = folded.sessions.map(row => ({ ...row, agent: "qoderwork", name: "Draft" }));
+    assert.equal(families(drafts).length, 1, "the shared rule groups a QoderWork title across machines");
+    assert.deepEqual(machineFamilies(drafts).map(fam => [fam.key, fam.members.map(row => row.id)]), [
+      ["t:a/Draft", ["a/sa", "a/sa-w", "a/sa-side"]],
+      ["t:b/Draft", ["b/sb", "b/sb-w", "b/sb-side"]],
+    ], "under a folder's head, one machine's chats alone, keyed by their machine");
+    assert.deepEqual(machineFamilies(folded.sessions).map(fam => fam.key), families(folded.sessions).map(fam => fam.key), "other families as they are, in the order of their first rows");
+    const lone = [{ id: "q1", agent: "qoderwork", name: "Draft" }, { id: "q2", agent: "qoderwork", name: "Draft (Fork)" }];
+    assert.deepEqual(machineFamilies(lone), families(lone), "and one monitor's, by title, as before");
+    assert.deepEqual(machineFamilies(drafts.filter(row => row.machine === "a")).map(fam => fam.key), ["t:a/Draft"], "one machine's title family is keyed by its machine too, so an open one stays open as the other's rows come and go");
+    const { flatFamilies } = await import("../../claude-monitor/src/codex-ui/session-list.js");
+    const draftTree = [{ ...one[0], projects: [{ ...folded, rows: drafts }] }];
+    assert.deepEqual(flatFamilies(draftTree, at).map(fam => fam.key).sort(), ["t:a/Draft", "t:b/Draft"], "the list by activity, and the rail's flyout drawing it, groups machine by machine too");
+    assert.match(listViewSource, /const fams = nestSideSessions\(machineFamilies\(rows\)\);/, "the tree's projects group by machine");
+    const single = groupSessions(index("sa").groups);
+    assert.equal(oneHeadPerProject(single, at)[0], single[0], "one monitor's tree is the same tree");
+    // Busy rows first, by name; then the newest: a machine's busy row before the other's idle one.
+    const timed = tree.map(agent => ({ ...agent, projects: agent.projects.map(project => ({ ...project, sessions: project.sessions.map((row, i) => ({ ...row, activityTs: project.machine === "b" && i === 0 ? at - 60 : at - 3600 * (i + 1) })) })) }));
+    assert.deepEqual(oneHeadPerProject(timed, at)[0].projects[0].sessions.map(row => row.id).slice(0, 3), ["b/sb", "a/sa", "a/sa-w"], "a row active in the last ten minutes first, then the newest");
+    // The view: the tree not grouped by machine and the rail's flyout draw it; each row under such a head
+    // wears its machine; its hide goes to every part it changes; Collapse all folds its head.
+    assert.match(listViewSource, /const oneTree = groupedByMachine\(\) \? shownAgents : oneHeadPerProject\(shownAgents, now\);\n  lastShownAgents = oneTree;/, "the flyout and the tree not grouped by machine fold");
+    assert.match(listViewSource, /else if \(flat\) html = flatSessionsHtml\(shownAgents\);\n  else for \(const agent of oneTree\) \{/, "the list by activity keeps each row's own project");
+    assert.match(listViewSource, /<span class="tree-title">\$\{escapeText\(name \|\| row\.name \|\| row\.id\)\}<\/span>\$\{taggingRows \? machineTag\(row\.machine\) : ""\}`;/, "a row under a head over several machines wears its machine");
+    assert.match(listViewSource, /const keys = target\.parts\.filter\(part => !!part\.hidden === !!target\.hidden\)\.map\(part => part\.ignoreKey\)\.filter\(Boolean\);/, "a hide sends each part's key it changes");
+    assert.match(listViewSource, /applyIgnore\(action\.dataset\.ignoreOp, action\.dataset\.ignoreKeys \? JSON\.parse\(action\.dataset\.ignoreKeys\) : action\.dataset\.ignoreKey\)/);
+    assert.match(listViewSource, /\} catch \(error\) \{ if \(unmounted\) return; failure = failure \|\| error; \}\n  \}\n/, "a machine that refuses stops none of the others");
+    assert.match(listViewSource, /  if \(!went\) return;\n  try \{ await sessionIndex\.refresh\(\); \}/, "and the list is read again once any went");
+    assert.match(listViewSource, /for \(const agent of oneHeadPerProject\(groupedSessions\(\)\)\) for \(const project of agent\.projects\) indexState\.collapsed\.add\(`p:\$\{project\.id\}`\);/, "Collapse all folds each folder's head");
+    console.log("#s738 one head per project cases passed");
+  }
 
   // #s603 (ab-replay's review of #s595): over several machines, ⌘K draws the rows of a machine that is
   // not answering as the list draws them: greyed, saying how it answers, in the list's own words.

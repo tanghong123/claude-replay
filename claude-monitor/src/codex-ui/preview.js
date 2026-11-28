@@ -4,6 +4,7 @@ import { sandboxDocument } from "./sandbox.js";
 import { createImageView } from "./shared/image-view.js";
 import { isMarkdownName, mdrevVersion, mountMarkdown } from "./mdrev-pane.js";
 import { besideAction, RASTER_FILE } from "./shared/capabilities.js";
+import { handOver } from "./attachment-viewer.js";
 import { svg } from "./icons.js";
 import { page, viewRoot } from "./view-root.js";
 
@@ -190,8 +191,11 @@ export class Preview {
     // full-screen REVIEW SHEET over the app, opened from here, closed back to exactly where the reader
     // was. Only for Markdown from a FILE (held text has no store), and only on a phone: the desktop
     // has its detached tab (#s10). The pane itself stays review-free.
-    this.reviewBtn = Object.assign(document.createElement("button"), { type: "button", className: "smallbtn preview-review", textContent: "Review", title: "Review with the other reviewers", hidden: true });
-    this.reviewBtn.setAttribute("aria-label", "Review this document with the other reviewers");
+    this.reviewBtn = Object.assign(document.createElement("button"), { type: "button", className: "smallbtn preview-review", title: "Review with others", hidden: true });
+    this.reviewBtn.setAttribute("aria-label", "Review with others");
+    // On a phone it is a row of the head's More menu (#s735); in the head where a host offers the sheet
+    // at every width (#s596).
+    this.reviewBtn.textContent = "Review with others";
     this.reviewBtn.onclick = () => this.openReviewSheet(this.markdownItem);
     // #s30, the owner: "for markdown, in mdrev, I actually think print still makes sense". mdrev's
     // own toolbar prints (on a phone from its Aa menu, since 1.1.24); a held reader has no toolbar
@@ -209,9 +213,10 @@ export class Preview {
     // #s663, Hong's choice on #s670: held sideways the pane is a column about 450 points wide, and its
     // head held the steps, the strip, the file's actions, full screen and close, each a finger's 44
     // points (#s649), which left the strip 138 points and cut every file's name. There the file's
-    // actions and full screen fold into one More menu (production.css shows it on a phone held
-    // sideways only, and takes them out of the head there); the steps, the strip and close stay, and
-    // the current tab may take the whole strip. The menu lists, as it opens, the controls the head
+    // actions and full screen fold into one More menu; upright too since #s735 (Hong's choice on #s736,
+    // "Fold them into More upright too, as sideways": upright at 390 the strip was 125 points). So on a
+    // phone production.css shows More and takes those controls out of the head; the steps, the strip
+    // and close stay, and the current tab may take the whole strip. The menu lists, as it opens, the controls the head
     // would show, each in its own words, and a choice presses that control: what each does, and when
     // it is offered, stays where it was.
     this.listening = new AbortController();
@@ -252,7 +257,15 @@ export class Preview {
     this.nextTabBtn = step(1, "Next file", "›");
     byId("previewTabs").before(this.prevTabBtn);
     byId("previewTabs").after(this.nextTabBtn);
-    this.tabsObserver = new ResizeObserver(() => this.fitTabs());
+    // The strip's own box changing is fitted at once; a tab's alone in a task of its own, since the fit may
+    // show the step buttons, which resizes the strip inside the same delivery and raises the browser's
+    // "ResizeObserver loop" error on the page (#s624 kept the search fit off it). A timer, not a frame:
+    // a tab with no frames due (a headless one, measured) would leave the strip unfitted till the next.
+    this.tabsFitTimer = 0;
+    this.tabsObserver = new ResizeObserver(entries => {
+      if (entries.some(entry => entry.target === byId("previewTabs"))) { this.fitTabs(); return; }
+      if (!this.tabsFitTimer) this.tabsFitTimer = setTimeout(() => { this.tabsFitTimer = 0; this.fitTabs(); }, 0);
+    });
     this.tabsObserver.observe(byId("previewTabs"));
     byId("previewHead").onclick = event => {
       const close = event.target.closest("[data-preview-tab-close]");
@@ -285,7 +298,8 @@ export class Preview {
     this.imageView?.destroy(); this.imageView = null;
     this.listening.abort();
     this.stageObserver?.disconnect(); this.stageObserver = null;
-    this.tabsObserver?.disconnect();
+    this.tabsObserver?.disconnect(); this.tabsObserver = null;
+    clearTimeout(this.tabsFitTimer); this.tabsFitTimer = 0;
     this.renderGeneration++;
     if (this.objectUrl) { URL.revokeObjectURL(this.objectUrl); this.objectUrl = ""; }
   }
@@ -305,14 +319,17 @@ export class Preview {
     else change();
   }
   setOpen(open) { this.uiState.preview = open; this.paneState("preview-off", !open); byId("previewBtn").classList.toggle("active", open); if (!open) { this.setFull(false); this.setMore(false); } if (open) this.render(); this.actions.layoutChanged?.(); }
-  /** The head's More menu (#s663; a phone held sideways): opening lists the head's file controls
-   *  offered now — reveal or download, print, review, then full screen — each by its own title, with
-   *  its glyph where it has one. A choice closes the menu and presses its control, if that control is
-   *  still offered. */
+  /** Whether the view is a phone held sideways, whose More menu offers full screen (#s663). */
+  sideways() { return !!viewRoot.element()?.matches(".pl-coarse.pl-max-h-500"); }
+  /** The head's More menu (#s663, #s735; a phone): opening lists the head's file controls offered
+   *  now — reveal or download, print, review, then full screen held sideways (upright the pane is the
+   *  whole screen already, so it has none) — each by its own title, with its glyph where it has one.
+   *  A choice closes the menu and presses its control, if that control is still offered. */
   setMore(open) {
     if (!this.moreMenu) return;
     if (open) {
-      const sources = [["reveal", this.revealBtn], ["download", this.downloadBtn], ["print", this.printBtn], ["review", this.reviewBtn], ["expand", this.expandBtn]];
+      const sideways = this.moreSideways = this.sideways();
+      const sources = [["reveal", this.revealBtn], ["download", this.downloadBtn], ["print", this.printBtn], ["review", this.reviewBtn], ...(sideways ? [["expand", this.expandBtn]] : [])];
       this.moreMenu.replaceChildren(...sources.filter(([, source]) => !source.hidden).map(([name, source]) => {
         const item = Object.assign(document.createElement("button"), { type: "button", className: "preview-more-item" });
         item.setAttribute("role", "menuitem");
@@ -427,14 +444,24 @@ export class Preview {
     this.uiState.previewId = ids[(at + dir + ids.length) % ids.length];
     this.render();
   }
+  /** The strip is fitted again when its own box changes size and when a tab's does: a label widening
+   *  after the first fit (a web font arriving) moves the current tab without resizing the strip, and
+   *  left it out of view by as much (#s733, measured: 18px past the strip's end at 390). */
+  watchTabs() {
+    const strip = byId("previewTabs");
+    if (!strip || !this.tabsObserver) return;
+    this.tabsObserver.disconnect();
+    this.tabsObserver.observe(strip);
+    for (const tab of strip.querySelectorAll(".preview-tab")) this.tabsObserver.observe(tab);
+  }
   /** #337: the step buttons while the strip overflows, and the current tab in view — moved by the
    *  strip's OWN scroller, never by asking the browser to scroll something into view. */
   fitTabs() {
     const strip = byId("previewTabs");
     if (!strip || !this.prevTabBtn) return;
-    // The strip's width changes as the phone turns: a More menu left open where the head no longer
-    // draws it (upright) closes, rather than coming back open when the phone is turned again.
-    if (this.moreMenu && !this.moreMenu.hidden && !this.moreWrap.getClientRects().length) this.setMore(false);
+    // The strip's width changes as the phone turns: a More menu left open closes, since its rows are the
+    // hold's (full screen is a sideways row, #s735), and so does one where the head no longer draws More.
+    if (this.moreMenu && !this.moreMenu.hidden && (!this.moreWrap.getClientRects().length || this.sideways() !== this.moreSideways)) this.setMore(false);
     const over = strip.scrollWidth > strip.clientWidth + 1;
     this.prevTabBtn.hidden = this.nextTabBtn.hidden = !over;
     const on = strip.querySelector(".preview-tab.on");
@@ -451,11 +478,13 @@ export class Preview {
     const beside = item ? besideAction(item, backend().local) : null;
     this.revealBtn.hidden = beside !== "reveal";
     this.downloadBtn.hidden = beside !== "download";
+    if (beside === "download") this.labelDownload(this.downloadSize?.item === item ? this.downloadSize.size : undefined);
     // No file tab selected and something was published: the roster is what the pane shows —
     // so it is also what a freshly opened pane lands on, without hunting for a control.
     const roster = !item && this.roster.length > 0;
     const pinned = this.roster.length ? `<button class="preview-tab sv-pinned ${roster ? "on" : ""}" data-preview-tab="${ROSTER_ID}" title="What this session published"><span class="preview-tab-label">Artifacts (${this.roster.length})</span></button>` : "";
     byId("previewTabs").innerHTML = pinned + this.uiState.previewTabs.map(tab => `<button class="preview-tab ${tab.id === this.uiState.previewId ? "on" : ""}" data-preview-tab="${escapeText(tab.id)}"><span class="preview-tab-label">${escapeText(tab.name)}</span><span class="preview-tab-close" data-preview-tab-close="${escapeText(tab.id)}">×</span></button>`).join("");
+    this.watchTabs();
     this.fitTabs();
     // A Markdown tab mdrev is already showing stays as it is: the tab strip and the roster re-render
     // around it, and a remount would throw away the reader's place, range and open notes. The tab
@@ -528,12 +557,27 @@ export class Preview {
     };
     body.querySelector("[data-close-preview]").onclick = () => this.closeTab(item.id);
   }
+  /** #s730: where the head's hand-over control opens the share sheet it says so, and a file known to
+   *  be too large to hold, which streams to the browser's download, says Download (its More row too,
+   *  which copies the glyph and the title). */
+  labelDownload(size) {
+    const { verb, glyph } = handOver(size);
+    if (this.downloadBtn.title === `${verb} this file`) return;
+    this.downloadBtn.innerHTML = glyph;
+    this.downloadBtn.title = `${verb} this file`;
+    this.downloadBtn.setAttribute("aria-label", `${verb} this file`);
+  }
   /** A file the page does not show: a download, with the file's place above it — and the head's
    *  reveal beside it (#272). */
   showDownload(item, size) {
     const body = byId("previewBody"); body.classList.remove("production-loading");
+    // #s730: Share where the tap opens the share sheet; a file too large to hold still downloads, and
+    // the head's control says the same as the body's.
+    const { verb } = handOver(size), share = verb === "Share";
+    this.downloadSize = { item, size };
+    if (!this.downloadBtn.hidden) this.labelDownload(size);
     const bytes = size >= 1048576 ? `${(size / 1048576).toFixed(1)} MB` : size >= 1024 ? `${Math.round(size / 1024)} KB` : size ? `${size} bytes` : "";
-    body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div></div><div class="preview-error preview-download"><strong>No preview for this file</strong><span>${escapeText(item.name)}${bytes ? ` · ${bytes}` : ""} — this pane shows text and images; this file downloads.</span><div class="preview-error-actions"><button class="smallbtn sv-primary" data-preview-download>Download</button></div></div>`;
+    body.innerHTML = `<div class="artifact-toolbar"><div class="artifact-location"><span>${escapeText(item.path || item.name)}</span></div></div><div class="preview-error preview-download"><strong>No preview for this file</strong><span>${escapeText(item.name)}${bytes ? ` · ${bytes}` : ""} — this pane shows text and images; ${share ? "share it to save it or open it elsewhere" : "this file downloads"}.</span><div class="preview-error-actions"><button class="smallbtn sv-primary" data-preview-download>${verb}</button></div></div>`;
     body.querySelector("[data-preview-download]").onclick = () => this.actions.download?.(item);
   }
   /** Text through mdrev's viewer (#270; every text file since #s13): a reader for text the
@@ -559,7 +603,12 @@ export class Preview {
       this.newTab.setAttribute("aria-label", `Open this ${isMarkdownName(item.name) ? "document" : "file"} in a new tab`);
       // #s13: shared review is threads on a document's notes, and mdrev files no notes on code. A
       // phone's alone, unless the host offers the sheet at every width (#s596, `reviewSheet`).
-      this.reviewBtn.hidden = !(this.actions.phone() || this.actions.reviewSheet) || handle.held || !isMarkdownName(item.name);
+      // #s733, Hong on #s732: "Keep it, labelled Review with others, hidden where shared review is not
+      // set up": shown only once the server says its review prefix offers shared review.
+      this.reviewBtn.hidden = true;
+      if ((this.actions.phone() || this.actions.reviewSheet) && !handle.held && isMarkdownName(item.name)) {
+        handle.reviewOffered().then(offered => { if (offered && this.markdown === handle) this.reviewBtn.hidden = false; });
+      }
       // #s30: where mdrev's toolbar offers no print of its own — a held reader (mdrev 1.1.24 prints
       // from its own Aa menu on a phone, #s31).
       this.printBtn.hidden = !isMarkdownName(item.name) || !handle.held;
@@ -677,7 +726,7 @@ export class Preview {
       state.handle?.unmount();
       sheet.remove();
       // The focus goes back to the control that opened the sheet: Review in the head, or More where the
-      // head folds it there (#s663, a phone held sideways).
+      // head folds it there (#s663, #s735: a phone).
       const back = [this.reviewBtn, this.moreBtn].find(control => control?.isConnected && !control.hidden && control.getClientRects().length);
       if (inside && back) back.focus({ preventScroll: true });
     };

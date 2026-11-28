@@ -131,6 +131,11 @@ pub struct Asked {
     /// and once it is answered.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unanswered: Option<Unanswered>,
+    /// What the reader said when they declined (#s684): the words the client's refusal attributes
+    /// to them ("…the user said:"), without the note to the model it may add after them, with
+    /// `unanswered` [`Unanswered::Declined`]. `None` for a bare decline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub said: Option<String>,
 }
 
 /// Why a call that put questions to the reader came back with no answer (#281).
@@ -145,6 +150,10 @@ pub enum Unanswered {
     TimedOut { after_ms: u64 },
     /// The reader dismissed the question in the client, and the agent was told not to proceed.
     Declined,
+    /// The reader chose to DISCUSS the questions instead of answering (#s684): the client denied
+    /// the call and asked the agent to find out what they want to clarify. Any answers or notes
+    /// they had given by then are on the questions.
+    Discussed,
     /// The call failed for some other reason; its result says which.
     Failed,
 }

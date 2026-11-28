@@ -38,7 +38,6 @@ clap = { version = "4", features = ["derive"] }
 # `claude-replay-browser-tests` — outside `default-members`, so an ordinary `cargo test` no longer
 # builds a ~250 MB dependency for a suite it does not run.
 
-# The QoderWork title tripwire builds its fixture SQLite store directly; macOS-only,
-# matching the reader it pins (see the agents crate's rusqlite note).
+# The QoderWork title test builds a fixture for its macOS-only reader.
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 rusqlite = { version = "0.40", features = ["bundled"] }

@@ -2025,10 +2025,11 @@ mod price_tests {
             .contains("duplicate pricing evidence"));
     }
 
-    /// Pins all four billing tiers where vendor/model families differ. Both vendors' tables were
-    /// queried 2026-09-09 and re-read since (OpenAI's on 2026-09-25, #279, when its flagship
-    /// table began publishing cache-WRITE rates above input); `pricing.json` records the exact
-    /// query timestamps and source URLs.
+    /// Pins all four billing tiers where vendor/model families differ. Anthropic's and OpenAI's
+    /// tables were queried 2026-09-09 and re-read since (OpenAI's on 2026-09-25, #279, when its
+    /// flagship table began publishing cache-WRITE rates above input), Google's on 2026-11-25
+    /// (#s713) and again on 2026-11-27 (#s739); `pricing.json` records the exact query timestamps
+    /// and source URLs.
     #[test]
     fn prices_match_the_published_tables() {
         for (model, want) in [
@@ -2057,6 +2058,28 @@ mod price_tests {
             ("claude-haiku-3-5", p("0.8", "1", "0.08", "4")),
             ("claude-3-5-haiku-20241022", p("0.8", "1", "0.08", "4")),
             ("claude-3-haiku-20240307", p("0.25", "0.3", "0.03", "1.25")),
+            // #s713: the 2026 rate (it doubles from 2027-01-01); a thinking level is the model's.
+            ("gemini-3.8-flash", p("0.75", "0.75", "0.075", "3.75")),
+            (
+                "gemini-3.8-flash-medium",
+                p("0.75", "0.75", "0.075", "3.75"),
+            ),
+            ("gemini-3.8-flash-high", p("0.75", "0.75", "0.075", "3.75")),
+            ("gemini-4-neon-high", p("3", "3", "0.15", "15")),
+            ("gemini-4-neon-xhigh", p("3", "3", "0.15", "15")),
+            ("gemini-4-hydrogen-low", p("1.5", "1.5", "0.075", "7.5")),
+            ("gemini-4-carbon-medium", p("2", "2", "0.1", "10")),
+            ("gemini-4-argon-high", p("2", "2", "0.1", "10")),
+            // #s739: Gemini 3.6 Flash at 3.8 Flash's 2026 rate; Gemini 3.1 Pro (High) by name at
+            // the preview's rate under 200,000 prompt tokens (`long_prompt_over`, below).
+            ("gemini-3.6-flash", p("0.75", "0.75", "0.075", "3.75")),
+            (
+                "gemini-3.6-flash-medium",
+                p("0.75", "0.75", "0.075", "3.75"),
+            ),
+            ("gemini-3.6-flash-high", p("0.75", "0.75", "0.075", "3.75")),
+            ("gemini-3.1-pro-preview", p("2", "2", "0.2", "12")),
+            ("gemini-3.1-pro-high", p("2", "2", "0.2", "12")),
             ("gpt-6-astra", p("10", "12.5", "1", "50")),
             ("gpt-6-sol", p("2", "2.5", "0.2", "10")),
             ("gpt-6.1-sol", p("2", "2.5", "0.1", "10")),
@@ -2127,6 +2150,20 @@ mod price_tests {
             "gpt-5.6-sol-20260230",
             "gpt-5.6-sol-2026-13-01",
             "us.anthropic.claude-opus-6-20260901-v1:0",
+            "gemini-4-argon-low",
+            "gemini-4-carbon-xhigh",
+            // #s739, unpriced by decision. Gemini 3.7 Flash has no published price (Google's
+            // pricing page and model list name no 3.7 model). Orchestrator pairs a planner with
+            // an executor inside one response (Antigravity's models page), so no single rate is
+            // right, and no transcript yet shows what a step under it records. The two -low ids
+            // are in the CLI's binary, not in `agy models`, as Argon's -low is.
+            "gemini-3.7-flash-high",
+            "gemini-3.7-flash-medium",
+            "gemini-pro-orchestrator",
+            "gemini-pro-orchestrator-neon",
+            "gemini-pro-orchestrator-argon",
+            "gemini-3.6-flash-low",
+            "gemini-3.1-pro-low",
         ] {
             assert_eq!(resolve(&PriceTable::new(), model), None, "{model}");
         }
@@ -3162,6 +3199,13 @@ mod long_prompt_tests {
             None,
             "the Codex adapter judges OpenAI's 272K off the request itself"
         );
+        // #s739: Gemini 3.1 Pro's page splits at a 200k-token prompt.
+        assert_eq!(long_prompt_over("gemini-3.1-pro-high"), Some(200_000));
+        assert_eq!(long_prompt_over("gemini-3-1-pro-preview"), Some(200_000));
+        assert_eq!(long_prompt_over("gemini-3.6-flash-high"), None);
+        // 2x input and cache, 1.5x output over it: $4 / $4 / $0.40 / $18.
+        let pro = usd(long(MILLION), "gemini-3.1-pro-high");
+        assert!(close(pro, 4.0 + 4.0 + 0.4 + 18.0), "{pro}");
     }
 
     /// The per-request path (a consumer that classifies each request) reads the same factors.

@@ -109,6 +109,29 @@ take the second and wrap within it. They never share a row, at any width. Below 
 so all five stay inside the sidebar at its 232px minimum (#210). Nothing is hidden at any width; a
 new control in that row is measured against the minimum, not the default, and the case
 (`the_app_shell_resizes_the_session_list`) hit-tests every control there rather than eyeballing it.
+**The DRAWER's head is one row** (#s705, Hong on a phone upright: "machines and theme should go to the
+top row (alongside the Agent Monitor text). The filter glyph moves to right above the session list"):
+in the drawer (`app-drawer`, but a wide phone's column) the app wears `drawer-one-row`, the brand
+shares its row with the native app's Machines glyph (`#machinesHead`, the nav's Machines row hidden)
+and the theme, the version giving way before the name, and `placeDrawerHead` moves the list's strip of
+controls and its filter's sheet into a row of their own right above the list (`#sideListHead`), the
+sheet capped to the room between that row and the list's foot, however little (a 120px floor put its
+end past the foot of a 292pt Safari page held sideways); anywhere else they go back into the head
+(`the_native_app_s_drawer_holds_machines_and_the_theme_beside_its_brand`).
+**The nav's rows quick-return** (#s701, Hong: "too much space taken by write, search, machines, I'd
+like to implement fast return for those (also apply to portrait mode)", "Yes, quick return"): in the
+drawer and a wide phone's column (`app-drawer`) Write mode, Search and a column's Machines row fold
+away (`nav-away`) once the list has scrolled down 24px on end, where it has more to show than their
+room, and come back on 8px of scroll up, at the list's top, as the drawer opens and anywhere the list
+is no drawer. They fold rather than float, so nothing lies over a row and the list's offset is never
+written (an iOS glide would not keep it); the scroll the fold itself causes is not read as the
+reader's (`NAV_QUIET_MS`). The filter's sheet folds them too (#s705, walked on an iPhone 17 Pro in
+Safari held sideways, where the drawer's sheet ran 30pt past the page's foot): a tap of the funnel
+in the one-row drawer with under `SHEET_ROOM` (240px) between the row above the list and the list's
+foot folds them at once, with no glide, before the sheet measures its room; closing that sheet
+brings them back, as closing one opened with the list at its top does, and while a sheet is open
+the list's scroll neither folds nor returns them
+(`a_phone_list_folds_its_nav_rows_on_the_way_down_and_brings_them_back_on_the_way_up`).
 **On a phone (the view's phone reader since #s431 stage 3: a view under 490px of its own width, or a
 touch screen's view of 760px or less or 500px tall or less; #310 then #313, #s32 a phone held
 sideways) the app shell is a reader and a native-feeling app**, the owner's rules: upright the transcript keeps a 24px margin either side (#s55; the Reading menu's Wide
@@ -251,13 +274,20 @@ session at half the width, remeasured once through `paneLayoutChanged`; the dock
 and the reply box keep to that half), and ⤢ (`.preview-expand`, sideways only)
 takes the whole screen and back without disturbing the session beneath
 (`a_phone_held_sideways_opens_the_pane_as_a_second_column`). Upright the pane is the whole screen.
-**Held sideways the pane's head is ‹, the tab strip, ›, More and close** (#s663, Hong's choice on #s670):
-the file's actions (reveal or download, print, Review) and ⤢ fold into one More menu
-(`.preview-more-wrap`, `Preview.setMore`: its rows are the head's own controls offered as it opens, each
-pressing its control), so the strip keeps their room and the current tab may take all of it but the 8px
-either side `fitTabs` scrolls it in by; each of six open files' names is whole on an iPhone 17 Pro
-(`a_phone_held_sideways_keeps_each_open_file_s_name_whole_in_its_pane_head`). A case held sideways
-reaches those controls through More, never by waiting for them in the head.
+**On a phone the pane's head is ‹, the tab strip, ›, More and close** (#s663, Hong's choice on #s670,
+held sideways; #s735, upright too, Hong's choice on #s736: "Fold them into More upright too, as
+sideways"): the file's actions (reveal or download, print, Review) and, held sideways, ⤢ fold into one
+More menu (`.preview-more-wrap`, `Preview.setMore`: its rows are the head's own controls offered as it
+opens, each pressing its control; upright the pane is the whole screen, so no ⤢), so the strip keeps
+their room and the current tab may take all of it but the 8px either side `fitTabs` scrolls it in by;
+each of six open files' names is whole on an iPhone 17 Pro held sideways
+(`a_phone_held_sideways_keeps_each_open_file_s_name_whole_in_its_pane_head`), and of three upright at
+390, where Review with others, the file's control and close had left the strip 125px
+(`a_phone_upright_keeps_each_markdown_title_whole_in_its_pane_head`). A case on a phone reaches those
+controls through More, never by waiting for them in the head. They fold exactly where the view is the
+phone reader (`pl-phone`); any view it does not take (a mouse's view of 490px or more, a touch screen's
+over 760px wide and over 500px tall: an iPad, a desktop window, a host's pane) keeps them in the head.
+An open More closes as the phone turns, since its rows are the hold's.
 **The shell's phone rules for its own top bar are scoped to `.workspace>.topbar`** (#s49): mdrev's
 toolbar in the pane is a `header.topbar` too, and `#app .topbar` outranked mdrev's own rules there
 (no wrap, the row spread, the shell's padding) — the owner saw the toolbar wrap beside a cut title,
@@ -280,14 +310,16 @@ over the drawer's head upright; `harness::safe_area` emulates them through Chrom
 sideways the transcript is a centred reading column (500px, about 75 characters of prose); and a
 WIDE phone held sideways (`WIDE_PHONE_QUERY`, ≥900px: the Plus and Max iPhones) shows the session
 list as a 280px COLUMN beside the session, its head ONE row of glyphs and no brand (the owner), never
-shrunk by a long pane under it (`flex:none`; #s41, it was cut to 11px): the
-switcher (Sessions / Turns / Tasks / Agents, borrowing the outline's live lists as the sheets do —
-Sessions wears a conversation glyph, never the sidebar glyph, which every desktop reads as "hide the
-sidebar": the owner tapped it to hide the column and called it dead, #s41), then
-the sidebar's own (Collapse all, Expand all and the session filter go while a pane is shown: they act
-on the list alone; Collapse all and Expand all are never glyphs there but the session filter sheet's
-first two rows, so the six glyphs left take a finger's 44 points each, #s664, Hong's choice on #s661); the pill keeps only Aa beside search — and takes the panes back while the column
-is hidden, or nothing would reach them. The handle sits at the session's top left, by
+shrunk by a long pane under it (`flex:none`; #s41, it was cut to 11px): the sidebar's own glyphs,
+the theme, Collapse all, Expand all and the session filter, each a finger's 44 points. **The column
+holds the sessions alone; Turns, Tasks and Agents are in the dock's pill at the bottom right with
+Aa, as upright** (#s703, Hong: "I feel it is a mistake to put the glyphs for the outline panes to the
+left. Instead, I'd put them to the right bottom, similar to the portrait mode"), each opening its
+sheet there as a popover, whether the column is shown or hidden; the column's switcher and the
+filter sheet's fold rows (#s664, which made room for its eight glyphs) are gone with them
+(`a_wide_phone_held_sideways_opens_its_panes_from_the_dock_at_the_bottom_right`). While the right
+pane covers the session beside the column, the dock goes under it with the session, the panes
+included. The handle sits at the session's top left, by
 the title (as iPad apps keep their sidebar button, and wearing its sidebar glyph there; ☰ is the
 drawer's), and hides and shows the column under its own key
 (`am-phone-column`; never the rail's, never `mobile-detail`); hidden, the session stays at its
@@ -333,8 +365,11 @@ Safari with its tab bar), so they may rise over the top bar
 (`a_wide_phone_held_sideways_keeps_its_sheets_beside_the_column_and_its_head_whole`). The jump to the
 latest sits at the bottom CENTRE of the session (#332): just above the dock upright, ON the dock's
 row sideways, where the middle of that row is free (the owner: "should move to the bottom"; above it
-again while the pane is a second column, whose half puts the pill in that middle, #s645), and
-gone while the find pill holds the dock (#s41). Inputs are 16px (iOS zooms into anything
+again while the pane is a second column, whose half puts the pill in that middle, #s645, and beside
+a wide phone's column, whose pill sits at the session's right since #s703), and
+gone while the find pill holds the dock (#s41). Whether it shows is asked again on every scroll and
+after a fold (#s700: painted only when the follow pin flipped or records came, a fold opened at the
+end drew it hidden with nothing below yet, and no scroll up brought it back). Inputs are 16px (iOS zooms into anything
 smaller), targets 44px — a reading row's whole width flips its switch, a facet suggestion is a 44px
 row, a delivered file a 36px chip (at 14px WebKit's tap adjustment gave its tap to the row's head,
 which folded the row), and the jump is offered only where something is below. **On a touch screen hover reveals nothing** (#s41): WebKit spends a tap on a hover that SHOWS
@@ -519,7 +554,13 @@ the list holds more than one machine; ticked (remembered, `am-prod-by-machine`),
 per machine (`.tree-machine-group`, its state beside it while it does not answer, folding under
 `m:<machine>`) over that machine's own tree or list by activity (`machineSections`), whose project
 heads and rows do not repeat the machine, and the heads over the list give way to them
-(`a_list_over_two_machines_groups_by_machine_from_the_filter`, and its phone twin).
+(`a_list_over_two_machines_groups_by_machine_from_the_filter`, and its phone twin). Unticked, a
+folder several machines hold is one project (#s738, Hong: "we did not combine agents working on the
+same project"): `oneHeadPerProject` folds an agent's projects at the same `path` (each server writes
+its own home as `~`) into one head, which names no one machine, its rows merged in the server's row
+order and each wearing its machine; its hide sends each machine's own key. A desktop agent's
+sessions (no folder) stay per machine, and ticked, each machine keeps its own
+(`one_list_over_two_machines_labels_routes_and_greys_each_machine`).
 
 **Which process a session is linked to** (#269, `index.rs` `link()`) decides liveness AND whether
 the compose box appears, and Claude Code 2.1.278 changed the shape it has to read: the session's
@@ -855,7 +896,7 @@ PreToolUse hook holds the terminal while it waits.
 static version of mdrev, similar to how agent-monitor depends on crates in claude-replay. Future
 upgrades will be triggered explicitly and manually"). `vendor/mdrev` is a crate holding ONE public
 mdrev release's embedding kit, unmodified (`release/`: `bundle/`, `mdrev-cli.js` + `package.json`,
-`docs/*.md`); its version IS the release's (1.1.88, #s648), `release.sha256` is checked by its tests (never
+`docs/*.md`); its version IS the release's (1.1.91, #s719), `release.sha256` is checked by its tests (never
 hand-edit a vendored file), and its build script embeds `bundle/` as a table. Only `claude-monitor`
 depends on it, and `routes::handler` — the one constructor the monitor goes through — installs it
 into the html crate (`install_mdrev`), so `agent-replay` carries none of it. Nothing installed on
@@ -931,7 +972,7 @@ step in the pane, so a host rule that stood in the way would fail it.
 **The pane prints a Markdown document where mdrev offers no print** (#s30, the owner: "print still
 makes sense"): mdrev's own toolbar prints — on a phone from its Aa menu since 1.1.24 (#s31), which also
 made the print start from the tap in Safari — but a held reader has no toolbar, so there the pane head
-carries a print control (`.preview-print`, hit-tested at 390px) that calls mdrev's own
+carries a print control (`.preview-print`; on a phone a row of the head's More menu, #s735) that calls mdrev's own
 `mounted.print()` — the document alone on the paper; never for code. **mdrev carries every print**
 (#s58, mdrev 1.1.29): its isolation (`#mdrev-print-isolation`, everything outside the mount hidden
 through `:has()`, the page printed white) comes back at each `beforeprint` until the reader next
@@ -983,8 +1024,13 @@ monitor's launchd PATH has `/opt/homebrew/bin`, where mdrev-plugin-alibaba puts 
 `the_detached_tab_reads_subscribes_and_notifies_through_draft_8` runs mdrev's own check's shape with
 a fake channel on that PATH.
 **On a phone the review prefix is a full-screen SHEET** (#s12, the owner's choice: a tab has no way
-back there): the pane's Markdown from a FILE shows a Review control on a phone only (held sideways in
-the head's More menu, #s663); `openReviewSheet`
+back there): the pane's Markdown from a FILE shows a Review control on a phone only (a row of the
+head's More menu, #s663 sideways, #s735 upright), labelled Review with others and offered only once the server's review
+prefix answers the document's review state (#s733, Hong's choice on #s732: "hidden where shared
+review is not set up"; a monitor with no viewer key answers 404 there, and `reviewOffered` in
+`mdrev-pane.js` keeps a yes once per server and asks again after a 404, which may be one document's own
+or come before shared review is set up, `a_phone_offers_review_with_others_only_where_shared_review_is_set_up`,
+`a_phone_upright_offers_review_with_others_from_the_pane_s_more_menu`); `openReviewSheet`
 (`preview.js`) mounts the document with `mountMarkdown(…, {review: true})` in `.review-sheet` over the
 whole app (z 95: above the drawer, below the toasts), and its 44px close control unmounts it — no
 navigation, so the transcript's offset is unchanged (`a_phone_reviews_in_a_full_screen_sheet_and_…`).
@@ -1009,6 +1055,17 @@ collaboration app styles in its own page** (#s438, where the view sits in a pane
 `sv-task-card-*` family, `sv-pinned` and `sv-primary` (the app's confirm button keeps `.primary`),
 and it draws no `.hint` (the app's ⌘K hint keeps it) and no `.crumbs`; `ui.rs` refuses the six bare
 names in `session-view.css`, and the contract refuses them in the view's modules.
+**Beside a large guest, one text change can restyle the whole page** (#s731, measured with mdrev's
+view of a 1,500-line file, 54,000 elements: about 280ms a time). Chrome does it at ANY text change,
+and at any element added, while some `:has()` rules are in the page: mdrev's eight on their own
+(mdviewer #s3149), and ours, `….header-searchbox:has(…) input::placeholder`, together with the
+app's `:root:has(…)` rules, while other `:has()` rules short of their subject cost nothing. Which
+ones do it is measured, never read off the selector: `a_text_change_beside_a_large_page_restyles_only_what_it_touched`
+holds the page's own stylesheets to it (ours is a sibling selector now). And a poll that changes
+nothing writes nothing (the header through `setText` and `setMarkup`; the filter's counts, the
+compose box's line and its image strip each compare first), held by
+`a_session_list_poll_that_changes_nothing_writes_nothing_to_the_page` and, for the strip,
+`a_herdr_session_takes_images_from_the_compose_box`.
 
 **Shared frontend modules live in `claude-replay-html/src/html/shared/`** (seam 0 of
 `design/monitor-shell-duplication.md`, v1.140.0): ONE source, consumed two ways — the monitor
@@ -1146,7 +1203,11 @@ file to `navigator.share` on `pointer: coarse` (a phone or a tablet; never a des
 is not a download), keeps it ready for the next tap when iOS says the tap expired during the fetch,
 and streams anything over 64 MB (`?inMemoryMax=` for a case) to the browser's own download from
 `/file`; a desktop saves to Downloads as before
-(`a_phone_download_opens_the_share_sheet_and_a_desktop_saves`). `a_phone_is_never_offered_the_file_manager` is the audit:
+(`a_phone_download_opens_the_share_sheet_and_a_desktop_saves`). Every control whose tap does that
+says so (#s730, Hong on a real iPhone: "the button shows like a down arrow which is not ideal"):
+`handOver` gives it the share glyph and the word Share where `shareHere` holds, ↓ and Download
+elsewhere and for a file it knows is too large to hold
+(`a_phone_shares_where_a_desktop_downloads`). `a_phone_is_never_offered_the_file_manager` is the audit:
 a remote phone clicks every kind of offered path in the app shell and meets no reveal and sends no
 `/__reveal`; a local narrow window keeps its reveal. A case about what a REMOTE reader is offered
 opens the monitor as one (`Monitor::spawn_remote`, `harness::remote_phone`, `open_remote`).
@@ -1368,9 +1429,9 @@ resizes the others (#159). Six drawer cases catch that in one run.
   finished agents or Show N finished agents (#s358, Hong's choice on #s357; `phoneAgentsFilter`), and
   its Tasks list one for Top-level only, Hide follow-ups or Show N follow-ups (#s606;
   `phoneTasksFilter`); with an agent running the list is not empty, so the empty line alone would
-  strand the reader. In a wide phone's column the control is a row at the top of the list, because
-  the list can be long; in a sheet it is in the sheet's HEAD beside its title (#s616, `renderFilter`,
-  the row not drawn there), because held sideways the sheet's list is about 97px and the Tasks
+  strand the reader. The control is in the sheet's HEAD beside its title (#s616, `renderFilter`,
+  copied from a row at the top of the list, which the sheet does not draw; a wide phone's column drew
+  the row until #s703 took the panes out of it), because held sideways the sheet's list is about 97px and the Tasks
   sheet's opening scroll to what is still moving took a row at the top out of reach, while a row
   pinned there left no task readable. A phone's Tasks pane shows every state (#319), so it needs no
   state filter. **A task the session recorded no title for is not listed** in that pane
@@ -1484,9 +1545,12 @@ choice), the message alone as Markdown. In the app shell each sender has a hue o
 Hong: tell agent turns from the person's and one agent from another, in the Turns pane): `peerHue`
 (`view-model.js`, FNV-1a over the name, so stable everywhere) colours the card's rule and name and
 the sender's chip on its Turns pane row, the label going on after the name (`peerLabelRest`).
-`origin.body` is read, never the prose; the tag is read
-only for a meta record with no `origin` (none measured), so a person QUOTING the tag keeps their
-prompt. The mid-turn one used to render as the person's own prompt. A peer enqueue draws no `⧗
+`origin.body` is read, never the prose; the tag is read only for a meta record with no `origin`
+(none measured), so a person QUOTING the tag keeps their prompt. Either way the card leaves out the
+notice Claude Code (2.1.322+) appends when the sender has handled others' Artifact content (a blank
+line, `<artifact-content-authored-by-others/>` on a line of its own and its fixed sentence, matched
+whole and word for word, so words after it are shown: the client's word to the model, #s699, #s717;
+the tag ends its line in every record, #s726). The mid-turn one used to render as the person's own prompt. A peer enqueue draws no `⧗
 queued` marker (that marker means the person typed it) but stays in the queue, popped at pickup by
 its raw text. Text the person PASTED is `<pasted_content id="X">…</pasted_content id="X">`; the
 adapter rewrites it as a fence labelled `pasted` (one backtick longer than any run inside), applied
@@ -1519,8 +1583,10 @@ ways (an attribute given twice), a sub-agent's record (`isSidechain`) and a queu
 `origin` is not a person's. **One sent as ANOTHER SESSION's message is his on the same terms**
 (#s655, Hong's choice on aries#s322: "Count it as mine when its signature checks"; aries-tell sends
 them since aries#s320, so typing no longer interrupts Aries): the record's own `origin.body`, never
-its prose or the tag's text, with whitespace at its ends stripped, must be one whole v1 element (the
-tag at its first character, the closing tag at its last, no paste around it) whose sig verifies, on
+its prose or the tag's text, with whitespace at its ends stripped and the client's artifact notice
+(#s699), whole and word for word, taken off its end (#s717, Hong's choice on #s707: "Accept it
+with the notice taken off first"), must be one whole v1 element (the tag at its first character,
+the closing tag at its last, no paste around it) whose sig verifies, on
 a record no sub-agent wrote, as a `user` record or a mid-turn pickup; who sent it does not matter.
 The first-id rule counts typed and sent alike, and a later copy sent that way is the session's
 message, drawn as before (`Message::UserInbox`'s `peer`). aries-inbox types a bracketed paste, and Claude Code 2.1.310 records a paste of four

@@ -426,11 +426,59 @@ pub const COMPACT_AFTER: usize = 256;
 /// element folds to the person's `UserInbox` the first time its id is met, where a v89 stream holds
 /// that session's `PeerText`.
 ///
+/// v91: #s683 — a Claude reply whose `requestSessionId` names another session than its own
+/// `sessionId` (a copy a moved or forked session opens with) adds no tokens and times no answer,
+/// where a v90 stream's persisted deltas priced it in both sessions.
+///
+/// v92: #s691 — Claude Code's "[Cross-session delivery notice]" to the model draws no `⧗ queued`
+/// marker and no result line, and its pickup takes its queue item by its text; a v91 stream holds
+/// the marker and the line, beside the client's own warning about the same outcome, and drew one
+/// picked up mid-turn as the person's prompt, a turn of its own.
+///
+/// v93: #s692 — a bridged peer message's queue key drops the `hop-chain` its enqueue alone
+/// carries, so its remove takes it; a v92 stream left it at the queue's front, where the next
+/// content-less pop took it in place of a typed prompt, whose `⧗ queued` marker then stayed.
+///
+/// v94: #s687 — a Claude client tally that began before the session's last copied reply is
+/// the tally of the session a move or fork came from, carried over, and is not this session's
+/// reported cost; a v93 cursor knows neither the copies' last time nor each epoch's end.
+///
+/// v95: !31477063 — Antigravity now groups activity spans, matches result rows to the call's
+/// step position, shows the tool summary as the fallback target, and includes requested
+/// Write and Edit diffs.
+///
+/// v96: #s688 — a Claude reply with no `requestSessionId` whose `session_id` names another
+/// session than its `sessionId` (a copy a fork by clients 2.1.287 to 2.1.310 opens with) adds
+/// no tokens and times no answer, where a v95 stream's persisted deltas priced it in both; and
+/// such a fork's client tally carried from its parent is left out (#s687).
+///
+/// v97: #s684 — a question the reader chose to discuss reads `Discussed`, not `Declined`, with the
+/// answers and notes its clarify text lists on its questions, and a decline keeps the reader's own
+/// words in `Asked::said`; a v96 block has neither.
+///
+/// v98: #s699 — a message from another session no longer carries the notice Claude Code appends
+/// when its sender has handled Artifact content others wrote: a v97 stream's `PeerText` ends with it.
+///
+/// v99: #s717 — a signed message from the person sent as another session's message whose body ends
+/// in that notice is his `UserInbox`, where a v98 stream holds it as the session's `PeerText`; and
+/// a `PeerText` whose notice has words after it keeps them, where v98 left them out.
+///
+/// v100: #s726 — the notice is matched as the client writes it, the tag on a line of its own, so a
+/// real `PeerText` leaves it out and a real signed message ending in it is his `UserInbox`, where a
+/// v99 stream kept the notice and held that message as the session's `PeerText`; and a
+/// `Compaction`'s summary leaves out the notice the client puts at its head, which a v99 one opens
+/// with.
+///
+/// v101: #s739 — an Antigravity step on a model priced by prompt length (Gemini 3.1 Pro, over
+/// 200,000 tokens) carries its tokens in `TokenCounts::long_prompt`, as v49 did for Claude Haiku
+/// 5.5. A v100 stream holds them only in the totals, and would price them at the standard rates as
+/// if exact.
+///
 /// Any one of these is block output changing; the rule this constant exists for is that such a
 /// change must not be resumable across. Pages are not the only readers of a resumed stream: a
 /// `--dump --json --cache` entry (#10) holds blocks too, and a collector's script has no way to
 /// notice it was handed the previous build's.
-pub const FOLD_VERSION: u16 = 90;
+pub const FOLD_VERSION: u16 = 101;
 
 impl Versions {
     /// This build's versions for a presentation whose output has no render parameters (the TUI).

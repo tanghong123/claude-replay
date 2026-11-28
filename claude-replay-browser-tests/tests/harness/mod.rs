@@ -779,6 +779,48 @@ pub fn ask_declined_answer(id: &str, ts: &str) -> String {
     format!("{line}\n")
 }
 
+/// #s684: a refused question's result carrying `after` behind the client's refusal, as Claude Code
+/// writes it when the dialog is left with text: the error text, the same behind "Error: " as the
+/// `toolUseResult`, the text again as `userFeedback`, and `holdsPersonsWords` (2.1.331).
+fn ask_refused_with(id: &str, ts: &str, after: &str) -> String {
+    let text = format!(
+        "The user doesn't want to proceed with this tool use. The tool use was rejected (eg. if it \
+         was a file edit, the new_string was NOT written to the file). To tell you how to proceed, \
+         the user said:\n{after}"
+    );
+    let line = serde_json::json!({
+        "type": "user",
+        "timestamp": ts,
+        "toolUseResult": format!("Error: {text}"),
+        "toolDenialKind": "user-rejected",
+        "holdsPersonsWords": true,
+        "userFeedback": after,
+        "message": {"role": "user", "content": [{
+            "type": "tool_result", "tool_use_id": id, "is_error": true, "content": text}]},
+    });
+    format!("{line}\n")
+}
+
+/// #s684: the reader chose to DISCUSS [`ask_question_at`]'s questions instead of answering, having
+/// picked "Hold" for the first and written a note on the second: the client's clarify text, in
+/// the shape its code writes it (2.1.331's `eDt`).
+pub fn ask_discussed_answer(id: &str, ts: &str) -> String {
+    ask_refused_with(
+        id,
+        ts,
+        "The user wants to clarify these questions.\n    This means they may have additional \
+         information, context or questions for you.\n    Take their response into account and then \
+         reformulate the questions if appropriate.\n    Start by asking them what they would like to \
+         clarify.\n\n    Questions asked:\n- \"Cut it now, or hold on main?\"\n  Answer: Hold\n- \
+         \"Which crates go in?\"\n  (No answer provided)\n  User notes: only the engine for now",
+    )
+}
+
+/// #s684: the reader declined [`ask_question_at`]'s questions with words of their own.
+pub fn ask_declined_with_words_answer(id: &str, ts: &str) -> String {
+    ask_refused_with(id, ts, "Wait for the gate to go green first.")
+}
+
 /// #282: the drawing [`ask_previewed_at`] offers with its first option (the one the reader picks).
 pub const PREVIEW_BOARD: &str = "┌─ board ──────┐\n│ [card] [card] │\n└───────────────┘";
 /// #282: …and with its second.
@@ -1167,6 +1209,7 @@ impl Stores {
             ("CLAUDE_PROJECTS_DIR", self.root.join("claude")),
             ("QODERWORK_PROJECTS_DIR", self.root.join("qoderwork")),
             ("QWENWORK_PROJECTS_DIR", self.root.join("qwenwork")),
+            ("ANTIGRAVITY_CLI_HOME", self.root.join("antigravity")),
             ("QWENWORK_DB", self.root.join("qwenwork.db")),
             ("QODER_PROJECTS_DIR", self.root.join("qoder")),
             ("CODEX_HOME", self.root.join("codex")),
@@ -1579,6 +1622,10 @@ pub fn configure_monitor_environment(
         // then admits no browser at all: none may leak in from the shell that runs the suite.
         // A case that wants one sets it (`Monitor::spawn_remote`).
         .env_remove("AGENT_MONITOR_TRUSTED_HOSTS")
+        // mdrev's state and viewer key are the case's own: a case that offers shared review sets
+        // them (#s733), and none comes from the shell that runs the suite.
+        .env_remove("MDREV_STATE_DIR")
+        .env_remove("MDREV_VIEWER_KEY")
         .env("XDG_CONFIG_HOME", base.join("config"))
         .env("XDG_DATA_HOME", base.join("data"))
         .env("XDG_STATE_HOME", base.join("xdg-state"))
@@ -2271,9 +2318,14 @@ pub fn browser_path() -> Option<std::path::PathBuf> {
 /// crate's SIGKILL is left for a Chrome that does not. Chrome removes the folder before it exits, so
 /// the exit is the whole wait. On Linux Chrome keeps the folder even then (measured on CI's Ubuntu
 /// runner: `com.google.Chrome.XXXXXX`), but it makes it in `TMPDIR`, the workspace's scratch, whose
-/// age rule (`scripts/sweep-scratch.sh`) clears it after a day. Each end
-/// is a [`profile`] row saying whether the folder went (`CR_PROFILE`, which is how a run is checked
-/// for them), and one left outside `TMPDIR` is also a stderr line naming it.
+/// age rule (`scripts/sweep-scratch.sh`) clears it after a day. Chrome for Testing 159 on a Mac
+/// keeps it too (#s710, measured on denali: SIGTERMed it exits at once and leaves the folder; 151
+/// removes it, and both remove it on `Browser.close`), so once the process has gone the guard
+/// removes the folder it read at the launch itself, wherever Chrome left it (on Linux too), and only
+/// while it holds nothing but Chrome's own `Singleton*` entries ([`remove_singleton_folder`]); the
+/// sweep's age rule is left for a folder the guard never saw. Each end is a [`profile`] row
+/// saying whether the folder went, and who took it (`CR_PROFILE`, which is how a run is checked for
+/// them), and one left outside `TMPDIR` is also a stderr line naming it.
 pub struct Chrome {
     browser: Option<headless_chrome::Browser>,
     /// The folder the profile's `SingletonSocket` link named once the browser was up.
@@ -2313,6 +2365,8 @@ pub struct Ended {
     pub took: Duration,
     /// The singleton folder, when it is still there after the end.
     pub folder_left: Option<PathBuf>,
+    /// Chrome left its singleton folder behind and the guard removed it (#s710).
+    pub folder_removed: bool,
 }
 
 impl Chrome {
@@ -2338,6 +2392,7 @@ impl Chrome {
                 exited: false,
                 took: Duration::ZERO,
                 folder_left: None,
+                folder_removed: false,
             };
         };
         let mut exited = false;
@@ -2362,10 +2417,18 @@ impl Chrome {
             // A pid the system hands out again must not find this profile (`profile_of`).
             profiles().lock().unwrap().remove(&pid);
         }
+        // Only once the process has gone: a running Chrome keeps its singleton there.
+        let folder_removed = match (self.singleton.as_ref(), pid) {
+            (Some(dir), Some(pid)) if dir.exists() && !process_runs(pid) => {
+                remove_singleton_folder(dir)
+            }
+            _ => false,
+        };
         // Said through [`profile`] as well as stderr: libtest keeps a passing case's stderr to
         // itself, and a run is checked by these rows (`CR_PROFILE`).
         let outcome = match self.singleton.as_ref() {
             None => "chrome end, no singleton folder",
+            Some(_) if folder_removed => "chrome end, singleton folder left and removed",
             // Linux's Chrome keeps it whatever, in the workspace's scratch the sweep clears.
             Some(dir) if dir.exists() && dir.starts_with(std::env::temp_dir()) => {
                 "chrome end, singleton folder kept in TMPDIR"
@@ -2385,6 +2448,7 @@ impl Chrome {
             exited,
             took,
             folder_left: self.singleton.clone().filter(|dir| dir.exists()),
+            folder_removed,
         }
     }
 }
@@ -2502,6 +2566,26 @@ fn singleton_folder(profile: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Remove a singleton folder an exited Chrome left behind (#s710): its `Singleton*` entries by
+/// name, then the folder, which `remove_dir` takes only once it is empty, so a folder holding
+/// anything else stays as it is. Whether the folder went.
+fn remove_singleton_folder(dir: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    let names: Vec<std::ffi::OsString> = entries.flatten().map(|entry| entry.file_name()).collect();
+    if names
+        .iter()
+        .any(|name| !name.to_string_lossy().starts_with("Singleton"))
+    {
+        return false;
+    }
+    for name in &names {
+        let _ = std::fs::remove_file(dir.join(name));
+    }
+    std::fs::remove_dir(dir).is_ok()
+}
+
 /// Whether `pid` still runs: there and not a zombie. A browser this process launched stays its
 /// child until headless_chrome waits for it, so a Chrome that has exited still answers `kill -0`.
 /// A `ps` that cannot start (a box too loaded to fork) says nothing, so it reads as running: the
@@ -2520,11 +2604,17 @@ fn process_runs(pid: u32) -> bool {
 
 /// End `pids` (#s614): SIGTERM each, wait until none runs or [`GENTLE_END`] has passed, then
 /// SIGKILL what is left. SIGTERM first because a Chrome SIGKILLed leaves its singleton folder in
-/// the system temp folder, and one SIGTERMed removes it. Before the SIGKILL each survivor's command
-/// line is read again and must still name a profile carrying the harness's mark (another
-/// worktree's included, as [`reap_stranded_browsers`] takes them), so a pid the system handed out
-/// again during the wait is never killed. Answers how many it ended.
+/// the system temp folder, and one SIGTERMed removes it, except Chrome for Testing 159, which
+/// keeps it (#s710): so each pid's folder is read before the signal, from its own harness profile,
+/// and removed once that process has gone ([`remove_singleton_folder`]). Before the SIGKILL each
+/// survivor's command line is read again and must still name a profile carrying the harness's mark
+/// (another worktree's included, as [`reap_stranded_browsers`] takes them), so a pid the system
+/// handed out again during the wait is never killed. Answers how many it ended.
 fn end_processes(pids: &[u32]) -> usize {
+    let folders: Vec<(u32, PathBuf)> = pids
+        .iter()
+        .filter_map(|&pid| harness_singleton_of(pid).map(|dir| (pid, dir)))
+        .collect();
     let signal = |sig: &str, pid: u32| {
         std::process::Command::new("kill")
             .args([sig, &pid.to_string()])
@@ -2557,7 +2647,29 @@ fn end_processes(pids: &[u32]) -> usize {
             signal("-KILL", pid);
         }
     }
+    for (pid, dir) in &folders {
+        if dir.exists() && !process_runs(*pid) {
+            remove_singleton_folder(dir);
+        }
+    }
     sent.len()
+}
+
+/// The singleton folder of a running process whose command line names a harness profile (one
+/// carrying [`BROWSER_PROFILE_MARK`]), read through that profile's `SingletonSocket` link. A helper
+/// shares its browser's profile and so its folder; any other process has none here.
+fn harness_singleton_of(pid: u32) -> Option<PathBuf> {
+    let out = std::process::Command::new("ps")
+        .args(["-wwo", "command=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    let command = String::from_utf8_lossy(&out.stdout).into_owned();
+    let profile = command.split(' ').find_map(|arg| {
+        arg.strip_prefix("--user-data-dir=")
+            .filter(|dir| dir.contains(BROWSER_PROFILE_MARK))
+    })?;
+    let target = std::fs::read_link(Path::new(profile).join("SingletonSocket")).ok()?;
+    target.parent().map(Path::to_path_buf)
 }
 
 pub fn chrome() -> Chrome {
@@ -2722,6 +2834,20 @@ pub const CASE_FLAGS: [&str; 3] = [
     "--disable-component-update",
 ];
 
+/// The headless_chrome defaults a case's Chrome goes without (#s710). With `--enable-automation`,
+/// Chrome for Testing 159 leaves a headless window's page 57px shorter than 151 does (measured on
+/// denali: a 1280x1100 window's page 900px tall under 159 and 957px under 151 with the flag; 957px
+/// under both without it), by its "controlled by automated test software" bar, presumably: the
+/// height was measured, the bar was not looked at. Nothing in the suite reads what else the flag
+/// changes (`navigator.webdriver`, the password bubble). Every launch a case makes passes these as
+/// `ignore_default_args`.
+pub const IGNORED_DEFAULTS: [&str; 1] = ["--enable-automation"];
+
+/// [`IGNORED_DEFAULTS`] as headless_chrome's `ignore_default_args` takes them.
+pub fn ignored_defaults() -> Vec<&'static std::ffi::OsStr> {
+    IGNORED_DEFAULTS.iter().map(std::ffi::OsStr::new).collect()
+}
+
 /// `extra`, then [`CASE_FLAGS`]: the arguments of a Chrome a case launches itself.
 pub fn chrome_args<'a>(extra: &[&'a str]) -> Vec<&'a std::ffi::OsStr> {
     extra
@@ -2767,6 +2893,7 @@ pub fn launch_within(
                 .window_size(Some((1400, 900)))
                 .user_data_dir(Some(dir.clone()))
                 .port(Some(port))
+                .ignore_default_args(ignored_defaults())
                 .args(args)
                 .build()
                 .unwrap(),
@@ -3171,9 +3298,17 @@ pub fn reap_own_browsers() {
 /// whatever port it serves on; should it hold a case's port, the spawn moves off it (#s495). A
 /// monitor a killed run left on a port it was MOVED to is not reaped here: it holds a port the
 /// kernel handed out, which no case asks for.
+///
+/// And only a monitor whose test process is GONE ([`stranded_monitors`], #s690): one whose parent
+/// is still running belongs to a live run, usually the local suite's other leg of the same part,
+/// whose case asked for the same port at the same moment. It used to be killed too: the other
+/// leg's page lost its monitor as it opened and timed out "waiting for the phone to open on a
+/// session; seen: null" (`a_session_list_refresh_that_changes_nothing_keeps_its_rows` and
+/// `a_phone_pairs_by_a_one_time_code` both ask for 2820). Left running, it holds the port, and the
+/// spawn moves off it as off any other holder (#s495).
 fn reap_stranded_monitor(port: u16) {
     let Ok(out) = std::process::Command::new("ps")
-        .args(["-Awwo", "pid=,command="])
+        .args(["-Awwo", "pid=,ppid=,command="])
         .output()
     else {
         return;
@@ -3183,24 +3318,50 @@ fn reap_stranded_monitor(port: u16) {
         .unwrap()
         .join("target/release/agent-monitor");
     let marker = workspace.to_string_lossy().into_owned();
-    let mut reaped = 0;
-    for line in String::from_utf8_lossy(&out.stdout).lines() {
-        let Some((pid, command)) = line.trim().split_once(' ') else {
-            continue;
-        };
-        if !command.contains(&marker) || !names_port(command, port) {
-            continue;
-        }
+    let stranded = stranded_monitors(&String::from_utf8_lossy(&out.stdout), &marker, port);
+    for pid in &stranded {
         let _ = std::process::Command::new("kill")
-            .args(["-9", pid])
+            .args(["-9", &pid.to_string()])
             .stderr(std::process::Stdio::null())
             .status();
-        reaped += 1;
     }
-    if reaped > 0 {
+    if !stranded.is_empty() {
         eprintln!("harness: reaped a monitor stranded on port {port} by an earlier run");
         std::thread::sleep(Duration::from_millis(200)); // let the port come free
     }
+}
+
+/// The pids, in a `ps -Awwo pid=,ppid=,command=` listing, of the monitors whose command is the
+/// binary at `marker` (the whole path: `agent-monitor-fleet` beside it is another program) started
+/// with `--port <port>`, and whose test process is gone: re-parented to launchd or init (a parent
+/// of 1, or 0), or whose parent the listing no longer holds. A monitor whose parent is any other
+/// live process (another run's test binary) is not stranded (#s690). Every row with a pid and a
+/// parent counts as a live process, whatever its command reads, even none.
+pub fn stranded_monitors(ps: &str, marker: &str, port: u16) -> Vec<u32> {
+    let rows: Vec<(u32, u32, &str)> = ps
+        .lines()
+        .filter_map(|line| {
+            let mut words = line.trim_start().splitn(2, char::is_whitespace);
+            let pid = words.next()?.parse().ok()?;
+            let rest = words.next()?.trim_start();
+            let (ppid, command) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            Some((pid, ppid.parse().ok()?, command.trim_start()))
+        })
+        .collect();
+    let listed: std::collections::HashSet<u32> = rows.iter().map(|&(pid, _, _)| pid).collect();
+    let runs_marker = |command: &str| {
+        command
+            .strip_prefix(marker)
+            .is_some_and(|args| args.is_empty() || args.starts_with(' '))
+    };
+    rows.iter()
+        .filter(|&&(_, ppid, command)| {
+            runs_marker(command)
+                && names_port(command, port)
+                && (ppid <= 1 || !listed.contains(&ppid))
+        })
+        .map(|&(pid, _, _)| pid)
+        .collect()
 }
 
 /// Whether a command line, as `ps` joins it, passes `--port` and then exactly `port`.
@@ -4463,7 +4624,24 @@ pub fn codex_tool_session(id: &str, turns: u32) -> String {
 /// ratio 3, with touch — what `tailscale serve` hands a phone after #11. Chrome's own emulation,
 /// so media queries, `pointer: coarse` and the visual viewport all answer as they would there.
 pub fn phone(tab: &headless_chrome::Tab, width: u32, height: u32) {
+    phone_turned(tab, width, height, None);
+}
+
+/// [`phone`] with the screen's orientation angle given (#s702): 90 is a phone held sideways with its
+/// island on the left, as iOS reports it, 270 with the island on the right, 0 upright. With none,
+/// headless Chrome reports the angle its own screen has, 0 (measured on Chrome 151), so a case that
+/// does not turn the phone keeps every inset whole.
+pub fn phone_turned(tab: &headless_chrome::Tab, width: u32, height: u32, angle: Option<u32>) {
     use headless_chrome::protocol::cdp::Emulation;
+    let screen_orientation = angle.map(|angle| Emulation::ScreenOrientation {
+        Type: match angle {
+            90 => Emulation::ScreenOrientationType::LandscapePrimary,
+            270 => Emulation::ScreenOrientationType::LandscapeSecondary,
+            180 => Emulation::ScreenOrientationType::PortraitSecondary,
+            _ => Emulation::ScreenOrientationType::PortraitPrimary,
+        },
+        angle,
+    });
     tab.call_method(Emulation::SetDeviceMetricsOverride {
         width,
         height,
@@ -4475,7 +4653,7 @@ pub fn phone(tab: &headless_chrome::Tab, width: u32, height: u32) {
         position_x: None,
         position_y: None,
         dont_set_visible_size: None,
-        screen_orientation: None,
+        screen_orientation,
         viewport: None,
         display_feature: None,
         device_posture: None,

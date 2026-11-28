@@ -2,6 +2,7 @@
 // (html/shared/capabilities.js, #46), read here and by the classic page alike.
 import { attachmentCapability, besideAction, groupPointerRuns, isPointerAttachment, referenceAction, revealQuery } from "./shared/capabilities.js";
 import { backend } from "./backend.js";
+import { handOver } from "./attachment-viewer.js";
 import { svg } from "./icons.js";
 import { fleetGroups } from "./shared/fleet.js";
 import { escapeText, literalText, partsHtml, peerHue, placeholderUnit } from "./view-model.js";
@@ -151,7 +152,7 @@ function rendererBody(view, state) {
     // renderer is `noninteractive` (see above) and draws as ONE head line — the kind, the
     // path, and the path itself clickable through `targetHtml`. A pointer looks like a pointer.
     if (isPointerAttachment(h)) return "";
-    return `<div class="renderer-note"><strong>${escapeText(h.att_kind || "file")} · ${escapeText(h.att_name || "attachment")}</strong><p>${capability.action === "copy" ? "This session kept only the original file path." : ""}</p><button class="artifact-link" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}">${escapeText(capability.label)} →</button>${besideHtml(view, h, capability)}</div>`;
+    return `<div class="renderer-note"><strong>${escapeText(h.att_kind || "file")} · ${escapeText(h.att_name || "attachment")}</strong><p>${capability.action === "copy" ? "This session kept only the original file path." : ""}</p><button class="artifact-link" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}">${escapeText(capability.action === "download" ? handOver().verb : capability.label)} →</button>${besideHtml(view, h, capability)}</div>`;
   }
   if (view.renderer === "bash") return `<div class="renderer-terminal ${view.error ? "error" : ""}"><span class="output">${bodyHtml(view, state) || "No output recorded"}</span></div>`;
   // #168: a record with nothing to show renders NOTHING. A card whose only content is a sentence
@@ -248,7 +249,7 @@ const besideOf = h => besideAction({ path: h.att_path, sig: h.att_sig, fsig: h.a
 function besideHtml(view, h, capability) {
   const beside = besideOf(h);
   if (!beside || beside === capability.action) return "";
-  return `<button class="artifact-link artifact-link-secondary" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${beside}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}">${beside === "reveal" ? "Reveal in file manager" : "Download"}</button>`;
+  return `<button class="artifact-link artifact-link-secondary" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${beside}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}">${beside === "reveal" ? "Reveal in file manager" : handOver().verb}</button>`;
 }
 
 /** What a change did, on its head (#s23): green `+N`, red `−N`, beside the target and never in
@@ -342,9 +343,11 @@ function turnTime(unit) {
   const when = typeof ts === "number" && ts > 0 ? `<span class="turn-time" title="When this turn was sent">${escapeText(fmtTime(ts))}</span>` : "";
   // #257: how long the turn took, when the transcript recorded it — 19% of turns have no
   // duration, and those show nothing rather than a zero. Same class as the time, so the chip
-  // needs no rule in the GENERATED stylesheet.
+  // needs no rule in the GENERATED stylesheet. #s706: it says what it is, "worked 45s" as Claude
+  // Code's own "Worked for 45s", since a bare "45s" under a message meant nothing on a phone, where
+  // no title shows.
   const secs = unit.view?.source?.dur;
-  const took = typeof secs === "number" && secs > 0 ? `<span class="turn-time" title="How long this turn took">${escapeText(fmtDur(secs))}</span>` : "";
+  const took = typeof secs === "number" && secs > 0 ? `<span class="turn-time" title="How long the agent worked on this turn">worked ${escapeText(fmtDur(secs))}</span>` : "";
   return when + took;
 }
 
@@ -540,16 +543,19 @@ function renderPromptAttachments(attachments = []) {
     // is the visible fingerprint of that miss.
     const action = `data-attachment="${escapeText(view.id || "")}" data-attachment-action="${capability.action}" data-name="${escapeText(h.att_name || "")}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}"`;
     const ext = String(h.att_name || "file").split(".").pop().slice(0, 4).toUpperCase();
-    const glyph = capability.action === "download" ? "↓" : capability.action === "copy" ? "⎘" : "↗";
+    // #s730: a file the card hands over goes to the share sheet where a tap opens it, and says so.
+    const handed = handOver();
+    const glyph = capability.action === "download" ? handed.glyph : capability.action === "copy" ? "⎘" : "↗";
+    const hint = capability.action === "download" && handed.verb === "Share" ? "no inline preview · tap to share" : capability.hint;
     const card = isImage && source
       ? `<button class="prompt-attachment prompt-image" type="button" ${action} title="Open ${escapeText(h.att_name || "image")} in the pane"><span class="prompt-image-thumb"><img src="${escapeText(source)}" alt=""></span><span class="prompt-file-copy">${titleCopy(h, h.att_name || "image")}<small>${escapeText(capability.hint)}</small></span><span class="prompt-file-open" aria-hidden="true">⤢</span></button>`
-      : `<button class="prompt-attachment prompt-file" type="button" ${action}><span class="prompt-file-icon">${escapeText(ext)}</span><span class="prompt-file-copy">${titleCopy(h, h.att_name || "Attachment")}<small>${escapeText(capability.hint)}</small></span><span class="prompt-file-open" aria-hidden="true">${glyph}</span></button>`;
+      : `<button class="prompt-attachment prompt-file" type="button" ${action}><span class="prompt-file-icon">${escapeText(ext)}</span><span class="prompt-file-copy">${titleCopy(h, h.att_name || "Attachment")}<small>${escapeText(hint)}</small></span><span class="prompt-file-open" aria-hidden="true">${glyph}</span></button>`;
     // The card's own action, and beside it the file manager for a reader at this machine or the
     // file as a download for one elsewhere (#272, #s29) — never the same thing twice.
     const beside = besideOf(h);
     if (!beside || beside === capability.action) return card;
-    const label = beside === "reveal" ? `Reveal ${escapeText(h.att_name || "this file")} in the file manager` : `Download ${escapeText(h.att_name || "this file")}`;
-    return `<span class="prompt-attachment-pair">${card}<button class="prompt-attachment-${beside}" type="button" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${beside}" data-name="${escapeText(h.att_name || "")}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}" title="${label}" aria-label="${label}">${beside === "reveal" ? svg("folder") : "↓"}</button></span>`;
+    const label = beside === "reveal" ? `Reveal ${escapeText(h.att_name || "this file")} in the file manager` : `${handed.verb} ${escapeText(h.att_name || "this file")}`;
+    return `<span class="prompt-attachment-pair">${card}<button class="prompt-attachment-${beside}" type="button" data-attachment="${escapeText(view.id || "")}" data-attachment-action="${beside}" data-name="${escapeText(h.att_name || "")}" data-path="${escapeText(h.att_path || "")}" data-fsig="${escapeText(h.att_fsig || "")}" data-sig="${escapeText(h.att_sig || "")}" title="${label}" aria-label="${label}">${beside === "reveal" ? svg("folder") : handed.glyph}</button></span>`;
   }).join("");
   return `<div class="prompt-attachments" aria-label="Prompt attachments">${cards}</div>`;
 }
@@ -708,15 +714,15 @@ export function bindComponentEvents(root, state, actions) {
       actions.rerender(); return;
     }
     if (renderer && event.target.closest(".renderer-head") && !renderer.classList.contains("noninteractive")) {
-      // The head's click cycle (#129, shared/tool-head.js): folded → the output → the output
-      // and the whole command → the output → folded. A target that already fits keeps the
-      // plain toggle, so a short call still costs one click to open and one to close.
+      // The head's click cycle (#129, #s698, shared/tool-head.js): folded → the output → the
+      // output and the whole command → folded. A target that already fits keeps the plain
+      // toggle, so a short call still costs one click to open and one to close.
       const id = renderer.dataset.recordId;
       const target = renderer.querySelector(":scope > .renderer-head > .renderer-target");
       const full = !!state.fullTargets?.has(id);
       const clipped = full || (!!target && target.scrollWidth - target.clientWidth > 1);
-      // The step is REMEMBERED, not derived: "output, command clipped" is both the way in and
-      // the way out of the cycle, and only the step tells them apart.
+      // The step is REMEMBERED where the click left it, and derived from what the head shows
+      // only where no click did (a remembered fold, a search that showed the command).
       const at = state.headSteps?.has(id) ? state.headSteps.get(id) : headStepOf(!renderer.classList.contains("closed"), full);
       const step = nextHeadStep(at, clipped);
       state.headSteps?.set(id, step);

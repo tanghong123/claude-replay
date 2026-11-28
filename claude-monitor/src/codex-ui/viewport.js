@@ -309,7 +309,10 @@ export class Viewport extends VirtualWindow {
   renderItem(index) { return this.stampNeighbours(renderUnit(this.units[index], this.state), index); }
   afterMount(fresh) {
     clampPrompts(fresh, this.state);
-    fresh.forEach(root => renderMermaid(root, () => this.readerReshaped()));
+    // A diagram's source toggle releases the pin before the source grows the page; the host hears of
+    // the growth once the click has made it (#s700: the jump to the latest, painted at the release,
+    // was drawn hidden at the end with the source opening below).
+    fresh.forEach(root => renderMermaid(root, () => { this.readerReshaped(); queueMicrotask(() => this.actions.afterReshape?.()); }));
   }
 
   /** What the cascade may read of a unit's NEIGHBOURS comes from the model, not from what happens

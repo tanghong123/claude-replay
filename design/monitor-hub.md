@@ -348,9 +348,9 @@ handles:
 - It names each row's machine in an optional `machine` field on the row, and namespaces by machine
   (`<machine>/<id>`) every field the merged list itself matches on: the session's id, its group,
   its `ignoreKey`, and the ids that nest one session under another (`startedBy`, `sideOf`,
-  `continuedIn`, a fork's family). So the same `~/code/x` on two machines stays two groups, and
-  nothing nests across machines. No monitor's answer gains a field: only the merged source writes
-  `machine`.
+  `continuedIn`, a fork's family). So the same `~/code/x` on two machines stays two groups in the
+  merged answer, and nothing nests across machines; the list not grouped by machine draws them as
+  one (D7). No monitor's answer gains a field: only the merged source writes `machine`.
 - It leaves each machine's layout answers and the rows' pane fields (`target`, `herdrSession`) as
   that machine wrote them, and hands both answers on per machine: which apps that machine can follow
   (plain `/api/layout`), and each app's layout (`/api/layout?source=<app>`), keyed by machine and
@@ -388,7 +388,16 @@ machine's own sessions arranged as the reader chose for the rest of the list (by
 or by activity); its rows do not repeat the machine, and its projects are in its own server's order.
 Unticked, the list is one merged list, each project's head and each row of the list by activity
 wearing its machine as a small label: the first label of the machine's host name (Hong: "limit to
-the first dot component maybe"). There each agent's projects are in the server's own order across
+the first dot component maybe"). A folder several machines hold is ONE project there (#s738, Hong
+on the iOS app: "selected group by agents and projects, but we did not combine agents working on
+the same project"): an agent's projects at the same path, each machine writing its own home as `~`,
+fold into one head where the first sat, which names no one machine (its title names them all) and
+is greyed only while every one of them does not answer, its rows the machines' merged in the
+server's row order and each wearing its machine's label; a hide from that head goes to each
+machine it changes, in that machine's key, and a machine that refuses stops none of the others. A
+folder keeps one fold key whether one machine or several show it. A desktop agent's sessions, which
+have no folder, stay a group per machine, and a family never spans machines (a QoderWork title
+family is one machine's). There each agent's projects are in the server's own order across
 the machines (#s615, Hong: "the sessions are not sorted by the last active time"): those active in
 the last ten minutes first, by name, then the rest newest first, each project dated by its folder's
 newest session of any agent, against the reader's clock; each machine's lists are merged without

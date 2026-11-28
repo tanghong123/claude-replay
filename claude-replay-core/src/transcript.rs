@@ -66,37 +66,31 @@ impl Transcript {
     }
 
     /// Parse the whole file into a [`Session`] — blocks + per-turn times + folded metrics + the
-    /// derived index + cwd — from one streaming pass. This is the real implementation behind
+    /// derived index + cwd — from one source read. This is the real implementation behind
     /// [`parse_session_as`](crate::parse_session_as); the free functions are thin wrappers over
     /// it. Sub-agent child transcripts are NOT loaded (`SubAgent.blocks` stays empty); use
     /// [`parse_enriched`](Transcript::parse_enriched) for the whole tree.
     pub fn parse(&self) -> io::Result<Session> {
-        // Parsing ignores CLI flags (fold is a view-layer concern), so the parse API takes no
-        // `Args` — that keeps clap out of the core. Derived from the incremental fold: feed a
-        // `SessionAccumulator` line-by-line (one line resident, so a multi-gigabyte transcript never
-        // balloons into memory) — blocks + per-turn times + metrics fold in the SAME pass (M10),
-        // one file read.
-        let mut b = crate::SessionAccumulator::new(crate::adapter::adapter(self.agent));
+        // Presentation flags belong to the caller. The shared accumulator folds blocks,
+        // per-turn times and metrics in the same pass over the adapter's records.
+        let adapter = crate::adapter::adapter(self.agent);
+        let mut b = crate::SessionAccumulator::new(adapter);
         // Out-of-band spawn identity, if this agent keeps any beside the transcript: read once,
         // before the fold, so a child is named in the blocks AND in the derived index.
-        b.set_spawn_links(crate::adapter::adapter(self.agent).spawn_links(&self.path));
+        b.set_spawn_links(adapter.spawn_links(&self.path));
 
         // The JSONL, a compressed rollout decoded as it is read (#s383); the offsets the blocks
         // keep are its, which the span reads below go back to.
         let mut reader = io::BufReader::new(claude_replay_engine::source::stream(&self.path)?);
-        b.advance_reader(&mut reader)?; // one line resident, byte offsets tracked
-                                        // The read-side reconcile (#38): a fleet's members are runtime state, merged into the
-                                        // view a batch consumer gets rather than folded into the block stream.
-        let adapter = crate::adapter::adapter(self.agent);
+        b.advance_reader(&mut reader)?;
+        // The read-side reconcile (#38): a fleet's members are runtime state, merged into the
+        // view a batch consumer gets rather than folded into the block stream.
         let mut s = b.into_session_with_runs(adapter, &adapter.spawn_rosters(&self.path));
-        s.cwd = crate::discover::first_cwd(&self.path); // the builder leaves cwd None; fill it
-                                                        // The builder can't resolve child transcript paths (it has no file path); now that we
-                                                        // know `path`, fill each `sub_agents[*].transcript` so the map can locate each child.
-        populate_sub_agent_transcripts(
-            crate::adapter::adapter(self.agent),
-            &self.path,
-            &mut s.sub_agents,
-        );
+        s.cwd = adapter
+            .project_dir(&self.path)
+            .or_else(|| crate::discover::first_cwd(&self.path));
+        // The builder has no source path; resolve child transcripts now that it is available.
+        populate_sub_agent_transcripts(adapter, &self.path, &mut s.sub_agents);
         Ok(s)
     }
 

@@ -9,7 +9,7 @@ You will serve some static files, add one script to a page, implement six small 
 ## 1. What is in the box
 
 ```text
-mdrev-embed-1.1.88/
+mdrev-embed-1.1.92/
   README.md
   bundle/              the guest — what the reader's browser runs
     mdrev.js             the entry: an ES module exporting mountMdrev   (~510 KB)
@@ -180,14 +180,14 @@ $(brew --prefix mdrev)/bin/mdrev-v2
 
 `brew pin mdrev` holds a version while you qualify the next one; `brew info tanghong123/tap/mdrev` says which is current.
 
-**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.88`, with two tarballs: `mdrev-1.1.88-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.88.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
+**The tarball, without Homebrew** — a Linux server, a container, a CI job. Every release is on GitHub, tagged `mdrev-1.1.92`, with two tarballs: `mdrev-1.1.92-macos.tar.gz`, the application with the kit inside it, and `mdrev-embed-1.1.92.tar.gz`, the kit alone — the tree above, exactly as unpacked. The name of the first notwithstanding, `mdrev-cli`, `mdrev-v2` and the bundle are pure JavaScript and run wherever node ≥ 20 and git are; only the `mdrev` application's Finder integration is macOS-only:
 
 ```bash
-curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.88/mdrev-embed-1.1.88.tar.gz
-tar xzf mdrev-embed-1.1.88.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.88
+curl -LO https://github.com/tanghong123/homebrew-tap/releases/download/mdrev-1.1.92/mdrev-embed-1.1.92.tar.gz
+tar xzf mdrev-embed-1.1.92.tar.gz -C /opt        # → /opt/mdrev-embed-1.1.92
 ```
 
-Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.88/mdrev-cli` — with node on the path. The releases page lists the current version.
+Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.92/mdrev-cli` — with node on the path. The releases page lists the current version.
 
 **From source** — `bash scripts/build-release.sh` in a checkout of the repository emits both tarballs into `dist-release/public/`.
 
@@ -196,8 +196,8 @@ Unpacked, the tree runs where it is — `/opt/mdrev-embed-1.1.88/mdrev-cli` — 
 Run the sample host against a git checkout that has Markdown in it:
 
 ```bash
-tar xzf mdrev-embed-1.1.88.tar.gz
-cd mdrev-embed-1.1.88
+tar xzf mdrev-embed-1.1.92.tar.gz
+cd mdrev-embed-1.1.92
 ./mdrev-v2 ~/src/your-docs/README.md --last 3   # or --root ~/src/your-docs for the whole checkout
 # mdrev-v2: README.md @ /Users/you/src/your-docs
 #   http://127.0.0.1:4600/?path=README.md&from=…&code=…
@@ -356,6 +356,7 @@ The options, all of them:
 | `annotate` | your leave for notes, the same shape: `false` hides the notes control and the selection invite even where `/annotations` answers; `true` grants nothing without the route. With both `review` and `annotate` effectively off the document is a **plain reader**, and `toolbar` / `controls` take effect | discovered |
 | `caps` | capabilities for more than one document at once, `{path: cap}`, where `cap` gives one. The listing routes hand theirs over as rows arrive, so this is for what the host knows up front | none |
 | `trustHtml` | let raw HTML in documents RUN — scripts included. Off, it renders with everything executable removed (§8) | `false` |
+| `linksOut` | send your `/resolve` the LINKS that climb out of the collection (`../other/x.md`), as the path from the collection's top that keeps its climb, and answer each with an address you built: `{href}` for a page showing a document, `{url}` for a file, or `null`. The viewer opens either as a new page when the reader clicks, and learns nothing else from it. A picture whose path climbs out is never sent, on any host. Only a host that gates with capabilities (mounts with `cap` or `caps`) is sent one; a host that gates nothing never is. Off, every reference that climbs out is drawn refused and never sent, which is what a host built before this expects (contract.md, "Links out of the collection") | `false` |
 | `cap` | the capability your routes will check for `path`, if you gate reads (§8) | none |
 
 **Sizing.** Without `scrollParent`, the viewer is `height: 100%` of its element and scrolls its own pane, so the element needs a height: in a flex column, `#review { flex: 1; min-height: 0 }` (that is `mdrev-v2`'s page). With `scrollParent`, the element grows to its content and your container scrolls; the viewer measures against that container for its change bars and note chips.
@@ -534,7 +535,7 @@ Install the `mdrev-embed` tree on the machine that runs your server (§1, *Getti
 | Your route | Run | stdin | stdout |
 |---|---|---|---|
 | `GET /annotations` | `mdrev-cli notes list --path P --all --records --root R` | — | `[note]` — return it as it is; without `--records` every note is judged against the file first, which the viewer does not use and which takes seconds on a busy document |
-| `POST /annotations` | `mdrev-cli notes add --path P --root R --author U` | the request body: `{body, anchor, type?, saveId?}` — `saveId` names the Save, so one sent again after a lost answer is answered with the note already filed | the stored note, with `id`, `rev`, `blob`, `created`, and the anchor placed |
+| `POST /annotations` | `mdrev-cli notes add --path P --root R --author U` | the request body: `{body, anchor, type?, saveId?}` — `saveId` names the Save, so one sent again after a lost answer is answered with the note already filed; a note on the whole document adds `whole: true`, and maybe `session`; its `anchor` may be left out, and the CLI replaces it | the stored note, with `id`, `rev`, `blob`, `created`, and the anchor placed |
 | `POST …/{id}/replies` | `mdrev-cli notes reply ID --body "…" --root R --author U`, with `--save-id K` when the body carries `saveId`, so a reply sent again is written once | — | the note |
 | `PATCH …/{id}` `{status: "resolved"}` | `mdrev-cli notes resolve ID --note "…" --force --root R --author U` | — | the note, with `resolvedBy` |
 | `PATCH …/{id}` `{status: "wontfix"}` | `mdrev-cli notes wontfix ID --note "…" --force …` | — | the note |
@@ -655,11 +656,12 @@ Diagrams render with mermaid at `securityLevel: 'strict'`, formulas with KaTeX a
 
 On top of that it does the capability half in about forty lines, and that part is not a stand-in — it is the pattern:
 
-- The page mints for the document it serves, **and only for a document git tracks**: an untracked key sitting in the directory is not something the host ever offers, so there is no first link in the chain for it.
-- `POST /resolve` mints for what a held document points at, and for nothing else.
-- `--allow <dir>` puts a floor under the whole chain: repeatable, the root by default, and no sequence of references can end up outside it however a document spells the path.
+- The page mints for the document it serves: a document in the repository it serves, tracked or not, which is the collection the reader opened. A file that is not a document — an image, a PDF, an untracked key sitting in the directory — is never offered by the page or the rail (a `--code-files` host lists source files too, by its own choice).
+- `POST /resolve` mints only for what a held document really links to. The host renders the document itself, with the engine the viewer uses, and checks each target against its links: the working text, an editing session's latest text, and the revisions the viewer says it draws (`from.revs`). So an untracked key the document does not link to is refused, however the page names it, and so is a picture from outside the repository.
+- A link out of the repository is followed only up to the reader's ceiling. The page mounts with `linksOut: true`, so the viewer sends such a link as `../…`, and the host answers it with an address of its own only when the file it leads to, where it really is, lies under the reader's `allow` in `~/.mdrev/roots.json`, or, with no `allow`, in a repository already opened. The address opens the file's own repository, as `mdrev <that file>` does; answering opens nothing, and only the reader's click on it does: a top-level navigation, never a picture or a fetch carrying a capability the page holds.
+- The root is a whole repository: `--root <dir>` serves the checkout `<dir>` is in, as opening any file in it does. `--allow <dir>` puts a floor under the whole chain: repeatable, relative to `--root` as given, and no sequence of references can end up outside it however a document spells the path.
 
-The three together are the answer to "what can a reader of one document reach": that document, what it points at, and nothing outside the boundary. Swap the boundary check for your own permissions and you have the same thing for real users.
+Together they are the answer to "what can a reader of one document reach": that document, what it points at, a link out as far as the reader's own ceiling and only on a click, and nothing outside the boundary. Swap the boundary check for your own permissions and you have the same thing for real users.
 
 ## 9. Check it
 

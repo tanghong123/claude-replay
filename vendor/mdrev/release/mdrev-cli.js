@@ -3734,8 +3734,8 @@ function assertCompiler(name, value2) {
     throw new TypeError("Cannot `" + name + "` without `compiler`");
   }
 }
-function assertUnfrozen(name, frozen) {
-  if (frozen) {
+function assertUnfrozen(name, frozen2) {
+  if (frozen2) {
     throw new Error(
       "Cannot call `" + name + "` on a frozen processor.\nCreate a new processor first, by calling it: use `processor()` instead of `processor`."
     );
@@ -19157,6 +19157,36 @@ function textSimilarity(a, b) {
     sb += n;
   return dice(ba, sa, bb, sb);
 }
+function linesAlike(a, b) {
+  const m = b.length;
+  const grid = new Float64Array(a.length * m);
+  const lists = /* @__PURE__ */ new Map();
+  b.forEach((line, j) => {
+    for (const [bg, k] of bigrams(line)) {
+      const list4 = lists.get(bg);
+      if (list4)
+        list4.push([j, k]);
+      else
+        lists.set(bg, [[j, k]]);
+    }
+  });
+  const common = new Int32Array(m);
+  a.forEach((line, i) => {
+    common.fill(0);
+    for (const [bg, k] of bigrams(line)) {
+      const list4 = lists.get(bg);
+      if (list4)
+        for (const [j, l] of list4)
+          common[j] += Math.min(k, l);
+    }
+    const sizeA = Math.max(0, line.length - 1);
+    for (let j = 0; j < m; j++) {
+      const sizeB = Math.max(0, b[j].length - 1);
+      grid[i * m + j] = sizeA === 0 && sizeB === 0 ? 1 : sizeA === 0 || sizeB === 0 ? 0 : 2 * common[j] / (sizeA + sizeB);
+    }
+  });
+  return grid;
+}
 
 // packages/engine/dist/nodes.js
 var phrasing2 = (n) => n;
@@ -22975,6 +23005,109 @@ function all2(parent) {
   return results.join("");
 }
 
+// packages/engine/dist/wordDiff.js
+function wordDiff2(oldStr, newStr, maxEditLength) {
+  const oldTokens = wordsWithSpaceDiff.tokenize(oldStr).filter((t) => t);
+  const newTokens = wordsWithSpaceDiff.tokenize(newStr).filter((t) => t);
+  const ids = /* @__PURE__ */ new Map();
+  const id = (t) => {
+    let n = ids.get(t);
+    if (n === void 0)
+      ids.set(t, n = ids.size);
+    return n;
+  };
+  const before = Int32Array.from(oldTokens, id);
+  const after = Int32Array.from(newTokens, id);
+  const newLen = after.length;
+  const oldLen = before.length;
+  let editLength = 1;
+  let max = newLen + oldLen;
+  if (maxEditLength != null)
+    max = Math.min(max, maxEditLength);
+  const off = max + 1;
+  const bestPath = new Array(2 * max + 3).fill(void 0);
+  const extractCommon = (basePath, diagonalPath) => {
+    let oldPos = basePath.oldPos;
+    let newPos2 = oldPos - diagonalPath;
+    let commonCount = 0;
+    while (newPos2 + 1 < newLen && oldPos + 1 < oldLen && before[oldPos + 1] === after[newPos2 + 1]) {
+      newPos2++;
+      oldPos++;
+      commonCount++;
+    }
+    if (commonCount)
+      basePath.lastComponent = { count: commonCount, previousComponent: basePath.lastComponent, added: false, removed: false };
+    basePath.oldPos = oldPos;
+    return newPos2;
+  };
+  const addToPath = (path2, added, removed, oldPosInc) => {
+    const last = path2.lastComponent;
+    if (last && last.added === added && last.removed === removed) {
+      return { oldPos: path2.oldPos + oldPosInc, lastComponent: { count: last.count + 1, added, removed, previousComponent: last.previousComponent } };
+    }
+    return { oldPos: path2.oldPos + oldPosInc, lastComponent: { count: 1, added, removed, previousComponent: last } };
+  };
+  const buildValues = (lastComponent) => {
+    const components = [];
+    for (let c = lastComponent; c; c = c.previousComponent)
+      components.push(c);
+    components.reverse();
+    const parts = [];
+    let newPos2 = 0;
+    let oldPos = 0;
+    for (const { count, added, removed } of components) {
+      let value2;
+      if (!removed) {
+        value2 = newTokens.slice(newPos2, newPos2 + count).join("");
+        newPos2 += count;
+        if (!added)
+          oldPos += count;
+      } else {
+        value2 = oldTokens.slice(oldPos, oldPos + count).join("");
+        oldPos += count;
+      }
+      parts.push({ count, added, removed, value: value2 });
+    }
+    return parts;
+  };
+  const seed = { oldPos: -1, lastComponent: void 0 };
+  bestPath[off] = seed;
+  let newPos = extractCommon(seed, 0);
+  if (seed.oldPos + 1 >= oldLen && newPos + 1 >= newLen)
+    return buildValues(seed.lastComponent);
+  let minDiagonalToConsider = -Infinity;
+  let maxDiagonalToConsider = Infinity;
+  while (editLength <= max) {
+    for (let diagonalPath = Math.max(minDiagonalToConsider, -editLength); diagonalPath <= Math.min(maxDiagonalToConsider, editLength); diagonalPath += 2) {
+      const removePath = bestPath[off + diagonalPath - 1];
+      const addPath = bestPath[off + diagonalPath + 1];
+      if (removePath)
+        bestPath[off + diagonalPath - 1] = void 0;
+      let canAdd = false;
+      if (addPath) {
+        const addPathNewPos = addPath.oldPos - diagonalPath;
+        canAdd = 0 <= addPathNewPos && addPathNewPos < newLen;
+      }
+      const canRemove = removePath !== void 0 && removePath.oldPos + 1 < oldLen;
+      if (!canAdd && !canRemove) {
+        bestPath[off + diagonalPath] = void 0;
+        continue;
+      }
+      const basePath = !canRemove || canAdd && removePath.oldPos < addPath.oldPos ? addToPath(addPath, true, false, 0) : addToPath(removePath, false, true, 1);
+      newPos = extractCommon(basePath, diagonalPath);
+      if (basePath.oldPos + 1 >= oldLen && newPos + 1 >= newLen)
+        return buildValues(basePath.lastComponent);
+      bestPath[off + diagonalPath] = basePath;
+      if (basePath.oldPos + 1 >= oldLen)
+        maxDiagonalToConsider = Math.min(maxDiagonalToConsider, diagonalPath - 1);
+      if (newPos + 1 >= newLen)
+        minDiagonalToConsider = Math.max(minDiagonalToConsider, diagonalPath + 1);
+    }
+    editLength++;
+  }
+  return void 0;
+}
+
 // packages/engine/dist/edits.js
 function walkWordDiff(before, after) {
   const steps = [];
@@ -23113,17 +23246,61 @@ function trimmed(removed, added) {
   const tail = a.slice(a.length - q).join("");
   return [head2, removed.slice(head2.length, removed.length - tail.length), added.slice(head2.length, added.length - tail.length), tail];
 }
+var COMPARED_BYTES = 32e6;
+var CHAR_BYTES = 4;
+var PART_BYTES = 64;
+var ENTRY_BYTES = 256;
+var compared = /* @__PURE__ */ new Map();
+var comparedBytes = 0;
+function hold(entry, bytes) {
+  entry.bytes += bytes;
+  comparedBytes += bytes;
+  for (const [key2, old] of compared) {
+    if (comparedBytes <= COMPARED_BYTES || old === entry)
+      break;
+    compared.delete(key2);
+    comparedBytes -= old.bytes;
+  }
+}
+function comparedFor(removed, added) {
+  const key2 = `${removed.length}:${removed}${added}`;
+  let entry = compared.get(key2);
+  if (entry)
+    return entry;
+  entry = { key: key2, counts: wordsShared(removed, added), words: /* @__PURE__ */ new Map(), bytes: 0 };
+  compared.set(key2, entry);
+  hold(entry, ENTRY_BYTES + CHAR_BYTES * key2.length);
+  return entry;
+}
+function answerFor(entry, removed, added, allowed) {
+  let answer = entry.words.get(allowed);
+  if (answer === void 0) {
+    answer = frozen(wordDiff2(removed, added, allowed));
+    entry.words.set(allowed, answer);
+    if (answer && compared.get(entry.key) === entry)
+      hold(entry, CHAR_BYTES * (removed.length + added.length) + PART_BYTES * answer.length);
+  }
+  return answer ?? void 0;
+}
+function frozen(words) {
+  if (!words)
+    return null;
+  for (const part of words)
+    Object.freeze(part);
+  return Object.freeze(words);
+}
 function runComparer() {
   let left = WALK_WORK;
   let run5 = RUN_WORK;
   const compare = (removed, added) => {
-    const { before, after, shared } = wordsShared(removed, added);
+    const kept = comparedFor(removed, added);
+    const { before, after, shared } = kept.counts;
     const whole = 2 * shared >= Math.min(before, after) ? comparisonWork(before + after, before, after) : Infinity;
     const may = Math.max(Math.min(run5, left), FLOOR_WORK * (before + after), whole <= left - RUN_WORK ? whole : 0);
     const allowed = rewriteAllowance(may, before, after);
     if (before + after - 2 * shared > allowed)
       return { words: void 0, tried: false };
-    const words = diffWordsWithSpace(removed, added, { maxEditLength: allowed });
+    const words = answerFor(kept, removed, added, allowed);
     const explored = words ? words.reduce((n, part) => n + (part.added || part.removed ? part.count ?? 0 : 0), 0) : allowed;
     left -= comparisonWork(explored, before, after);
     return { words, tried: true };
@@ -33975,6 +34152,16 @@ function keepWhereThereIsRoom(table2, rows, cellsOf) {
 function escapeHtml(s2) {
   return s2.replace(/&/g, "&#x26;").replace(/</g, "&#x3C;");
 }
+var ITEM_MARK = (() => {
+  const bytes = new Uint8Array(8);
+  const random = globalThis.crypto;
+  if (random)
+    random.getRandomValues(bytes);
+  else
+    for (let i = 0; i < bytes.length; i++)
+      bytes[i] = Math.floor(Math.random() * 256);
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+})();
 function makeHandlers(opts, policy2, cleaned) {
   const inline = (tagName) => (state2, node2) => {
     const el = { type: "element", tagName, properties: {}, children: state2.all(node2) };
@@ -34015,6 +34202,23 @@ function makeHandlers(opts, policy2, cleaned) {
       const el = handlers.table(state2, node2);
       floorColumns(el);
       return el;
+    },
+    /*
+     * A LIST ITEM THE MARKDOWN MAKES SAYS SO (data-mdv-item, #s2587), on a page drawn for its source. Raw HTML in a
+     * block draws <li> of its own, which are no item of the source's, and the editor lines a block's drawn items up
+     * with its source's: it used to tell the two apart by predicting, from the raw HTML's text, which `<li>` tags the
+     * browser's parser draws, and each new malformed input found it wrong (#s2556). Every <li> this handler makes is a
+     * Markdown item, since raw HTML is never parsed into this tree; the footnotes' own list at the end is built
+     * without it and is no item either. The mark's value is ITEM_MARK, made at random as this module loads, and the
+     * editor matches that value alone: under `filter` the filter keeps no data-* attribute on an li (html.ts), and
+     * under `trust`, which keeps the author's HTML as written, an author's own data-mdv-item was written before the
+     * page was drawn and cannot carry it (#s2840 D2).
+     */
+    listItem(state2, node2, parent) {
+      const li2 = handlers.listItem(state2, node2, parent);
+      if (opts.sourceMap)
+        li2.properties["data-mdv-item"] = ITEM_MARK;
+      return li2;
     },
     mdvDefList: inline("dl"),
     mdvDt: inline("dt"),
@@ -34471,6 +34675,9 @@ function plainTextOf(html7) {
 var CJK = "\\p{Script=Han}\\p{Script=Hiragana}\\p{Script=Katakana}\\p{Script=Hangul}";
 var TOKEN = new RegExp(`[${CJK}]|\\s+|(?:(?![${CJK}])[\\p{L}\\p{N}_])+|[^]`, "gu");
 
+// packages/engine/dist/links.js
+var WebUrl = globalThis.URL;
+
 // packages/engine/dist/mentions.js
 var MENTION = /(?<![\w.%+@-])@([A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,})/g;
 function speakingLines(body3) {
@@ -34516,6 +34723,9 @@ function mentionSnippet(body3, email, max = 140) {
 
 // packages/engine/dist/anchor.js
 var CONTEXT = 32;
+function wholeAnchor() {
+  return { exact: "", prefix: "", suffix: "", start: 0, end: 0, space: "source", trail: [] };
+}
 function buildAnchor(docText, start, end, trail2 = []) {
   return {
     exact: docText.slice(start, end),
@@ -34684,8 +34894,7 @@ function lineMap(del2, replacement2) {
   const m = b.length;
   let map3 = null;
   if (n > 1 && n * m <= ALIGN_PAIRS && alignable.has(del2)) {
-    const ga = a.map(bigrams);
-    const gb = b.map(bigrams);
+    const alike = linesAlike(a, b);
     const width = m + 1;
     const best = new Float64Array((n + 1) * width);
     let byNumber = -SKIP2 * Math.abs(n - m);
@@ -34696,10 +34905,10 @@ function lineMap(del2, replacement2) {
     for (let i = 1; i <= n; i++) {
       for (let j = 1; j <= m; j++) {
         const k = i * width + j;
-        const alike = dice(ga[i - 1], Math.max(0, a[i - 1].length - 1), gb[j - 1], Math.max(0, b[j - 1].length - 1));
-        best[k] = Math.max(best[k - width] - SKIP2, best[k - 1] - SKIP2, best[k - width - 1] + alike);
+        const pair = alike[(i - 1) * m + j - 1];
+        best[k] = Math.max(best[k - width] - SKIP2, best[k - 1] - SKIP2, best[k - width - 1] + pair);
         if (i === j)
-          byNumber += alike;
+          byNumber += pair;
       }
     }
     if (best[n * width + m] - byNumber < ALIGN_GAIN * Math.min(n, m)) {
@@ -40328,7 +40537,7 @@ async function collectNotes(source, q = {}) {
       if (!inScope(annotation, q))
         continue;
       const text9 = spaceOf(annotation.anchor) === "source" ? src : rendered;
-      const m = await mapFromBase(source, annotation, text9, bases) ?? resolveAnchor(text9, annotation.anchor);
+      const m = annotation.whole ? { state: "exact" } : await mapFromBase(source, annotation, text9, bases) ?? resolveAnchor(text9, annotation.anchor);
       out.push({
         path: path2,
         annotation,
@@ -40531,7 +40740,7 @@ function formatNotes(views, o = {}) {
       lines.push(`      read:   mdrev --thread ${shr} --for ${a.id}`);
       lines.push(`      answer: mdrev --reply ${shr} --note "\u2026" --for ${a.id}`);
     }
-    lines.push(`    on:    "${ellipsis(a.anchor.exact, 68)}"`);
+    lines.push(a.whole ? "    on:    the whole document" : `    on:    "${ellipsis(a.anchor.exact, 68)}"`);
     if (v.state === "changed" && v.currentText) {
       lines.push(`    now:   "${ellipsis(v.currentText, 68)}"`);
     }
@@ -40706,7 +40915,7 @@ var Recents = class {
     return this.list;
   }
 };
-var NOTE_FIELDS = /* @__PURE__ */ new Set(["body", "anchor", "type", "rev", "fromRev", "target", "about", "ref", "saveId", "shared"]);
+var NOTE_FIELDS = /* @__PURE__ */ new Set(["body", "anchor", "type", "rev", "fromRev", "target", "about", "ref", "saveId", "shared", "whole", "session"]);
 var Review = class {
   registry;
   opts;
@@ -42436,14 +42645,21 @@ async function run4(argv, out = (s2) => process.stdout.write(s2), input = readSt
             }
             if (typeof record.body !== "string")
               throw new UsageError("the record needs a body");
-            if (!record.anchor || typeof record.anchor !== "object")
+            if (record.whole !== true && (!record.anchor || typeof record.anchor !== "object"))
               throw new UsageError("the record needs an anchor");
             if (notesOnly && record.shared === true)
               throw new UsageError(NOTES_KEY_ONLY);
             if (notesOnly)
               record = Object.fromEntries(Object.entries(record).filter(([k]) => NOTE_FIELDS2.has(k)));
+            if (record.whole !== void 0 && record.whole !== true)
+              throw new UsageError(`the record's "whole" is true or absent`);
+            if (record.session !== void 0 && (record.whole !== true || typeof record.session !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(record.session))) {
+              throw new UsageError(`the record's "session" is a short id (letters, digits, - and _), on a note on the whole document alone`);
+            }
+            if (record.whole === true)
+              record.anchor = wholeAnchor();
             const anchor = record.anchor;
-            if (typeof anchor.exact !== "string" || anchor.exact === "") {
+            if (record.whole !== true && (typeof anchor.exact !== "string" || anchor.exact === "")) {
               throw new UsageError('the anchor needs "exact": the text the note points at');
             }
             for (const [field, ok3] of [
@@ -43066,7 +43282,7 @@ function viewerKeyOk() {
 function notesKeyOk() {
   return keyOk(process.env.MDREV_NOTES_KEY, "notes-token");
 }
-var NOTE_FIELDS2 = /* @__PURE__ */ new Set(["body", "anchor", "type", "rev", "fromRev", "target", "about", "ref", "saveId"]);
+var NOTE_FIELDS2 = /* @__PURE__ */ new Set(["body", "anchor", "type", "rev", "fromRev", "target", "about", "ref", "saveId", "whole", "session"]);
 var NOTES_KEY_ONLY = `the notes key is for the person's own notes: anything shared \u2014 a thread, Share, hiding, the review store \u2014 needs the viewer key (contract.md, "The notes key")`;
 function keyOk(given, file) {
   let token = "";
@@ -43110,3 +43326,34 @@ run4(process.argv.slice(2)).then(leave, (e) => {
 `);
   leave(1);
 });
+/*! Ported from jsdiff 9.0.0 (the `diff` package): its diff/base.js and diff/word.js, under this licence.
+BSD 3-Clause License
+
+Copyright (c) 2009-2015, Kevin Decker <kpdecker@gmail.com>
+All rights reserved.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are met:
+
+1. Redistributions of source code must retain the above copyright notice, this
+   list of conditions and the following disclaimer.
+
+2. Redistributions in binary form must reproduce the above copyright notice,
+   this list of conditions and the following disclaimer in the documentation
+   and/or other materials provided with the distribution.
+
+3. Neither the name of the copyright holder nor the names of its
+   contributors may be used to endorse or promote products derived from
+   this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
+FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
+CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*/

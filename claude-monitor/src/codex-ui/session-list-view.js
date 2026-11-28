@@ -11,7 +11,7 @@ import { SessionIndexStore } from "./session-index-store.js";
 import { SESSION_LIST_MARKUP } from "./session-list-markup.js";
 import { indexState, selectedRow } from "./state.js";
 import { families, hideAction, ignoreQuery, visibleTree } from "./shared/session-visibility.js";
-import { ARRANGE_SOURCES, arrangeSessions, familyHolds, flatFamilies, isDefaultView, machineNote, machineSections, machineShortLabel, nestSideSessions, paneLookup, rowLookup, sectionView, viewSection } from "./session-list.js";
+import { ARRANGE_SOURCES, arrangeSessions, familyHolds, flatFamilies, isDefaultView, machineFamilies, machineNote, machineSections, machineShortLabel, nestSideSessions, oneHeadPerProject, paneLookup, rowLookup, sectionView, viewSection } from "./session-list.js";
 import { displayState, denoteState, sessionBucket, sessionFilterBuckets, FILTER_BUCKETS, FILTER_LABELS, BLOCKED_SUMMARY } from "./shared/state-labels.js";
 import { agentName, escapeText } from "./view-model.js";
 import { page } from "./view-root.js";
@@ -436,6 +436,13 @@ function closeSectionMenu(refocus) {
 // whole point of showing it. The key is the server's (`ignoreKey`), passed through verbatim.
 function treeAction(target, kind) {
   if (!shows("hiding")) return "";
+  // #s738: a project over several machines is hidden where every part is; its action sends each part's
+  // own key, the ones it changes (hiding the parts still shown, or restoring them all).
+  if (target.parts) {
+    const action = hideAction(target, kind);
+    const keys = target.parts.filter(part => !!part.hidden === !!target.hidden).map(part => part.ignoreKey).filter(Boolean);
+    return keys.length ? `<button class="tree-action" type="button" data-ignore-op="${action.op}" data-ignore-keys="${escapeText(JSON.stringify(keys))}" title="${escapeText(action.title)}" aria-label="${escapeText(action.title)}">${svg(action.icon)}</button>` : "";
+  }
   const action = hideAction(target, kind);
   return `<button class="tree-action" type="button" data-ignore-op="${action.op}" data-ignore-key="${escapeText(action.key)}" title="${escapeText(action.title)}" aria-label="${escapeText(action.title)}">${svg(action.icon)}</button>`;
 }
@@ -467,6 +474,9 @@ const groupedByMachine = () => shows("filter") && indexState.byMachine && machin
  *  project heads and rows do not repeat it. The rail's flyout, drawn by the same functions over
  *  every machine, keeps the label. */
 let drawingMachine = false;
+/** Set while the tree draws the rows of a project over several machines (#s738), whose head names no
+ *  one machine, so each row wears its own after its title. */
+let taggingRows = false;
 /** Whether the last draw was the list by activity grouped by machine, where Collapse all folds the
  *  machines' heads alone: the agents and projects it does not show stay as the reader left them. */
 let drawnGroupedFlat = false;
@@ -502,7 +512,7 @@ function sessionTreeRow(row, fam = null, member = false, context = null, side = 
   // #s387: an arranged row takes the title the app shows (`name`), and its mark says where it sits.
   const sideMark = side ? `<span class="tree-side" role="img" aria-label="Side session" title="${escapeText(side.via || `Started from “${side.starter}” in the Claude desktop app`)}">↳</span>` : "";
   // Over a context line (an arranged row, #s387) the mark rides inside the title's line.
-  const title = context && sideMark ? `<span class="tree-title">${sideMark}${escapeText(name || row.name || row.id)}</span>` : `${sideMark}<span class="tree-title">${escapeText(name || row.name || row.id)}</span>`;
+  const title = context && sideMark ? `<span class="tree-title">${sideMark}${escapeText(name || row.name || row.id)}</span>` : `${sideMark}<span class="tree-title">${escapeText(name || row.name || row.id)}</span>${taggingRows ? machineTag(row.machine) : ""}`;
   const main = context ? `<span class="tree-main">${title}<span class="tree-context"><span class="tree-agent" role="img" aria-label="${escapeText(context.agent.name)}" title="${escapeText(context.agent.name)}">${agentGlyph(context.agent.id, context.agent.name)}</span><span class="tree-project" title="${escapeText(context.project.path || context.project.name)}">${escapeText(context.project.name)}</span>${machineTag(row.machine)}</span></span>` : title;
   return `<div class="tree-row session ${context ? "flat" : ""} ${row.id === indexState.selected ? "selected" : ""} ${row.hidden && shows("hiding") ? "is-hidden" : ""} ${member ? "is-member" : ""} ${side ? "is-side" : ""} ${machineStale(row.machine) ? "machine-stale" : ""}"${side ? ` style="--side-depth:${side.depth}"` : ""} role="treeitem" tabindex="0" data-session="${escapeText(row.id)}" title="${machineStale(row.machine) ? `${escapeText(machineWords(machineState(row.machine)))} · ` : ""}${escapeText(displayState(row).label)} · ${escapeText(row.stateDetail || "")}">${main}<span class="session-end">${chip}${treeAction(row, "session")}${marker}<span class="session-age">${escapeText(newest.activity || row.activity || "")}</span></span></div>`;
 }
@@ -632,15 +642,23 @@ function agentProjectsHtml(agent) {
   for (const project of agent.projects) {
     const rows = project.rows;
     const projectKey = `p:${project.id}`, openProject = !indexState.collapsed.has(projectKey);
-    html += `<div class="tree-row project ${project.hidden ? "is-hidden" : ""} ${machineStale(project.machine) ? "machine-stale" : ""}" role="treeitem" tabindex="0" data-toggle="${escapeText(projectKey)}" aria-expanded="${openProject}" title="${escapeText(project.machine ? `${machineWords(machineState(project.machine))} · ${project.path}` : project.path)}">${svg("folder")}<span class="tree-title">${escapeText(project.name)}</span>${machineTag(project.machine)}${agent.id === "codex" && options.projectActions?.() ? `<button class="native-project-new" type="button" data-native-project="${escapeText(project.nativeProjectId || "")}" data-native-cwd="${escapeText(project.path)}" aria-label="New session in ${escapeText(project.name)}" title="New session in ${escapeText(project.name)}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>` : ""}${project.ignoreKey ? treeAction(project, project.kind) : ""}</div>`;
+    // #s738: a project over several machines names no one machine on its head (its rows wear theirs),
+    // is greyed only while every one of them is stale, and its title says which machines.
+    const listed = key => { const at = indexState.machines.findIndex(entry => entry.machine === key); return at < 0 ? indexState.machines.length : at; };
+    const across = project.machines && project.machines.length > 1 ? [...project.machines].sort((x, y) => listed(x) - listed(y)) : null;
+    const stale = across ? across.every(machineStale) : machineStale(project.machine);
+    const where = across ? `${across.map(key => machineWords(machineState(key))).join(", ")} · ${project.path}` : project.machine ? `${machineWords(machineState(project.machine))} · ${project.path}` : project.path;
+    html += `<div class="tree-row project ${project.hidden ? "is-hidden" : ""} ${stale ? "machine-stale" : ""}" role="treeitem" tabindex="0" data-machine="${escapeText(project.machine || "")}" data-toggle="${escapeText(projectKey)}" aria-expanded="${openProject}" title="${escapeText(where)}">${svg("folder")}<span class="tree-title">${escapeText(project.name)}</span>${machineTag(project.machine)}${agent.id === "codex" && options.projectActions?.() ? `<button class="native-project-new" type="button" data-native-project="${escapeText(project.nativeProjectId || "")}" data-native-cwd="${escapeText(project.path)}" aria-label="New session in ${escapeText(project.name)}" title="New session in ${escapeText(project.name)}"><svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg></button>` : ""}${project.ignoreKey || across ? treeAction(project, project.kind) : ""}</div>`;
     if (!openProject) continue;
     const overflowKey = `${agent.id}:${project.id}`;
     const expanded = indexState.expandedProjects.has(overflowKey);
-    const fams = nestSideSessions(families(rows));
+    const fams = nestSideSessions(machineFamilies(rows));
     let shown = expanded ? fams : fams.slice(0, SIDEBAR_SESSION_LIMIT);
     const selectedFam = fams.find(fam => familyHolds(fam, indexState.selected));
     if (!expanded && selectedFam && !shown.includes(selectedFam)) shown = shown.concat(selectedFam);
-    for (const fam of shown) html += familyRowsHtml(fam);
+    const wasTagging = taggingRows;
+    taggingRows = !!across;
+    try { for (const fam of shown) html += familyRowsHtml(fam); } finally { taggingRows = wasTagging; }
     const hidden = fams.filter(fam => !shown.includes(fam)).length;
     if (fams.length > SIDEBAR_SESSION_LIMIT) html += `<button class="tree-project-more" type="button" data-project-more="${escapeText(overflowKey)}" aria-expanded="${expanded}"><span>${expanded ? "Show fewer" : `Show ${hidden} more`}</span><span aria-hidden="true">${expanded ? "⌃" : "⌄"}</span></button>`;
   }
@@ -693,7 +711,10 @@ function renderTree() {
   const filteredAgents = visibleTree(agents, { showHidden: includeHidden(), buckets: filtered ? indexState.buckets : null, bucketsOf });
   const shownAgents = options.projectTree?.(filteredAgents, agents) || filteredAgents;
   const shown = shownAgents.reduce((n, agent) => n + agent.projects.reduce((m, project) => m + project.rows.length, 0), 0);
-  lastShownAgents = shownAgents;
+  // #s738: the tree not grouped by machine, and the rail's flyout with it, draw one head per project
+  // across machines; grouped by machine, each machine keeps its own.
+  const oneTree = groupedByMachine() ? shownAgents : oneHeadPerProject(shownAgents, now);
+  lastShownAgents = oneTree;
   // #s206: one list by activity, or the tree. Flat, no group is collapsed and nothing is left to
   // expand, so Collapse every group and Expand every group go with the heads (`sessions-flat`).
   // #s387: or another app's list, while it reads; until it does, or when it cannot be read, the
@@ -713,13 +734,10 @@ function renderTree() {
   drawnGroupedFlat = grouped && flat;
   const noGroups = (flat && !grouped) || arranged;
   for (const control of [collapseBtn, expandBtn]) control.toggleAttribute("data-flat", noGroups);
-  // The sheet's fold rows (#s664) wear a mark of their own: in the sheet `data-flat` names the One list
-  // by activity option, which a reader (the cases' `#sessionFilter [data-flat]`) finds by it.
-  filterSheet.querySelector("[data-group-part]")?.toggleAttribute("data-no-groups", noGroups);
   if (arranged) html = arrangedSessionsHtml(layout, agents, shownAgents);
   else if (grouped) html = machineGroupsHtml(shownAgents, flat, filtered);
   else if (flat) html = flatSessionsHtml(shownAgents);
-  else for (const agent of shownAgents) {
+  else for (const agent of oneTree) {
     const agentKey = `a:${agent.id}`, openAgent = !indexState.collapsed.has(agentKey);
     html += agentHeadHtml(agent, agentKey, openAgent);
     if (!openAgent) continue;
@@ -819,16 +837,7 @@ if (shows("filter")) sheetParts[0] += `
 <div data-machine-part><div class="scope-menu-divider"></div><div class="scope-menu-list">
 <button class="scope-option" type="button" role="checkbox" aria-checked="false" data-by-machine title="A head for each machine, holding its own agents and projects"><span class="scope-check"></span><span>Group by machine</span></button>
 </div></div>`;
-// #s664 (Hong's choice on #s661): Collapse every group and Expand every group as the sheet's first two
-// rows. They are drawn with any sheet and shown only where the app's layout takes the two glyphs out of
-// the head: on a wide phone held sideways, whose column head cannot give eight glyphs a finger's 44
-// points each. Elsewhere the glyphs stay and the rows are not shown. They go where the glyphs go
-// (`data-no-groups`, at each draw), and a row closes the sheet, so the list it folded is in view.
-const groupPart = `<div data-group-part><div class="scope-menu-list">
-<button class="scope-option" type="button" data-group-action="collapse" title="Fold every agent, project and machine">${svg("collapseStack")}<span>Collapse every group</span></button>
-<button class="scope-option" type="button" data-group-action="expand" title="Open every agent, project and machine">${svg("expandStack")}<span>Expand every group</span></button>
-</div><div class="scope-menu-divider"></div></div>`;
-filterSheet.innerHTML = (sheetParts.length ? `${groupPart}\n` : "") + sheetParts.join(`\n<div class="scope-menu-divider"></div>\n`);
+filterSheet.innerHTML = sheetParts.join(`\n<div class="scope-menu-divider"></div>\n`);
 // Hidden at once, before the first index answer draws anything: the sheet can be opened during the
 // first scan.
 paintMachinePart();
@@ -860,32 +869,33 @@ function toggleFilterSheet(open) {
 /** The sheet ends on the screen (#s206): its stylesheet caps it at 74% of the viewport, which
  *  forgets where it STARTS — under the drawer's head on a phone held sideways (a 292px page in
  *  Safari) it ran 16px past the screen's foot, half of Include hidden and all of the row below out
- *  of reach. Capped at the room below its top instead, it scrolls within what is on screen. */
+ *  of reach. Capped at the room below its top instead, it scrolls within what is on screen, however
+ *  short that room is (#s705: a floor of 120px ran it past the screen's foot in Safari held sideways,
+ *  where the row it hangs from left it 82). */
 function fitFilterSheet() {
   filterSheet.style.maxHeight = "";
   if (filterSheet.hidden || railFlyoutFor === "filter") return;
-  // In the list's own head (a host's) it ends at the list's foot, or higher at the foot of a box of
-  // the host's that clips the list (a scrolling pane the list is taller than, one contained or
-  // clipped by a path), so a pane that clips the list never cuts its last rows off; placed by the
-  // app, at the window's. The page's own root and body are left out: a body's overflow is the
-  // window's, which the window's height already says.
-  let foot = innerHeight;
+  // It ends at the list's foot: placed by the app over the list, that is above a phone's home
+  // indicator, where the sidebar's padding keeps the list (#s705: hung from the row over the list
+  // held sideways, the sheet ran into it). In the list's own head (a host's) it ends higher at the
+  // foot of a box of the host's that clips the list (a scrolling pane the list is taller than, one
+  // contained or clipped by a path), so a pane that clips the list never cuts its last rows off. The
+  // page's own root and body are left out: a body's overflow is the window's, which the window's
+  // height already says.
+  let foot = Math.min(innerHeight, sessionList.getBoundingClientRect().bottom);
   if (sessionList.contains(filterSheet)) {
-    foot = Math.min(foot, sessionList.getBoundingClientRect().bottom);
     for (let at = sessionList.parentElement; at && at.localName !== "body" && at.localName !== "html"; at = at.parentElement) {
       const style = getComputedStyle(at);
       if (style.overflowY !== "visible" || /paint|strict|content/.test(style.contain) || style.clipPath !== "none") foot = Math.min(foot, at.getBoundingClientRect().bottom);
     }
   }
   const room = Math.floor(foot - filterSheet.getBoundingClientRect().top - 8);
-  if (room > 0 && filterSheet.scrollHeight > room) filterSheet.style.maxHeight = `${Math.max(120, room)}px`;
+  if (room > 0 && filterSheet.scrollHeight > room) filterSheet.style.maxHeight = `${room}px`;
 }
 addEventListener("resize", fitFilterSheet, { signal });
 filterBtn.onclick = () => toggleFilterSheet(filterSheet.hidden);
 filterMini.onclick = () => { if (railFlyoutFor === "filter" && railFlyoutPinned) closeRailFlyout(false); else openRailFlyout("filter", filterMini, true); };
 filterSheet.addEventListener("click", event => {
-  const group = event.target.closest("[data-group-action]");
-  if (group) { toggleFilterSheet(false); (group.dataset.groupAction === "collapse" ? collapseBtn : expandBtn).onclick(); return; }
   if (event.target.closest("[data-filter-reset]")) { setBuckets(FILTER_BUCKETS); return; }
   if (event.target.closest("[data-include-hidden]")) { indexState.showHidden = !indexState.showHidden; renderTree(); return; }
   if (event.target.closest("[data-by-machine]")) { indexState.byMachine = !indexState.byMachine; persist(); renderTree(); return; }
@@ -1198,21 +1208,35 @@ function renderFilterControl(counts, shown, total) {
     const off = !!known && !known.available && !on;
     option.classList.toggle("disabled", off); option.setAttribute("aria-disabled", String(off));
     const note = filterSheet.querySelector(`[data-arrange-note="${key}"]`);
-    if (note) note.textContent = !known ? "" : !known.available ? known.reason || "Cannot be read" : known.lastError ? `Last read: ${known.lastError}` : "";
+    const why = !known ? "" : !known.available ? known.reason || "Cannot be read" : known.lastError ? `Last read: ${known.lastError}` : "";
+    if (note && note.textContent !== why) note.textContent = why;
   }
+  // Each poll paints this sheet again: a count that has not changed is not written (#s731), since an
+  // equal write still replaces the text, which beside a large guest in the pane cost a restyle of
+  // the whole page.
   for (const el of filterSheet.querySelectorAll("[data-bucket-count]")) {
     const key = el.dataset.bucketCount;
-    el.textContent = String(key === "hidden" ? indexState.ignoredCount : counts[key] || 0);
+    const count = String(key === "hidden" ? indexState.ignoredCount : counts[key] || 0);
+    if (el.textContent !== count) el.textContent = count;
   }
 }
-async function applyIgnore(op, key) {
-  try {
-    const response = await listBackend().fetch(ignoreQuery({ op, key }), { cache: "no-store" });
-    if (unmounted) return;
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    onToast(op === "add" ? "Hidden — find it under Hidden" : "Restored");
-    await sessionIndex.refresh();
-  } catch (error) { if (!unmounted) onToast(`Could not ${op === "add" ? "hide" : "restore"}: ${error.message}`); }
+async function applyIgnore(op, keys) {
+  const verb = op === "add" ? "hide" : "restore";
+  // One key, or each machine's own for a project over several (#s738), one after the other: a machine
+  // that refuses stops none of the others, and the list is read again once any of them went.
+  let went = 0, failure = null;
+  for (const key of [].concat(keys)) {
+    try {
+      const response = await listBackend().fetch(ignoreQuery({ op, key }), { cache: "no-store" });
+      if (unmounted) return;
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      went++;
+    } catch (error) { if (unmounted) return; failure = failure || error; }
+  }
+  if (!failure) onToast(op === "add" ? "Hidden — find it under Hidden" : "Restored");
+  else onToast(went ? `Could not ${verb} it on every machine: ${failure.message}` : `Could not ${verb}: ${failure.message}`);
+  if (!went) return;
+  try { await sessionIndex.refresh(); } catch (error) { if (!unmounted) onToast(`Could not ${verb}: ${error.message}`); }
 }
 
 tree.onclick = event => {
@@ -1223,7 +1247,7 @@ tree.onclick = event => {
   if (addProject) { event.stopPropagation(); options.newSession?.("add"); return; }
   const newSession = event.target.closest("[data-native-project]");
   if (newSession) { event.stopPropagation(); options.newSession?.({ id: newSession.dataset.nativeProject, cwd: newSession.dataset.nativeCwd }); return; }
-  const action = event.target.closest("[data-ignore-op]"); if (action) { event.stopPropagation(); applyIgnore(action.dataset.ignoreOp, action.dataset.ignoreKey); return; }
+  const action = event.target.closest("[data-ignore-op]"); if (action) { event.stopPropagation(); applyIgnore(action.dataset.ignoreOp, action.dataset.ignoreKeys ? JSON.parse(action.dataset.ignoreKeys) : action.dataset.ignoreKey); return; }
   // A family holding the open session is drawn open whatever its chip says, so a click there redraws
   // nothing, and the row or the chip the press focused kept the page's keys: a click with the mouse
   // hands them back, as a session's does (#s460); Enter's leaves the focus where the keyboard put it.
@@ -1269,6 +1293,8 @@ collapseBtn.onclick = () => {
     // #s561: grouped by machine, each machine's head and its agents' heads fold under their own keys.
     for (const project of agent.projects) { indexState.collapsed.add(`p:${project.id}`); if (project.machine) indexState.collapsed.add(`a:${project.machine}/${agent.id}`); }
   }
+  // #s738: and the folders' heads, which the tree not grouped by machine draws under a folder's id.
+  for (const agent of oneHeadPerProject(groupedSessions())) for (const project of agent.projects) indexState.collapsed.add(`p:${project.id}`);
   if (groupedByMachine()) for (const entry of indexState.machines) indexState.collapsed.add(`m:${entry.machine}`);
   persist(); renderTree();
 };

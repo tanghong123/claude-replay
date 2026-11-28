@@ -109,7 +109,8 @@ pub(crate) fn verified(turn: &str) -> Option<Verified> {
 /// when its signature checks"): the body as the client recorded it in `origin.body`, whitespace
 /// at its start and end stripped (aries-tell lets a send through that differs only there), must
 /// open with the tag at its first character and end with the closing tag: one v1 element and
-/// nothing else, no paste wrapper around it. Its signature is checked as a typed one's is.
+/// nothing else, no paste wrapper around it. Its signature is checked as a typed one's is. The
+/// caller takes the client's own artifact notice off the body's end first (#s717).
 pub(crate) fn verified_body(body: &str) -> Option<Verified> {
     let element = body.trim();
     if !element.starts_with("<aries-inbox ") || !element.ends_with(CLOSE) {

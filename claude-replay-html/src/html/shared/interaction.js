@@ -5,7 +5,8 @@
 // `asked: [{header, question, multi, options: [{label, description, chosen, preview?}], typed?, notes?}]`
 // — every question put, and what the reader said to each (#255, #280; `asked_section`). A call
 // that came back WITHOUT an answer is `resolved` too, with `unanswered: {why, seconds?}` saying
-// why — timed out, declined, failed, or none (#281).
+// why — timed out, declined, failed, or none (#281) — or `discuss`, when the reader chose to discuss
+// the questions instead of answering, and a decline carries `said`, the reader's own words (#s684).
 // Monitor cannot answer a native prompt, so the card's job is to say WHERE the answer goes and,
 // once it has been given, WHAT it was.
 // The app shell had this card; the classic page showed a generic tool fold. Now the words, the
@@ -30,6 +31,14 @@ const unansweredNote = ({ why, seconds } = {}) =>
       : why === "failed"
         ? "The question failed before it was answered."
         : "The call came back without an answer.";
+/** #s684: a refusal that is not a no — the reader chose to discuss the questions instead. Whatever
+ *  they had answered by then is on the questions, so the card is not titled "No answer". Past
+ *  tense and a settled mark, as the other titles: the call has come back. */
+const DISCUSS_TITLE = "Chose to discuss";
+const DISCUSS_NOTE = "Discussed in the agent client instead of answered; the agent was told to ask what they want to clarify.";
+/** #s684: the words the client's refusal says the reader said, captioned so they never read as the
+ *  client's. */
+const SAID_CAPTION = "Their words";
 /** #280: what the reader wrote themselves, captioned so it never reads as one of the options. */
 const TYPED_CAPTION = "Typed answer";
 const NOTES_CAPTION = "Notes";
@@ -46,7 +55,8 @@ function interactionCard(interaction, summary) {
   const resolved = !!(interaction && interaction.resolved);
   // #281: `unanswered` rides only on a call that has come back, and it outranks "received".
   const unanswered = resolved && interaction.unanswered ? interaction.unanswered : null;
-  const note = unanswered ? unansweredNote(unanswered) : resolved ? RESOLVED_NOTE : WAITING_NOTE;
+  const discuss = !!unanswered && unanswered.why === "discuss";
+  const note = discuss ? DISCUSS_NOTE : unanswered ? unansweredNote(unanswered) : resolved ? RESOLVED_NOTE : WAITING_NOTE;
   // #255: every question the call put, with every option it offered and which came back.
   // The transcript always had this; the card used to show the first question's text and the
   // labels that were picked, which on a four-question call is a fraction of what was asked —
@@ -54,8 +64,8 @@ function interactionCard(interaction, summary) {
   const asked = (interaction && interaction.asked) || [];
   return {
     state: unanswered ? "unanswered" : resolved ? "resolved" : "waiting",
-    icon: unanswered ? "–" : resolved ? "✓" : "?",
-    title: unanswered ? UNANSWERED_TITLE : resolved ? RESOLVED_TITLE : WAITING_TITLE,
+    icon: discuss ? "↩" : unanswered ? "–" : resolved ? "✓" : "?",
+    title: discuss ? DISCUSS_TITLE : unanswered ? UNANSWERED_TITLE : resolved ? RESOLVED_TITLE : WAITING_TITLE,
     note,
     // The question itself when the record carries one; the note stands in when it does not,
     // and then moves out of the body so the reader is never told the same thing twice.
@@ -69,6 +79,8 @@ function interactionCard(interaction, summary) {
     meta: !asked.length && summary ? note : "",
     answers: (interaction && interaction.answers) || [],
     asked,
+    // #s684: the reader's own words beside a decline, drawn after the questions.
+    said: unanswered && unanswered.why === "declined" && unanswered.said ? String(unanswered.said) : "",
   };
 }
 
@@ -106,7 +118,7 @@ function interactionHtml(interaction, summary, classes) {
   const answers = asked
     ? ""
     : card.answers.map(a => chip(a.label, a.id, false)).join("");
-  return `<div class="${classes.card} ${card.state}"><span class="${classes.icon}" aria-hidden="true">${card.icon}</span><div class="${classes.copy}"><strong>${escapeInteraction(card.title)}</strong><p>${escapeInteraction(card.text)}</p>${card.meta ? `<small class="${classes.meta}">${escapeInteraction(card.meta)}</small>` : ""}${asked}${answers ? `<div class="${classes.answers}">${answers}</div>` : ""}</div></div>`;
+  return `<div class="${classes.card} ${card.state}"><span class="${classes.icon}" aria-hidden="true">${card.icon}</span><div class="${classes.copy}"><strong>${escapeInteraction(card.title)}</strong><p>${escapeInteraction(card.text)}</p>${card.meta ? `<small class="${classes.meta}">${escapeInteraction(card.meta)}</small>` : ""}${asked}${card.said ? reply(SAID_CAPTION, card.said, false) : ""}${answers ? `<div class="${classes.answers}">${answers}</div>` : ""}</div></div>`;
 }
 
 export { isInteraction, interactionCard, interactionHtml };

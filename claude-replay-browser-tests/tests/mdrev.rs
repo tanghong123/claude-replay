@@ -1601,13 +1601,22 @@ const PRESS_REVIEW: &str = "(function(){ var b = document.querySelector('.previe
 /// `--mdrev-edge-*`): in each place the pane can be held sideways (beside a wide phone's column, as
 /// the second column, at the whole screen, and the Review sheet over everything) the bar runs from
 /// the pane's edge to its edge, painted, every control in it and the document's heading are inside
-/// the safe area, and mdrev reaches the pane's foot. Red on 3e5e27c5, where the bar ended at 870.
+/// the safe area, and mdrev reaches the pane's foot. Red on 3e5e27c5, where the bar ended at 870. The
+/// monitor holds mdrev's viewer key, since the pane offers Review only where shared review is set up
+/// (#s733).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
 fn a_sideways_phone_runs_mdrevs_toolbar_to_the_screen_s_edge() {
     let _serial = serial();
-    let (base, stores, repo) = fixture("mdrev-toolbar-edge");
-    let m = Monitor::spawn(Kind::V1, 3381, &base, Some(&stores), true);
+    let (base, stores, repo, state) = shared_review_world("mdrev-toolbar-edge");
+    let m = Monitor::spawn_with(
+        Kind::V1,
+        3381,
+        &base,
+        Some(&stores),
+        true,
+        &[("MDREV_STATE_DIR", &state.display().to_string())],
+    );
     let (_browser, tab) = chrome_tab();
     harness::phone(&tab, 932, 430);
     harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
@@ -1767,14 +1776,15 @@ fn a_phone_review_sheet_keeps_a_note_above_the_keyboard() {
     open_guide(&tab, &repo);
     until(
         &tab,
-        "!!document.querySelector('#previewBody .mdrev-host h1') && (function(){ var b = document.querySelector('.preview-review'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+        &format!("!!document.querySelector('#previewBody .mdrev-host h1') && {REVIEW_OFFERED}"),
         "the guide in the pane, with its Review control",
         Duration::from_secs(30),
         PANE,
     );
-    eval(
-        &tab,
-        "document.querySelector('.preview-review').click(); 'ok'",
+    assert_eq!(
+        eval(&tab, PRESS_REVIEW).as_str(),
+        Some("more"),
+        "on a phone, Review is a row of the head's More menu (#s735)"
     );
     until(
         &tab,
@@ -2005,6 +2015,293 @@ fn host_review_sheet_keeps_a_note_above_the_keyboard(case: HostSheet) {
     );
 }
 
+/// An upright phone's pane head with three Markdown files of ordinary names open and Review with
+/// others offered, read once settled for each file in turn (the last opened, then the others chosen by
+/// their tabs): the strip, the current tab and its title, which of the head's file controls are drawn,
+/// and its More menu opened (#s735: a phone folds the file's controls into it, upright as held
+/// sideways), its rows and their words. The strip is fitted again when Review is offered after the
+/// mount (it waits for the server's answer), so a reading counts once two taken 300ms apart agree.
+fn upright_head_readings(case: &str, port: u16) -> Vec<serde_json::Value> {
+    const SID733: &str = "5e5510a1-0000-4000-8000-000000000733";
+    let (base, stores, repo, state) = shared_review_world(case);
+    let names = [
+        "answer-speed.md",
+        "phone-landscape.md",
+        "release-checklist.md",
+    ];
+    let mut jsonl = user_at("read the three docs", &at("00:01"));
+    let mut paths = Vec::new();
+    for (i, name) in names.iter().enumerate() {
+        let path = repo.join("docs").join(name);
+        std::fs::write(&path, format!("# {name}\n\nA paragraph.\n")).unwrap();
+        let path = path.display().to_string();
+        jsonl += &read_tool_at(&format!("t{i}"), &path, &at("00:02"));
+        jsonl += &tool_result_at(&format!("t{i}"), &at("00:03"));
+        paths.push(path);
+    }
+    let jsonl = jsonl.replace("\"cwd\":\"/r\"", &format!("\"cwd\":\"{}\"", repo.display()));
+    stores.claude_session(SID733, &jsonl);
+    let m = Monitor::spawn_with(
+        Kind::V1,
+        port,
+        &base,
+        Some(&stores),
+        true,
+        &[("MDREV_STATE_DIR", &state.display().to_string())],
+    );
+    let (_browser, tab) = chrome_tab();
+    harness::phone(&tab, 390, 844);
+    m.pair(&tab);
+    m.open(&tab, &format!("?ui=app&session={SID733}"));
+    // Offered: the server answered that shared review is set up (#s733). On a phone the head draws no
+    // Review of its own; More lists it.
+    let review_offered = "(function(){ var b = document.querySelector('.preview-review'); return !!b && !b.hidden; })()";
+    for path in &paths {
+        let link = format!("[data-reference-path={path:?}]");
+        until(
+            &tab,
+            &format!("!!document.querySelector({link:?})"),
+            "the session's link to the doc",
+            Duration::from_secs(30),
+            "document.querySelector('.transcript') ? document.querySelector('.transcript').innerText.slice(0, 300) : 'no transcript'",
+        );
+        eval(
+            &tab,
+            &format!("document.querySelector({link:?}).click(); 'ok'"),
+        );
+        until(
+            &tab,
+            &format!("!!document.querySelector('#previewBody .mdrev-host h1') && {review_offered}"),
+            "the doc in the pane, with Review with others offered",
+            Duration::from_secs(30),
+            PANE,
+        );
+        if path != paths.last().unwrap() {
+            eval(
+                &tab,
+                "document.getElementById('closePreview').click(); 'ok'",
+            );
+            until(
+                &tab,
+                "document.getElementById('sessionView').classList.contains('preview-off')",
+                "the pane put away",
+                Duration::from_secs(10),
+                "document.getElementById('sessionView').className",
+            );
+        }
+    }
+    let strip = "(function(){ var s = document.getElementById('previewTabs'), box = s.getBoundingClientRect(), tabs = [].slice.call(s.querySelectorAll('.preview-tab:not(.sv-pinned)')), on = s.querySelector('.preview-tab.on'), label = on && on.querySelector('.preview-tab-label'), r = on ? on.getBoundingClientRect() : {}, b = document.querySelector('.preview-review'), hit = function (el) { if (!el) return false; var q = el.getBoundingClientRect(); if (!q.width) return false; var at = document.elementFromPoint((q.left + q.right) / 2, (q.top + q.bottom) / 2); return !!at && (at === el || el.contains(at)); }, drawn = ['.preview-reveal', '.preview-download', '.preview-print', '.preview-review', '.preview-expand'].filter(function (c) { var e = document.querySelector('#preview .preview-head ' + c); return !!e && e.getClientRects().length > 0; }); return JSON.stringify({ n: tabs.length, on: label ? label.textContent : '', whole: !!label && label.scrollWidth <= label.clientWidth + 1, nat: label ? label.scrollWidth : 0, room: label ? label.clientWidth : 0, inView: r.left >= box.left - 1 && r.right <= box.right + 1, onW: Math.round(r.width || 0), stripW: Math.round(box.width), at: [Math.round((r.left || 0) - box.left), Math.round((r.right || 0) - box.left), Math.round(s.scrollLeft), s.scrollWidth, s.clientWidth], steps: !document.querySelector('.preview-tab-step').hidden, drawn: drawn, more: hit(document.querySelector('#preview .preview-more')), close: hit(document.getElementById('closePreview')), words: [b.textContent, b.title, b.getAttribute('aria-label')], w: innerWidth }); })()";
+    // More opened by a press of its button, its rows read, and closed again by a second press.
+    let menu = "(function(){ var btn = document.querySelector('#preview .preview-more'); btn.click(); var m = document.querySelector('#preview .preview-more-menu'), mr = m.getBoundingClientRect(), rows = [].slice.call(m.querySelectorAll('[data-preview-more]')).map(function (row) { var q = row.getBoundingClientRect(), l = row.querySelector('.preview-more-label'), at = document.elementFromPoint((q.left + q.right) / 2, (q.top + q.bottom) / 2); return { name: row.dataset.previewMore, label: l ? l.textContent : '', whole: !!l && l.scrollWidth <= l.clientWidth + 1, h: Math.round(q.height), hit: !!at && (at === row || row.contains(at)) }; }); var open = !m.hidden, onScreen = mr.left >= 0 && mr.right <= innerWidth && mr.bottom <= innerHeight; btn.click(); return JSON.stringify({ open: open, onScreen: onScreen, rows: rows, closed: m.hidden }); })()";
+    // Two equal readings 300ms apart with the current tab in view, or the last two equal ones once 20
+    // are spent: the strip's observers run in a frame, and a loaded headless tab may give none in
+    // 300ms, so a reading from before the refit can repeat. A strip never fitted again still fails.
+    let settled = || -> serde_json::Value {
+        let mut last = String::new();
+        let mut stable = None;
+        for _ in 0..20 {
+            let now = eval(&tab, strip).as_str().unwrap_or("{}").to_string();
+            if now == last {
+                let reading: serde_json::Value = serde_json::from_str(&now).unwrap();
+                if reading["inView"] == true {
+                    stable = Some(reading);
+                    break;
+                }
+                stable = Some(reading);
+            }
+            last = now;
+            std::thread::sleep(Duration::from_millis(300));
+        }
+        let mut reading = stable.unwrap_or_else(|| {
+            panic!("the pane head never settled over 20 readings 300ms apart: the last {last}")
+        });
+        let more: serde_json::Value =
+            serde_json::from_str(eval(&tab, menu).as_str().unwrap_or("{}")).unwrap();
+        reading["menu"] = more;
+        reading
+    };
+    let mut readings = vec![settled()];
+    // A tab left of the current one widens after the fit, as one under its cap does when a web font
+    // arrives late (the strip's own box keeps its size): the strip is fitted again, so the current tab
+    // stays in view (#s733: once in five runs it sat 18px past the strip's end).
+    eval(
+        &tab,
+        "var st = document.createElement('style'); st.id = 'wideFirstTab'; st.textContent = '#previewTabs .preview-tab:first-child{min-width:140px}'; document.head.appendChild(st); 'ok'",
+    );
+    readings.push(settled());
+    eval(
+        &tab,
+        "document.getElementById('wideFirstTab').remove(); 'ok'",
+    );
+    for want in [names[1], names[0]] {
+        eval(&tab, &format!("[].slice.call(document.querySelectorAll('#previewTabs .preview-tab')).find(function (t) {{ var l = t.querySelector('.preview-tab-label'); return l && l.textContent === {want:?}; }}).click(); 'ok'"));
+        until(
+            &tab,
+            &format!("(document.querySelector('#previewTabs .preview-tab.on .preview-tab-label') || {{}}).textContent === {want:?} && (document.querySelector('#previewBody .mdrev-host h1') || {{}}).textContent === {want:?} && {review_offered}"),
+            "the doc chosen from its tab, with Review with others offered",
+            Duration::from_secs(20),
+            strip,
+        );
+        readings.push(settled());
+    }
+    for s in &readings {
+        eprintln!("upright head: {s}");
+    }
+    assert_eq!(readings[0]["n"], 3, "a tab per open doc: {}", readings[0]);
+    assert_eq!(
+        readings[0]["on"], names[2],
+        "the last opened is current: {}",
+        readings[0]
+    );
+    readings
+}
+
+/// #s735, Hong's choice on #s736 ("Fold them into More upright too, as sideways"): upright, the pane
+/// head's More menu offers Review with others, whole and in its words, with the file's other controls,
+/// each a row a finger's 44 points on the screen; full screen is a sideways row only, since upright the
+/// pane is the whole screen already. The head itself draws none of them, More and close take a finger,
+/// and the current tab stays in view.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
+fn a_phone_upright_offers_review_with_others_from_the_pane_s_more_menu() {
+    let _serial = serial();
+    for s in upright_head_readings("mdrev-review-head", 2798) {
+        assert_eq!(
+            s["words"],
+            serde_json::json!([
+                "Review with others",
+                "Review with others",
+                "Review with others"
+            ]),
+            "the control's words, title and name: {s}"
+        );
+        assert_eq!(
+            s["drawn"],
+            serde_json::json!([]),
+            "the head draws none of the file's controls: {s}"
+        );
+        assert_eq!(
+            (&s["more"], &s["close"]),
+            (&serde_json::json!(true), &serde_json::json!(true)),
+            "More and close take a finger: {s}"
+        );
+        let menu = &s["menu"];
+        assert_eq!(
+            (&menu["open"], &menu["onScreen"], &menu["closed"]),
+            (
+                &serde_json::json!(true),
+                &serde_json::json!(true),
+                &serde_json::json!(true)
+            ),
+            "More opens on the screen and closes: {s}"
+        );
+        let rows = menu["rows"].as_array().cloned().unwrap_or_default();
+        assert!(
+            rows.iter().any(|r| r["name"] == "review"
+                && r["label"] == "Review with others"
+                && r["whole"] == true),
+            "More offers Review with others, whole: {s}"
+        );
+        assert!(
+            rows.iter().all(|r| r["name"] != "expand"),
+            "and no full screen upright: {s}"
+        );
+        assert!(
+            rows.iter()
+                .all(|r| r["h"].as_i64().unwrap_or(0) >= 44 && r["hit"] == true),
+            "each row a finger's 44 points: {s}"
+        );
+        assert_eq!(s["inView"], true, "the current tab is in view: {s}");
+    }
+}
+
+/// #s735 (Hong's #337 rule, upright): with the file's controls in More, three Markdown files of
+/// ordinary names each keep the current title whole at 390px (measured before it: 67px of room on main
+/// against 98-116px of title, beside the file's control, Review and close).
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
+fn a_phone_upright_keeps_each_markdown_title_whole_in_its_pane_head() {
+    let _serial = serial();
+    for s in upright_head_readings("mdrev-review-head-whole", 2799) {
+        assert_eq!(s["whole"], true, "the current title is whole: {s}");
+        assert_eq!(s["inView"], true, "and in view: {s}");
+    }
+}
+
+/// #s733, Hong on #s732: "Keep it, labelled Review with others, hidden where shared review is not set
+/// up". A phone's pane offers Review with others over a monitor whose mdrev has its viewer key, and no
+/// Review over one without: there the review prefix is the pane's own (#s6), so the sheet would only
+/// repeat the pane.
+#[test]
+#[ignore = "needs a local Chrome, a built agent-monitor and node"]
+fn a_phone_offers_review_with_others_only_where_shared_review_is_set_up() {
+    let _serial = serial();
+    {
+        let (base, stores, repo, state) = shared_review_world("mdrev-review-words");
+        let m = Monitor::spawn_with(
+            Kind::V1,
+            2796,
+            &base,
+            Some(&stores),
+            true,
+            &[("MDREV_STATE_DIR", &state.display().to_string())],
+        );
+        let (_browser, tab) = chrome_tab();
+        harness::phone(&tab, 440, 956);
+        open_shell(&m, &tab);
+        open_guide(&tab, &repo);
+        until(
+            &tab,
+            &format!("!!document.querySelector('#previewBody .mdrev-host h1') && {REVIEW_OFFERED}"),
+            "the guide in the pane, with its Review control",
+            Duration::from_secs(30),
+            PANE,
+        );
+        assert_eq!(
+            eval(
+                &tab,
+                "(function(){ var b = document.querySelector('.preview-review'); return JSON.stringify([b.textContent, b.title, b.getAttribute('aria-label')]); })()"
+            ),
+            r#"["Review with others","Review with others","Review with others"]"#,
+            "the control says what it is for, in its words, its title and its name"
+        );
+        assert_eq!(
+            eval(
+                &tab,
+                "(function(){ var m = document.querySelector('#preview .preview-more'); m.click(); var row = document.querySelector('#preview .preview-more-menu [data-preview-more=\"review\"]'), words = row ? row.querySelector('.preview-more-label').textContent : 'no row'; m.click(); return words; })()"
+            ),
+            "Review with others",
+            "and so does its row in the head's More menu, where a phone finds it (#s735)"
+        );
+    }
+    {
+        // No viewer key: the monitor's mdrev state is the case's own, empty.
+        let (base, stores, repo) = fixture("mdrev-review-off");
+        let m = Monitor::spawn(Kind::V1, 2797, &base, Some(&stores), true);
+        let (_browser, tab) = chrome_tab();
+        harness::phone(&tab, 440, 956);
+        open_shell(&m, &tab);
+        open_guide(&tab, &repo);
+        until(
+            &tab,
+            "!!document.querySelector('#previewBody .mdrev-host h1')",
+            "the guide in the pane",
+            Duration::from_secs(30),
+            PANE,
+        );
+        // The prefix, asked as the page asks it, refuses; well after that answer the control is still
+        // not drawn.
+        assert_eq!(
+            eval(
+                &tab,
+                "(async function(){ var d = document.querySelector('.mdrev-pane').dataset; var q = 'root=' + encodeURIComponent(d.root) + '&path=' + encodeURIComponent(d.path) + '&cap=' + encodeURIComponent(d.cap); var r = await fetch('/api/mdrev-review/review?' + q, { cache: 'no-store' }); await new Promise(function (done) { setTimeout(done, 500); }); var b = document.querySelector('.preview-review'); return r.status + ' ' + (!b || b.hidden); })()"
+            ),
+            "404 true",
+            "no Review where shared review is not set up"
+        );
+    }
+}
+
 /// #s12, the owner chose it: on a phone, where a tab of its own has no way back (#335), shared review
 /// is a FULL-SCREEN SHEET over the app. The pane's Markdown shows a Review control there; the sheet
 /// mounts the document on the review prefix (#s10), its guest asking for and fetching the store, and
@@ -2031,7 +2328,7 @@ fn a_phone_reviews_in_a_full_screen_sheet_and_closes_back_to_where_it_was() {
     open_guide(&tab, &repo);
     until(
         &tab,
-        "!!document.querySelector('#previewBody .mdrev-host h1') && (function(){ var b = document.querySelector('.preview-review'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+        &format!("!!document.querySelector('#previewBody .mdrev-host h1') && {REVIEW_OFFERED}"),
         "the guide in the pane, with its Review control",
         Duration::from_secs(30),
         PANE,
@@ -2045,9 +2342,10 @@ fn a_phone_reviews_in_a_full_screen_sheet_and_closes_back_to_where_it_was() {
         .unwrap_or(-1)
     };
     let before = offset();
-    eval(
-        &tab,
-        "document.querySelector('.preview-review').click(); 'ok'",
+    assert_eq!(
+        eval(&tab, PRESS_REVIEW).as_str(),
+        Some("more"),
+        "on a phone, Review is a row of the head's More menu (#s735)"
     );
     // The sheet's guest is mounted on the REVIEW prefix (#s10), and that prefix, asked for the store
     // with the sheet's own document facts, answers paired. Not "the guest asked": when mdrev asks is
@@ -2109,9 +2407,10 @@ fn a_phone_reviews_in_a_full_screen_sheet_and_closes_back_to_where_it_was() {
         "the transcript is where the reader left it"
     );
     // Open again, then the browser's Back to another session (the app reads the address on popstate).
-    eval(
-        &tab,
-        "document.querySelector('.preview-review').click(); 'ok'",
+    assert_eq!(
+        eval(&tab, PRESS_REVIEW).as_str(),
+        Some("more"),
+        "on a phone, Review is a row of the head's More menu (#s735)"
     );
     until(
         &tab,
@@ -2726,14 +3025,15 @@ fn a_phone_review_sheet_brings_a_note_at_the_documents_end_back_above_the_keyboa
     open_guide(&tab, &repo);
     until(
         &tab,
-        "!!document.querySelector('#previewBody .mdrev-host h1') && (function(){ var b = document.querySelector('.preview-review'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+        &format!("!!document.querySelector('#previewBody .mdrev-host h1') && {REVIEW_OFFERED}"),
         "the guide in the pane, with its Review control",
         Duration::from_secs(30),
         PANE,
     );
-    eval(
-        &tab,
-        "document.querySelector('.preview-review').click(); 'ok'",
+    assert_eq!(
+        eval(&tab, PRESS_REVIEW).as_str(),
+        Some("more"),
+        "on a phone, Review is a row of the head's More menu (#s735)"
     );
     until(
         &tab,
@@ -2889,14 +3189,15 @@ fn a_phone_review_sheet_keeps_a_note_above_the_keyboard_through_a_pinch_while_th
     open_guide(&tab, &repo);
     until(
         &tab,
-        "!!document.querySelector('#previewBody .mdrev-host h1') && (function(){ var b = document.querySelector('.preview-review'); return !!b && !b.hidden && b.offsetWidth > 0; })()",
+        &format!("!!document.querySelector('#previewBody .mdrev-host h1') && {REVIEW_OFFERED}"),
         "the guide in the pane, with its Review control",
         Duration::from_secs(30),
         PANE,
     );
-    eval(
-        &tab,
-        "document.querySelector('.preview-review').click(); 'ok'",
+    assert_eq!(
+        eval(&tab, PRESS_REVIEW).as_str(),
+        Some("more"),
+        "on a phone, Review is a row of the head's More menu (#s735)"
     );
     until(
         &tab,
@@ -3253,6 +3554,10 @@ fn the_pane_hands_mdrev_held_code_and_keeps_its_own_view_of_the_rest() {
     );
 }
 
+/// On a phone (#s735, upright as sideways): whether the pane head's More menu lists print, and where a
+/// tap at the row's centre lands; `hidden` when More or the row is not drawn. The menu is closed again.
+const PRINT_ROW: &str = "(function(){ var m = document.querySelector('#preview .preview-more'); if (!m || !m.offsetWidth) return 'hidden'; m.click(); var row = document.querySelector('#preview .preview-more-menu [data-preview-more=\"print\"]'), seen = 'hidden'; if (row && row.offsetWidth) { var r = row.getBoundingClientRect(), hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); seen = r.right > innerWidth || r.left < 0 || r.bottom > innerHeight ? 'off-screen' : hit && row.contains(hit) ? 'shown' : 'covered by ' + (hit ? hit.className : 'nothing'); } m.click(); return seen; })()";
+
 /// Whether the pane head's print control is offered, and where a tap at its centre lands — the
 /// control itself, or what covers it. `hidden` when it is not drawn.
 const PRINT_CONTROL: &str = "(function(){ var b = document.querySelector('#previewHead .preview-print, .preview-head .preview-print'); if (!b || b.hidden || !b.offsetWidth) return 'hidden'; var r = b.getBoundingClientRect(); if (r.right > innerWidth || r.left < 0) return 'off-screen'; var hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return hit && b.contains(hit) ? 'shown' : 'covered by ' + (hit ? hit.className : 'nothing'); })()";
@@ -3324,12 +3629,12 @@ fn the_pane_prints_a_markdown_document_where_mdrev_offers_no_print() {
         "String(window.__printed)",
     );
     assert_eq!(
-        eval(&phone, PRINT_CONTROL).as_str(),
-        Some("hidden"),
-        "no second print control in the pane head"
+        eval(&phone, &format!("{PRINT_CONTROL} + ' ' + {PRINT_ROW}")).as_str(),
+        Some("hidden hidden"),
+        "no second print control in the pane head, nor in its More menu"
     );
-    // A held reader on a phone has no mdrev toolbar: the pane's own print, on screen and on top at
-    // 390px, beside the head's other controls.
+    // A held reader on a phone has no mdrev toolbar: the pane's own print, a row of the head's More
+    // menu (#s735), on screen and on top at 390px.
     eval(
         &phone,
         "window.__printed = 0; document.querySelector('[data-attachment-action=\"preview\"]').click(); 'ok'",
@@ -3343,14 +3648,14 @@ fn the_pane_prints_a_markdown_document_where_mdrev_offers_no_print() {
     );
     until(
         &phone,
-        &format!("{PRINT_CONTROL} === 'shown'"),
-        "the pane's print control, on screen and on top, at 390px",
+        &format!("{PRINT_ROW} === 'shown'"),
+        "the pane's print, a row of its More menu, on screen and on top, at 390px",
         Duration::from_secs(10),
-        &format!("{PRINT_CONTROL} + ' | ' + {PANE}"),
+        &format!("{PRINT_ROW} + ' | ' + {PANE}"),
     );
     eval(
         &phone,
-        "document.querySelector('.preview-print').click(); 'ok'",
+        "document.querySelector('#preview .preview-more').click(); document.querySelector('#preview .preview-more-menu [data-preview-more=\"print\"]').click(); 'ok'",
     );
     until(
         &phone,
@@ -3369,8 +3674,8 @@ fn the_pane_prints_a_markdown_document_where_mdrev_offers_no_print() {
         PANE,
     );
     assert_eq!(
-        eval(&phone, PRINT_CONTROL).as_str(),
-        Some("hidden"),
+        eval(&phone, &format!("{PRINT_CONTROL} + ' ' + {PRINT_ROW}")).as_str(),
+        Some("hidden hidden"),
         "no print for code"
     );
 

@@ -99,9 +99,10 @@ function stateLabel(th) {
  * reader wanted — the flags, the heredoc, the far end of a pipeline — was unreachable.
  *
  * The owner's cycle, from folded: one click opens the OUTPUT, the next opens the COMMAND
- * (output stays), the next folds the command back (output stays), the next folds the output.
- * Four clicks, and the reader passes through "output only" on the way in and on the way out —
- * which is the state they want most of the time.
+ * (output stays), and the next folds it all back to the one line. #129 had a fourth step that
+ * folded the command back with the output still open, so the way out took two clicks; the
+ * owner dropped it (#s698, Hong: "one-line message -> expand output -> expand command line ->
+ * collapse command line -> collapse output. I'd like to skip the third step").
  *
  * A head with nothing clipped keeps the plain two-state toggle: an extra click to close a fold
  * whose target already fits would be a tax on every short call, and row density is what makes a
@@ -110,7 +111,6 @@ const HEAD_STEPS = [
   { open: false, full: false },
   { open: true, full: false },
   { open: true, full: true },
-  { open: true, full: false },
 ];
 
 /** Where a click takes a head. `clipped` is the page's measurement — does the target overflow

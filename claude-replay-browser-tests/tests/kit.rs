@@ -620,6 +620,16 @@ fn the_web_app_over_two_machines_reads_each_session_from_its_own_machine() {
         serde_json::json!("false"),
         "write mode does not turn on for an unpaired machine"
     );
+    // The click opened the help, which stays open across machines and says what writing needs on
+    // the machine of the session open now (#s709).
+    let help = "(function () { var h = document.getElementById('writeHelp'); return h.hidden ? null : h.textContent; })()";
+    let unpaired_help = harness::probe(&tab, help);
+    assert!(
+        unpaired_help
+            .as_str()
+            .is_some_and(|h| !h.starts_with("Monitor is paired") && h.contains("pair")),
+        "a click on the unpaired machine's switch opens its help: {unpaired_help}"
+    );
 
     // The document the second machine's session carries, in mdrev with the app's bundle.
     harness::eval(
@@ -704,6 +714,13 @@ fn the_web_app_over_two_machines_reads_each_session_from_its_own_machine() {
         (&serde_json::json!(true), &serde_json::json!(true), &serde_json::json!(false), &serde_json::json!(format!("a/{SID_BOTH}"))),
         "a new view on the first machine, the pane's state on #app the new view's, no pairing hint on the paired machine, and the list's id in the address: {switched}"
     );
+    let paired_help = harness::probe(&tab, help);
+    assert!(
+        paired_help
+            .as_str()
+            .is_some_and(|h| h.starts_with("Monitor is paired")),
+        "the help left open says the paired machine's, not the unpaired one's: {paired_help}"
+    );
     // Write mode turns on for the paired machine.
     let write = "document.getElementById('writeSwitch').getAttribute('aria-checked')";
     harness::eval(&tab, "document.getElementById('writeSwitch').click(); 'ok'");
@@ -775,6 +792,11 @@ fn the_web_app_over_two_machines_reads_each_session_from_its_own_machine() {
         chose,
         serde_json::json!({ "address": format!("b/{SID_BOTH}"), "write": "false", "pairHint": true }),
         "⌘K's row opens on its machine, where write mode is off: the machine is not paired"
+    );
+    assert_eq!(
+        harness::probe(&tab, help),
+        unpaired_help,
+        "back on the unpaired machine the open help says its words again"
     );
 
     // The browser's Back, across machines and on one, the list's selection following.
@@ -1106,7 +1128,7 @@ try {
 /// #s541 — one list over two machines. Two hermetic monitors, the page on the first, the second
 /// relayed under `/machine-b` (as a host relays another machine's server, the guide's section 2),
 /// each holding sessions in the same directory. The list shows both machines' sessions, the shared
-/// path as two projects each labelled with its machine; a session opened from the list is read from
+/// path as one project whose rows each wear their machine (#s738); a session opened from the list is read from
 /// its own machine, the view mounted again with that machine's handle when the reader moves to the
 /// other machine, and no request for one machine's session goes to the other; a hide from the list
 /// reaches only the row's machine; and once the second monitor stops, its rows stay listed, greyed,
@@ -1195,12 +1217,17 @@ fn one_list_over_two_machines_labels_routes_and_greys_each_machine() {
     );
     let listed = harness::probe(
         &tab,
-        "(function () { var heads = Array.from(document.querySelectorAll('#sessionList .tree-row.project')); return { titles: heads.map(function (h) { return h.querySelector('.tree-title').textContent; }), tags: heads.map(function (h) { var t = h.querySelector('.tree-machine'); return t ? t.textContent : null; }).sort(), machines: window.__merged.machines().map(function (m) { return m.machine + ':' + m.state; }), banner: !!document.querySelector('#sessionList .tree-machines'), stale: document.querySelectorAll('#sessionList .machine-stale').length, errors: window.__host.errors }; })()",
+        "(function () { var heads = Array.from(document.querySelectorAll('#sessionList .tree-row.project')); return { titles: heads.map(function (h) { return h.querySelector('.tree-title').textContent; }), headTags: heads.map(function (h) { var t = h.querySelector('.tree-machine'); return t ? t.textContent : null; }), headTitle: heads.length ? heads[0].title : null, tags: Array.from(document.querySelectorAll('#sessionList .tree-row.session')).map(function (r) { var t = r.querySelector('.tree-machine'); return r.dataset.session.split('/')[0] + ':' + (t ? t.textContent : ''); }).sort(), machines: window.__merged.machines().map(function (m) { return m.machine + ':' + m.state; }), banner: !!document.querySelector('#sessionList .tree-machines'), stale: document.querySelectorAll('#sessionList .machine-stale').length, errors: window.__host.errors }; })()",
     );
     let titles = listed["titles"].as_array().cloned().unwrap_or_default();
-    assert!(
-        titles.len() == 2 && titles[0] == titles[1],
-        "the same path on two machines is two projects: {listed}"
+    assert_eq!(
+        (titles.len(), &listed["headTags"], &listed["headTitle"]),
+        (
+            1,
+            &serde_json::json!([null]),
+            &serde_json::json!("tern-mini, skua-book · /r")
+        ),
+        "the same path on two machines is one project, whose head names no one machine and says both in its title (#s738): {listed}"
     );
     assert_eq!(
         (
@@ -1211,13 +1238,13 @@ fn one_list_over_two_machines_labels_routes_and_greys_each_machine() {
             &listed["errors"]
         ),
         (
-            &serde_json::json!(["skua-book", "tern-mini"]),
+            &serde_json::json!(["a:tern-mini", "b:skua-book", "b:skua-book"]),
             &serde_json::json!(["a:live", "b:live"]),
             &serde_json::json!(false),
             &serde_json::json!(0),
             &serde_json::json!([])
         ),
-        "each project's head names its machine, both machines answer, and nothing is greyed: {listed}"
+        "each row under it names its machine, both machines answer, and nothing is greyed: {listed}"
     );
 
     // Open the other machine's session, then the page's own: each read from its own machine.
@@ -1377,7 +1404,7 @@ fn one_list_over_two_machines_labels_routes_and_greys_each_machine() {
             "session": SID_HERE,
             "errors": [],
         }),
-        "the stopped machine's rows stay listed and greyed by the kit's stylesheet, its project's label marked, the page's machine untouched: {stale}"
+        "the stopped machine's rows stay listed and greyed by the kit's stylesheet, their machine's label marked, the page's machine untouched: {stale}"
     );
 }
 
@@ -1753,10 +1780,10 @@ fn groups_by_machine_from_the_filter(phone: bool, here_port: u16, there_port: u1
         harness::probe(&tab, layout)
     };
 
-    // The box off: the arrangement of #s541, each project's head naming its machine by the first
-    // label of its host name.
+    // The box off: the arrangement of #s541, one head for the folder both machines hold (#s738),
+    // each row under it naming its machine by the first label of its host name.
     let off = until_seq(
-        serde_json::json!(["A", "P", "S", "P", "S"]),
+        serde_json::json!(["A", "P", "S", "S"]),
         "the list by agent and project",
     );
     assert_eq!(
@@ -1767,7 +1794,7 @@ fn groups_by_machine_from_the_filter(phone: bool, here_port: u16, there_port: u1
             &serde_json::json!("false"),
             &serde_json::json!([])
         ),
-        "each project's head names its machine by its host name's first label: {off}"
+        "each row names its machine by its host name's first label: {off}"
     );
     // The filter's sheet: the box between Idle and Include hidden.
     click("#filterBtn");
@@ -1963,7 +1990,7 @@ fn groups_by_machine_from_the_filter(phone: bool, here_port: u16, there_port: u1
     click("#filterBtn");
     click("#sessionFilter [data-by-machine]");
     let back = until_seq(
-        serde_json::json!(["A", "P", "S", "P", "S"]),
+        serde_json::json!(["A", "P", "S", "S"]),
         "the list by agent and project again",
     );
     assert_eq!(
@@ -1973,7 +2000,7 @@ fn groups_by_machine_from_the_filter(phone: bool, here_port: u16, there_port: u1
             &serde_json::json!("false"),
             &serde_json::json!(true)
         ),
-        "the labels back on the projects' heads, and the stopped machine's head over the list: {back}"
+        "the labels back on the rows, and the stopped machine's head over the list: {back}"
     );
 
     // A list of one machine offers no box, even with Group by machine chosen.
@@ -2109,7 +2136,7 @@ fn a_list_over_two_machines_puts_its_projects_in_the_order_of_their_last_activit
         "the host mounts the list with the merged source"
     );
     // The tree's heads in order: a machine's (when grouped) and each project's title with its machine.
-    let heads = "JSON.stringify(Array.from(document.querySelectorAll('#tree > .tree-machine-group, #tree > .tree-row.project')).map(function (el) { return el.classList.contains('tree-machine-group') ? 'M:' + el.dataset.machine : el.querySelector('.tree-title').textContent + '@' + el.dataset.toggle.split('/')[0].replace('p:', ''); }))";
+    let heads = "JSON.stringify(Array.from(document.querySelectorAll('#tree > .tree-machine-group, #tree > .tree-row.project')).map(function (el) { return el.classList.contains('tree-machine-group') ? 'M:' + el.dataset.machine : el.querySelector('.tree-title').textContent + '@' + el.dataset.machine; }))";
     let order = serde_json::json!(["auk-now@b", "tern-now@a", "skua-mid@b", "tern-old@a"]);
     until(
         &tab,
@@ -2895,46 +2922,175 @@ fn the_native_app_s_own_options_from_the_kit_under_its_policy() {
     );
 }
 
-/// #s596 on a phone: the Machines row is in the drawer's nav, upright, and in a wide phone's column
-/// held sideways, and a finger's tap on it calls `onMachines` in each.
+/// #s705, Hong on the drawer upright: "I think machines and theme should go to the top row (alongside
+/// the Agent Monitor text). The filter glyph moves to right above the session list." In the native
+/// app (which passes `onMachines`, #s596) the drawer's head is ONE row: the brand, its name whole,
+/// then Machines and the theme, each a finger's 44 points on top, in order, inside the drawer; the
+/// nav's Machines row is gone; the list's controls are a row of their own right above the session
+/// list, below Search, the filter at its right end; the filter's sheet hangs from that row and ends
+/// inside the window, its last row reached by a finger. Checked at the narrowest phone iOS 26 runs
+/// on (375 points), at the widest (440), and on a narrow phone held sideways, whose list is the same
+/// drawer. A tap on the head's Machines calls `onMachines`. A wide phone's column held sideways keeps
+/// its own head and its nav's Machines row (#s703, #s596), and a desktop's list its two-line head
+/// (#223).
 #[test]
 #[ignore = "needs a local Chrome and a built agent-monitor"]
-fn the_native_app_s_machines_row_is_reached_on_a_phone() {
+fn the_native_app_s_drawer_holds_machines_and_the_theme_beside_its_brand() {
     let _serial = serial();
     let (monitor, _base) = native_world("kit-native-phone", 3342);
     let (_browser, tab) = harness::chrome_tab();
     monitor.pair(&tab);
-    harness::phone(&tab, 390, 844);
     harness::answer_in_browser(&tab, native_answers(&monitor));
-    tab.navigate_to(&monitor.url("kit-native")).unwrap();
-    tab.wait_until_navigated().unwrap();
-    mounted(&tab, "the app on a phone");
-    harness::click_when_settled(&tab, "#drawerHandle", "the drawer's handle");
-    until(
-        &tab,
-        "!document.getElementById('app').classList.contains('mobile-detail') && (function () { var b = document.getElementById('machinesBtn'); if (!b) return false; var r = b.getBoundingClientRect(); var h = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2); return !!h && b.contains(h) && document.getAnimations().every(function (a) { return a.playState !== 'running'; }); })()",
-        "the drawer open, its Machines row on top",
-        Duration::from_secs(10),
-        "document.getElementById('app').className",
-    );
-    let drawer = reach(&tab, "machinesBtn");
-    let centre = |v: &serde_json::Value| {
-        (
-            v["centre"][0].as_f64().unwrap(),
-            v["centre"][1].as_f64().unwrap(),
+    for (w, h, insets) in [
+        (375, 667, None),
+        (440, 956, None),
+        (874, 402, Some(harness::SIDEWAYS_INSETS)),
+        // Safari's page held sideways with its tab bar (#s705: the walk on an iPhone 17 Pro).
+        (874, 292, Some(harness::SIDEWAYS_INSETS)),
+    ] {
+        let at = format!("{w}x{h}");
+        harness::phone(&tab, w, h);
+        if let Some(insets) = insets {
+            harness::safe_area(&tab, insets);
+        }
+        tab.navigate_to(&monitor.url("kit-native")).unwrap();
+        tab.wait_until_navigated().unwrap();
+        mounted(&tab, &format!("{at}: the app on a phone"));
+        harness::click_when_settled(&tab, "#drawerHandle", "the drawer's handle");
+        until(
+            &tab,
+            "!document.getElementById('app').classList.contains('mobile-detail') && document.getAnimations().every(function (a) { return a.playState !== 'running'; }) && Math.abs(document.querySelector('#app>.sidebar').getBoundingClientRect().left) < 1",
+            &format!("{at}: the drawer open and at rest"),
+            Duration::from_secs(10),
+            "document.getElementById('app').className",
+        );
+        let f = drawer_head_facts(&tab);
+        let num = |v: &serde_json::Value, k: &str| v[k].as_f64().unwrap_or(f64::NAN);
+        let mid = |v: &serde_json::Value| (num(v, "t") + num(v, "b")) / 2.0;
+        assert!(
+            f["app"]
+                .as_str()
+                .unwrap_or("")
+                .split(' ')
+                .any(|c| c == "drawer-one-row")
+                && num(&f["head"], "h") <= 56.0,
+            "{at}: the drawer's head is one row: {f}"
+        );
+        for id in ["machinesHead", "themeBtn", "filterBtn"] {
+            assert!(
+                num(&f[id], "w") >= 44.0 && num(&f[id], "h") >= 44.0 && f["hits"][id] == true,
+                "{at}: {id} is a finger's 44 points, on top: {f}"
+            );
+        }
+        let (brand, name, machines, theme, side) = (
+            &f["brand"],
+            &f["name"],
+            &f["machinesHead"],
+            &f["themeBtn"],
+            &f["side"],
+        );
+        // The row is the ☰ handle's: the handle is fixed at the drawer's top left, and the two-line
+        // head's 10px top put the row's middle 8px below it (the brand line had been level with it).
+        assert!(
+            (mid(theme) - mid(&f["drawerHandle"])).abs() <= 2.0,
+            "{at}: the row is level with the ☰ handle: {f}"
+        );
+        assert!(
+            (mid(machines) - mid(theme)).abs() <= 1.0
+                && (mid(brand) - mid(theme)).abs() <= 4.0
+                && num(name, "r") <= num(brand, "r") + 0.5
+                && num(brand, "r") <= num(machines, "l") + 0.5
+                && num(machines, "r") <= num(theme, "l") + 0.5
+                && num(theme, "r") <= num(side, "r") + 0.5,
+            "{at}: the brand, its name whole, then Machines and the theme, in one row inside the drawer: {f}"
+        );
+        assert!(
+            f["machinesBtn"].is_null(),
+            "{at}: the nav's Machines row is gone: {f}"
+        );
+        let (list_head, search, list, filter) = (
+            &f["sideListHead"],
+            &f["searchBtn"],
+            &f["sessionList"],
+            &f["filterBtn"],
+        );
+        assert!(
+            f["filterHome"] == "list"
+                && num(list_head, "t") >= num(search, "b") - 0.5
+                && (num(list_head, "b") - num(list, "t")).abs() <= 1.0
+                && num(side, "r") - num(filter, "r") <= 12.0,
+            "{at}: the filter sits in a row right above the session list, below Search, at its right end: {f}"
+        );
+        // Machines answers a finger.
+        harness::finger_tap(
+            &tab,
+            (num(machines, "l") + num(machines, "r")) / 2.0,
+            mid(machines),
+        );
+        until(
+            &tab,
+            "window.__host.machines === 1",
+            &format!("{at}: the head's Machines to call onMachines"),
+            Duration::from_secs(5),
+            "window.__host.machines",
+        );
+        // The filter's sheet hangs from its row and ends inside the window; its last row takes a tap.
+        harness::finger_tap(
+            &tab,
+            (num(filter, "l") + num(filter, "r")) / 2.0,
+            mid(filter),
+        );
+        until(
+            &tab,
+            "!document.getElementById('sessionFilter').hidden",
+            &format!("{at}: the filter's sheet"),
+            Duration::from_secs(5),
+            "document.getElementById('sessionFilter').hidden",
+        );
+        harness::pause("the sheet to rest", Duration::from_millis(300));
+        let bottom_inset = insets.map(|(_, _, b, _)| b).unwrap_or(0);
+        let sheet = eval(
+            &tab,
+            &format!("(function () {{ var s = document.getElementById('sessionFilter'), b = s.getBoundingClientRect(), row = document.getElementById('sideListHead').getBoundingClientRect(); s.scrollTop = s.scrollHeight; var rows = [].slice.call(s.querySelectorAll('.scope-option')).filter(function (r) {{ return r.getClientRects().length > 0; }}); var last = rows[rows.length - 1], lb = last.getBoundingClientRect(), hit = document.elementFromPoint(lb.left + lb.width / 2, lb.top + lb.height / 2); return JSON.stringify({{ top: b.top, bottom: b.bottom, rowBottom: row.bottom, floor: innerHeight - {bottom_inset}, lastHit: !!hit && last.contains(hit), last: last.textContent.trim() }}); }})()"),
+        );
+        let sheet: serde_json::Value =
+            serde_json::from_str(sheet.as_str().unwrap_or("null")).unwrap_or_default();
+        assert!(
+            num(&sheet, "top") >= num(&sheet, "rowBottom") - 1.0
+                && num(&sheet, "bottom") <= num(&sheet, "floor") + 0.5
+                && sheet["lastHit"] == true,
+            "{at}: the filter's sheet hangs from its row, ends inside the window and its last row takes a tap: {sheet}"
+        );
+        // Held sideways the room below the row is short, and Write mode and Search step aside while the
+        // sheet is open (#s705); upright they stay. Closed, the sheet gives them back.
+        let away = eval(
+            &tab,
+            "document.getElementById('app').classList.contains('nav-away')",
+        );
+        assert_eq!(
+            away.as_bool(),
+            Some(h < 500),
+            "{at}: the rows step aside for the sheet only where the room below its row is short"
+        );
+        let filter_now: serde_json::Value = serde_json::from_str(
+            eval(&tab, "(function () { var b = document.getElementById('filterBtn').getBoundingClientRect(); return JSON.stringify({ x: b.left + b.width / 2, y: b.top + b.height / 2 }); })()")
+                .as_str()
+                .unwrap_or("null"),
         )
-    };
-    let (x, y) = centre(&drawer);
-    harness::finger_tap(&tab, x, y);
-    harness::until(
-        &tab,
-        "window.__host.machines === 1",
-        "the drawer's row to call onMachines",
-        Duration::from_secs(5),
-        "window.__host.machines",
-    );
+        .unwrap_or_default();
+        harness::finger_tap(&tab, num(&filter_now, "x"), num(&filter_now, "y"));
+        until(
+            &tab,
+            "document.getElementById('sessionFilter').hidden && !document.getElementById('app').classList.contains('nav-away')",
+            &format!("{at}: the sheet closed and the rows back"),
+            Duration::from_secs(5),
+            "document.getElementById('sessionFilter').hidden + ' ' + document.getElementById('app').className",
+        );
+    }
 
+    // A wide phone's column held sideways keeps its own head, and its nav's Machines row.
     harness::phone(&tab, 956, 440);
+    harness::safe_area(&tab, harness::SIDEWAYS_INSETS);
     tab.navigate_to(&monitor.url("kit-native")).unwrap();
     tab.wait_until_navigated().unwrap();
     mounted(&tab, "the app on a wide phone held sideways");
@@ -2945,16 +3101,37 @@ fn the_native_app_s_machines_row_is_reached_on_a_phone() {
         Duration::from_secs(10),
         "JSON.stringify({ app: document.getElementById('app').className, row: (function () { var b = document.getElementById('machinesBtn'); return b ? [b.offsetWidth, b.offsetHeight] : null; })() })",
     );
-    let column = reach(&tab, "machinesBtn");
-    let (x, y) = centre(&column);
-    harness::finger_tap(&tab, x, y);
-    harness::until(
+    let column = drawer_head_facts(&tab);
+    assert!(
+        !column["app"].as_str().unwrap_or("").split(' ').any(|c| c == "drawer-one-row")
+            && column["filterHome"] == "head"
+            && column["machinesHead"].is_null()
+            && column["sideListHead"].is_null(),
+        "the wide phone's column keeps the filter in its own head, no Machines glyph and no row over the list: {column}"
+    );
+    let row = reach(&tab, "machinesBtn");
+    harness::finger_tap(
+        &tab,
+        row["centre"][0].as_f64().unwrap(),
+        row["centre"][1].as_f64().unwrap(),
+    );
+    until(
         &tab,
         "window.__host.machines === 1",
         "the column's row to call onMachines",
         Duration::from_secs(5),
         "window.__host.machines",
     );
+
+    // A desktop's list keeps its head as it was: the filter in it, the nav's Machines row.
+    let (_desk_browser, desk) = harness::chrome_tab();
+    monitor.pair(&desk);
+    harness::answer_in_browser(&desk, native_answers(&monitor));
+    harness::resize(&desk, 1280.0, 860.0);
+    desk.navigate_to(&monitor.url("kit-native")).unwrap();
+    desk.wait_until_navigated().unwrap();
+    mounted(&desk, "the app on a desktop");
+    let desktop = drawer_head_facts(&desk);
     let host: serde_json::Value = serde_json::from_str(
         eval(&tab, "JSON.stringify(window.__host)")
             .as_str()
@@ -2963,8 +3140,16 @@ fn the_native_app_s_machines_row_is_reached_on_a_phone() {
     .unwrap();
     drop(monitor);
     assert!(
-        drawer["reached"] == true && column["reached"] == true,
-        "reached in the drawer and in the column: {drawer} {column}"
+        !desktop["app"]
+            .as_str()
+            .unwrap_or("")
+            .split(' ')
+            .any(|c| c == "drawer-one-row")
+            && desktop["filterHome"] == "head"
+            && desktop["machinesHead"].is_null()
+            && desktop["sideListHead"].is_null()
+            && !desktop["machinesBtn"].is_null(),
+        "a desktop's list keeps the filter in its head and the nav's Machines row: {desktop}"
     );
     assert_eq!(
         (&host["error"], &host["errors"], &host["violations"]),
@@ -2973,6 +3158,17 @@ fn the_native_app_s_machines_row_is_reached_on_a_phone() {
             &serde_json::json!([]),
             &serde_json::json!([])
         ),
-        "no error, and nothing breaks the app's policy"
+        "nothing raised on the phone: {host}"
     );
+}
+
+/// The drawer's head and the row over its list, as a reader meets them: each part's box (null where it
+/// is not drawn), whether a finger at each control's centre reaches it, the brand's name as its text
+/// is drawn, the app's classes, and whether the filter sits in the row over the list or in the head.
+fn drawer_head_facts(tab: &headless_chrome::Tab) -> serde_json::Value {
+    let raw = eval(
+        tab,
+        "(function () { var box = function (e) { if (!e || !e.getClientRects().length) return null; var b = e.getBoundingClientRect(); return { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height }; }; var hit = function (e) { if (!e || !e.getClientRects().length) return false; var b = e.getBoundingClientRect(), h = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2); return !!h && e.contains(h); }; var side = document.querySelector('#app>.sidebar'), head = side.querySelector('.side-head'), brand = head.querySelector('.brand'), name = document.createRange(); name.selectNodeContents(brand.firstChild); var nb = name.getBoundingClientRect(), filter = document.getElementById('filterBtn'); var out = { app: document.getElementById('app').className, side: box(side), head: box(head), brand: box(brand), name: { l: nb.left, r: nb.right, w: nb.width }, filterHome: !filter ? null : filter.closest('#sideListHead') ? 'list' : filter.closest('.side-head') ? 'head' : 'elsewhere', hits: {} }; ['machinesHead', 'themeBtn', 'filterBtn', 'machinesBtn', 'searchBtn', 'sideListHead', 'sessionList', 'drawerHandle'].forEach(function (id) { var e = document.getElementById(id); out[id] = box(e); out.hits[id] = hit(e); }); return JSON.stringify(out); })()",
+    );
+    serde_json::from_str(raw.as_str().unwrap_or("null")).unwrap_or_default()
 }

@@ -1653,8 +1653,10 @@ fn native_desktop_search_step_never_leaves_a_match_under_the_composer() {
     // With the runtime panel showing above the composer (a queued message, a pending approval), the
     // panel is what covers the foot. "marker" (paragraph 8) lands between the panel's top and the
     // composer's: under the panel, though above the composer, so only a floor that counts the panel
-    // reveals it.
-    eval(&tab, "(() => { const q = document.querySelector('.shared-runtime .shared-queue'); const d = document.createElement('div'); d.style.height = '150px'; d.textContent = 'queued'; q.append(d); return true; })()");
+    // reveals it. The queued row is taller than the panel may grow (32dvh), so the panel stands at
+    // that cap at any window height: at 150px, on a page with its whole window (#s710) CI's Linux
+    // Chrome landed the marker 4px above the panel, in sight with no reveal.
+    eval(&tab, "(() => { const q = document.querySelector('.shared-runtime .shared-queue'); const d = document.createElement('div'); d.style.height = '400px'; d.textContent = 'queued'; q.append(d); return true; })()");
     wait(&tab, "getComputedStyle(document.querySelector('.shared-runtime')).display !== 'none' && document.querySelector('.shared-runtime').getBoundingClientRect().height > 100");
     eval(&tab, "(() => { const b = document.getElementById('transcriptSearchInput'); b.value = 'marker'; b.dispatchEvent(new Event('input', { bubbles: true })); return true; })()");
     wait(

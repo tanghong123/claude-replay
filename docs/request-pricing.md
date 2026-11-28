@@ -27,11 +27,15 @@ have no request rules, so every request on them is an estimate.
 Only explicitly listed aliases share rules; unknown snapshots never borrow prices.
 
 Qwen4-Max (Alibaba Model Studio) has one bracket to 1M input tokens, so no long-context
-surcharge; Batch is half. No Fast, Flex or Ultrafast rate is published for it, so those
-tiers price at standard as an estimate. Its rates are the Beijing / global deployment
-tier, which the international pricing page publishes in USD; the international
-(Singapore) and US deployments carry different rates, and the catalog has no per-region
-rows, so every request on the model prices at the Beijing / global tier.
+surcharge; Batch is half, per the domestic page's label. No Fast, Flex or Ultrafast rate
+is published for it, so those tiers price at standard as an estimate. Its rates are the
+Beijing / global deployment tier, which the international pricing page publishes in USD;
+the international (Singapore) and US deployments carry different rates, and the catalog
+has no per-region rows, so every request on the model prices at the Beijing / global
+tier. Its cache write and hit rates are the values the international page printed on
+2026-11-23; the page removed those sub-tables afterwards, so they are held provisionally
+at the read-time values, the write corroborated by the explicit-cache (Qwen4) page's
+creation ratios (about 125% of input for TTL 5m, about 200% for TTL 1h).
 
 The returned incomplete-evidence flag also covers unsupported tiers and GPT
 models without verified request rules. These estimates are not necessarily lower
@@ -39,6 +43,10 @@ bounds: a missing tier might be Flex or Fast. Prices use exact integer arithmeti
 until projection. Rules live in `pricing.json`, so changes invalidate priced caches
 through `PRICING_FINGERPRINT`. This is current API-equivalent token pricing, not
 historical invoice reconstruction or Codex subscription-credit consumption.
+A request in a discounted background completion window (2 or 8 hours, on
+GPT-6.2 Astra and Sol, GPT-6.1 Terra and GPT-6 Luna) is priced at Standard: no
+transcript records a background request or its window, so the discount, 30% or
+40%, is not applied, and such a request reads high with no estimate flag.
 
 Consumers should retain `PricedTokens` classes inside each time/model bucket,
 merge identical classes, and separately retain tokens without evidence. Never
@@ -50,5 +58,9 @@ and [Astra model page](https://developers.openai.com/api/docs/models/gpt-6-astra
 on 2026-09-28, and for GPT-5.2, 5.1, 5, 5 mini and 5 nano on 2026-11-14. Qwen4-Max was
 verified against Model Studio's [domestic](https://help.aliyun.com/zh/model-studio/model-pricing)
 and [international](https://www.alibabacloud.com/help/zh/model-studio/model-pricing) pricing
-pages and its [context-cache](https://help.aliyun.com/zh/model-studio/context-cache) page on
-2026-11-23. This is a token-price estimate, not a provider invoice.
+pages on 2026-11-23 and again on 2026-11-28, and against its
+[explicit-cache (Qwen4)](https://help.aliyun.com/zh/model-studio/explicit-cache-qwen4) and
+[context-cache](https://help.aliyun.com/zh/model-studio/context-cache) pages on 2026-11-28;
+the international page's qwen4-max cache sub-tables, read on 2026-11-23, were removed by
+the re-read, so the stored cache rates are read-time provisional values.
+This is a token-price estimate, not a provider invoice.

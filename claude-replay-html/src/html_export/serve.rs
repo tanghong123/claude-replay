@@ -388,7 +388,9 @@ impl SessionService {
             }
         }
         let agent = discover::detect_agent(path);
-        let cwd = discover::first_cwd(path)
+        let cwd = crate::adapter(agent)
+            .project_dir(path)
+            .or_else(|| discover::first_cwd(path))
             .map(|c| c.display().to_string())
             .unwrap_or_default();
         {
@@ -457,7 +459,9 @@ impl SessionService {
             .find(|r| r.id == id)
             .map(|r| r.cwd.clone())
             .unwrap_or_else(|| {
-                discover::first_cwd(src.path())
+                crate::adapter(src.agent())
+                    .project_dir(src.path())
+                    .or_else(|| discover::first_cwd(src.path()))
                     .map(|p| p.display().to_string())
                     .unwrap_or_default()
             });
@@ -490,7 +494,7 @@ impl SessionService {
             }
             // The prefix matches: resolve where this session's repo lives NOW. Only a genuine
             // move (project_path != the dead first_cwd) is worth trying.
-            if let Some(proj) = discover::project_path(&r.path) {
+            if let Some(proj) = discover::project_path_for(r.agent, &r.path) {
                 if proj != old {
                     let candidate = crate::sys::relocate(dead, old, &proj);
                     if candidate.exists() {
@@ -679,7 +683,7 @@ impl SessionService {
             if !cwd.is_empty() {
                 allow.push(PathBuf::from(cwd));
             }
-            if let Some(proj) = discover::project_path(transcript) {
+            if let Some(proj) = discover::project_path_for(*agent, transcript) {
                 allow.push(proj);
             }
             if let Some(dir) = transcript.parent() {
@@ -8958,33 +8962,37 @@ mod tests {
 
     /// #s632: a stop that finds its loop already ended says nothing and waits for nothing. The loop
     /// ends on its own when an accept returns after the flag is set; here a connection of the
-    /// test's own brings it, and the loop closes the port. The stop's wake is then refused, which
-    /// is stopped: no retry pause, and not the "could not wake it" line, which is said only for
-    /// `Wake::CouldNot`. A connect that fails another way (the open-file ceiling) is still tried
-    /// four times.
+    /// test's own brings it, and the loop closes the port, then drops its handler. The stop's wake
+    /// is then refused, which is stopped: no retry pause, and not the "could not wake it" line,
+    /// which is said only for `Wake::CouldNot`. A connect that fails another way (the open-file
+    /// ceiling) is still tried four times.
+    ///
+    /// #s722: the loop's end is read from the loop itself, its handler gone, never from the port.
+    /// Tests in this process start listeners on port 0 that live as long as it does, and one can
+    /// be given the number the loop freed: on CI every connect then went through for 30 s, which
+    /// the test read as the loop still running. A wake that goes through once the loop has ended
+    /// reached something else holding the number (such a listener, a copy of the socket held
+    /// elsewhere, or a connect that joins itself), so the refusal is read again on a port bound
+    /// and dropped for it.
     #[test]
     fn a_refused_wake_means_the_loop_already_stopped() {
         use std::sync::atomic::Ordering;
         let handler: StreamingRouteHandler = std::sync::Arc::new(|_request: &Request| {
             HttpResponse::ok("text/plain", b"ok".to_vec()).into()
         });
+        // Once the listener runs, its loop holds the only copy, and drops it after its port.
+        let copies = std::sync::Arc::downgrade(&handler);
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let port = spawn_listener_until(0, handler, AuthGate::same_user(), Some(stop.clone()))
             .expect("the listener starts");
         stop.store(true, Ordering::SeqCst);
-        let _ = std::net::TcpStream::connect(("127.0.0.1", port));
-        // Until the port refuses: any other error (a parallel test at the open-file ceiling) is not
-        // a closed port, and is said as itself rather than read as a stopped loop. A reset is the
-        // port closing under the connect, as Linux answers a handshake that reached the backlog of
-        // a socket then closed (CI saw it, #s642), so it is polled on through, as a connect that
-        // went through is.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-        loop {
-            match std::net::TcpStream::connect(("127.0.0.1", port)) {
-                Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => break,
-                Err(error) if error.kind() == std::io::ErrorKind::ConnectionReset => {}
-                Err(error) => panic!("waiting for the port to close: {error}"),
-                Ok(_) => {}
+        // Connect until one goes through, the accept after the stop: one that fails (a parallel
+        // test at the open-file ceiling) brings no accept. Then wait for the handler to go.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+        let mut woken = false;
+        while copies.strong_count() > 0 {
+            if !woken {
+                woken = std::net::TcpStream::connect(("127.0.0.1", port)).is_ok();
             }
             assert!(
                 std::time::Instant::now() < deadline,
@@ -8992,21 +9000,35 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let to = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-        let mut pauses = 0;
-        let woke = wake_listener(
-            || {
-                std::net::TcpStream::connect_timeout(&to, std::time::Duration::from_secs(1))
-                    .map(drop)
-            },
-            |_| pauses += 1,
-        );
-        assert_eq!(
-            woke,
-            Wake::AlreadyStopped,
-            "a closed port is a stopped loop"
-        );
-        assert_eq!(pauses, 0, "and nothing is retried");
+        let mut port = port;
+        let mut freed = 0;
+        loop {
+            let to = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+            let mut pauses = 0;
+            let woke = wake_listener(
+                || {
+                    std::net::TcpStream::connect_timeout(&to, std::time::Duration::from_secs(1))
+                        .map(drop)
+                },
+                |_| pauses += 1,
+            );
+            if woke != Wake::Woke {
+                assert_eq!(
+                    woke,
+                    Wake::AlreadyStopped,
+                    "a closed port is a stopped loop"
+                );
+                assert_eq!(pauses, 0, "and nothing is retried");
+                break;
+            }
+            // Something else holds the number now: bind a port, drop it, and read that one.
+            freed += 1;
+            assert!(freed < 20, "a freed port refuses a connect");
+            port = std::net::TcpListener::bind(("127.0.0.1", 0))
+                .and_then(|listener| listener.local_addr())
+                .expect("bind a loopback port to free")
+                .port();
+        }
 
         let mut tries = 0;
         let mut pauses = Vec::new();
@@ -9191,6 +9213,84 @@ mod tests {
             );
         }
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn antigravity_pulls_serve_workspace_files_and_replace_persisted_counters() {
+        use crate::cache::{Cursor, MetaReader};
+        use crate::engine::meta_stream::MaterializedMeta;
+
+        let base = std::env::temp_dir().join(format!("cr-serve-agy-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let project = base.join("project");
+        let file = project.join("README.md");
+        let sid = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+        let logs = base.join("brain").join(sid).join(".system_generated/logs");
+        let path = logs.join("transcript_full.jsonl");
+        std::fs::create_dir_all(&logs).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(base.join("cache")).unwrap();
+        std::fs::write(&file, "project file").unwrap();
+        // AGY's workspace catalog fallback has the same directory mapping as its SQLite catalog.
+        std::fs::write(
+            base.join("cache/last_conversations.json"),
+            json!({ project.to_str().unwrap(): sid }).to_string(),
+        )
+        .unwrap();
+        let mut transcript = String::new();
+        for turn in 0..10 {
+            use std::fmt::Write;
+            writeln!(transcript, "{}", json!({"step_index": 2 * turn, "type": "USER_INPUT", "source": "USER_EXPLICIT", "status": "DONE", "created_at": "2026-10-07T10:00:00Z", "content": "Read the file"})).unwrap();
+            writeln!(transcript, "{}", json!({"step_index": 2 * turn + 1, "type": "PLANNER_RESPONSE", "source": "MODEL", "status": "DONE", "created_at": "2026-10-07T10:00:01Z", "content": "Reply A", "tool_calls": [{"name": "read_file", "args": {"Path": "README.md"}}]})).unwrap();
+        }
+        std::fs::write(&path, &transcript).unwrap();
+        let live = SessionService {
+            fold: FoldPolicy::default(),
+            roots: std::sync::Mutex::new(Vec::new()),
+            cache: test_cache(&base),
+            port: std::sync::Arc::new(std::sync::OnceLock::new()),
+        };
+        assert_eq!(live.register_root(&path), sid);
+        let pull = || {
+            serde_json::from_str::<Value>(&body(live.pull_response(sid, Cursor::default())))
+                .unwrap()
+        };
+        let first = pull();
+        assert_eq!(first["meta"]["agent"], "antigravity");
+        assert_eq!(first["meta"]["cwd"], json!(project));
+        assert_eq!(
+            live.contained_kind(&file, false),
+            Some(file.canonicalize().unwrap())
+        );
+        let records = test_records(&base, sid);
+        assert!(std::fs::read_to_string(&records)
+            .unwrap()
+            .contains(file.to_str().unwrap()));
+
+        let counts = || {
+            let (_, reader) = MetaReader::open(records.parent().unwrap())
+                .unwrap()
+                .unwrap();
+            let mut meta = MaterializedMeta::default();
+            for record in reader {
+                meta.push(&record);
+            }
+            (meta.session_meta.turns, meta.session_meta.tools)
+        };
+        let cold = counts();
+        assert!(
+            cold.0 > 0 && cold.1 > 0,
+            "the initial pull commits metadata"
+        );
+        for reply in ["Reply B", "Reply C"] {
+            let replacement = path.with_extension("next");
+            std::fs::write(&replacement, transcript.replace("Reply A", reply)).unwrap();
+            std::fs::rename(replacement, &path).unwrap();
+            pull();
+            assert_eq!(counts(), cold, "the persistent metadata reflects one fold");
+        }
+        drop(live);
+        std::fs::remove_dir_all(base).unwrap();
     }
 
     #[test]

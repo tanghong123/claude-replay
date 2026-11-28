@@ -400,7 +400,7 @@ fn print_unknown_shapes(args: &Args) -> anyhow::Result<()> {
         // file must not stop the sweep that would have found the thing we are looking for. A
         // compressed one that does not decode is a file the store holds and no reader can open,
         // though (#s385): that is reported.
-        let session = match claude_replay_core::parse_session(path) {
+        let session = match claude_replay_core::parse_session_as(*agent, path) {
             Ok(session) => session,
             Err(e) => {
                 let undecodable = matches!(
@@ -441,8 +441,14 @@ fn print_unknown_shapes(args: &Args) -> anyhow::Result<()> {
             }
             let sid = discover::session_id(path);
             let key = sid.clone().unwrap_or_else(|| path.display().to_string());
+            let name =
+                if session.agent == claude_replay_core::Agent::ANTIGRAVITY && model.is_empty() {
+                    "(no model)".to_owned()
+                } else {
+                    model.clone()
+                };
             unpriced
-                .entry((session.agent.label(), model.clone()))
+                .entry((session.agent.label(), name))
                 .or_insert_with(|| (Default::default(), sid))
                 .0
                 .insert(key);
@@ -585,8 +591,8 @@ fn session_paths_json(
 ) -> serde_json::Value {
     let show = |o: Option<std::path::PathBuf>| o.map(|p| p.display().to_string());
     let agent = agent.unwrap_or_else(|| discover::detect_agent(path));
-    let repo_root = discover::repo_root(path);
-    let project_path = discover::project_path(path);
+    let project_path = discover::project_path_for(agent, path);
+    let repo_root = project_path.clone().map(discover::repo_root_from);
     let key = discover::session_key_from(agent, repo_root.as_deref(), project_path.as_deref());
     serde_json::json!({
         "path": path.display().to_string(),

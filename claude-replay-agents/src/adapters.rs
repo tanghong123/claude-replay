@@ -655,30 +655,75 @@ qwork_family_adapter!(
     false
 );
 
-/// Antigravity CLI adapter (#s43) — for now its subscription limits alone, which reach the
-/// command it runs for its status line. It claims no transcript and lists no session: reading
-/// its transcripts is #s44, until which everything below the limits is inert.
+/// Antigravity CLI adapter for local trajectory logs and subscription limits.
 pub struct AntigravityAdapter;
 impl TranscriptAdapter for AntigravityAdapter {
     fn agent(&self) -> Agent {
         Agent::ANTIGRAVITY
     }
-    fn sniff(&self, _head: &Value) -> SniffClaim {
-        SniffClaim::No
+    fn sniff(&self, head: &Value) -> SniffClaim {
+        if agents::antigravity::model::is_step(head) {
+            SniffClaim::Owns
+        } else {
+            SniffClaim::No
+        }
     }
-    // Never used: no transcript is ever this adapter's.
     fn shaping(&self) -> &'static Shaping {
-        &agents::claude::model::CLAUDE_SHAPING
+        &agents::antigravity::model::SHAPING
     }
-    fn decode_line(&self, _line: &str, _cwd: &mut String, _out: &mut Vec<Message>) {}
+    fn rewrites_transcript(&self) -> bool {
+        true
+    }
+    fn session_id_from_path<'p>(&self, path: &'p std::path::Path) -> Option<&'p str> {
+        agents::antigravity::discover::trajectory_id(path)
+    }
+    fn timestamp_field(&self) -> &'static str {
+        "created_at"
+    }
+    fn elision(&self) -> claude_replay_engine::seam::Elision {
+        agents::antigravity::model::ELISION
+    }
+    fn line_preprocessor(&self) -> Box<dyn claude_replay_engine::seam::LinePreprocessor> {
+        Box::new(agents::antigravity::model::ResultLinker::default())
+    }
+    fn decode_line(&self, line: &str, _cwd: &mut String, out: &mut Vec<Message>) {
+        agents::antigravity::model::decode_line(line, out);
+    }
     fn metrics_acc(&self) -> Box<dyn MetricsAccumulator> {
-        Box::new(NoMetrics)
+        Box::new(agents::antigravity::metrics::MetricsAcc::default())
     }
-    fn candidates_scoped(&self, _cwd: &Path) -> Vec<Candidate> {
-        Vec::new()
+    fn candidates_scoped(&self, cwd: &Path) -> Vec<Candidate> {
+        agents::antigravity::discover::candidates_scoped(cwd)
     }
-    fn resolve_id(&self, _id: &str) -> Option<PathBuf> {
-        None
+    fn resolve_id(&self, id: &str) -> Option<PathBuf> {
+        agents::antigravity::discover::resolve_id(id)
+    }
+    fn store_contains(&self, path: &Path) -> bool {
+        agents::antigravity::discover::store_contains(path)
+    }
+    fn store_transcripts(&self) -> Vec<PathBuf> {
+        agents::antigravity::discover::store_transcripts_in(
+            &agents::antigravity::discover::brain_dir(),
+        )
+    }
+    fn store_transcripts_in(&self, root: &Path) -> Option<Vec<PathBuf>> {
+        Some(agents::antigravity::discover::store_transcripts_in(root))
+    }
+    fn project_dir(&self, path: &Path) -> Option<PathBuf> {
+        agents::antigravity::discover::project_dir(path)
+    }
+    fn session_card(
+        &self,
+        path: &Path,
+        _memo: Option<&claude_replay_engine::seam::CardMemo>,
+    ) -> claude_replay_engine::seam::CardOutcome {
+        use claude_replay_engine::seam::CardOutcome;
+        let card = agents::antigravity::discover::session_card(path);
+        if card.is_empty() {
+            CardOutcome::Absent
+        } else {
+            CardOutcome::Fresh { card, memo: None }
+        }
     }
     fn status_line_limits(
         &self,
@@ -697,12 +742,24 @@ impl TranscriptAdapter for AntigravityAdapter {
     }
 }
 
-/// The metrics of an adapter that reads no transcript: nothing.
-struct NoMetrics;
-impl MetricsAccumulator for NoMetrics {
-    fn push(&mut self, _v: &Value) {}
+impl MetricsAccumulator for agents::antigravity::metrics::MetricsAcc {
+    fn push(&mut self, v: &Value) {
+        Self::push(self, v);
+    }
+    fn bump_extra(&mut self, key: &str, n: u64) {
+        Self::bump_extra(self, key, n);
+    }
+    fn totals(&self) -> claude_replay_engine::seam::MetricsTotals {
+        Self::totals(self)
+    }
+    fn usage_id(&self) -> Option<String> {
+        Self::usage_id(self)
+    }
+    fn usage_kind(&self) -> Option<claude_replay_engine::seam::UsageKind> {
+        Some(claude_replay_engine::seam::UsageKind::Call)
+    }
     fn finish(&self) -> Metrics {
-        Metrics::default()
+        Self::finish(self)
     }
 }
 
@@ -1112,11 +1169,11 @@ mod sniff_tests {
         for a in REGISTRY {
             let want = match a.agent() {
                 Agent::CODEX => Some(UsageKind::CounterReading),
-                Agent::CLAUDE | Agent::QODER | Agent::QODERWORK | Agent::QWENWORK => {
-                    Some(UsageKind::Call)
-                }
-                // Reads no transcript yet (#s44): no usage ids at all.
-                Agent::ANTIGRAVITY => None,
+                Agent::CLAUDE
+                | Agent::QODER
+                | Agent::QODERWORK
+                | Agent::QWENWORK
+                | Agent::ANTIGRAVITY => Some(UsageKind::Call),
                 other => panic!("{other:?} is registered: declare what its usage ids name"),
             };
             assert_eq!(a.metrics_acc().usage_kind(), want, "{:?}", a.agent());
