@@ -1,6 +1,7 @@
 use super::model::field;
 use claude_replay_engine::seam::{
-    long_prompt_over, parse_ts, total_cost, Metrics, MetricsTotals, TimeSpan, TokenCounts,
+    long_prompt_over, parse_ts, total_cost, Metrics, MetricsTotals, RequestPricing, TimeSpan,
+    TokenCounts,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -12,11 +13,15 @@ pub(crate) struct MetricsAcc {
     span: TimeSpan,
     model: String,
     step: Option<u64>,
+    /// The billing class of the most recent push's step — the seam's `request_pricing`, cleared
+    /// on every push and never part of the resumable state.
+    request_pricing: Option<RequestPricing>,
 }
 
 impl MetricsAcc {
     pub(crate) fn push(&mut self, value: &Value) {
         self.step = None;
+        self.request_pricing = None;
         if let Some(ts) = field(value, "created_at").and_then(parse_ts) {
             self.span.observe(ts);
         }
@@ -44,11 +49,29 @@ impl MetricsAcc {
         // bills this step's tokens at its long rate when its prompt is over the threshold, as the
         // Claude fold does for Haiku 5.5 (#s47). That a step is one request is assumed, like the
         // readings of its counts (#s715).
-        if long_prompt_over(model).is_some_and(|over| counts.prompt() > over) {
-            counts.long_prompt = counts.into();
+        //
+        // The same judgement is this step's billing class (#s747), for a consumer that prices
+        // from classes beside its token deltas (agent-metrics drops `long_prompt` and reads the
+        // long share from the class), set only for a model whose price depends on the request,
+        // as the Claude fold sets it (#s56). A step records no service tier, so the tier stays
+        // unknown and unconfirmed: missing evidence is never a standard-tier assertion.
+        if let Some(over) = long_prompt_over(model) {
+            let long = counts.prompt() > over;
+            if long {
+                counts.long_prompt = counts.into();
+            }
+            self.request_pricing = Some(RequestPricing {
+                long_context: Some(long),
+                ..Default::default()
+            });
         }
         *self.totals.entry(model.into()).or_default() += counts;
         self.step = value["step_index"].as_u64();
+    }
+
+    /// The seam's `request_pricing` for the most recent push.
+    pub(crate) fn request_pricing(&self) -> Option<RequestPricing> {
+        self.request_pricing
     }
 
     pub(crate) fn bump_extra(&mut self, key: &str, n: u64) {

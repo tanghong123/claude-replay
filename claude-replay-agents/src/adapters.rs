@@ -758,8 +758,112 @@ impl MetricsAccumulator for agents::antigravity::metrics::MetricsAcc {
     fn usage_kind(&self) -> Option<claude_replay_engine::seam::UsageKind> {
         Some(claude_replay_engine::seam::UsageKind::Call)
     }
+    /// The class of a step to a model priced by prompt length (#s747).
+    fn request_pricing(&self) -> Option<claude_replay_engine::seam::RequestPricing> {
+        Self::request_pricing(self)
+    }
     fn finish(&self) -> Metrics {
         Self::finish(self)
+    }
+}
+
+#[cfg(test)]
+mod antigravity_class_tests {
+    use super::*;
+    use claude_replay_engine::seam::{RequestPricing, ServiceTier, TokenCounts};
+    use std::collections::BTreeMap;
+
+    /// #s747: a consumer that prices from billing classes (agent-metrics keeps each push's class
+    /// beside its token delta) gets one per Gemini 3.1 Pro step, long only over the 200,000-token
+    /// prompt, so it prices a session the way the fold's own cost does. A model whose price does
+    /// not depend on the request has no class, and the class never outlives its push.
+    #[test]
+    fn each_gemini_3_1_pro_step_names_its_class_through_the_seam() {
+        let step = |index: u64, model: &str, input: u64| {
+            serde_json::json!({
+                "type": "PLANNER_RESPONSE", "created_at": "2026-11-28T00:00:00Z",
+                "step_index": index, "model": model,
+                "input_tokens": input, "cache_read_tokens": 50000, "output_tokens": 1000,
+            })
+        };
+        let mut acc = AntigravityAdapter.metrics_acc();
+        let mut classes: BTreeMap<RequestPricing, TokenCounts> = BTreeMap::new();
+        let mut seen = Vec::new();
+        let mut before = TokenCounts::default();
+        for line in [
+            step(1, "gemini-3.1-pro-high", 150_001),
+            step(2, "gemini-3.1-pro-high", 150_000),
+            step(3, "gemini-3.8-flash-medium", 500_000),
+        ] {
+            acc.push(&line);
+            let now = acc.totals().0.get("gemini-3.1-pro-high").copied();
+            let class = acc.request_pricing();
+            seen.push(class.map(|c| c.long_context));
+            if let (Some(class), Some(now)) = (class, now) {
+                let mut delta = now;
+                delta.input -= before.input;
+                delta.cache_read -= before.cache_read;
+                delta.output -= before.output;
+                let sum = classes.entry(class).or_default();
+                sum.input += delta.input;
+                sum.cache_read += delta.cache_read;
+                sum.output += delta.output;
+                before = now;
+            }
+        }
+        assert_eq!(seen, [Some(Some(true)), Some(Some(false)), None]);
+        let class = |long| RequestPricing {
+            long_context: Some(long),
+            ..Default::default()
+        };
+        let counts = |input| TokenCounts {
+            input,
+            cache_read: 50000,
+            output: 1000,
+            ..Default::default()
+        };
+        assert_eq!(
+            classes,
+            BTreeMap::from([
+                (class(true), counts(150_001)),
+                (class(false), counts(150_000))
+            ]),
+        );
+        // The fold's own cost is the classes' price: each class at its rate, the Flash step at
+        // the catalog's.
+        let metrics = acc.finish();
+        let prices = claude_replay_engine::metrics::PriceTable::default();
+        let priced = |long, input| {
+            class(long)
+                .cost_with(&prices, "gemini-3.1-pro-high", counts(input))
+                .0
+                .expect("Gemini 3.1 Pro is priced")
+        };
+        let flash = (500_000.0 * 0.75 + 50_000.0 * 0.075 + 1000.0 * 3.75) / 1e6;
+        let want = priced(true, 150_001) + priced(false, 150_000) + flash;
+        let cost = metrics.cost_usd.expect("every step is priced");
+        assert!((cost - want).abs() < 1e-12, "{cost}, expected {want}");
+
+        // A step records no tier, so none is asserted. A line that is no step, a step with no
+        // counts, and one with counts but no model (they go to the unassigned bucket) have no
+        // class, and each clears the one before it.
+        acc.push(&step(4, "gemini-3.1-pro-high", 150_001));
+        let pushed = acc.request_pricing().expect("a long 3.1 Pro step");
+        assert_eq!(pushed.tier, ServiceTier::Unknown);
+        assert!(!pushed.tier_confirmed);
+        acc.push(&serde_json::json!({"type": "USER_INPUT", "step_index": 5}));
+        assert_eq!(acc.request_pricing(), None);
+        acc.push(&step(6, "gemini-3.1-pro-high", 150_001));
+        acc.push(
+            &serde_json::json!({"type": "PLANNER_RESPONSE", "step_index": 7,
+            "model": "gemini-3.1-pro-high"}),
+        );
+        assert_eq!(acc.request_pricing(), None);
+        acc.push(&step(8, "gemini-3.1-pro-high", 150_001));
+        let mut unnamed = step(9, "", 150_001);
+        unnamed.as_object_mut().unwrap().remove("model");
+        acc.push(&unnamed);
+        assert_eq!(acc.request_pricing(), None);
     }
 }
 
