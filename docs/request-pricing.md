@@ -26,6 +26,20 @@ gpt-5-codex, gpt-5.1-codex, gpt-5.1-codex-max, gpt-5.1-codex-mini and gpt-5.2-co
 have no request rules, so every request on them is an estimate.
 Only explicitly listed aliases share rules; unknown snapshots never borrow prices.
 
+Qwen4-Max (Alibaba Model Studio) has one bracket to 1M input tokens, so no long-context
+surcharge; Batch is half, per the label on both pricing pages. No Fast, Flex or Ultrafast rate
+is published for it, so those tiers price at standard as an estimate. Its rates are the
+Beijing / global deployment tier, which the international pricing page publishes in USD;
+the international (Singapore) and US deployments carry different rates, and the catalog
+has no per-region rows, so every request on the model prices at the Beijing / global
+tier. Its cache write and hit rates are the values the international page printed on
+2026-11-23; the page removed those sub-tables afterwards, so they are held provisionally
+at the read-time values as agreed in review, corroborated by the console's live CNY
+cache table (source bailian_console_qwen4; 12.5 / 20 / 0.5 yuan per million tokens for the 5m creation, the 1h
+creation and a hit, explicit or implicit) at the published 10-yuan-to-$1.413 input
+ratio, and by the explicit-cache (Qwen4) page's creation ratios (about 125% of input
+for TTL 5m, about 200% for TTL 1h).
+
 The returned incomplete-evidence flag also covers unsupported tiers and GPT
 models without verified request rules. These estimates are not necessarily lower
 bounds: a missing tier might be Flex or Fast. Prices use exact integer arithmetic
@@ -44,5 +58,14 @@ use a session's final runtime settings to reprice its earlier requests.
 
 Rates were verified against the [official pricing page](https://developers.openai.com/api/docs/pricing)
 and [Astra model page](https://developers.openai.com/api/docs/models/gpt-6-astra)
-on 2026-09-28, and for GPT-5.2, 5.1, 5, 5 mini and 5 nano on 2026-11-14. This is a
-token-price estimate, not a provider invoice.
+on 2026-09-28, and for GPT-5.2, 5.1, 5, 5 mini and 5 nano on 2026-11-14. Qwen4-Max was
+verified against Model Studio's [domestic](https://help.aliyun.com/zh/model-studio/model-pricing)
+and [international](https://www.alibabacloud.com/help/zh/model-studio/model-pricing) pricing
+pages on 2026-11-23 and again on 2026-11-28, and against its
+[explicit-cache (Qwen4)](https://help.aliyun.com/zh/model-studio/explicit-cache-qwen4) and
+[context-cache](https://help.aliyun.com/zh/model-studio/context-cache) pages on 2026-11-28;
+the console's [qwen4-max model page](https://bailian.console.aliyun.com/cn-beijing/model/market/detail/qwen4-max)
+(readable without login) was read on 2026-11-28T12:06Z and prints the CNY cache table;
+the international page's qwen4-max cache sub-tables, read on 2026-11-23, were removed by
+the re-read, so the stored cache rates are read-time provisional values.
+This is a token-price estimate, not a provider invoice.
